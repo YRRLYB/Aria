@@ -1,5 +1,14 @@
 import type { LyricCandidate } from "@/data/music";
 
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export type ApiScannedTrack = {
   id: string;
   path: string;
@@ -19,6 +28,30 @@ export type NeteaseAccountSummary = {
   cookiePreview: string | null;
 };
 
+export type ProviderTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  source: string;
+};
+
+export type ProviderPlaylist = {
+  id: string;
+  name: string;
+  trackCount: number;
+  subscribed: boolean;
+  coverColor: string;
+};
+
+export type ProviderDailyBundle = {
+  date: string;
+  tracks: ProviderTrack[];
+  reason: string;
+};
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: {
@@ -29,7 +62,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    let message = `Request failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (typeof body.error === "string") message = body.error;
+    } catch {
+      // Keep the generic message when the server does not return JSON.
+    }
+    throw new ApiError(response.status, message);
   }
 
   return response.json() as Promise<T>;
@@ -70,5 +110,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ cookie }),
     });
+  },
+  listProviders() {
+    return request<{
+      providers: Array<{
+        id: string;
+        name: string;
+        account: {
+          connected: boolean;
+          nickname: string | null;
+          userId: string | null;
+        };
+      }>;
+    }>("/api/providers");
+  },
+  getProviderLiked(providerId = "netease") {
+    return request<{ tracks: ProviderTrack[] }>(`/api/providers/${providerId}/liked`);
+  },
+  getProviderPlaylists(providerId = "netease") {
+    return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
+  },
+  getProviderDaily(providerId = "netease") {
+    return request<ProviderDailyBundle>(`/api/providers/${providerId}/daily`);
   },
 };

@@ -3,9 +3,10 @@ import express from "express";
 import { z } from "zod";
 import { searchLyricCandidates } from "./lyrics";
 import { scanMusicFolder } from "./musicScanner";
-import { listProviders } from "./providers";
+import { getProvider, listProviders } from "./providers";
 import { getNeteaseAccountSummary, saveNeteaseCookie } from "./services/neteaseService";
 import { readStore, updateStore } from "./store";
+import { HttpError } from "./utils/httpError";
 
 const app = express();
 const port = Number(process.env.MUSICBOX_API_PORT || 3636);
@@ -40,6 +41,33 @@ app.get("/api/providers", async (_req, res, next) => {
       })),
     );
     res.json({ providers });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/:providerId/liked", async (req, res, next) => {
+  try {
+    const provider = resolveProvider(req.params.providerId);
+    res.json({ tracks: await provider.getLikedTracks() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/:providerId/playlists", async (req, res, next) => {
+  try {
+    const provider = resolveProvider(req.params.providerId);
+    res.json({ playlists: await provider.getPlaylists() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/:providerId/daily", async (req, res, next) => {
+  try {
+    const provider = resolveProvider(req.params.providerId);
+    res.json(await provider.getDailyRecommendations());
   } catch (error) {
     next(error);
   }
@@ -102,9 +130,22 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     return;
   }
 
+  if (error instanceof HttpError) {
+    res.status(error.status).json({ error: error.message, code: error.code });
+    return;
+  }
+
   const message = error instanceof Error ? error.message : "Unknown server error";
   res.status(500).json({ error: message });
 });
+
+function resolveProvider(providerId: string) {
+  const provider = getProvider(providerId);
+  if (!provider) {
+    throw new HttpError(404, `Unknown provider: ${providerId}`, "UNKNOWN_PROVIDER");
+  }
+  return provider;
+}
 
 app.listen(port, "127.0.0.1", () => {
   console.log(`musicbox-api listening on http://127.0.0.1:${port}`);

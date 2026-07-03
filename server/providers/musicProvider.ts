@@ -4,8 +4,35 @@ export type ProviderAccount = {
   userId: string | null;
 };
 
+export type ProviderTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  source: string;
+};
+
+export type ProviderPlaylist = {
+  id: string;
+  name: string;
+  trackCount: number;
+  subscribed: boolean;
+  coverColor: string;
+};
+
+export type ProviderDailyBundle = {
+  date: string;
+  tracks: ProviderTrack[];
+  reason: string;
+};
+
 export type MusicProvider = {
   id: string;
   name: string;
   getAccount(): Promise<ProviderAccount>;
+  getLikedTracks(): Promise<ProviderTrack[]>;
+  getPlaylists(): Promise<ProviderPlaylist[]>;
+  getDailyRecommendations(): Promise<ProviderDailyBundle>;
 };
