@@ -1,6 +1,9 @@
 import cors from "cors";
 import express from "express";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { z } from "zod";
+import { clearLibrary, findTrack, readLibrary, replaceLibraryRoot } from "./libraryStore";
 import { searchLyricCandidates } from "./lyrics";
 import { scanMusicFolder } from "./musicScanner";
 import { getProvider, listProviders } from "./providers";
@@ -85,9 +88,71 @@ app.post("/api/settings/netease-cookie", async (req, res, next) => {
 
 app.post("/api/library/scan", async (req, res, next) => {
   try {
-    const body = z.object({ folderPath: z.string().min(1) }).parse(req.body);
+    const body = z
+      .object({
+        folderPath: z.string().min(1),
+        persist: z.boolean().optional().default(true),
+      })
+      .parse(req.body);
     const tracks = await scanMusicFolder(body.folderPath);
-    res.json({ tracks });
+    const library = body.persist ? await replaceLibraryRoot(body.folderPath, tracks) : null;
+    res.json({ tracks, library });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/library", async (_req, res, next) => {
+  try {
+    res.json(await readLibrary());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/library", async (_req, res, next) => {
+  try {
+    res.json(await clearLibrary());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/library/tracks/:trackId/stream", async (req, res, next) => {
+  try {
+    const track = await findTrack(req.params.trackId);
+    if (!track) throw new HttpError(404, "Track not found", "TRACK_NOT_FOUND");
+
+    const fileStat = await stat(track.path);
+    const range = req.headers.range;
+    const contentType = mimeFromFormat(track.format);
+
+    if (!range) {
+      res.writeHead(200, {
+        "Content-Length": fileStat.size,
+        "Content-Type": contentType,
+        "Accept-Ranges": "bytes",
+      });
+      createReadStream(track.path).pipe(res);
+      return;
+    }
+
+    const match = range.match(/bytes=(\d*)-(\d*)/);
+    if (!match) throw new HttpError(416, "Invalid range", "INVALID_RANGE");
+
+    const start = match[1] ? Number(match[1]) : 0;
+    const end = match[2] ? Number(match[2]) : fileStat.size - 1;
+    if (start > end || end >= fileStat.size) {
+      throw new HttpError(416, "Range not satisfiable", "RANGE_NOT_SATISFIABLE");
+    }
+
+    res.writeHead(206, {
+      "Content-Range": `bytes ${start}-${end}/${fileStat.size}`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": end - start + 1,
+      "Content-Type": contentType,
+    });
+    createReadStream(track.path, { start, end }).pipe(res);
   } catch (error) {
     next(error);
   }
@@ -145,6 +210,16 @@ function resolveProvider(providerId: string) {
     throw new HttpError(404, `Unknown provider: ${providerId}`, "UNKNOWN_PROVIDER");
   }
   return provider;
+}
+
+function mimeFromFormat(format: string) {
+  const normalized = format.toLowerCase();
+  if (normalized.includes("flac")) return "audio/flac";
+  if (normalized.includes("wave") || normalized.includes("wav")) return "audio/wav";
+  if (normalized.includes("mpeg") || normalized.includes("mp3")) return "audio/mpeg";
+  if (normalized.includes("mp4") || normalized.includes("m4a")) return "audio/mp4";
+  if (normalized.includes("ogg")) return "audio/ogg";
+  return "application/octet-stream";
 }
 
 app.listen(port, "127.0.0.1", () => {

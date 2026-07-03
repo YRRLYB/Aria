@@ -21,6 +21,12 @@ export type ApiScannedTrack = {
   size: number;
 };
 
+export type ApiLibraryIndex = {
+  updatedAt: string | null;
+  roots: string[];
+  tracks: ApiScannedTrack[];
+};
+
 export type NeteaseAccountSummary = {
   connected: boolean;
   nickname: string | null;
@@ -79,11 +85,22 @@ export const api = {
   health() {
     return request<{ ok: boolean; name: string }>("/api/health");
   },
-  scanLibrary(folderPath: string) {
-    return request<{ tracks: ApiScannedTrack[] }>("/api/library/scan", {
+  scanLibrary(folderPath: string, persist = true) {
+    return request<{ tracks: ApiScannedTrack[]; library: ApiLibraryIndex | null }>("/api/library/scan", {
       method: "POST",
-      body: JSON.stringify({ folderPath }),
+      body: JSON.stringify({ folderPath, persist }),
     });
+  },
+  getLibrary() {
+    return request<ApiLibraryIndex>("/api/library");
+  },
+  clearLibrary() {
+    return request<ApiLibraryIndex>("/api/library", {
+      method: "DELETE",
+    });
+  },
+  getTrackStreamUrl(trackId: string) {
+    return `/api/library/tracks/${encodeURIComponent(trackId)}/stream`;
   },
   searchLyrics(query: { title: string; artist?: string; album?: string }) {
     const params = new URLSearchParams();
