@@ -36,7 +36,7 @@ import {
   type Track,
   type ViewId,
 } from "@/data/music";
-import { api, type NeteaseAccountSummary } from "@/lib/api";
+import { api, type ApiScannedTrack, type NeteaseAccountSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const sourceLabel: Record<Track["source"], string> = {
@@ -51,32 +51,154 @@ const panelVariants = {
   exit: { opacity: 0, y: -16, filter: "blur(16px)" },
 };
 
+const localCoverPalettes = [
+  "linear-gradient(135deg, #d9e7f6 0%, #5e8ab8 48%, #182338 100%)",
+  "linear-gradient(135deg, #f4d4ce 0%, #c6796d 50%, #241a1a 100%)",
+  "linear-gradient(135deg, #d7f1e5 0%, #5aa894 50%, #172823 100%)",
+  "linear-gradient(135deg, #e4ddf5 0%, #8680b4 50%, #202036 100%)",
+];
+
+function formatDuration(seconds: number | null) {
+  if (!seconds || Number.isNaN(seconds)) return "--:--";
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.floor(seconds % 60);
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function normalizeQuality(quality: string): Track["quality"] {
+  if (quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K") {
+    return quality;
+  }
+  return "320K";
+}
+
+function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
+  return {
+    id: track.id,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    duration: formatDuration(track.duration),
+    quality: normalizeQuality(track.quality),
+    source: "local",
+    streamUrl: api.getTrackStreamUrl(track.id),
+    cover: localCoverPalettes[index % localCoverPalettes.length],
+    accent: ["#5e8ab8", "#c6796d", "#5aa894", "#8680b4"][index % 4],
+    waveform: [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48],
+    lyricStatus: "searchable",
+    lyrics: [
+      { time: "00:00", text: "本地歌词等待匹配" },
+      { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
+      { time: "00:30", text: "绑定后会保存到本地索引" },
+    ],
+  };
+}
+
 export default function App() {
   const [activeView, setActiveView] = useState<ViewId>("home");
   const [activeTrackId, setActiveTrackId] = useState(tracks[0].id);
   const [playing, setPlaying] = useState(true);
+  const [localTracks, setLocalTracks] = useState<Track[]>([]);
+  const [libraryMeta, setLibraryMeta] = useState({ roots: 0, updatedAt: null as string | null });
   const [navOpen, setNavOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [neteaseConnected, setNeteaseConnected] = useState(false);
   const [query, setQuery] = useState("");
   const [folderName, setFolderName] = useState("未选择");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const navCloseTimer = useRef<number | null>(null);
 
-  const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? tracks[0];
+  const allTracks = useMemo(() => [...localTracks, ...tracks], [localTracks]);
+  const activeTrack = allTracks.find((track) => track.id === activeTrackId) ?? allTracks[0] ?? tracks[0];
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return tracks;
+    if (!normalized) return allTracks;
 
-    return tracks.filter((track) =>
+    return allTracks.filter((track) =>
       [track.title, track.artist, track.album, track.quality, sourceLabel[track.source]]
         .join(" ")
         .toLowerCase()
         .includes(normalized),
     );
-  }, [query]);
+  }, [allTracks, query]);
+  const visibleLocalTracks = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return localTracks;
+
+    return localTracks.filter((track) =>
+      [track.title, track.artist, track.album, track.quality].join(" ").toLowerCase().includes(normalized),
+    );
+  }, [localTracks, query]);
+
+  useEffect(() => {
+    api
+      .getLibrary()
+      .then((library) => {
+        setLocalTracks(library.tracks.map(localTrackToUiTrack));
+        setLibraryMeta({ roots: library.roots.length, updatedAt: library.updatedAt });
+      })
+      .catch(() => {
+        setLibraryMeta({ roots: 0, updatedAt: null });
+      });
+  }, []);
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then((settings) => setNeteaseConnected(settings.neteaseAccount.connected))
+      .catch(() => setNeteaseConnected(false));
+  }, []);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (!activeTrack.streamUrl) {
+      audio.pause();
+      return;
+    }
+
+    if (audio.src !== new URL(activeTrack.streamUrl, window.location.href).href) {
+      audio.src = activeTrack.streamUrl;
+    }
+
+    if (playing) {
+      audio.play().catch(() => setPlaying(false));
+    } else {
+      audio.pause();
+    }
+  }, [activeTrack, playing]);
+
+  async function scanBackendPath(folderPath: string) {
+    const result = await api.scanLibrary(folderPath);
+    const nextTracks = result.library?.tracks ?? result.tracks;
+    setLocalTracks(nextTracks.map(localTrackToUiTrack));
+    setLibraryMeta({
+      roots: result.library?.roots.length ?? 1,
+      updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
+    });
+    if (nextTracks[0]) setActiveTrackId(nextTracks[0].id);
+    setActiveView("local");
+  }
+
+  function pickRelativeTrack(direction: 1 | -1) {
+    if (!visibleTracks.length) return;
+    const currentIndex = visibleTracks.findIndex((track) => track.id === activeTrack.id);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = (safeIndex + direction + visibleTracks.length) % visibleTracks.length;
+    setActiveTrackId(visibleTracks[nextIndex].id);
+    setPlaying(true);
+  }
+
+  function chooseTrack(trackId: string) {
+    setActiveTrackId(trackId);
+    setPlaying(true);
+  }
 
   return (
     <main className="relative h-screen overflow-hidden bg-[#f5f6f8] p-3 text-neutral-950 sm:p-4">
+      <audio ref={audioRef} onEnded={() => pickRelativeTrack(1)} />
       <div className="noise" />
       <input
         ref={fileInputRef}
@@ -153,9 +275,18 @@ export default function App() {
             >
               <UserRound />
             </Button>
+            <span
+              className={cn(
+                "absolute right-0 top-0 size-2.5 rounded-full ring-2 ring-white",
+                neteaseConnected ? "bg-[#28c840]" : "bg-neutral-300",
+              )}
+            />
             <AnimatePresence>
               {accountOpen && (
-                <AccountPanel onClose={() => setAccountOpen(false)} />
+                <AccountPanel
+                  onClose={() => setAccountOpen(false)}
+                  onAccountChange={(account) => setNeteaseConnected(account.connected)}
+                />
               )}
             </AnimatePresence>
           </div>
@@ -177,7 +308,7 @@ export default function App() {
                   activeTrack={activeTrack}
                   playing={playing}
                   onTogglePlay={() => setPlaying((value) => !value)}
-                  onPickTrack={setActiveTrackId}
+                  onPickTrack={chooseTrack}
                   onOpenPlayer={() => setActiveView("player")}
                 />
               )}
@@ -186,23 +317,28 @@ export default function App() {
                   activeTrack={activeTrack}
                   playing={playing}
                   onTogglePlay={() => setPlaying((value) => !value)}
-                  onPickTrack={setActiveTrackId}
+                  onNext={() => pickRelativeTrack(1)}
+                  onPrevious={() => pickRelativeTrack(-1)}
+                  onPickTrack={chooseTrack}
                 />
               )}
               {activeView === "local" && (
                 <LibrarySurface
                   folderName={folderName}
                   onChooseFolder={() => fileInputRef.current?.click()}
-                  tracks={visibleTracks}
+                  tracks={visibleLocalTracks}
+                  localTrackCount={localTracks.length}
+                  libraryMeta={libraryMeta}
                   activeTrackId={activeTrackId}
-                  onPickTrack={setActiveTrackId}
+                  onPickTrack={chooseTrack}
+                  onScanPath={scanBackendPath}
                 />
               )}
               {activeView === "liked" && (
-                <LikedSurface onPickTrack={setActiveTrackId} />
+                <LikedSurface onPickTrack={chooseTrack} />
               )}
               {activeView === "playlists" && (
-                <PlaylistSurface onPickTrack={setActiveTrackId} />
+                <PlaylistSurface onPickTrack={chooseTrack} />
               )}
               {activeView === "daily" && (
                 <CollectionSurface
@@ -210,7 +346,7 @@ export default function App() {
                   subtitle="30 首"
                   icon={<Sparkles className="size-5" />}
                   tracks={[tracks[1], tracks[3], tracks[0]]}
-                  onPickTrack={setActiveTrackId}
+                  onPickTrack={chooseTrack}
                 />
               )}
               {activeView === "radar" && (
@@ -219,7 +355,7 @@ export default function App() {
                   subtitle="基于最近偏好"
                   icon={<Radio className="size-5" />}
                   tracks={[tracks[2], tracks[0], tracks[3]]}
-                  onPickTrack={setActiveTrackId}
+                  onPickTrack={chooseTrack}
                 />
               )}
               {activeView === "cloud" && <CloudSurface />}
@@ -248,7 +384,9 @@ export default function App() {
                     "flex w-full items-center gap-3 rounded-3xl p-2 text-left transition hover:bg-white/65",
                     activeTrackId === track.id && "bg-white shadow-sm",
                   )}
-                  onClick={() => setActiveTrackId(track.id)}
+                  onClick={() => {
+                    chooseTrack(track.id);
+                  }}
                 >
                   <CoverArt track={track} className="size-14 rounded-2xl" />
                   <div className="min-w-0 flex-1">
@@ -273,9 +411,9 @@ export default function App() {
               </div>
 
               <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
-                <Metric value="4" label="曲目" />
-                <Metric value="2" label="歌词" />
-                <Metric value="3" label="无损" />
+                <Metric value={String(allTracks.length)} label="曲目" />
+                <Metric value={String(allTracks.filter((track) => track.lyricStatus === "linked").length)} label="歌词" />
+                <Metric value={String(allTracks.filter((track) => track.quality !== "320K").length)} label="无损" />
               </div>
 
               <div className="mt-4 rounded-2xl bg-white/56 p-3">
@@ -446,11 +584,15 @@ function PlayerSurface({
   activeTrack,
   playing,
   onTogglePlay,
+  onNext,
+  onPrevious,
   onPickTrack,
 }: {
   activeTrack: Track;
   playing: boolean;
   onTogglePlay: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
   onPickTrack: (id: string) => void;
 }) {
   const [lyricsFocus, setLyricsFocus] = useState(false);
@@ -571,13 +713,13 @@ function PlayerSurface({
                 <Button variant="ghost" size="icon" aria-label="随机播放">
                   <Shuffle />
                 </Button>
-                <Button variant="ghost" size="icon" aria-label="上一首">
+                <Button variant="ghost" size="icon" aria-label="上一首" onClick={onPrevious}>
                   <SkipBack />
                 </Button>
                 <Button size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
                   {playing ? <Pause className="size-6 fill-current" /> : <Play className="size-6 fill-current" />}
                 </Button>
-                <Button variant="ghost" size="icon" aria-label="下一首">
+                <Button variant="ghost" size="icon" aria-label="下一首" onClick={onNext}>
                   <SkipForward />
                 </Button>
                 <Button variant="ghost" size="icon" aria-label="循环播放">
@@ -663,19 +805,38 @@ function LibrarySurface({
   folderName,
   onChooseFolder,
   tracks: libraryTracks,
+  localTrackCount,
+  libraryMeta,
   activeTrackId,
   onPickTrack,
+  onScanPath,
 }: {
   folderName: string;
   onChooseFolder: () => void;
   tracks: Track[];
+  localTrackCount: number;
+  libraryMeta: { roots: number; updatedAt: string | null };
   activeTrackId: string;
   onPickTrack: (id: string) => void;
+  onScanPath: (folderPath: string) => Promise<void>;
 }) {
   const [lookupOpen, setLookupOpen] = useState(false);
   const [boundCandidateId, setBoundCandidateId] = useState<string | null>(null);
+  const [scanPath, setScanPath] = useState("");
+  const [scanState, setScanState] = useState<"idle" | "scanning" | "error">("idle");
   const candidateTarget =
     libraryTracks.find((track) => track.lyricStatus !== "linked") ?? libraryTracks[0];
+
+  async function submitScanPath() {
+    if (!scanPath.trim()) return;
+    setScanState("scanning");
+    try {
+      await onScanPath(scanPath.trim());
+      setScanState("idle");
+    } catch {
+      setScanState("error");
+    }
+  }
 
   return (
     <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
@@ -698,9 +859,35 @@ function LibrarySurface({
       </div>
 
       <div className="mt-6 grid gap-3 md:grid-cols-3">
-        <LyricLookupCard label="关键词" value="标题 + 歌手 + 专辑" />
-        <LyricLookupCard label="来源" value="网易云 / QQ / 酷狗候选" />
-        <LyricLookupCard label="保存" value="绑定到本地曲目" />
+        <LyricLookupCard label="索引曲目" value={`${localTrackCount} 首本地音乐`} />
+        <LyricLookupCard label="目录数量" value={`${libraryMeta.roots} 个目录`} />
+        <LyricLookupCard
+          label="更新时间"
+          value={libraryMeta.updatedAt ? new Date(libraryMeta.updatedAt).toLocaleString() : "尚未扫描"}
+        />
+      </div>
+
+      <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">
+              Backend Scan
+            </p>
+            <input
+              value={scanPath}
+              onChange={(event) => setScanPath(event.target.value)}
+              placeholder="输入本机音乐目录路径，例如 E:\\Music"
+              className="mt-2 w-full rounded-full border border-white/70 bg-white/70 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+            />
+          </div>
+          <Button onClick={submitScanPath} disabled={scanState === "scanning"}>
+            <RefreshCw className={cn(scanState === "scanning" && "animate-spin")} />
+            {scanState === "scanning" ? "扫描中" : "扫描目录"}
+          </Button>
+        </div>
+        {scanState === "error" && (
+          <p className="mt-3 text-sm text-neutral-500">扫描失败，请确认路径存在且后端服务正在运行。</p>
+        )}
       </div>
 
       <AnimatePresence initial={false}>
@@ -1193,7 +1380,13 @@ function FloatingNav({
   );
 }
 
-function AccountPanel({ onClose }: { onClose: () => void }) {
+function AccountPanel({
+  onClose,
+  onAccountChange,
+}: {
+  onClose: () => void;
+  onAccountChange?: (account: NeteaseAccountSummary) => void;
+}) {
   const [cookie, setCookie] = useState("");
   const [account, setAccount] = useState<NeteaseAccountSummary | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1204,7 +1397,10 @@ function AccountPanel({ onClose }: { onClose: () => void }) {
     api
       .getSettings()
       .then((settings) => {
-        if (mounted) setAccount(settings.neteaseAccount);
+        if (mounted) {
+          setAccount(settings.neteaseAccount);
+          onAccountChange?.(settings.neteaseAccount);
+        }
       })
       .catch(() => {
         if (mounted) setMessage("后端未连接");
@@ -1225,6 +1421,7 @@ function AccountPanel({ onClose }: { onClose: () => void }) {
     try {
       const result = await api.saveNeteaseCookie(cookie.trim());
       setAccount(result.account);
+      onAccountChange?.(result.account);
       setCookie("");
       setMessage("Cookie 已保存");
     } catch {

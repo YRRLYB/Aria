@@ -17,6 +17,7 @@ export type Track = {
   duration: string;
   quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: "local" | "cloud" | "netease";
+  streamUrl?: string;
   cover: string;
   accent: string;
   waveform: number[];
