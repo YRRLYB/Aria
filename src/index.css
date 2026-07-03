@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+:root {
+  color: #171717;
+  background: #f7f8fb;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --page: #f7f8fb;
+  --ink: #171717;
+  --muted: #6f7480;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--page);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  overflow-x: hidden;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(23, 23, 23, 0.12);
+}
+
+.glass {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: 0 22px 70px rgba(47, 55, 76, 0.12);
+  backdrop-filter: blur(28px) saturate(1.2);
+}
+
+.noise {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.2;
+  background-image:
+    radial-gradient(circle at 20% 12%, rgba(89, 118, 180, 0.18), transparent 27rem),
+    radial-gradient(circle at 83% 20%, rgba(76, 159, 143, 0.15), transparent 24rem),
+    radial-gradient(circle at 68% 88%, rgba(182, 110, 95, 0.14), transparent 27rem);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(23, 23, 23, 0.18) transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.015);
+  }
+}
+
+.album-breathe {
+  animation: breathe 7s ease-in-out infinite;
+}
+
+.nav-wave-base {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.72);
+  filter: drop-shadow(0 1px 5px rgba(23, 23, 23, 0.16));
+  stroke-linecap: round;
+  stroke-width: 1.4;
+}
+
+.nav-wave-flow {
+  animation: wave-link 1.8s linear infinite;
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.96);
+  filter: drop-shadow(0 1px 8px rgba(255, 255, 255, 0.9));
+  stroke-dasharray: 2 10;
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
+@keyframes wave-link {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -40;
+  }
+}
+
+.player-orbit {
+  position: absolute;
+  inset: 7%;
+  border: 1px solid color-mix(in srgb, var(--track-accent) 42%, white);
+  border-radius: 999px;
+  opacity: 0.55;
+  transform: rotate(-12deg);
+}
+
+.player-orbit::before,
+.player-orbit::after {
+  position: absolute;
+  border-radius: inherit;
+  content: "";
+  inset: 9%;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+}
+
+.player-orbit::after {
+  inset: 23%;
+  border-color: color-mix(in srgb, var(--track-accent) 34%, transparent);
+}
+
+.player-orbit.is-playing {
+  animation: orbit-slow 18s linear infinite;
+}
+
+.player-glow {
+  position: absolute;
+  inset: auto 10% 9% 10%;
+  height: 28%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--track-accent) 42%, white);
+  filter: blur(42px);
+  opacity: 0.38;
+}
+
+.player-glow.is-playing {
+  animation: glow-pulse 2.8s ease-in-out infinite;
+}
+
+@keyframes orbit-slow {
+  to {
+    transform: rotate(348deg);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scaleX(0.86);
+  }
+  50% {
+    opacity: 0.48;
+    transform: scaleX(1);
+  }
+}
