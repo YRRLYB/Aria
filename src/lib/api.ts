@@ -1,5 +1,21 @@
 import type { LyricCandidate } from "@/data/music";
 
+declare global {
+  interface Window {
+    ariaDesktop?: {
+      apiBase?: string;
+      minimizeToTray?: () => void;
+      minimizeWindow?: () => void;
+      toggleMaximizeWindow?: () => void;
+      closeWindow?: () => void;
+      onWindowVisibilityChange?: (callback: (visible: boolean) => void) => () => void;
+      showApp?: () => void;
+      quitApp?: () => void;
+      setBackgroundEnabled?: (enabled: boolean) => void;
+    };
+  }
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -19,6 +35,10 @@ export type ApiScannedTrack = {
   quality: string;
   format: string;
   size: number;
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  bpm?: number | null;
+  hasCover?: boolean;
 };
 
 export type ApiLibraryIndex = {
@@ -31,6 +51,7 @@ export type NeteaseAccountSummary = {
   connected: boolean;
   nickname: string | null;
   userId: string | null;
+  avatarUrl: string | null;
   cookiePreview: string | null;
 };
 
@@ -42,6 +63,8 @@ export type ProviderTrack = {
   duration: number;
   quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: string;
+  streamUrl?: string | null;
+  coverUrl?: string | null;
 };
 
 export type ProviderPlaylist = {
@@ -50,6 +73,7 @@ export type ProviderPlaylist = {
   trackCount: number;
   subscribed: boolean;
   coverColor: string;
+  coverUrl?: string | null;
 };
 
 export type ProviderDailyBundle = {
@@ -58,8 +82,15 @@ export type ProviderDailyBundle = {
   reason: string;
 };
 
+const API_BASE = window.ariaDesktop?.apiBase ?? "";
+
+export function apiUrl(url: string) {
+  if (!API_BASE || /^https?:\/\//i.test(url)) return url;
+  return `${API_BASE}${url}`;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(apiUrl(url), {
     headers: {
       "Content-Type": "application/json",
       ...init?.headers,
@@ -82,6 +113,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  resolveUrl(url: string) {
+    return apiUrl(url);
+  },
   health() {
     return request<{ ok: boolean; name: string }>("/api/health");
   },
@@ -100,7 +134,13 @@ export const api = {
     });
   },
   getTrackStreamUrl(trackId: string) {
-    return `/api/library/tracks/${encodeURIComponent(trackId)}/stream`;
+    return apiUrl(`/api/library/tracks/${encodeURIComponent(trackId)}/stream`);
+  },
+  getTrackCoverUrl(trackId: string) {
+    return apiUrl(`/api/library/tracks/${encodeURIComponent(trackId)}/cover`);
+  },
+  getNeteaseCoverUrl(sourceUrl: string) {
+    return apiUrl(`/api/providers/netease/cover?url=${encodeURIComponent(sourceUrl)}`);
   },
   searchLyrics(query: { title: string; artist?: string; album?: string }) {
     const params = new URLSearchParams();
@@ -110,7 +150,11 @@ export const api = {
     return request<{ candidates: LyricCandidate[] }>(`/api/lyrics/search?${params}`);
   },
   bindLyric(trackId: string, candidateId: string) {
-    return request<{ ok: boolean; lyricBindings: Record<string, string> }>("/api/lyrics/bind", {
+    return request<{
+      ok: boolean;
+      lyricBindings: Record<string, string>;
+      lyrics: Array<{ time: string; text: string }>;
+    }>("/api/lyrics/bind", {
       method: "POST",
       body: JSON.stringify({ trackId, candidateId }),
     });
@@ -137,6 +181,7 @@ export const api = {
           connected: boolean;
           nickname: string | null;
           userId: string | null;
+          avatarUrl: string | null;
         };
       }>;
     }>("/api/providers");
@@ -147,7 +192,18 @@ export const api = {
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
   },
+  getNeteasePlaylistTracks(playlistId: string) {
+    return request<{ tracks: ProviderTrack[] }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/tracks`);
+  },
   getProviderDaily(providerId = "netease") {
     return request<ProviderDailyBundle>(`/api/providers/${providerId}/daily`);
+  },
+  getProviderRoam(providerId = "netease", limit = 18) {
+    return request<ProviderDailyBundle>(`/api/providers/${providerId}/roam?limit=${limit}`);
+  },
+  getNeteaseLyrics(trackId: string) {
+    return request<{ lyrics: Array<{ time: string; text: string }> }>(
+      `/api/providers/netease/tracks/${encodeURIComponent(trackId)}/lyrics`,
+    );
   },
 };

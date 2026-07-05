@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppStore } from "./types";
 
-const dataDir = path.resolve(process.cwd(), ".musicbox");
+const dataDir = path.resolve(process.env.ARIA_DATA_DIR || path.join(process.cwd(), ".musicbox"));
 const storePath = path.join(dataDir, "store.json");
 
 const defaultStore: AppStore = {

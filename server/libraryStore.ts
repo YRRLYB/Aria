@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ScannedTrack } from "./types";
 
-const dataDir = path.resolve(process.cwd(), ".musicbox");
+const dataDir = path.resolve(process.env.ARIA_DATA_DIR || path.join(process.cwd(), ".musicbox"));
 const libraryPath = path.join(dataDir, "library.json");
 
 export type LibraryIndex = {

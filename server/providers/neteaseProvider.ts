@@ -10,6 +10,7 @@ export const neteaseProvider: MusicProvider = {
       connected: account.connected,
       nickname: account.nickname,
       userId: account.userId,
+      avatarUrl: account.avatarUrl,
     };
   },
   async getLikedTracks() {
@@ -20,5 +21,8 @@ export const neteaseProvider: MusicProvider = {
   },
   async getDailyRecommendations() {
     return neteaseClient.getDailyRecommendations();
+  },
+  async getPrivateRoaming(limit?: number) {
+    return neteaseClient.getPrivateRoaming(limit);
   },
 };

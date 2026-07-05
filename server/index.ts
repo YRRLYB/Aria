@@ -2,23 +2,27 @@ import cors from "cors";
 import express from "express";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { parseFile } from "music-metadata";
 import { z } from "zod";
 import { clearLibrary, findTrack, readLibrary, replaceLibraryRoot } from "./libraryStore";
-import { searchLyricCandidates } from "./lyrics";
+import { resolveLyricLines, searchLyricCandidates } from "./lyrics";
 import { scanMusicFolder } from "./musicScanner";
+import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
 import { getNeteaseAccountSummary, saveNeteaseCookie } from "./services/neteaseService";
 import { readStore, updateStore } from "./store";
 import { HttpError } from "./utils/httpError";
 
 const app = express();
-const port = Number(process.env.MUSICBOX_API_PORT || 3636);
+const port = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
 
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, name: "musicbox-api" });
+  res.json({ ok: true, name: "aria-api" });
 });
 
 app.get("/api/settings", async (_req, res, next) => {
@@ -67,10 +71,132 @@ app.get("/api/providers/:providerId/playlists", async (req, res, next) => {
   }
 });
 
+app.get("/api/providers/netease/playlists/:playlistId/tracks", async (req, res, next) => {
+  try {
+    res.json({ tracks: await neteaseClient.getPlaylistTracks(req.params.playlistId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/providers/:providerId/daily", async (req, res, next) => {
   try {
     const provider = resolveProvider(req.params.providerId);
     res.json(await provider.getDailyRecommendations());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/:providerId/roam", async (req, res, next) => {
+  try {
+    const provider = resolveProvider(req.params.providerId);
+    const query = z
+      .object({
+        limit: z.coerce.number().int().min(3).max(30).optional(),
+      })
+      .parse(req.query);
+    res.json(await provider.getPrivateRoaming(query.limit));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) => {
+  try {
+    const query = z
+      .object({
+        level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional(),
+      })
+      .parse(req.query);
+    const url = await neteaseClient.getSongUrl(req.params.trackId, query.level);
+    if (!url) {
+      throw new HttpError(404, "Playable URL is unavailable", "NETEASE_URL_UNAVAILABLE");
+    }
+    const upstream = await fetch(url, {
+      headers: req.headers.range ? { Range: req.headers.range } : undefined,
+    });
+    if (!upstream.ok && upstream.status !== 206) {
+      throw new HttpError(502, "Upstream audio request failed", "NETEASE_AUDIO_UPSTREAM_FAILED");
+    }
+
+    res.status(upstream.status);
+    for (const header of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+      const value = upstream.headers.get(header);
+      if (value) res.setHeader(header, value);
+    }
+    res.setHeader("Cache-Control", "no-store");
+
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+    await pipeline(Readable.fromWeb(upstream.body), res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/netease/tracks/:trackId/lyrics", async (req, res, next) => {
+  try {
+    res.json({ lyrics: await neteaseClient.getLyrics(req.params.trackId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/netease/cover", async (req, res, next) => {
+  try {
+    const query = z.object({ url: z.string().url() }).parse(req.query);
+    const target = new URL(query.url);
+    if (!target.hostname.endsWith("music.126.net")) {
+      throw new HttpError(400, "Unsupported cover host", "NETEASE_COVER_HOST_UNSUPPORTED");
+    }
+
+    const upstream = await fetch(query.url);
+    if (!upstream.ok) {
+      throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
+    }
+
+    res.status(upstream.status);
+    for (const header of ["content-type", "content-length"]) {
+      const value = upstream.headers.get(header);
+      if (value) res.setHeader(header, value);
+    }
+    res.setHeader("Cache-Control", "public, max-age=86400");
+
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+    await pipeline(Readable.fromWeb(upstream.body), res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/library/tracks/:trackId/cover", async (req, res, next) => {
+  try {
+    const track = await findTrack(req.params.trackId);
+    if (!track) throw new HttpError(404, "Track not found", "TRACK_NOT_FOUND");
+
+    const metadata = await parseFile(track.path);
+    const picture = metadata.common.picture?.[0];
+    if (!picture) throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
+
+    res.setHeader("Content-Type", picture.format || "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(Buffer.from(picture.data));
   } catch (error) {
     next(error);
   }
@@ -158,7 +284,7 @@ app.get("/api/library/tracks/:trackId/stream", async (req, res, next) => {
   }
 });
 
-app.get("/api/lyrics/search", (req, res, next) => {
+app.get("/api/lyrics/search", async (req, res, next) => {
   try {
     const query = z
       .object({
@@ -167,7 +293,7 @@ app.get("/api/lyrics/search", (req, res, next) => {
         album: z.string().optional(),
       })
       .parse(req.query);
-    res.json({ candidates: searchLyricCandidates(query) });
+    res.json({ candidates: await searchLyricCandidates(query) });
   } catch (error) {
     next(error);
   }
@@ -176,6 +302,7 @@ app.get("/api/lyrics/search", (req, res, next) => {
 app.post("/api/lyrics/bind", async (req, res, next) => {
   try {
     const body = z.object({ trackId: z.string().min(1), candidateId: z.string().min(1) }).parse(req.body);
+    const lyrics = await resolveLyricLines(body.candidateId);
     const store = await updateStore((current) => ({
       ...current,
       lyricBindings: {
@@ -183,7 +310,7 @@ app.post("/api/lyrics/bind", async (req, res, next) => {
         [body.trackId]: body.candidateId,
       },
     }));
-    res.json({ ok: true, lyricBindings: store.lyricBindings });
+    res.json({ ok: true, lyricBindings: store.lyricBindings, lyrics });
   } catch (error) {
     next(error);
   }
@@ -223,5 +350,5 @@ function mimeFromFormat(format: string) {
 }
 
 app.listen(port, "127.0.0.1", () => {
-  console.log(`musicbox-api listening on http://127.0.0.1:${port}`);
+  console.log(`aria-api listening on http://127.0.0.1:${port}`);
 });

@@ -2,6 +2,7 @@ export type ProviderAccount = {
   connected: boolean;
   nickname: string | null;
   userId: string | null;
+  avatarUrl: string | null;
 };
 
 export type ProviderTrack = {
@@ -12,6 +13,8 @@ export type ProviderTrack = {
   duration: number;
   quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: string;
+  streamUrl?: string | null;
+  coverUrl?: string | null;
 };
 
 export type ProviderPlaylist = {
@@ -20,6 +23,7 @@ export type ProviderPlaylist = {
   trackCount: number;
   subscribed: boolean;
   coverColor: string;
+  coverUrl?: string | null;
 };
 
 export type ProviderDailyBundle = {
@@ -35,4 +39,5 @@ export type MusicProvider = {
   getLikedTracks(): Promise<ProviderTrack[]>;
   getPlaylists(): Promise<ProviderPlaylist[]>;
   getDailyRecommendations(): Promise<ProviderDailyBundle>;
+  getPrivateRoaming(limit?: number): Promise<ProviderDailyBundle>;
 };

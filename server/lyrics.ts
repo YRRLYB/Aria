@@ -1,28 +1,45 @@
-import { createHash } from "node:crypto";
+import neteaseApi from "NeteaseCloudMusicApi";
 import type { LyricCandidate, ScannedTrack } from "./types";
 
-const sources: LyricCandidate["source"][] = ["网易云", "QQ音乐", "酷狗"];
+type SearchSong = {
+  id: number | string;
+  name: string;
+  ar?: Array<{ name: string }>;
+  artists?: Array<{ name: string }>;
+  al?: { name?: string; picUrl?: string };
+  album?: { name?: string; picUrl?: string };
+};
 
-export function searchLyricCandidates(query: {
+export async function searchLyricCandidates(query: {
   title: string;
   artist?: string;
   album?: string;
-}): LyricCandidate[] {
-  const artist = query.artist || "未知艺人";
-  const album = query.album || "未知专辑";
+}): Promise<LyricCandidate[]> {
+  const keywords = [query.title, query.artist].filter(Boolean).join(" ");
+  const response = await neteaseApi.cloudsearch({
+    keywords,
+    type: 1,
+    limit: 6,
+  });
+  const songs = ((response.body?.result as { songs?: SearchSong[] } | undefined)?.songs ?? []).slice(0, 6);
 
-  return sources.map((source, index) => ({
-    id: createHash("sha1")
-      .update(`${source}:${query.title}:${artist}:${album}`)
-      .digest("hex")
-      .slice(0, 12),
-    source,
-    title: query.title,
-    artist,
-    album: index === 1 ? `${album} · 精确匹配` : album,
-    score: Math.max(76, 96 - index * 8),
-    preview: buildPreviewLines(query.title, artist, source),
-  }));
+  const candidates = await Promise.all(
+    songs.map(async (song, index) => {
+      const lyric = await readLyricPreview(song.id);
+      return {
+        id: `netease:${song.id}`,
+        source: "网易云" as const,
+        title: song.name,
+        artist: (song.ar ?? song.artists ?? []).map((artist) => artist.name).join(" / ") || query.artist || "未知艺人",
+        album: song.al?.name ?? song.album?.name ?? query.album ?? "未知专辑",
+        coverUrl: song.al?.picUrl ?? song.album?.picUrl ?? null,
+        score: Math.max(72, 98 - index * 5),
+        preview: lyric,
+      };
+    }),
+  );
+
+  return candidates;
 }
 
 export function candidatesFromTrack(track: ScannedTrack) {
@@ -33,10 +50,40 @@ export function candidatesFromTrack(track: ScannedTrack) {
   });
 }
 
-function buildPreviewLines(title: string, artist: string, source: LyricCandidate["source"]) {
-  return [
-    `${title} 的第一句歌词预览`,
-    `${artist} 的匹配结果来自 ${source}`,
-    "绑定后会保存到本地曲目记录",
-  ];
+export async function resolveLyricLines(candidateId: string) {
+  if (!candidateId.startsWith("netease:")) return [];
+  const songId = candidateId.slice("netease:".length);
+  const response = await neteaseApi.lyric({ id: songId });
+  const lyric = (response.body?.lrc as { lyric?: string } | undefined)?.lyric ?? "";
+  return parseLrc(lyric);
+}
+
+async function readLyricPreview(songId: string | number) {
+  try {
+    const response = await neteaseApi.lyric({ id: songId });
+    const lyric = (response.body?.lrc as { lyric?: string } | undefined)?.lyric ?? "";
+    return lyric
+      .split("\n")
+      .map((line) => line.replace(/\[[^\]]+\]/g, "").trim())
+      .filter((line) => line && !line.includes("作词") && !line.includes("作曲"))
+      .slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+function parseLrc(lyric: string) {
+  return lyric
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/^\[(\d{2}):(\d{2})(?:\.\d+)?\](.*)$/);
+      if (!match) return null;
+      const text = match[3].trim();
+      if (!text) return null;
+      return {
+        time: `${match[1]}:${match[2]}`,
+        text,
+      };
+    })
+    .filter((line): line is { time: string; text: string } => Boolean(line));
 }

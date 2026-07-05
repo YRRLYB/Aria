@@ -8,6 +8,10 @@ export type ScannedTrack = {
   quality: string;
   format: string;
   size: number;
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  bpm?: number | null;
+  hasCover?: boolean;
 };
 
 export type LyricCandidate = {
@@ -16,6 +20,7 @@ export type LyricCandidate = {
   title: string;
   artist: string;
   album: string;
+  coverUrl?: string | null;
   score: number;
   preview: string[];
 };

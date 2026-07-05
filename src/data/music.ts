@@ -11,6 +11,7 @@ import {
 
 export type Track = {
   id: string;
+  providerId?: string;
   title: string;
   artist: string;
   album: string;
@@ -18,6 +19,10 @@ export type Track = {
   quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: "local" | "cloud" | "netease";
   streamUrl?: string;
+  coverUrl?: string;
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  bpm?: number | null;
   cover: string;
   accent: string;
   waveform: number[];
@@ -34,6 +39,7 @@ export type LyricCandidate = {
   title: string;
   artist: string;
   album: string;
+  coverUrl?: string | null;
   score: number;
   preview: string[];
 };
@@ -56,7 +62,7 @@ export const navItems = [
   { id: "liked" as const, label: "我喜欢", icon: Heart },
   { id: "playlists" as const, label: "歌单", icon: Cloud },
   { id: "daily" as const, label: "每日推荐", icon: Compass },
-  { id: "radar" as const, label: "私人雷达", icon: Radar },
+  { id: "radar" as const, label: "私人漫游", icon: Radar },
   { id: "cloud" as const, label: "音乐云盘", icon: Cloud },
   { id: "stats" as const, label: "听歌统计", icon: History },
 ];
