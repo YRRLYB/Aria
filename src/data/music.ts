@@ -23,6 +23,9 @@ export type Track = {
   bitrate?: number | null;
   sampleRate?: number | null;
   bpm?: number | null;
+  likedAt?: number | null;
+  currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
+  availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
   cover: string;
   accent: string;
   waveform: number[];

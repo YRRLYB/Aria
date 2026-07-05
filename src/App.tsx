@@ -62,6 +62,9 @@ type CachedPlayerState = {
 };
 
 const playerCacheKey = "aria-player-state";
+const bpmCacheKey = "aria-bpm-cache";
+const lyricCacheKey = "aria-lyrics-cache";
+const audioSettingsKey = "aria-audio-settings";
 const dragRegionStyle = { WebkitAppRegion: "drag" } as CSSProperties;
 const noDragRegionStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
@@ -73,6 +76,15 @@ const qualityOptions: Array<{ value: QualityLevel; label: string }> = [
   { value: "hires", label: "Hi-Res" },
   { value: "jymaster", label: "臻品" },
 ];
+
+const qualityLevelLabels: Record<QualityLevel, string> = {
+  standard: "标准",
+  higher: "较高",
+  exhigh: "320K",
+  lossless: "无损",
+  hires: "Hi-Res",
+  jymaster: "臻品",
+};
 
 function readCachedPlayerState(): CachedPlayerState {
   try {
@@ -101,6 +113,69 @@ function readCachedPlayerState(): CachedPlayerState {
     };
   } catch {
     return {};
+  }
+}
+
+function readCachedLyrics(trackId?: string) {
+  if (!trackId) return [];
+  try {
+    const raw = window.localStorage.getItem(lyricCacheKey);
+    if (!raw) return [];
+    const cache = JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>;
+    return Array.isArray(cache[trackId]) ? cache[trackId] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedLyrics(trackId: string, lyrics: Array<{ time: string; text: string }>) {
+  if (!lyrics.length) return;
+  try {
+    const raw = window.localStorage.getItem(lyricCacheKey);
+    const cache = raw ? (JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>) : {};
+    const entries = Object.entries({ ...cache, [trackId]: lyrics }).slice(-80);
+    window.localStorage.setItem(lyricCacheKey, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Lyric caching is best-effort.
+  }
+}
+
+function readCachedAudioSettings() {
+  try {
+    const raw = window.localStorage.getItem(audioSettingsKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { sinkId?: string; hifiEnabled?: boolean; exclusiveMode?: boolean };
+    return {
+      sinkId: typeof parsed.sinkId === "string" ? parsed.sinkId : "default",
+      hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
+      exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function readCachedBpm(trackId?: string) {
+  if (!trackId) return null;
+  try {
+    const raw = window.localStorage.getItem(bpmCacheKey);
+    if (!raw) return null;
+    const cache = JSON.parse(raw) as Record<string, number>;
+    const bpm = cache[trackId];
+    return typeof bpm === "number" && bpm >= 40 && bpm <= 240 ? bpm : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedBpm(trackId: string, bpm: number) {
+  try {
+    const raw = window.localStorage.getItem(bpmCacheKey);
+    const cache = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    cache[trackId] = Math.round(bpm);
+    window.localStorage.setItem(bpmCacheKey, JSON.stringify(cache));
+  } catch {
+    // Keep BPM caching best-effort.
   }
 }
 
@@ -241,7 +316,37 @@ function normalizeQuality(quality: string): Track["quality"] {
   return "320K";
 }
 
+const qualityLevelBitrates: Record<QualityLevel, string> = {
+  standard: "128 kbps",
+  higher: "192 kbps",
+  exhigh: "320 kbps",
+  lossless: "1411 kbps",
+  hires: "24bit / 96 kHz",
+  jymaster: "24bit / 192 kHz",
+};
+
+function formatBitrate(value?: number | null, compact = false) {
+  if (!value || !Number.isFinite(value)) return null;
+  return compact ? `${Math.round(value / 1000)}k` : `${Math.round(value / 1000)} kbps`;
+}
+
+function formatSampleRate(value?: number | null, compact = false) {
+  if (!value || !Number.isFinite(value)) return null;
+  const khz = value / 1000;
+  const rendered = Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1);
+  return compact ? `${rendered}kHz` : `${rendered} kHz`;
+}
+
+function formatAudioDetail(track: Track, level?: QualityLevel, compact = true) {
+  const resolvedLevel = track.currentLevel ?? level ?? null;
+  const qualityLabel = resolvedLevel ? qualityLevelLabels[resolvedLevel] : track.quality;
+  const bitrate = track.bitrate ? formatBitrate(track.bitrate, compact) : null;
+  const sampleRate = formatSampleRate(track.sampleRate, compact);
+  return [qualityLabel, bitrate, sampleRate].filter(Boolean).join(" · ");
+}
+
 function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
+  const cachedLyrics = readCachedLyrics(track.id);
   return {
     id: track.id,
     title: track.title,
@@ -254,12 +359,14 @@ function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
     coverUrl: track.hasCover ? api.getTrackCoverUrl(track.id) : undefined,
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
-    bpm: track.bpm ?? null,
+    bpm: track.bpm ?? readCachedBpm(track.id),
+    currentLevel: null,
+    availableLevels: [],
     cover: localCoverPalettes[index % localCoverPalettes.length],
     accent: ["#5e8ab8", "#c6796d", "#5aa894", "#8680b4"][index % 4],
     waveform: [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48],
-    lyricStatus: "searchable",
-    lyrics: [
+    lyricStatus: cachedLyrics.length ? "linked" : "searchable",
+    lyrics: cachedLyrics.length ? cachedLyrics : [
       { time: "00:00", text: "本地歌词等待匹配" },
       { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
       { time: "00:30", text: "绑定后会保存到本地索引" },
@@ -270,6 +377,7 @@ function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
 function providerTrackToUiTrack(track: ProviderTrack, index: number): Track {
   const palette = localCoverPalettes[(index + 1) % localCoverPalettes.length];
   const accent = ["#c6796d", "#5aa894", "#8680b4", "#5e8ab8"][index % 4];
+  const cachedLyrics = readCachedLyrics(`netease:${track.id}`);
 
   return {
     id: `netease:${track.id}`,
@@ -282,11 +390,17 @@ function providerTrackToUiTrack(track: ProviderTrack, index: number): Track {
     source: "netease",
     streamUrl: track.streamUrl ? api.resolveUrl(track.streamUrl) : undefined,
     coverUrl: track.coverUrl ? api.getNeteaseCoverUrl(track.coverUrl) : undefined,
+    likedAt: track.likedAt ?? null,
+    bpm: track.bpm ?? readCachedBpm(`netease:${track.id}`) ?? readCachedBpm(track.id),
+    bitrate: track.bitrate ?? null,
+    sampleRate: track.sampleRate ?? null,
+    currentLevel: track.currentLevel ?? null,
+    availableLevels: track.availableLevels ?? ["standard", "higher", "exhigh"],
     cover: palette,
     accent,
     waveform: [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52],
-    lyricStatus: "searchable",
-    lyrics: [
+    lyricStatus: cachedLyrics.length ? "linked" : "searchable",
+    lyrics: cachedLyrics.length ? cachedLyrics : [
       { time: "00:00", text: "歌词等待同步" },
       { time: "00:15", text: "网易云歌曲已接入真实账号数据" },
       { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
@@ -303,19 +417,25 @@ function mergeTracks(tracksToMerge: Track[]) {
   });
 }
 
+function isLikedPlaylist(playlist: ProviderPlaylist | null | undefined, index?: number) {
+  if (!playlist) return false;
+  return index === 0 || /喜欢|我喜欢|liked|favorite/i.test(playlist.name);
+}
+
 export default function App() {
   const [initialPlayerCache] = useState(readCachedPlayerState);
-  const [activeView, setActiveView] = useState<ViewId>(initialPlayerCache.activeView ?? "home");
+  const [activeView, setActiveView] = useState<ViewId>("home");
   const [activeTrackId, setActiveTrackId] = useState(initialPlayerCache.activeTrackId ?? idleTrack.id);
-  const [playing, setPlaying] = useState(initialPlayerCache.playing ?? false);
+  const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
   const [currentTime, setCurrentTime] = useState(initialPlayerCache.currentTime ?? 0);
   const [durationSeconds, setDurationSeconds] = useState(0);
-  const [spectrum, setSpectrum] = useState<number[]>([]);
+  const [spectrum] = useState<number[]>([]);
   const [shuffleEnabled, setShuffleEnabled] = useState(initialPlayerCache.shuffleEnabled ?? false);
   const [repeatMode, setRepeatMode] = useState<"all" | "one">(initialPlayerCache.repeatMode ?? "all");
   const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
   const [likedTrackIds, setLikedTrackIds] = useState<Record<string, true>>({});
+  const [neteaseLikedIds, setNeteaseLikedIds] = useState<Record<string, true>>({});
   const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
   const [qualityLevel, setQualityLevel] = useState<QualityLevel>(initialPlayerCache.qualityLevel ?? "lossless");
@@ -343,22 +463,30 @@ export default function App() {
   });
   const [playerSideView, setPlayerSideView] = useState<PlayerSideView>(initialPlayerCache.playerSideView ?? "lyrics");
   const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
+  const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [folderName, setFolderName] = useState("未选择");
+  const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
+  const [selectedSinkId, setSelectedSinkId] = useState(() => readCachedAudioSettings().sinkId ?? "default");
+  const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
+  const [exclusiveMode] = useState(() => readCachedAudioSettings().exclusiveMode ?? false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const visualizerFrameRef = useRef<number | null>(null);
-  const spectrumRef = useRef<number[]>([]);
   const bpmPeaksRef = useRef<number[]>([]);
+  const bpmSamplesRef = useRef<number[]>([]);
   const bpmEnergyRef = useRef(0);
+  const bpmLockedRef = useRef(false);
   const lastBpmStateRef = useRef(0);
   const countedTrackRef = useRef<string | null>(null);
   const navCloseTimer = useRef<number | null>(null);
   const lyricSyncingRef = useRef<Set<string>>(new Set());
   const artworkSyncingRef = useRef<Set<string>>(new Set());
+  const neteaseWarmupRef = useRef<Set<string>>(new Set());
+  const bpmSavedRef = useRef<Record<string, number>>({});
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
@@ -370,14 +498,19 @@ export default function App() {
   );
   const requestedActiveTrack = allTracks.find((track) => track.id === activeTrackId);
   const activeTrack = requestedActiveTrack ?? allTracks[0] ?? idleTrack;
+  const effectiveQualityLevel = useMemo(() => {
+    if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
+    const levels = activeTrack.availableLevels ?? [];
+    return levels.at(-1) ?? qualityLevel;
+  }, [activeTrack.availableLevels, activeTrack.source, hifiEnabled, qualityLevel]);
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
     const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
     if (activeTrack.source !== "netease") return url.href;
 
-    url.searchParams.set("level", qualityLevel);
+    url.searchParams.set("level", effectiveQualityLevel);
     return url.href;
-  }, [activeTrack, qualityLevel]);
+  }, [activeTrack, effectiveQualityLevel]);
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -405,13 +538,9 @@ export default function App() {
     () => localTracks.filter((track) => likedTrackIds[track.id]),
     [localTracks, likedTrackIds],
   );
-  const neteaseManualLikedTracks = useMemo(
-    () => allTracks.filter((track) => track.source === "netease" && likedTrackIds[track.id]),
-    [allTracks, likedTrackIds],
-  );
   const neteaseLikedDisplayTracks = useMemo(
-    () => mergeTracks([...neteaseLikedTracks, ...neteaseManualLikedTracks]),
-    [neteaseLikedTracks, neteaseManualLikedTracks],
+    () => [...neteaseLikedTracks].sort((left, right) => (right.likedAt ?? 0) - (left.likedAt ?? 0)),
+    [neteaseLikedTracks],
   );
   const likedDisplayTracks = useMemo(
     () => mergeTracks([...localLikedTracks, ...neteaseLikedDisplayTracks]),
@@ -441,8 +570,14 @@ export default function App() {
       .map((id) => byId.get(id))
       .filter((track): track is Track => Boolean(track?.streamUrl));
   }, [allTracks, playQueueIds]);
-  const linkedLyricCount = allTracks.filter((track) => track.lyricStatus === "linked").length;
-  const lyricProgress = allTracks.length ? Math.round((linkedLyricCount / allTracks.length) * 100) : 0;
+  const linkedLyricCount = useMemo(
+    () => allTracks.filter((track) => track.lyricStatus === "linked").length,
+    [allTracks],
+  );
+  const lyricProgress = useMemo(
+    () => (allTracks.length ? Math.round((linkedLyricCount / allTracks.length) * 100) : 0),
+    [allTracks.length, linkedLyricCount],
+  );
 
   async function refreshNeteaseData() {
     const [liked, daily, roam, playlists] = await Promise.all([
@@ -461,12 +596,33 @@ export default function App() {
     setDailyTracks(dailyUiTracks);
     setRoamTracks(roamUiTracks);
     setNeteaseLikedTracks(likedUiTracks);
+    setNeteaseLikedIds(Object.fromEntries(likedUiTracks.map((track) => [track.id, true])));
     setNeteaseTracks(merged);
     setProviderPlaylists(playlists.playlists);
+    warmNeteaseTrackCache(merged);
     if (activeTrackId === idleTrack.id && !localTracks.length && merged[0]) {
       setActiveTrackId(merged[0].id);
     }
   }
+
+  function warmNeteaseTrackCache(tracksToWarm: Track[]) {
+    const warmupItems = tracksToWarm
+      .filter((track) => track.source === "netease" && track.providerId)
+      .map((track) => ({ id: track.providerId as string, key: `${qualityLevel}:${track.providerId}` }))
+      .filter((item) => !neteaseWarmupRef.current.has(item.key))
+      .slice(0, 300);
+    const ids = warmupItems.map((item) => item.id);
+    if (!ids.length) return;
+    warmupItems.forEach((item) => neteaseWarmupRef.current.add(item.key));
+    api.warmNeteaseCache(ids, qualityLevel).catch(() => {
+      warmupItems.forEach((item) => neteaseWarmupRef.current.delete(item.key));
+    });
+  }
+
+  useEffect(() => {
+    const tracksToWarm = playQueueTracks.length ? playQueueTracks : visibleTracks.slice(0, 80);
+    warmNeteaseTrackCache(tracksToWarm);
+  }, [qualityLevel, playQueueTracks, visibleTracks]);
 
   useEffect(() => {
     api
@@ -479,6 +635,28 @@ export default function App() {
         setLibraryMeta({ roots: 0, updatedAt: null });
       });
   }, []);
+
+  useEffect(() => {
+    const boundTracks = localTracks
+      .filter((track) => lyricBindings[track.id] && track.lyricStatus !== "linked" && !lyricSyncingRef.current.has(track.id))
+      .slice(0, 8);
+    if (!boundTracks.length) return;
+
+    boundTracks.forEach((track) => {
+      lyricSyncingRef.current.add(track.id);
+      api
+        .bindLyric(track.id, lyricBindings[track.id])
+        .then((result) => {
+          applyLyricsToTrack(track.id, result.lyrics);
+        })
+        .catch(() => {
+          // Keep using cached placeholder if rebinding fails.
+        })
+        .finally(() => {
+          lyricSyncingRef.current.delete(track.id);
+        });
+    });
+  }, [localTracks, lyricBindings]);
 
   useEffect(() => {
     try {
@@ -518,7 +696,7 @@ export default function App() {
   useEffect(() => {
     const updateVisibility = () => setPageVisible(document.visibilityState === "visible");
     const disposeDesktopVisibility = window.ariaDesktop?.onWindowVisibilityChange?.((visible) => {
-      setPageVisible(visible && document.visibilityState === "visible");
+      setPageVisible(visible);
     });
     document.addEventListener("visibilitychange", updateVisibility);
     return () => {
@@ -526,17 +704,6 @@ export default function App() {
       disposeDesktopVisibility?.();
     };
   }, []);
-
-  useEffect(() => {
-    const playableIds = contextualQueueTracks.filter((track) => track.streamUrl).map((track) => track.id);
-    if (!playableIds.length) return;
-    setPlayQueueIds((current) => {
-      if (current.length === playableIds.length && current.every((id, index) => id === playableIds[index])) {
-        return current;
-      }
-      return playableIds;
-    });
-  }, [contextualQueueTracks]);
 
   useEffect(() => {
     if (activeTrack.id === idleTrack.id || activeTrack.id !== activeTrackId) return;
@@ -572,6 +739,7 @@ export default function App() {
       .getSettings()
       .then((settings) => {
         setNeteaseAccount(settings.neteaseAccount);
+        setLyricBindings(settings.lyricBindings);
         if (settings.neteaseAccount.connected) {
           refreshNeteaseData().catch(() => {
             setNeteaseTracks([]);
@@ -585,6 +753,55 @@ export default function App() {
       })
       .catch(() => setNeteaseAccount(null));
   }, []);
+
+  useEffect(() => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+
+    let cancelled = false;
+    const refreshDevices = () => {
+      navigator.mediaDevices
+        .enumerateDevices()
+        .then((devices) => {
+          if (cancelled) return;
+          const outputs = devices
+            .filter((device) => device.kind === "audiooutput")
+            .map((device, index) => ({
+              id: device.deviceId || `output-${index}`,
+              label: device.label || `播放设备 ${index + 1}`,
+            }));
+          setAudioOutputDevices([{ id: "default", label: "系统默认" }, ...outputs.filter((device) => device.id !== "default")]);
+        })
+        .catch(() => {
+          if (!cancelled) setAudioOutputDevices([{ id: "default", label: "系统默认" }]);
+        });
+    };
+
+    refreshDevices();
+    navigator.mediaDevices.addEventListener?.("devicechange", refreshDevices);
+    return () => {
+      cancelled = true;
+      navigator.mediaDevices.removeEventListener?.("devicechange", refreshDevices);
+    };
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        audioSettingsKey,
+        JSON.stringify({ sinkId: selectedSinkId, hifiEnabled, exclusiveMode }),
+      );
+    } catch {
+      // Audio settings are a comfort feature.
+    }
+  }, [exclusiveMode, hifiEnabled, selectedSinkId]);
+
+  useEffect(() => {
+    const audio = audioRef.current as (HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }) | null;
+    if (!audio?.setSinkId) return;
+    audio.setSinkId(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => {
+      // Device switching is optional; keep current output if the platform rejects it.
+    });
+  }, [selectedSinkId]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -608,6 +825,25 @@ export default function App() {
       audio.pause();
     }
   }, [activeStreamUrl, playing, volume]);
+
+  useEffect(() => {
+    if (activeTrack.source !== "netease" || !activeTrack.providerId) return;
+
+    let cancelled = false;
+    api
+      .getNeteaseStreamMeta(activeTrack.providerId, effectiveQualityLevel)
+      .then((meta) => {
+        if (cancelled) return;
+        applyStreamMetaToTrack(activeTrack.id, meta);
+      })
+      .catch(() => {
+        // Keep the previous metadata when the provider temporarily rejects the request.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel]);
 
   useEffect(() => {
     if (!activeTrack.coverUrl) {
@@ -650,7 +886,9 @@ export default function App() {
   useEffect(() => {
     setDetectedBpm(activeTrack.bpm ?? null);
     bpmPeaksRef.current = [];
+    bpmSamplesRef.current = [];
     bpmEnergyRef.current = 0;
+    bpmLockedRef.current = Boolean(activeTrack.bpm);
     lastBpmStateRef.current = 0;
   }, [activeTrack.id, activeTrack.bpm]);
 
@@ -691,30 +929,51 @@ export default function App() {
     const frequencyData = new Uint8Array(analyser.frequencyBinCount);
     const tick = () => {
       analyser.getByteFrequencyData(frequencyData);
-      const lowBand = frequencyData.slice(1, 18);
-      const lowEnergy = lowBand.reduce((sum, value) => sum + value, 0) / Math.max(1, lowBand.length);
-      const baseline = bpmEnergyRef.current ? bpmEnergyRef.current * 0.94 + lowEnergy * 0.06 : lowEnergy;
+      const nextSpectrum = Array.from({ length: 28 }, (_, index) => {
+        const start = Math.floor((index / 28) * frequencyData.length * 0.78);
+        const end = Math.max(start + 1, Math.floor(((index + 1) / 28) * frequencyData.length * 0.78));
+        let energy = 0;
+        for (let cursor = start; cursor < end; cursor += 1) {
+          energy += frequencyData[cursor] ?? 0;
+        }
+        return Math.round((energy / Math.max(1, end - start)) / 2.55);
+      });
+      let lowEnergy = 0;
+      const lowBandEnd = Math.min(18, frequencyData.length);
+      for (let index = 1; index < lowBandEnd; index += 1) {
+        lowEnergy += frequencyData[index] ?? 0;
+      }
+      lowEnergy /= Math.max(1, lowBandEnd - 1);
+      const baseline = bpmEnergyRef.current ? bpmEnergyRef.current * 0.95 + lowEnergy * 0.05 : lowEnergy;
       const now = performance.now();
       bpmEnergyRef.current = baseline;
 
-      if (lowEnergy > baseline * 1.32 && lowEnergy > 42) {
+      if (!bpmLockedRef.current && lowEnergy > baseline * 1.3 && lowEnergy > 34) {
         const peaks = bpmPeaksRef.current;
-        if (!peaks.length || now - peaks[peaks.length - 1] > 260) {
+        if (!peaks.length || now - peaks[peaks.length - 1] > 280) {
           bpmPeaksRef.current = [...peaks, now].slice(-24);
         }
       }
 
-      if (now - lastBpmStateRef.current > 1800 && bpmPeaksRef.current.length >= 5) {
+      if (!bpmLockedRef.current && now - lastBpmStateRef.current > 2600 && bpmPeaksRef.current.length >= 5) {
         const intervals = bpmPeaksRef.current
           .slice(1)
           .map((peak, index) => peak - bpmPeaksRef.current[index])
-          .filter((interval) => interval >= 315 && interval <= 1000)
+          .filter((interval) => interval >= 330 && interval <= 950)
           .sort((a, b) => a - b);
         const median = intervals[Math.floor(intervals.length / 2)];
         if (median) {
           const bpm = Math.round(60000 / median);
           if (bpm >= 60 && bpm <= 190) {
-            setDetectedBpm(bpm);
+            const nextSamples = [...bpmSamplesRef.current, bpm].slice(-3);
+            bpmSamplesRef.current = nextSamples;
+            const spread = Math.max(...nextSamples) - Math.min(...nextSamples);
+            if (nextSamples.length >= 3 && spread <= 3) {
+              const stableBpm = Math.round(nextSamples.reduce((sum, value) => sum + value, 0) / nextSamples.length);
+              bpmLockedRef.current = true;
+              setDetectedBpm(stableBpm);
+              applyBpmToTrack(activeTrack.id, stableBpm);
+            }
             lastBpmStateRef.current = now;
           }
         }
@@ -787,6 +1046,7 @@ export default function App() {
       setPlaylistTracks(uiTracks);
       setPlayQueueIds(uiTracks.filter((track) => track.streamUrl).map((track) => track.id));
       setNeteaseTracks((current) => mergeTracks([...current, ...uiTracks]));
+      warmNeteaseTrackCache(uiTracks);
       if (uiTracks[0]) setActiveTrackId(uiTracks[0].id);
     } finally {
       setPlaylistLoading(false);
@@ -864,8 +1124,27 @@ export default function App() {
     window.setTimeout(() => pickRelativeTrack(1), 650);
   }
 
+  function resolveQueueForTrack(trackId: string) {
+    const playable = (tracks: Track[]) => tracks.filter((track) => track.streamUrl);
+    const currentQueue = playable(contextualQueueTracks);
+    if (activeView !== "home" && activeView !== "player" && currentQueue.some((track) => track.id === trackId)) {
+      return currentQueue;
+    }
+
+    const candidateQueues = [
+      playQueueTracks,
+      dailyTracks,
+      roamTracks,
+      playlistTracks,
+      neteaseLikedDisplayTracks,
+      visibleLocalTracks,
+      visibleTracks,
+    ].map(playable);
+    return candidateQueues.find((tracks) => tracks.some((track) => track.id === trackId)) ?? currentQueue;
+  }
+
   function chooseTrack(trackId: string) {
-    const playableIds = contextualQueueTracks.filter((track) => track.streamUrl).map((track) => track.id);
+    const playableIds = resolveQueueForTrack(trackId).map((track) => track.id);
     if (playableIds.length) setPlayQueueIds(playableIds);
     pendingSeekRef.current = 0;
     setActiveTrackId(trackId);
@@ -875,7 +1154,10 @@ export default function App() {
 
   function toggleLikeTrack(trackId: string) {
     const track = allTracks.find((item) => item.id === trackId);
-    const wasLiked = Boolean(likedTrackIds[trackId]);
+    if (track?.source === "netease") {
+      toggleNeteaseLike(track);
+      return;
+    }
     setLikedTrackIds((current) => {
       if (current[trackId]) {
         const next = { ...current };
@@ -884,15 +1166,73 @@ export default function App() {
       }
       return { ...current, [trackId]: true };
     });
-    if (track?.source === "netease") {
-      setNeteaseLikedTracks((current) =>
-        wasLiked ? current.filter((item) => item.id !== trackId) : mergeTracks([...current, track]),
+  }
+
+  function toggleNeteaseLike(track: Track) {
+    const providerId = track.providerId;
+    if (!providerId) return;
+
+    const wasLiked = Boolean(neteaseLikedIds[track.id]);
+    const nextLiked = !wasLiked;
+    const likedTrack = { ...track, likedAt: nextLiked ? Date.now() : track.likedAt };
+    setNeteaseLikedIds((current) => {
+      const next = { ...current };
+      if (nextLiked) next[track.id] = true;
+      else delete next[track.id];
+      return next;
+    });
+    setNeteaseLikedTracks((current) =>
+      nextLiked
+        ? mergeTracks([likedTrack, ...current]).sort((left, right) => (right.likedAt ?? 0) - (left.likedAt ?? 0))
+        : current.filter((item) => item.id !== track.id),
+    );
+    setProviderPlaylists((current) =>
+      current.map((playlist, index) =>
+        isLikedPlaylist(playlist, index)
+          ? { ...playlist, trackCount: Math.max(0, playlist.trackCount + (nextLiked ? 1 : -1)) }
+          : playlist,
+      ),
+    );
+    if (isLikedPlaylist(selectedPlaylist)) {
+      setPlaylistTracks((current) =>
+        nextLiked
+          ? mergeTracks([likedTrack, ...current]).sort((left, right) => (right.likedAt ?? 0) - (left.likedAt ?? 0))
+          : current.filter((item) => item.id !== track.id),
       );
     }
+
+    api.setNeteaseLike(providerId, nextLiked).catch(() => {
+      setNeteaseLikedIds((current) => {
+        const next = { ...current };
+        if (wasLiked) next[track.id] = true;
+        else delete next[track.id];
+        return next;
+      });
+      setNeteaseLikedTracks((current) =>
+        wasLiked
+          ? mergeTracks([track, ...current]).sort((left, right) => (right.likedAt ?? 0) - (left.likedAt ?? 0))
+          : current.filter((item) => item.id !== track.id),
+      );
+      setProviderPlaylists((current) =>
+        current.map((playlist, index) =>
+          isLikedPlaylist(playlist, index)
+            ? { ...playlist, trackCount: Math.max(0, playlist.trackCount + (wasLiked ? 1 : -1)) }
+            : playlist,
+        ),
+      );
+      if (isLikedPlaylist(selectedPlaylist)) {
+        setPlaylistTracks((current) =>
+          wasLiked
+            ? mergeTracks([track, ...current]).sort((left, right) => (right.likedAt ?? 0) - (left.likedAt ?? 0))
+            : current.filter((item) => item.id !== track.id),
+        );
+      }
+    });
   }
 
   function applyLyricsToTrack(trackId: string, lyrics: Track["lyrics"]) {
     if (!lyrics.length) return;
+    writeCachedLyrics(trackId, lyrics);
     const updateTrack = (track: Track) =>
       track.id === trackId ? { ...track, lyrics, lyricStatus: "linked" as const } : track;
     setLocalTracks((current) => current.map(updateTrack));
@@ -907,6 +1247,57 @@ export default function App() {
     if (!coverUrl) return;
     const proxiedCoverUrl = api.getNeteaseCoverUrl(coverUrl);
     const updateTrack = (track: Track) => (track.id === trackId ? { ...track, coverUrl: proxiedCoverUrl } : track);
+    setLocalTracks((current) => current.map(updateTrack));
+    setNeteaseTracks((current) => current.map(updateTrack));
+    setDailyTracks((current) => current.map(updateTrack));
+    setRoamTracks((current) => current.map(updateTrack));
+    setNeteaseLikedTracks((current) => current.map(updateTrack));
+    setPlaylistTracks((current) => current.map(updateTrack));
+  }
+
+  function applyBpmToTrack(trackId: string, bpm: number) {
+    const safeBpm = Math.round(bpm);
+    const updateTrack = (track: Track) => (track.id === trackId ? { ...track, bpm: safeBpm } : track);
+    writeCachedBpm(trackId, safeBpm);
+    setLocalTracks((current) => current.map(updateTrack));
+    setNeteaseTracks((current) => current.map(updateTrack));
+    setDailyTracks((current) => current.map(updateTrack));
+    setRoamTracks((current) => current.map(updateTrack));
+    setNeteaseLikedTracks((current) => current.map(updateTrack));
+    setPlaylistTracks((current) => current.map(updateTrack));
+
+    const track = allTracks.find((item) => item.id === trackId);
+    if (track?.source === "netease" && track.providerId && bpmSavedRef.current[track.id] !== safeBpm) {
+      bpmSavedRef.current[track.id] = safeBpm;
+      writeCachedBpm(track.providerId, safeBpm);
+      api.saveNeteaseBpm(track.providerId, safeBpm).catch(() => {
+        delete bpmSavedRef.current[track.id];
+      });
+    }
+  }
+
+  function applyStreamMetaToTrack(
+    trackId: string,
+    meta: {
+      quality: Track["quality"];
+      bitrate: number | null;
+      sampleRate: number | null;
+      currentLevel: Track["currentLevel"];
+      availableLevels: NonNullable<Track["availableLevels"]>;
+    },
+  ) {
+    const updateTrack = (track: Track) =>
+      track.id === trackId
+        ? {
+            ...track,
+            quality: meta.quality,
+            bitrate: meta.bitrate,
+            sampleRate: meta.sampleRate,
+            currentLevel: meta.currentLevel ?? track.currentLevel ?? null,
+            availableLevels: meta.availableLevels.length ? meta.availableLevels : track.availableLevels,
+          }
+        : track;
+
     setLocalTracks((current) => current.map(updateTrack));
     setNeteaseTracks((current) => current.map(updateTrack));
     setDailyTracks((current) => current.map(updateTrack));
@@ -1098,7 +1489,9 @@ export default function App() {
         <section
           className={cn(
             "grid min-h-0 flex-1 gap-4 p-4",
-            activeView === "player" ? "lg:grid-cols-[minmax(0,1fr)_390px]" : "lg:grid-cols-[minmax(0,1fr)_340px]",
+            activeView === "player"
+              ? "lg:grid-cols-[minmax(0,1fr)_minmax(360px,22vw)]"
+              : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,20vw)]",
           )}
         >
           <AnimatePresence mode="wait">
@@ -1115,9 +1508,10 @@ export default function App() {
                 <HomeSurface
                   activeTrack={activeTrack}
                   tracks={visibleTracks}
+                  dailyTracks={dailyTracks}
+                  roamTracks={roamTracks}
                   playCounts={playCounts}
                   playing={playing}
-                  visualizerActive={pageVisible}
                   onTogglePlay={() => setPlaying((value) => !value)}
                   onPickTrack={chooseTrack}
                   onOpenPlayer={() => setActiveView("player")}
@@ -1128,6 +1522,7 @@ export default function App() {
                   activeTrack={activeTrack}
                   palette={activePalette}
                   playing={playing}
+                  visualizerActive={pageVisible}
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
                   onTogglePlay={() => setPlaying((value) => !value)}
@@ -1135,12 +1530,13 @@ export default function App() {
                   onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
                   onNext={() => pickRelativeTrack(1)}
                   onPrevious={() => pickRelativeTrack(-1)}
-                  liked={Boolean(likedTrackIds[activeTrack.id])}
+                  liked={activeTrack.source === "netease" ? Boolean(neteaseLikedIds[activeTrack.id]) : Boolean(likedTrackIds[activeTrack.id])}
                   onToggleLike={() => toggleLikeTrack(activeTrack.id)}
                   volume={volume}
                   onVolumeChange={setVolume}
-                  qualityLevel={qualityLevel}
+                  qualityLevel={effectiveQualityLevel}
                   onQualityLevelChange={setQualityLevel}
+                  hifiEnabled={hifiEnabled}
                   currentTime={currentTime}
                   durationSeconds={durationSeconds}
                   spectrum={spectrum}
@@ -1181,6 +1577,7 @@ export default function App() {
                   tracks={playlistTracks}
                   loading={playlistLoading}
                   onOpenPlaylist={openPlaylist}
+                  onClosePlaylist={() => setSelectedPlaylist(null)}
                   onPickTrack={chooseTrack}
                 />
               )}
@@ -1283,6 +1680,12 @@ export default function App() {
               lyricProgress={lyricProgress}
               volume={volume}
               onVolumeChange={setVolume}
+              audioOutputDevices={audioOutputDevices}
+              selectedSinkId={selectedSinkId}
+              onSelectedSinkIdChange={setSelectedSinkId}
+              hifiEnabled={hifiEnabled}
+              onHifiEnabledChange={setHifiEnabled}
+              exclusiveMode={exclusiveMode}
               onClose={() => setSettingsOpen(false)}
             />
           )}
@@ -1320,6 +1723,8 @@ export default function App() {
 function HomeSurface({
   activeTrack,
   tracks: homeTracks,
+  dailyTracks,
+  roamTracks,
   playCounts,
   playing,
   onTogglePlay,
@@ -1328,24 +1733,36 @@ function HomeSurface({
 }: {
   activeTrack: Track;
   tracks: Track[];
+  dailyTracks: Track[];
+  roamTracks: Track[];
   playCounts: Record<string, number>;
   playing: boolean;
   onTogglePlay: () => void;
   onPickTrack: (id: string) => void;
   onOpenPlayer: () => void;
 }) {
-  const rankedTracks = [...homeTracks]
-    .sort((left, right) => {
-      const byCount = (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0);
-      if (byCount !== 0) return byCount;
-      return left.title.localeCompare(right.title, "zh-CN");
-    })
-    .slice(0, 6);
-  const mixedTracks = homeTracks.slice(0, 3);
+  const rankedTracks = useMemo(
+    () =>
+      [...homeTracks]
+        .sort((left, right) => {
+          const byCount = (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0);
+          if (byCount !== 0) return byCount;
+          return left.title.localeCompare(right.title, "zh-CN");
+        })
+        .slice(0, 20),
+    [homeTracks, playCounts],
+  );
+  const mixedTracks = useMemo(
+    () => mergeTracks([...roamTracks.slice(0, 4), ...dailyTracks.slice(0, 6), ...homeTracks]).slice(0, 8),
+    [dailyTracks, homeTracks, roamTracks],
+  );
+  const totalPlays = useMemo(() => Object.values(playCounts).reduce((sum, count) => sum + count, 0), [playCounts]);
+  const neteaseCount = useMemo(() => homeTracks.filter((track) => track.source === "netease").length, [homeTracks]);
+  const favoriteArtist = rankedTracks[0]?.artist ?? "等待播放";
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.95fr)_minmax(0,1.05fr)] gap-4 overflow-hidden">
-      <section className="glass grid min-h-0 overflow-hidden rounded-[1.5rem] lg:grid-cols-[1.1fr_0.9fr]">
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.86fr)_minmax(0,1.14fr)] gap-4 overflow-hidden">
+      <section className="glass grid min-h-0 overflow-hidden rounded-[1.5rem] lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
         <div className="p-5 sm:p-7">
           <Badge>Home</Badge>
           <h1 className="mt-5 max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
@@ -1355,9 +1772,9 @@ function HomeSurface({
             把本地音乐、网易云喜欢、每日推荐和云盘放在同一个主页里。
           </p>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            <StatTile label="曲目" value={String(homeTracks.length)} />
-            <StatTile label="无损" value={String(homeTracks.filter((track) => track.quality !== "320K").length)} />
-            <StatTile label="歌词" value={String(homeTracks.filter((track) => track.lyricStatus === "linked").length)} />
+            <StatTile label="本周播放" value={String(totalPlays)} />
+            <StatTile label="网易云" value={String(neteaseCount)} />
+            <StatTile label="常听歌手" value={favoriteArtist} compact />
           </div>
         </div>
         <button
@@ -1384,7 +1801,7 @@ function HomeSurface({
             <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">{activeTrack.title}</h2>
             <p className="mt-2 truncate text-base font-medium text-white/84">{activeTrack.artist}</p>
             <p className="mt-1 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
-              {activeTrack.album} · {sourceLabel[activeTrack.source]} · {activeTrack.quality}
+              {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}
             </p>
           </div>
           <div className="hidden">
@@ -1404,20 +1821,20 @@ function HomeSurface({
               <h2 className="mt-2 line-clamp-2 max-w-[22rem] text-3xl font-semibold leading-tight text-white">{activeTrack.title}</h2>
               <p className="mt-1 text-white/75">{activeTrack.artist}</p>
               <p className="mt-3 line-clamp-2 max-w-md text-sm leading-6 text-white/72">
-                {activeTrack.album} · {sourceLabel[activeTrack.source]} · {activeTrack.quality} · {activeTrack.duration}
+                {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)} · {activeTrack.duration}
               </p>
             </div>
           </div>
         </button>
       </section>
 
-      <section className="grid min-h-0 gap-4 xl:grid-cols-[1fr_1fr]">
+      <section className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
         <div className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold">听歌排行</h2>
             <Badge>周榜</Badge>
           </div>
-          <div className="mt-4 grid max-h-[calc(100%-3.5rem)] gap-2 overflow-hidden">
+          <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-2 overflow-y-auto pr-1">
             {rankedTracks.map((track, index) => (
               <button
                 key={track.id}
@@ -1442,7 +1859,7 @@ function HomeSurface({
             <h2 className="text-xl font-semibold">每日混合</h2>
             <Badge>Radar</Badge>
           </div>
-          <div className="mt-4 grid max-h-[calc(100%-9rem)] gap-3 overflow-hidden">
+          <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-3 overflow-y-auto pr-1">
             {mixedTracks.map((track, index) => (
               <button
                 key={track.id}
@@ -1456,15 +1873,10 @@ function HomeSurface({
                     {index === 0 ? "私人漫游" : index === 1 ? "每日推荐" : "相似单曲"}
                   </p>
                 </div>
-                <Badge>{track.quality}</Badge>
+                <Badge>{formatAudioDetail(track)}</Badge>
               </button>
             ))}
             {!mixedTracks.length && <EmptyState text="暂无推荐数据，先同步网易云每日推荐。" />}
-          </div>
-          <div className="mt-4 rounded-[1.2rem] bg-neutral-950 p-4 text-white shadow-sm">
-            <p className="text-xs uppercase tracking-[0.24em] text-white/45">Today</p>
-            <p className="mt-2 text-2xl font-semibold">30</p>
-            <p className="mt-1 text-sm text-white/58">首新鲜推荐等待同步</p>
           </div>
         </div>
       </section>
@@ -1472,11 +1884,11 @@ function HomeSurface({
   );
 }
 
-function StatTile({ label, value }: { label: string; value: string }) {
+function StatTile({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
   return (
     <div className="rounded-[1.15rem] bg-white/58 p-4 shadow-sm">
       <p className="text-sm text-neutral-500">{label}</p>
-      <p className="mt-2 text-3xl font-semibold">{value}</p>
+      <p className={cn("mt-2 truncate font-semibold", compact ? "text-xl" : "text-3xl")}>{value}</p>
     </div>
   );
 }
@@ -1498,9 +1910,17 @@ function QueueList({
   activeTrackId: string;
   onPickTrack: (id: string) => void;
 }) {
+  const displayTracks = useMemo(() => {
+    const firstTracks = tracks.slice(0, 80);
+    if (firstTracks.some((track) => track.id === activeTrackId)) return firstTracks;
+    const activeTrack = tracks.find((track) => track.id === activeTrackId);
+    return activeTrack ? [activeTrack, ...firstTracks.slice(0, 79)] : firstTracks;
+  }, [activeTrackId, tracks]);
+  const hiddenCount = Math.max(0, tracks.length - displayTracks.length);
+
   return (
     <div className="no-scrollbar relative mt-4 flex-1 space-y-2 overflow-y-auto">
-      {tracks.map((track) => (
+      {displayTracks.map((track) => (
         <button
           key={track.id}
           className={cn(
@@ -1514,9 +1934,14 @@ function QueueList({
             <p className="truncate text-sm font-semibold">{track.title}</p>
             <p className="truncate text-xs text-neutral-500">{track.artist}</p>
           </div>
-          <Badge className="shrink-0">{track.quality}</Badge>
+          <Badge className="shrink-0">{formatAudioDetail(track)}</Badge>
         </button>
       ))}
+      {hiddenCount > 0 && (
+        <div className="rounded-2xl bg-white/45 px-3 py-2 text-center text-xs text-neutral-500">
+          还有 {hiddenCount} 首，使用搜索快速定位
+        </div>
+      )}
       {!tracks.length && <EmptyState text="暂无队列，先扫描本地目录或同步网易云。" />}
       <div className="pointer-events-none sticky bottom-0 h-10 bg-gradient-to-t from-white/70 to-transparent" />
     </div>
@@ -1668,13 +2093,12 @@ function SpectrumCanvas({
   fallback: number[];
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const levelsRef = useRef<number[]>(Array.from({ length: 56 }, () => 0.12));
-  const peaksRef = useRef<number[]>(Array.from({ length: 56 }, () => 0.14));
+  const levelsRef = useRef<number[]>(Array.from({ length: 42 }, () => 0.1));
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (!active) return;
+    if (!active && !playing) return;
 
     let frame = 0;
     let frequencyData = new Uint8Array(0);
@@ -1717,14 +2141,14 @@ function SpectrumCanvas({
       context.fillStyle = background;
       context.fillRect(0, 0, width, height);
 
-      const gap = 4 * dpr;
+      const gap = 6 * dpr;
       const barWidth = Math.max(2 * dpr, (width - gap * (barCount - 1)) / barCount);
-      const baseline = height * 0.78;
-      const maxBarHeight = height * 0.66;
-      const barGradient = context.createLinearGradient(0, height * 0.16, 0, baseline);
-      barGradient.addColorStop(0, colorWithAlpha(palette.secondary, 0.95));
-      barGradient.addColorStop(0.55, colorWithAlpha(palette.primary, 0.86));
-      barGradient.addColorStop(1, colorWithAlpha(palette.primary, 0.42));
+      const baseline = height * 0.82;
+      const maxBarHeight = height * 0.58;
+      const barGradient = context.createLinearGradient(0, baseline - maxBarHeight, 0, baseline);
+      barGradient.addColorStop(0, colorWithAlpha(palette.secondary, 0.9));
+      barGradient.addColorStop(0.75, colorWithAlpha(palette.primary, 0.82));
+      barGradient.addColorStop(1, colorWithAlpha(palette.primary, 0.56));
 
       context.strokeStyle = colorWithAlpha(palette.primary, 0.2);
       context.lineWidth = 1 * dpr;
@@ -1734,12 +2158,19 @@ function SpectrumCanvas({
       context.stroke();
 
       for (let index = 0; index < barCount; index += 1) {
-        const logStart = Math.floor(Math.pow(index / barCount, 1.42) * frequencyData.length * 0.92);
+        const logStart = Math.floor(Math.pow(index / barCount, 1.18) * frequencyData.length * 0.82);
         const logEnd = Math.max(
           logStart + 1,
-          Math.floor(Math.pow((index + 1) / barCount, 1.42) * frequencyData.length * 0.92),
+          Math.floor(Math.pow((index + 1) / barCount, 1.18) * frequencyData.length * 0.82),
         );
-        const linearIndex = Math.min(frequencyData.length - 1, Math.floor((index / Math.max(1, barCount - 1)) * (frequencyData.length - 1)));
+        const foldedBand = Math.max(1, Math.floor(frequencyData.length * 0.42));
+        const foldedIndex = frequencyData.length
+          ? (index * 3 + Math.floor(index / 4)) % foldedBand
+          : 0;
+        const linearIndex = Math.min(
+          frequencyData.length - 1,
+          Math.floor((index / Math.max(1, barCount - 1)) * (frequencyData.length - 1)),
+        );
         const mirrorIndex = Math.max(0, frequencyData.length - 1 - linearIndex);
         let bandEnergy = 0;
         for (let cursor = logStart; cursor < logEnd; cursor += 1) {
@@ -1748,36 +2179,32 @@ function SpectrumCanvas({
         const timeIndex = timeData.length ? Math.floor((index / barCount) * timeData.length) : 0;
         const timeEnergy = timeData.length ? Math.abs((timeData[timeIndex] ?? 128) - 128) / 96 : 0;
         const spectralEnergy = analyser
-          ? (bandEnergy / (logEnd - logStart) + (frequencyData[linearIndex] ?? 0) * 0.62 + (frequencyData[mirrorIndex] ?? 0) * 0.28) /
-            (255 * 1.9)
+          ? (bandEnergy / (logEnd - logStart) +
+              (frequencyData[linearIndex] ?? 0) * 0.28 +
+              (frequencyData[mirrorIndex] ?? 0) * 0.08 +
+              (frequencyData[foldedIndex] ?? 0) * 0.36 +
+              (frequencyData[Math.max(1, foldedIndex - 1)] ?? 0) * 0.16) /
+            (255 * 1.6)
           : (fallback[index % fallback.length] ?? 18) / 100;
         const energy = analyser
-          ? Math.pow(Math.min(1, spectralEnergy * 2.25 + timeEnergy * 0.42), 0.72)
+          ? Math.pow(Math.min(1, spectralEnergy * 1.7 + timeEnergy * 0.3 + globalWave * 0.12), 0.88)
           : spectralEnergy;
 
-        const phase = Math.sin(now / (160 + index * 2.6) + index * 0.58);
-        const breathing = playing ? (phase + 1) * 0.045 + Math.abs(Math.sin(now / 310 + index)) * 0.035 : 0;
+        const phase = Math.sin(now / (210 + index * 3.2) + index * 0.42);
+        const breathing = playing
+          ? (phase + 1) * 0.032 + Math.abs(Math.sin(now / 320 + index * 0.42)) * 0.028
+          : 0;
         const target = playing
-          ? Math.min(1, Math.max(0.08, energy * 0.92 + globalWave * 0.48 + breathing))
-          : Math.max(0.05, levelsRef.current[index] * 0.88);
-        levelsRef.current[index] = levelsRef.current[index] * 0.64 + target * 0.36;
-        peaksRef.current[index] = Math.max(levelsRef.current[index], peaksRef.current[index] - 0.009);
+          ? Math.min(1, Math.max(0.08, energy * 0.86 + globalWave * 0.24 + breathing))
+          : Math.max(0.05, levelsRef.current[index] * 0.92);
+        levelsRef.current[index] = levelsRef.current[index] * 0.72 + target * 0.28;
 
         const x = index * (barWidth + gap);
         const barHeight = Math.max(3 * dpr, levelsRef.current[index] * maxBarHeight);
-        const peakY = baseline - peaksRef.current[index] * maxBarHeight;
-        const radius = Math.min(barWidth / 2, 8 * dpr);
+        const radius = Math.min(barWidth / 2, 10 * dpr);
 
         context.fillStyle = barGradient;
         roundedRect(context, x, baseline - barHeight, barWidth, barHeight, radius);
-        context.fill();
-
-        context.fillStyle = colorWithAlpha(palette.secondary, 0.68);
-        roundedRect(context, x, peakY, barWidth, 2 * dpr, 1 * dpr);
-        context.fill();
-
-        context.fillStyle = colorWithAlpha(palette.primary, 0.16);
-        roundedRect(context, x, baseline + 5 * dpr, barWidth, barHeight * 0.22, radius);
         context.fill();
       }
 
@@ -1790,7 +2217,7 @@ function SpectrumCanvas({
     };
   }, [active, analyserRef, fallback, palette.primary, palette.secondary, playing]);
 
-  return <canvas ref={canvasRef} className="block h-32 w-full" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="block h-36 w-full sm:h-40 2xl:h-48" aria-hidden="true" />;
 }
 
 function roundedRect(
@@ -1833,6 +2260,7 @@ function PlayerSurface({
   onVolumeChange,
   qualityLevel,
   onQualityLevelChange,
+  hifiEnabled,
   currentTime,
   durationSeconds,
   spectrum,
@@ -1857,6 +2285,7 @@ function PlayerSurface({
   onVolumeChange: (volume: number) => void;
   qualityLevel: QualityLevel;
   onQualityLevelChange: (level: QualityLevel) => void;
+  hifiEnabled: boolean;
   currentTime: number;
   durationSeconds: number;
   spectrum: number[];
@@ -1869,6 +2298,7 @@ function PlayerSurface({
   const themeSecondary = colorWithAlpha(palette.secondary, 0.24);
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
   const bpmLabel = activeTrack.bpm ? `${activeTrack.bpm} BPM` : detectedBpm ? `${detectedBpm} BPM` : "BPM --";
+  const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
   const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
   const progressPercent = resolvedDuration ? Math.min(100, Math.max(0, (currentTime / resolvedDuration) * 100)) : 0;
 
@@ -1963,7 +2393,7 @@ function PlayerSurface({
           <div className="min-h-0">
             <div className="flex flex-wrap items-center gap-2">
               <Badge>{sourceLabel[activeTrack.source]}</Badge>
-              <Badge>{activeTrack.quality}</Badge>
+              <Badge>{formatAudioDetail(activeTrack, resolvedQualityLevel)}</Badge>
               <Badge>{activeTrack.duration}</Badge>
               <Badge>{bpmLabel}</Badge>
             </div>
@@ -2027,11 +2457,11 @@ function PlayerSurface({
             </div>
 
             <div
-              className="mt-4 rounded-[1.25rem] border border-white/35 p-4 shadow-sm"
+              className="mt-4 rounded-[1.35rem] border border-white/35 p-4 shadow-sm"
               style={{ background: `linear-gradient(135deg, rgba(255,255,255,0.34), ${themeSoft})` }}
             >
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center justify-center gap-2">
+                <div className="flex items-center gap-2 rounded-full bg-white/72 p-2 shadow-sm">
                   <Button
                     variant={shuffleEnabled ? "default" : "ghost"}
                     size="icon"
@@ -2050,7 +2480,7 @@ function PlayerSurface({
                     <SkipForward />
                   </Button>
                   <Button
-                    className="relative"
+                    className="relative rounded-full"
                     variant={repeatMode === "one" ? "default" : "ghost"}
                     size="icon"
                     aria-label="循环播放"
@@ -2068,7 +2498,7 @@ function PlayerSurface({
                     <Heart className={cn(liked && "fill-current")} />
                   </Button>
                 </div>
-                <div className="flex min-w-0 items-center gap-3">
+                <div className="flex min-w-0 items-center gap-3 rounded-full bg-white/72 px-4 py-3 shadow-sm">
                   <Volume2 className="size-4 text-neutral-500" />
                   <input
                     aria-label="音量"
@@ -2096,21 +2526,24 @@ function PlayerSurface({
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Quality</p>
-                <div className="flex flex-wrap gap-1 rounded-full bg-white/60 p-1">
+                <div className="flex items-center gap-2">
+                  {hifiEnabled && <Badge>HiFi 优先</Badge>}
+                  <div className="flex flex-wrap gap-1 rounded-full bg-white/60 p-1">
                   {qualityOptions.map((option) => (
                     <button
                       key={option.value}
                       className={cn(
                         "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
-                        qualityLevel === option.value && "bg-neutral-950 text-white shadow-sm",
-                        activeTrack.source !== "netease" && "opacity-45",
+                        resolvedQualityLevel === option.value && "bg-neutral-950 text-white shadow-sm",
+                        (activeTrack.source !== "netease" || !activeTrack.availableLevels?.includes(option.value)) && "opacity-45",
                       )}
-                      disabled={activeTrack.source !== "netease"}
+                      disabled={activeTrack.source !== "netease" || !activeTrack.availableLevels?.includes(option.value)}
                       onClick={() => onQualityLevelChange(option.value)}
                     >
                       {option.label}
                     </button>
                   ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2249,8 +2682,7 @@ function LibrarySurface({
             </div>
             <div className="hidden items-center gap-2 sm:flex">
               <Badge>{track.lyricStatus === "linked" ? "有歌词" : "待匹配"}</Badge>
-              <Badge>{track.quality}</Badge>
-              {track.bitrate ? <Badge>{Math.round(track.bitrate / 1000)}kbps</Badge> : null}
+              <Badge>{formatAudioDetail(track)}</Badge>
               <span className="w-12 text-right text-sm text-neutral-500">{track.duration}</span>
             </div>
           </button>
@@ -2535,6 +2967,7 @@ function PlaylistSurface({
   tracks,
   loading,
   onOpenPlaylist,
+  onClosePlaylist,
   onPickTrack,
 }: {
   playlists: ProviderPlaylist[];
@@ -2542,8 +2975,45 @@ function PlaylistSurface({
   tracks: Track[];
   loading: boolean;
   onOpenPlaylist: (playlist: ProviderPlaylist) => void;
+  onClosePlaylist: () => void;
   onPickTrack: (id: string) => void;
 }) {
+  if (selectedPlaylist) {
+    return (
+      <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <Button variant="ghost" size="sm" onClick={onClosePlaylist}>
+              <ChevronDown className="rotate-90" />
+              返回歌单
+            </Button>
+            <h1 className="mt-4 truncate text-3xl font-semibold sm:text-5xl">{selectedPlaylist.name}</h1>
+            <p className="mt-2 text-sm text-neutral-500">{tracks.length} 首 · 按歌单顺序播放</p>
+          </div>
+          <Badge>{loading ? "读取中" : "Ready"}</Badge>
+        </div>
+        <div className="mt-6 grid gap-2">
+          {tracks.map((track, index) => (
+            <button
+              key={track.id}
+              className="grid grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
+              onClick={() => onPickTrack(track.id)}
+            >
+              <span className="text-center text-sm text-neutral-400">{index + 1}</span>
+              <CoverArt track={track} className="size-14 rounded-2xl" />
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{track.title}</p>
+                <p className="truncate text-sm text-neutral-500">{track.artist}</p>
+              </div>
+              <Badge>{formatAudioDetail(track)}</Badge>
+            </button>
+          ))}
+          {!tracks.length && !loading && <EmptyState text="这个歌单暂时没有读取到曲目。" />}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
       <div className="flex items-center justify-between gap-4">
@@ -2597,7 +3067,7 @@ function PlaylistSurface({
                   <p className="truncate text-sm font-semibold">{track.title}</p>
                   <p className="truncate text-xs text-neutral-500">{track.artist}</p>
                 </div>
-                <Badge>{track.quality}</Badge>
+                <Badge>{formatAudioDetail(track)}</Badge>
               </button>
             ))}
             {!tracks.length && !loading && <EmptyState text="这个歌单暂时没有读取到曲目。" />}
@@ -2808,6 +3278,12 @@ function SettingsPanel({
   lyricProgress,
   volume,
   onVolumeChange,
+  audioOutputDevices,
+  selectedSinkId,
+  onSelectedSinkIdChange,
+  hifiEnabled,
+  onHifiEnabledChange,
+  exclusiveMode,
   onClose,
 }: {
   backgroundEnabled: boolean;
@@ -2819,10 +3295,20 @@ function SettingsPanel({
   lyricProgress: number;
   volume: number;
   onVolumeChange: (value: number) => void;
+  audioOutputDevices: Array<{ id: string; label: string }>;
+  selectedSinkId: string;
+  onSelectedSinkIdChange: (value: string) => void;
+  hifiEnabled: boolean;
+  onHifiEnabledChange: (value: boolean) => void;
+  exclusiveMode: boolean;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
   const desktopReady = Boolean(window.ariaDesktop);
+  const deviceSwitchSupported =
+    typeof HTMLMediaElement !== "undefined" &&
+    "setSinkId" in HTMLMediaElement.prototype &&
+    audioOutputDevices.length > 0;
 
   function refreshApiState() {
     setApiState("checking");
@@ -2993,6 +3479,57 @@ function SettingsPanel({
                   } as CSSProperties
                 }
               />
+            </div>
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Output</p>
+                <Badge>{deviceSwitchSupported ? "Device" : "Default"}</Badge>
+              </div>
+              <select
+                value={selectedSinkId}
+                disabled={!deviceSwitchSupported}
+                onChange={(event) => onSelectedSinkIdChange(event.target.value)}
+                className="w-full rounded-[0.95rem] border border-white/70 bg-white/80 px-3 py-2 text-sm outline-none disabled:opacity-50"
+              >
+                {audioOutputDevices.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-neutral-500">
+                {deviceSwitchSupported ? "切换到指定播放设备后会即时生效。" : "当前环境不支持在应用内切换播放设备。"}
+              </p>
+            </div>
+            <div className="mt-4 rounded-[1rem] bg-neutral-950/[0.03] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">HiFi 优先</p>
+                  <p className="mt-1 text-xs text-neutral-500">自动请求当前歌曲可用的最高音质。</p>
+                </div>
+                <button
+                  className={cn(
+                    "flex h-8 w-14 items-center rounded-full p-1 transition",
+                    hifiEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                  )}
+                  onClick={() => onHifiEnabledChange(!hifiEnabled)}
+                  aria-label="切换 HiFi 优先"
+                >
+                  <span
+                    className={cn(
+                      "size-6 rounded-full bg-white shadow-sm transition",
+                      hifiEnabled && "translate-x-6",
+                    )}
+                  />
+                </button>
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">独占输出</p>
+                  <p className="mt-1 text-xs text-neutral-500">需要原生音频引擎，当前版本先保留为待实现。</p>
+                </div>
+                <Badge>{exclusiveMode ? "Planned" : "Unavailable"}</Badge>
+              </div>
             </div>
           </section>
         </div>

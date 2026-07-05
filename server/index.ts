@@ -1,7 +1,9 @@
 import cors from "cors";
 import express from "express";
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parseFile } from "music-metadata";
@@ -13,6 +15,7 @@ import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
 import { getNeteaseAccountSummary, saveNeteaseCookie } from "./services/neteaseService";
 import { readStore, updateStore } from "./store";
+import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
 
 const app = express();
@@ -109,11 +112,11 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
         level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional(),
       })
       .parse(req.query);
-    const url = await neteaseClient.getSongUrl(req.params.trackId, query.level);
-    if (!url) {
+    const meta = await neteaseClient.getStreamMeta(req.params.trackId, query.level);
+    if (!meta.url) {
       throw new HttpError(404, "Playable URL is unavailable", "NETEASE_URL_UNAVAILABLE");
     }
-    const upstream = await fetch(url, {
+    const upstream = await fetch(meta.url, {
       headers: req.headers.range ? { Range: req.headers.range } : undefined,
     });
     if (!upstream.ok && upstream.status !== 206) {
@@ -125,7 +128,10 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
       const value = upstream.headers.get(header);
       if (value) res.setHeader(header, value);
     }
-    res.setHeader("Cache-Control", "no-store");
+    if (meta.bitrate) res.setHeader("x-aria-bitrate", String(meta.bitrate));
+    if (meta.sampleRate) res.setHeader("x-aria-sample-rate", String(meta.sampleRate));
+    if (meta.currentLevel) res.setHeader("x-aria-level", meta.currentLevel);
+    res.setHeader("Cache-Control", "private, max-age=600");
 
     if (req.method === "HEAD") {
       res.end();
@@ -137,6 +143,19 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
       return;
     }
     await pipeline(Readable.fromWeb(upstream.body), res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/netease/tracks/:trackId/stream-meta", async (req, res, next) => {
+  try {
+    const query = z
+      .object({
+        level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional().default("lossless"),
+      })
+      .parse(req.query);
+    res.json(await neteaseClient.getStreamMeta(req.params.trackId, query.level));
   } catch (error) {
     next(error);
   }
@@ -150,6 +169,40 @@ app.get("/api/providers/netease/tracks/:trackId/lyrics", async (req, res, next) 
   }
 });
 
+app.post("/api/providers/netease/tracks/:trackId/like", async (req, res, next) => {
+  try {
+    const body = z.object({ liked: z.boolean() }).parse(req.body);
+    res.json(await neteaseClient.setLike(req.params.trackId, body.liked));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/providers/netease/tracks/:trackId/bpm", async (req, res, next) => {
+  try {
+    const body = z.object({ bpm: z.number().min(40).max(240) }).parse(req.body);
+    const bpm = await neteaseClient.saveBpm(req.params.trackId, body.bpm);
+    res.json({ ok: true, bpm });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/providers/netease/cache/warmup", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        trackIds: z.array(z.union([z.string(), z.number()])).max(300),
+        level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional().default("lossless"),
+      })
+      .parse(req.body);
+    const cached = await neteaseClient.warmupTracks(body.trackIds, body.level);
+    res.json({ ok: true, cached });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/providers/netease/cover", async (req, res, next) => {
   try {
     const query = z.object({ url: z.string().url() }).parse(req.query);
@@ -158,28 +211,44 @@ app.get("/api/providers/netease/cover", async (req, res, next) => {
       throw new HttpError(400, "Unsupported cover host", "NETEASE_COVER_HOST_UNSUPPORTED");
     }
 
+    const coverCacheDir = path.join(cacheDir, "covers");
+    const cacheKey = createHash("sha1").update(query.url).digest("hex");
+    const cachedPath = path.join(coverCacheDir, `${cacheKey}.img`);
+    const cachedMetaPath = path.join(coverCacheDir, `${cacheKey}.json`);
+    try {
+      const [buffer, rawMeta] = await Promise.all([readFile(cachedPath), readFile(cachedMetaPath, "utf8")]);
+      const meta = JSON.parse(rawMeta) as { contentType?: string };
+      res.setHeader("Content-Type", meta.contentType || "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+      res.send(buffer);
+      return;
+    } catch {
+      // Cache miss; continue with upstream fetch.
+    }
+
     const upstream = await fetch(query.url);
     if (!upstream.ok) {
       throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
     }
 
+    const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    const body = Buffer.from(await upstream.arrayBuffer());
+    await mkdir(coverCacheDir, { recursive: true });
+    await Promise.all([
+      writeFile(cachedPath, body),
+      writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
+    ]);
+
     res.status(upstream.status);
-    for (const header of ["content-type", "content-length"]) {
-      const value = upstream.headers.get(header);
-      if (value) res.setHeader(header, value);
-    }
-    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", String(body.byteLength));
+    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
 
     if (req.method === "HEAD") {
       res.end();
       return;
     }
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-    await pipeline(Readable.fromWeb(upstream.body), res);
+    res.send(body);
   } catch (error) {
     next(error);
   }
@@ -190,13 +259,38 @@ app.get("/api/library/tracks/:trackId/cover", async (req, res, next) => {
     const track = await findTrack(req.params.trackId);
     if (!track) throw new HttpError(404, "Track not found", "TRACK_NOT_FOUND");
 
+    const fileStat = await stat(track.path);
+    const localCoverCacheDir = path.join(cacheDir, "local-covers");
+    const cacheKey = createHash("sha1").update(`${track.path}:${fileStat.mtimeMs}:${fileStat.size}`).digest("hex");
+    const cachedPath = path.join(localCoverCacheDir, `${cacheKey}.img`);
+    const cachedMetaPath = path.join(localCoverCacheDir, `${cacheKey}.json`);
+    try {
+      const [buffer, rawMeta] = await Promise.all([readFile(cachedPath), readFile(cachedMetaPath, "utf8")]);
+      const meta = JSON.parse(rawMeta) as { contentType?: string };
+      res.setHeader("Content-Type", meta.contentType || "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+      res.send(buffer);
+      return;
+    } catch {
+      // Cache miss; extract embedded cover once and persist it.
+    }
+
     const metadata = await parseFile(track.path);
     const picture = metadata.common.picture?.[0];
     if (!picture) throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
 
-    res.setHeader("Content-Type", picture.format || "image/jpeg");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    res.send(Buffer.from(picture.data));
+    const body = Buffer.from(picture.data);
+    const contentType = picture.format || "image/jpeg";
+    await mkdir(localCoverCacheDir, { recursive: true });
+    await Promise.all([
+      writeFile(cachedPath, body),
+      writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
+    ]);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", String(body.byteLength));
+    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+    res.send(body);
   } catch (error) {
     next(error);
   }

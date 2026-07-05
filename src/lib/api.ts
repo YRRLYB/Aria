@@ -65,6 +65,12 @@ export type ProviderTrack = {
   source: string;
   streamUrl?: string | null;
   coverUrl?: string | null;
+  likedAt?: number | null;
+  bpm?: number | null;
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
+  availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
 };
 
 export type ProviderPlaylist = {
@@ -189,6 +195,12 @@ export const api = {
   getProviderLiked(providerId = "netease") {
     return request<{ tracks: ProviderTrack[] }>(`/api/providers/${providerId}/liked`);
   },
+  setNeteaseLike(trackId: string, liked: boolean) {
+    return request<{ ok: boolean; liked: boolean }>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/like`, {
+      method: "POST",
+      body: JSON.stringify({ liked }),
+    });
+  },
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
   },
@@ -205,5 +217,29 @@ export const api = {
     return request<{ lyrics: Array<{ time: string; text: string }> }>(
       `/api/providers/netease/tracks/${encodeURIComponent(trackId)}/lyrics`,
     );
+  },
+  getNeteaseStreamMeta(trackId: string, level: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster") {
+    const params = new URLSearchParams({ level });
+    return request<{
+      url: string | null;
+      bitrate: number | null;
+      sampleRate: number | null;
+      size: number | null;
+      quality: ProviderTrack["quality"];
+      currentLevel: ProviderTrack["currentLevel"];
+      availableLevels: NonNullable<ProviderTrack["availableLevels"]>;
+    }>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/stream-meta?${params}`);
+  },
+  saveNeteaseBpm(trackId: string, bpm: number) {
+    return request<{ ok: boolean; bpm: number }>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/bpm`, {
+      method: "POST",
+      body: JSON.stringify({ bpm }),
+    });
+  },
+  warmNeteaseCache(trackIds: string[], level = "lossless") {
+    return request<{ ok: boolean; cached: number }>("/api/providers/netease/cache/warmup", {
+      method: "POST",
+      body: JSON.stringify({ trackIds, level }),
+    });
   },
 };

@@ -15,6 +15,12 @@ export type ProviderTrack = {
   source: string;
   streamUrl?: string | null;
   coverUrl?: string | null;
+  likedAt?: number | null;
+  bpm?: number | null;
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
+  availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
 };
 
 export type ProviderPlaylist = {
