@@ -14,6 +14,7 @@ class MpvAudioEngine {
     this.buffer = "";
     this.requestId = 0;
     this.pendingRequests = new Map();
+    this.ensurePromise = null;
     this.pendingSeek = 0;
     this.pendingPause = true;
     this.state = {
@@ -88,49 +89,56 @@ class MpvAudioEngine {
       throw new Error("Native audio engine is not available.");
     }
     if (this.process && this.socket && !this.socket.destroyed) return;
+    if (this.ensurePromise) {
+      await this.ensurePromise;
+      return;
+    }
 
-    await this.teardown();
+    this.ensurePromise = (async () => {
+      await this.teardown();
 
-    this.pipePath = `\\\\.\\pipe\\aria-mpv-${process.pid}-${Date.now()}`;
-    this.buffer = "";
+      this.pipePath = `\\\\.\\pipe\\aria-mpv-${process.pid}-${Date.now()}`;
+      this.buffer = "";
 
-    this.process = spawn(
-      this.resolveExecutable(),
-      [
-        "--idle=yes",
-        "--no-video",
-        "--force-window=no",
-        "--keep-open=no",
-        "--no-terminal",
-        "--msg-level=all=warn",
-        "--no-config",
-        `--input-ipc-server=${this.pipePath}`,
-      ],
-      {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+      this.process = spawn(
+        this.resolveExecutable(),
+        [
+          "--idle=yes",
+          "--no-video",
+          "--force-window=no",
+          "--keep-open=no",
+          "--no-terminal",
+          "--msg-level=all=warn",
+          "--no-config",
+          `--input-ipc-server=${this.pipePath}`,
+        ],
+        {
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
 
-    this.process.stdout?.on("data", (chunk) => this.writeLog("native-audio.log", String(chunk).trimEnd()));
-    this.process.stderr?.on("data", (chunk) => this.writeLog("native-audio.log", `ERR ${String(chunk).trimEnd()}`));
-    this.process.once("exit", (code, signal) => {
-      this.writeLog("native-audio.log", `mpv exited: code=${code} signal=${signal}`);
-      this.process = null;
-      this.socket = null;
-      this.state.ready = false;
-      this.state.active = false;
-      this.rejectPending(new Error("mpv process exited"));
-      this.emit({ kind: "stopped" });
-    });
+      this.process.stdout?.on("data", (chunk) => this.writeLog("native-audio.log", String(chunk).trimEnd()));
+      this.process.stderr?.on("data", (chunk) => this.writeLog("native-audio.log", `ERR ${String(chunk).trimEnd()}`));
+      this.process.once("exit", (code, signal) => {
+        this.writeLog("native-audio.log", `mpv exited: code=${code} signal=${signal}`);
+        this.process = null;
+        this.socket = null;
+        this.state.ready = false;
+        this.state.active = false;
+        this.rejectPending(new Error("mpv process exited"));
+        this.emit({ kind: "stopped" });
+      });
 
-    await this.connectPipe();
-    await this.observeProperties();
-    await this.setVolume(this.state.volume);
-    await this.applyOutputSettings({
-      exclusive: this.state.exclusive,
-      deviceId: this.state.deviceId,
-    });
+      await this.connectPipe();
+      await this.observeProperties();
+    })();
+
+    try {
+      await this.ensurePromise;
+    } finally {
+      this.ensurePromise = null;
+    }
   }
 
   async connectPipe() {
