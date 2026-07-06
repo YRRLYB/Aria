@@ -48,6 +48,7 @@ const sourceLabel: Record<Track["source"], string> = {
 type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
 type CoverPalette = { primary: string; secondary: string };
 type PlayerSideView = "lyrics" | "queue";
+type AudioOutputMode = "system" | "shared" | "exclusive";
 type NativeAudioState = {
   supported: boolean;
   ready: boolean;
@@ -159,11 +160,23 @@ function readCachedAudioSettings() {
   try {
     const raw = window.localStorage.getItem(audioSettingsKey);
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as { sinkId?: string; hifiEnabled?: boolean; exclusiveMode?: boolean };
+    const parsed = JSON.parse(raw) as {
+      sinkId?: string;
+      hifiEnabled?: boolean;
+      exclusiveMode?: boolean;
+      outputMode?: AudioOutputMode;
+    };
+    const outputMode =
+      parsed.outputMode === "shared" || parsed.outputMode === "exclusive" || parsed.outputMode === "system"
+        ? parsed.outputMode
+        : parsed.exclusiveMode
+          ? "exclusive"
+          : "system";
     return {
       sinkId: typeof parsed.sinkId === "string" ? parsed.sinkId : "default",
       hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
       exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
+      outputMode,
     };
   } catch {
     return {};
@@ -486,12 +499,14 @@ export default function App() {
   const [nativeAudioState, setNativeAudioState] = useState<NativeAudioState | null>(null);
   const [selectedSinkId, setSelectedSinkId] = useState(() => readCachedAudioSettings().sinkId ?? "default");
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
-  const [exclusiveMode, setExclusiveMode] = useState(() => readCachedAudioSettings().exclusiveMode ?? false);
+  const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>(() => readCachedAudioSettings().outputMode ?? "system");
+  const [nativePlaybackFailed, setNativePlaybackFailed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const analyserDestinationConnectedRef = useRef(false);
   const visualizerFrameRef = useRef<number | null>(null);
   const bpmPeaksRef = useRef<number[]>([]);
   const bpmSamplesRef = useRef<number[]>([]);
@@ -510,7 +525,9 @@ export default function App() {
   const nativeLoadedUrlRef = useRef<string | null>(null);
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
-  const nativePlaybackEnabled = nativeAudioSupported;
+  const nativePlaybackRequested = Boolean(nativeAudioSupported && audioOutputMode !== "system");
+  const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
+  const exclusiveMode = audioOutputMode === "exclusive";
   const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
   const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
   const nativePlaybackVolume = volume;
@@ -833,12 +850,22 @@ export default function App() {
     try {
       window.localStorage.setItem(
         audioSettingsKey,
-        JSON.stringify({ sinkId: selectedSinkId, hifiEnabled, exclusiveMode }),
+        JSON.stringify({
+          sinkId: selectedSinkId,
+          hifiEnabled,
+          exclusiveMode,
+          outputMode: audioOutputMode,
+        }),
       );
     } catch {
       // Audio settings are a comfort feature.
     }
-  }, [exclusiveMode, hifiEnabled, selectedSinkId]);
+  }, [audioOutputMode, exclusiveMode, hifiEnabled, selectedSinkId]);
+
+  useEffect(() => {
+    setNativePlaybackFailed(false);
+    nativeLoadedUrlRef.current = null;
+  }, [activeTrack.id, activeStreamUrl, audioOutputMode, selectedSinkId]);
 
   useEffect(() => {
     if (!audioOutputDevices.length) return;
@@ -870,7 +897,7 @@ export default function App() {
         setPlaying(!state.paused);
       }
     }
-    if (state.kind === "ended") {
+    if (state.kind === "ended" && currentTrackMatches && nativePlaybackEnabled) {
       handleTrackEnded();
     }
   });
@@ -1006,6 +1033,7 @@ export default function App() {
       })
       .catch(() => {
         nativeLoadedUrlRef.current = null;
+        setNativePlaybackFailed(true);
       });
   }, [
     activeStreamUrl,
@@ -1099,21 +1127,42 @@ export default function App() {
     const context = audioContextRef.current ?? new AudioContextClass();
     audioContextRef.current = context;
     if (!audioSourceRef.current) {
-      audioSourceRef.current = context.createMediaElementSource(audio);
+      try {
+        audioSourceRef.current = context.createMediaElementSource(audio);
+      } catch {
+        return;
+      }
       analyserRef.current = context.createAnalyser();
       analyserRef.current.fftSize = 256;
       analyserRef.current.smoothingTimeConstant = 0.58;
       analyserRef.current.minDecibels = -92;
       analyserRef.current.maxDecibels = -10;
       audioSourceRef.current.connect(analyserRef.current);
-      if (!nativePlaybackEnabled) {
-        analyserRef.current.connect(context.destination);
-      }
     }
 
     context.resume();
     const analyser = analyserRef.current;
     if (!analyser) return;
+    if (!nativePlaybackEnabled && !analyserDestinationConnectedRef.current) {
+      try {
+        analyser.connect(context.destination);
+        analyserDestinationConnectedRef.current = true;
+      } catch {
+        analyserDestinationConnectedRef.current = false;
+      }
+    }
+    if (nativePlaybackEnabled && analyserDestinationConnectedRef.current) {
+      try {
+        analyser.disconnect(context.destination);
+      } catch {
+        try {
+          analyser.disconnect();
+        } catch {
+          // Ignore graph cleanup errors; the next tick will recreate the visible spectrum.
+        }
+      }
+      analyserDestinationConnectedRef.current = false;
+    }
 
     const frequencyData = new Uint8Array(analyser.frequencyBinCount);
     const tick = () => {
@@ -1905,8 +1954,10 @@ export default function App() {
               onHifiEnabledChange={setHifiEnabled}
               nativeAudioSupported={nativeAudioSupported}
               nativeAudioState={nativeAudioState}
+              audioOutputMode={audioOutputMode}
+              onAudioOutputModeChange={setAudioOutputMode}
               exclusiveMode={exclusiveMode}
-              onExclusiveModeChange={setExclusiveMode}
+              onExclusiveModeChange={(enabled) => setAudioOutputMode(enabled ? "exclusive" : "system")}
               onClose={() => setSettingsOpen(false)}
             />
           )}
@@ -3562,6 +3613,8 @@ function SettingsPanel({
   onHifiEnabledChange,
   nativeAudioSupported,
   nativeAudioState,
+  audioOutputMode,
+  onAudioOutputModeChange,
   exclusiveMode,
   onExclusiveModeChange,
   onClose,
@@ -3582,6 +3635,8 @@ function SettingsPanel({
   onHifiEnabledChange: (value: boolean) => void;
   nativeAudioSupported: boolean;
   nativeAudioState: NativeAudioState | null;
+  audioOutputMode: AudioOutputMode;
+  onAudioOutputModeChange: (value: AudioOutputMode) => void;
   exclusiveMode: boolean;
   onExclusiveModeChange: (value: boolean) => void;
   onClose: () => void;
@@ -3590,6 +3645,8 @@ function SettingsPanel({
   const desktopReady = Boolean(window.ariaDesktop);
   const deviceSwitchSupported = audioOutputDevices.length > 0;
   const exclusiveReady = Boolean(exclusiveMode && nativeAudioSupported && nativeAudioState?.exclusive);
+  const outputModeLabel =
+    audioOutputMode === "exclusive" ? "WASAPI Exclusive" : audioOutputMode === "shared" ? "WASAPI Shared" : "System";
 
   function refreshApiState() {
     setApiState("checking");
@@ -3764,7 +3821,32 @@ function SettingsPanel({
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Output</p>
-                <Badge>{nativeAudioSupported ? "WASAPI" : deviceSwitchSupported ? "Device" : "Default"}</Badge>
+                <Badge>{outputModeLabel}</Badge>
+              </div>
+              <div className="grid grid-cols-3 gap-2 rounded-[1rem] bg-neutral-950/[0.035] p-1">
+                {([
+                  ["system", "系统"],
+                  ["shared", "共享"],
+                  ["exclusive", "独占"],
+                ] as Array<[AudioOutputMode, string]>).map(([mode, label]) => {
+                  const disabled = mode !== "system" && !nativeAudioSupported;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={disabled}
+                      className={cn(
+                        "rounded-[0.8rem] px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40",
+                        audioOutputMode === mode
+                          ? "bg-neutral-950 text-white shadow-sm"
+                          : "text-neutral-500 hover:bg-white/70 hover:text-neutral-950",
+                      )}
+                      onClick={() => onAudioOutputModeChange(mode)}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
               <select
                 value={selectedSinkId}
@@ -3780,7 +3862,7 @@ function SettingsPanel({
               </select>
               <p className="text-xs text-neutral-500">
                 {nativeAudioSupported
-                  ? "独占模式会使用这里选择的 WASAPI 输出设备。"
+                  ? "系统模式使用浏览器音频；共享/独占模式使用内置 mpv WASAPI 输出。"
                   : deviceSwitchSupported
                     ? "切换到指定播放设备后会即时生效。"
                     : "当前环境不支持在应用内切换播放设备。"}
@@ -3810,23 +3892,27 @@ function SettingsPanel({
               </div>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold">独占输出</p>
+                  <p className="text-sm font-semibold">输出链路</p>
                   <p className="mt-1 text-xs text-neutral-500">
                     {nativeAudioSupported
                       ? exclusiveMode
                         ? exclusiveReady
                           ? "已进入原生 WASAPI Exclusive，当前仍允许软件音量调节。"
                           : "正在请求独占输出或设备拒绝独占，请检查设备属性里的独占权限。"
-                        : "关闭时仍使用应用内标准播放链路。"
+                        : audioOutputMode === "shared"
+                          ? "当前使用 WASAPI Shared，声音由后端音频主机输出。"
+                          : "当前使用系统音频，优先保证兼容和稳定。"
                       : "需要桌面版内置原生音频引擎，Web 预览里不会启用。"}
                   </p>
                 </div>
-                <Badge>{exclusiveReady ? "Locked" : exclusiveMode ? "Pending" : "Shared"}</Badge>
+                <Badge>{exclusiveReady ? "Locked" : audioOutputMode === "shared" ? "Shared" : audioOutputMode === "exclusive" ? "Pending" : "System"}</Badge>
               </div>
               <div className="mt-2 text-[11px] leading-5 text-neutral-500">
                 {exclusiveMode && nativeAudioSupported
                   ? "直通模式下播放由原生宿主完成，频谱和进度由分析器与宿主状态共同驱动。"
-                  : "普通模式下也会继续使用原生宿主播放，只是不申请独占设备。"}
+                  : audioOutputMode === "shared" && nativeAudioSupported
+                    ? "共享模式由 native 主机播放，但不独占设备；加载失败会自动退回系统播放。"
+                    : "系统模式使用 HTMLAudio，频谱和声音在同一条浏览器音频图里。"}
               </div>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <div className="min-w-0">

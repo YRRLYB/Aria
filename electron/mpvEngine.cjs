@@ -104,6 +104,7 @@ class MpvAudioEngine {
         this.resolveExecutable(),
         [
           "--idle=yes",
+          "--ao=wasapi",
           "--no-video",
           "--force-window=no",
           "--keep-open=no",
@@ -302,8 +303,8 @@ class MpvAudioEngine {
   }
 
   async load({ trackId, url, position = 0, paused = true, volume = 72, exclusive = false, deviceId = "default" }) {
-    await this.teardown();
     await this.ensureProcess();
+    await this.command("stop").catch(() => undefined);
     this.pendingSeek = Math.max(0, Number(position) || 0);
     this.pendingPause = Boolean(paused);
     this.state.trackId = trackId;
