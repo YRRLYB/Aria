@@ -510,7 +510,7 @@ export default function App() {
   const nativeLoadedUrlRef = useRef<string | null>(null);
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
-  const nativePlaybackEnabled = Boolean(nativeAudioSupported && exclusiveMode);
+  const nativePlaybackEnabled = nativeAudioSupported;
   const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
   const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
   const nativePlaybackVolume = volume;
