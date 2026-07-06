@@ -858,7 +858,18 @@ export default function App() {
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
     setNativeAudioState(state);
-    if (nativePlaybackEnabled || state.active || state.kind === "ended") {
+    const currentTrackMatches = Boolean(state.trackId && state.trackId === activeTrackId);
+    const shouldSyncPlayback =
+      currentTrackMatches &&
+      (state.active ||
+        state.kind === "loading" ||
+        state.kind === "loaded" ||
+        state.kind === "pause" ||
+        state.kind === "seek" ||
+        state.kind === "progress" ||
+        state.kind === "ended");
+
+    if (shouldSyncPlayback) {
       if (typeof state.duration === "number" && state.duration > 0) {
         setDurationSeconds(state.duration);
       }

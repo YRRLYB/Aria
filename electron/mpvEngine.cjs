@@ -311,6 +311,7 @@ class MpvAudioEngine {
     this.state.position = this.pendingSeek;
     this.state.duration = 0;
     this.state.active = false;
+    this.state.paused = this.pendingPause;
     this.state.bitrate = null;
     await this.applyOutputSettings({ exclusive, deviceId, volume });
     await this.command("loadfile", url, "replace");
