@@ -169,6 +169,8 @@ class MpvAudioEngine {
     await this.command("observe_property", 2, "duration");
     await this.command("observe_property", 3, "pause");
     await this.command("observe_property", 4, "audio-bitrate");
+    await this.command("observe_property", 5, "audio-exclusive");
+    await this.command("observe_property", 6, "audio-device");
   }
 
   handleChunk(chunk) {
@@ -204,6 +206,8 @@ class MpvAudioEngine {
       if (message.name === "duration") this.state.duration = Number(message.data) || 0;
       if (message.name === "pause") this.state.paused = Boolean(message.data);
       if (message.name === "audio-bitrate") this.state.bitrate = Number(message.data) || null;
+      if (message.name === "audio-exclusive") this.state.exclusive = Boolean(message.data);
+      if (message.name === "audio-device" && typeof message.data === "string") this.state.deviceId = message.data;
       this.emit({ kind: "progress" });
       return;
     }
@@ -271,12 +275,16 @@ class MpvAudioEngine {
       await this.command("set_property", "volume", volume);
     }
     if (typeof exclusive === "boolean") {
-      this.state.exclusive = exclusive;
-      await this.command("set_property", "audio-exclusive", exclusive ? "yes" : "no");
+      await this.command("set_property", "audio-exclusive", exclusive);
+      this.state.exclusive = Boolean(await this.command("get_property", "audio-exclusive"));
     }
     if (typeof deviceId === "string") {
       this.state.deviceId = this.normalizeDeviceId(deviceId);
       await this.command("set_property", "audio-device", this.state.deviceId);
+      const resolvedDevice = await this.command("get_property", "audio-device").catch(() => this.state.deviceId);
+      if (typeof resolvedDevice === "string") {
+        this.state.deviceId = resolvedDevice;
+      }
     }
     this.emit({ kind: "settings" });
     return this.snapshot();

@@ -521,6 +521,8 @@ export default function App() {
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
   const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
+  const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
+  const nativePlaybackVolume = desktopExclusiveActive ? 100 : volume;
   const allTracks = useMemo(
     () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
     [localTracks, neteaseTracks, roamTracks, playlistTracks],
@@ -846,6 +848,12 @@ export default function App() {
   }, [exclusiveMode, hifiEnabled, selectedSinkId]);
 
   useEffect(() => {
+    if (!desktopExclusiveActive) return;
+    if (volume === 100) return;
+    setVolume(100);
+  }, [desktopExclusiveActive, volume]);
+
+  useEffect(() => {
     if (!audioOutputDevices.length) return;
     if (audioOutputDevices.some((device) => device.id === selectedSinkId)) return;
     setSelectedSinkId("default");
@@ -922,7 +930,7 @@ export default function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.volume = Math.max(0, Math.min(1, volume / 100));
+    audio.volume = Math.max(0, Math.min(1, nativePlaybackVolume / 100));
     audio.preload = hifiEnabled ? "auto" : "metadata";
 
     if (desktopExclusiveActive) {
@@ -950,7 +958,7 @@ export default function App() {
     } else {
       audio.pause();
     }
-  }, [activeStreamUrl, audioElementKey, desktopExclusiveActive, hifiEnabled, playing, volume]);
+  }, [activeStreamUrl, audioElementKey, desktopExclusiveActive, hifiEnabled, nativePlaybackVolume, playing]);
 
   useEffect(() => {
     if (activeTrack.source !== "netease" || !activeTrack.providerId) return;
@@ -999,7 +1007,7 @@ export default function App() {
         url: nextUrl,
         position: pendingSeekRef.current || 0,
         paused: !playing,
-        volume,
+        volume: nativePlaybackVolume,
         exclusive: true,
         deviceId: selectedSinkId,
       })
@@ -1017,7 +1025,7 @@ export default function App() {
     playing,
     selectedSinkId,
     syncNativeAudioState,
-    volume,
+    nativePlaybackVolume,
   ]);
 
   useEffect(() => {
@@ -1029,16 +1037,16 @@ export default function App() {
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!desktopExclusiveActive || !nativeAudio?.supported) return;
-    nativeAudio.setVolume?.(volume).catch(() => undefined);
-  }, [desktopExclusiveActive, volume]);
+    nativeAudio.setVolume?.(nativePlaybackVolume).catch(() => undefined);
+  }, [desktopExclusiveActive, nativePlaybackVolume]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!desktopExclusiveActive || !nativeAudio?.supported) return;
     nativeAudio
-      .configure?.({ exclusive: true, deviceId: selectedSinkId, volume })
+      .configure?.({ exclusive: true, deviceId: selectedSinkId, volume: nativePlaybackVolume })
       .catch(() => undefined);
-  }, [desktopExclusiveActive, selectedSinkId, volume]);
+  }, [desktopExclusiveActive, nativePlaybackVolume, selectedSinkId]);
 
   useEffect(() => {
     if (!activeTrack.coverUrl) {
@@ -1904,6 +1912,7 @@ export default function App() {
               hifiEnabled={hifiEnabled}
               onHifiEnabledChange={setHifiEnabled}
               nativeAudioSupported={nativeAudioSupported}
+              nativeAudioState={nativeAudioState}
               exclusiveMode={exclusiveMode}
               onExclusiveModeChange={setExclusiveMode}
               onClose={() => setSettingsOpen(false)}
@@ -3511,6 +3520,7 @@ function SettingsPanel({
   hifiEnabled,
   onHifiEnabledChange,
   nativeAudioSupported,
+  nativeAudioState,
   exclusiveMode,
   onExclusiveModeChange,
   onClose,
@@ -3530,14 +3540,15 @@ function SettingsPanel({
   hifiEnabled: boolean;
   onHifiEnabledChange: (value: boolean) => void;
   nativeAudioSupported: boolean;
+  nativeAudioState: NativeAudioState | null;
   exclusiveMode: boolean;
   onExclusiveModeChange: (value: boolean) => void;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
   const desktopReady = Boolean(window.ariaDesktop);
-  const deviceSwitchSupported =
-    audioOutputDevices.length > 0;
+  const deviceSwitchSupported = audioOutputDevices.length > 0;
+  const exclusiveReady = Boolean(exclusiveMode && nativeAudioSupported && nativeAudioState?.exclusive);
 
   function refreshApiState() {
     setApiState("checking");
@@ -3700,7 +3711,8 @@ function SettingsPanel({
                 max={100}
                 value={volume}
                 onChange={(event) => onVolumeChange(Number(event.target.value))}
-                className="aria-range w-full"
+                disabled={exclusiveMode && nativeAudioSupported}
+                className="aria-range w-full disabled:cursor-not-allowed disabled:opacity-45"
                 style={
                   {
                     "--range-color": "#171717",
@@ -3762,9 +3774,24 @@ function SettingsPanel({
                   <p className="mt-1 text-xs text-neutral-500">
                     {nativeAudioSupported
                       ? exclusiveMode
-                        ? "当前走原生 WASAPI Exclusive，浏览器音频链已旁路。"
+                        ? exclusiveReady
+                          ? "已进入原生 WASAPI Exclusive，数字音量固定为 100。"
+                          : "正在请求独占输出或设备拒绝独占，请检查设备属性里的独占权限。"
                         : "关闭时仍使用应用内标准播放链路。"
                       : "需要桌面版内置原生音频引擎，Web 预览里不会启用。"}
+                  </p>
+                </div>
+                <Badge>{exclusiveReady ? "Locked" : exclusiveMode ? "Pending" : "Shared"}</Badge>
+              </div>
+              <div className="mt-2 text-[11px] leading-5 text-neutral-500">
+                {exclusiveMode && nativeAudioSupported
+                  ? "独占模式下软件数字音量会锁定 100，音量请交给 DAC、耳放或系统硬件旋钮处理。"
+                  : "普通模式下可以继续使用应用内音量与实时频谱。"}
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-xs text-neutral-500">
+                    {nativeAudioState?.deviceId ? `当前设备: ${nativeAudioState.deviceId}` : "当前设备: --"}
                   </p>
                 </div>
                 <button
