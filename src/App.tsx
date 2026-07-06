@@ -170,14 +170,6 @@ function readCachedAudioSettings() {
   }
 }
 
-function disconnectAudioNode(node: AudioNode | null) {
-  try {
-    node?.disconnect();
-  } catch {
-    // Nodes may already be disconnected while rebuilding the playback chain.
-  }
-}
-
 function readCachedBpm(trackId?: string) {
   if (!trackId) return null;
   try {
@@ -495,7 +487,6 @@ export default function App() {
   const [selectedSinkId, setSelectedSinkId] = useState(() => readCachedAudioSettings().sinkId ?? "default");
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
   const [exclusiveMode, setExclusiveMode] = useState(() => readCachedAudioSettings().exclusiveMode ?? false);
-  const [audioElementKey, setAudioElementKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -516,7 +507,6 @@ export default function App() {
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
-  const lastNativePlaybackRef = useRef(false);
   const nativeLoadedUrlRef = useRef<string | null>(null);
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
@@ -914,26 +904,7 @@ export default function App() {
     audio.setSinkId(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => {
       // Device switching is optional; keep current output if the platform rejects it.
     });
-  }, [audioElementKey, nativePlaybackEnabled, selectedSinkId]);
-
-  useEffect(() => {
-    if (lastNativePlaybackRef.current === nativePlaybackEnabled) return;
-    lastNativePlaybackRef.current = nativePlaybackEnabled;
-
-    pendingSeekRef.current = audioRef.current?.currentTime || currentTime || 0;
-    if (visualizerFrameRef.current) {
-      window.cancelAnimationFrame(visualizerFrameRef.current);
-      visualizerFrameRef.current = null;
-    }
-    disconnectAudioNode(analyserRef.current);
-    disconnectAudioNode(audioSourceRef.current);
-    audioContextRef.current?.close().catch(() => undefined);
-    analyserRef.current = null;
-    audioSourceRef.current = null;
-    audioContextRef.current = null;
-    setDurationSeconds(0);
-    setAudioElementKey((key) => key + 1);
-  }, [currentTime, nativePlaybackEnabled]);
+  }, [nativePlaybackEnabled, selectedSinkId]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -960,7 +931,7 @@ export default function App() {
     } else {
       audio.pause();
     }
-  }, [activeStreamUrl, audioElementKey, hifiEnabled, nativePlaybackEnabled, nativePlaybackVolume, playing]);
+  }, [activeStreamUrl, hifiEnabled, nativePlaybackEnabled, nativePlaybackVolume, playing]);
 
   useEffect(() => {
     if (!nativePlaybackEnabled) return;
@@ -1574,7 +1545,6 @@ export default function App() {
   return (
     <main className="relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950">
       <audio
-        key={audioElementKey}
         ref={audioRef}
         crossOrigin="anonymous"
         preload={hifiEnabled ? "auto" : "metadata"}

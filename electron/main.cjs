@@ -53,7 +53,9 @@ function getNativeAudioEngine() {
       app,
       writeLog,
       sendEvent: (payload) => {
-        mainWindow?.webContents.send("aria:native-audio-event", payload);
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (!mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
+        mainWindow.webContents.send("aria:native-audio-event", payload);
       },
     });
   }
