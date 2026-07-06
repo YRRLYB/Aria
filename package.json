@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.2.12-beta.0",
+  "version": "0.2.13-beta.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {

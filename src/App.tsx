@@ -506,7 +506,8 @@ export default function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const analyserDestinationConnectedRef = useRef(false);
+  const nativeSilenceGainRef = useRef<GainNode | null>(null);
+  const analyserOutputModeRef = useRef<"audible" | "silent" | null>(null);
   const visualizerFrameRef = useRef<number | null>(null);
   const bpmPeaksRef = useRef<number[]>([]);
   const bpmSamplesRef = useRef<number[]>([]);
@@ -748,6 +749,36 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (visualizerFrameRef.current) {
+        window.cancelAnimationFrame(visualizerFrameRef.current);
+        visualizerFrameRef.current = null;
+      }
+      try {
+        audioSourceRef.current?.disconnect();
+      } catch {
+        // Ignore audio graph shutdown errors.
+      }
+      try {
+        analyserRef.current?.disconnect();
+      } catch {
+        // Ignore audio graph shutdown errors.
+      }
+      try {
+        nativeSilenceGainRef.current?.disconnect();
+      } catch {
+        // Ignore audio graph shutdown errors.
+      }
+      audioSourceRef.current = null;
+      analyserRef.current = null;
+      nativeSilenceGainRef.current = null;
+      analyserOutputModeRef.current = null;
+      audioContextRef.current?.close().catch(() => undefined);
+      audioContextRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeTrack.id === idleTrack.id || activeTrack.id !== activeTrackId) return;
 
     const now = Date.now();
@@ -936,9 +967,10 @@ export default function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.muted = nativePlaybackEnabled;
-    audio.volume = nativePlaybackEnabled ? 0 : Math.max(0, Math.min(1, nativePlaybackVolume / 100));
-    audio.preload = hifiEnabled ? "auto" : "metadata";
+    const nativeAnalyserBridgeReady = Boolean(nativePlaybackEnabled && audioSourceRef.current && nativeSilenceGainRef.current);
+    audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
+    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : Math.max(0, Math.min(1, nativePlaybackVolume / 100));
+    audio.preload = nativePlaybackEnabled ? "metadata" : hifiEnabled ? "auto" : "metadata";
 
     if (!activeStreamUrl) {
       audio.pause();
@@ -1143,39 +1175,39 @@ export default function App() {
     context.resume();
     const analyser = analyserRef.current;
     if (!analyser) return;
-    if (!nativePlaybackEnabled && !analyserDestinationConnectedRef.current) {
+
+    const desiredOutputMode = nativePlaybackEnabled ? "silent" : "audible";
+    if (analyserOutputModeRef.current !== desiredOutputMode) {
       try {
+        analyser.disconnect();
+      } catch {
+        // Ignore graph cleanup errors; reconnect below.
+      }
+      try {
+        nativeSilenceGainRef.current?.disconnect();
+      } catch {
+        // The silent sink may already be disconnected.
+      }
+
+      if (nativePlaybackEnabled) {
+        const silentGain = nativeSilenceGainRef.current ?? context.createGain();
+        silentGain.gain.value = 0;
+        nativeSilenceGainRef.current = silentGain;
+        analyser.connect(silentGain);
+        silentGain.connect(context.destination);
+      } else {
         analyser.connect(context.destination);
-        analyserDestinationConnectedRef.current = true;
-      } catch {
-        analyserDestinationConnectedRef.current = false;
       }
+      analyserOutputModeRef.current = desiredOutputMode;
     }
-    if (nativePlaybackEnabled && analyserDestinationConnectedRef.current) {
-      try {
-        analyser.disconnect(context.destination);
-      } catch {
-        try {
-          analyser.disconnect();
-        } catch {
-          // Ignore graph cleanup errors; the next tick will recreate the visible spectrum.
-        }
-      }
-      analyserDestinationConnectedRef.current = false;
+    if (nativePlaybackEnabled) {
+      audio.muted = false;
+      audio.volume = 1;
     }
 
     const frequencyData = new Uint8Array(analyser.frequencyBinCount);
     const tick = () => {
       analyser.getByteFrequencyData(frequencyData);
-      const nextSpectrum = Array.from({ length: 28 }, (_, index) => {
-        const start = Math.floor((index / 28) * frequencyData.length * 0.78);
-        const end = Math.max(start + 1, Math.floor(((index + 1) / 28) * frequencyData.length * 0.78));
-        let energy = 0;
-        for (let cursor = start; cursor < end; cursor += 1) {
-          energy += frequencyData[cursor] ?? 0;
-        }
-        return Math.round((energy / Math.max(1, end - start)) / 2.55);
-      });
       let lowEnergy = 0;
       const lowBandEnd = Math.min(18, frequencyData.length);
       for (let index = 1; index < lowBandEnd; index += 1) {
@@ -1759,10 +1791,10 @@ export default function App() {
 
         <section
           className={cn(
-            "grid min-h-0 flex-1 gap-4 p-4",
+            "grid min-h-0 flex-1 gap-4 p-4 2xl:gap-5 2xl:p-5",
             activeView === "player"
-              ? "lg:grid-cols-[minmax(0,1fr)_minmax(360px,22vw)]"
-              : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,20vw)]",
+              ? "xl:grid-cols-[minmax(0,1fr)_minmax(380px,18vw)]"
+              : "xl:grid-cols-[minmax(0,1fr)_minmax(340px,18vw)]",
           )}
         >
           <AnimatePresence mode="wait">
@@ -1957,7 +1989,6 @@ export default function App() {
               audioOutputMode={audioOutputMode}
               onAudioOutputModeChange={setAudioOutputMode}
               exclusiveMode={exclusiveMode}
-              onExclusiveModeChange={(enabled) => setAudioOutputMode(enabled ? "exclusive" : "system")}
               onClose={() => setSettingsOpen(false)}
             />
           )}
@@ -2380,7 +2411,7 @@ function SpectrumCanvas({
       if (!context) return;
 
       const rect = canvas.getBoundingClientRect();
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const dpr = Math.min(1.75, Math.max(1, window.devicePixelRatio || 1));
       const width = Math.max(1, Math.floor(rect.width * dpr));
       const height = Math.max(1, Math.floor(rect.height * dpr));
       if (canvas.width !== width || canvas.height !== height) {
@@ -2407,12 +2438,6 @@ function SpectrumCanvas({
         : 0;
 
       context.clearRect(0, 0, width, height);
-      const background = context.createLinearGradient(0, 0, width, height);
-      background.addColorStop(0, colorWithAlpha(palette.primary, 0.08));
-      background.addColorStop(1, colorWithAlpha(palette.secondary, 0.04));
-      context.fillStyle = background;
-      context.fillRect(0, 0, width, height);
-
       const gap = 6 * dpr;
       const barWidth = Math.max(2 * dpr, (width - gap * (barCount - 1)) / barCount);
       const baseline = height * 0.82;
@@ -2489,7 +2514,7 @@ function SpectrumCanvas({
     };
   }, [active, analyserRef, fallback, palette.primary, palette.secondary, playing]);
 
-  return <canvas ref={canvasRef} className="block h-36 w-full sm:h-40 2xl:h-48" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="block h-36 w-full sm:h-40 2xl:h-56" aria-hidden="true" />;
 }
 
 function roundedRect(
@@ -2578,7 +2603,7 @@ function PlayerSurface({
 
   return (
     <div
-      className="relative h-full min-h-[620px] overflow-hidden rounded-[1.5rem] border border-white/55 shadow-[0_22px_70px_rgba(47,55,76,0.12)]"
+      className="relative h-full min-h-[620px] overflow-hidden rounded-[1.5rem] border border-white/55 shadow-[0_22px_70px_rgba(47,55,76,0.12)] 2xl:min-h-[calc(100vh-7.5rem)]"
       style={{
         ["--track-accent" as string]: palette.primary,
         background: `linear-gradient(135deg, ${themePrimary}, rgba(255,255,255,0.26) 42%, ${themeSecondary})`,
@@ -2590,7 +2615,7 @@ function PlayerSurface({
           background: `radial-gradient(circle at 28% 32%, ${palette.primary}38, transparent 24rem), radial-gradient(circle at 82% 78%, ${palette.secondary}28, transparent 18rem)`,
         }}
       />
-      <div className="relative grid h-full min-h-[620px] lg:grid-cols-[0.95fr_1.05fr]">
+      <div className="relative grid h-full min-h-[620px] lg:grid-cols-[minmax(360px,0.9fr)_minmax(460px,1.1fr)] 2xl:grid-cols-[minmax(520px,0.95fr)_minmax(680px,1.05fr)]">
         <div
           className="relative min-h-[420px] overflow-hidden bg-neutral-950"
           style={{
@@ -2608,7 +2633,7 @@ function PlayerSurface({
             transition={{ duration: 0.42 }}
             className="absolute inset-0"
           >
-            <CoverArt track={activeTrack} className="size-full" fit="cover" />
+            <CoverArt track={activeTrack} className="size-full" fit="cover" large />
           </motion.div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />
           <div className="hidden">
@@ -2661,7 +2686,7 @@ function PlayerSurface({
         </div>
 
         <div
-          className="flex min-h-0 flex-col justify-between p-5 sm:p-8"
+          className="flex min-h-0 flex-col justify-between p-5 sm:p-8 2xl:p-10"
           style={{ background: `linear-gradient(160deg, rgba(255,255,255,0.36), ${themeSoft} 48%, ${themeSecondary})` }}
         >
           <div className="min-h-0">
@@ -2732,12 +2757,9 @@ function PlayerSurface({
               </div>
             </div>
 
-            <div
-              className="mt-4 rounded-[1.35rem] border border-white/35 p-4 shadow-sm"
-              style={{ background: `linear-gradient(135deg, rgba(255,255,255,0.34), ${themeSoft})` }}
-            >
+            <div className="mt-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-2 rounded-full bg-white/72 p-2 shadow-sm">
+                <div className="flex items-center gap-2 rounded-full bg-white/78 p-2 shadow-[0_14px_42px_rgba(47,55,76,0.12)]">
                   <Button
                     variant={shuffleEnabled ? "default" : "ghost"}
                     size="icon"
@@ -2774,7 +2796,7 @@ function PlayerSurface({
                     <Heart className={cn(liked && "fill-current")} />
                   </Button>
                 </div>
-                <div className="flex min-w-0 items-center gap-3 rounded-full bg-white/72 px-4 py-3 shadow-sm">
+                <div className="flex min-w-0 items-center gap-3 rounded-full bg-white/78 px-4 py-3 shadow-[0_14px_42px_rgba(47,55,76,0.1)]">
                   <Volume2 className="size-4 text-neutral-500" />
                   <input
                     aria-label="音量"
@@ -3282,6 +3304,14 @@ function PlaylistSurface({
         return indexed.map((item) => item.track);
     }
   }, [playCounts, sortMode, tracks]);
+  const playlistPlayRanking = useMemo(
+    () =>
+      [...tracks]
+        .filter((track) => (playCounts[track.id] ?? 0) > 0)
+        .sort((left, right) => (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0))
+        .slice(0, 3),
+    [playCounts, tracks],
+  );
 
   if (selectedPlaylist) {
     return (
@@ -3317,6 +3347,33 @@ function PlaylistSurface({
             </button>
           ))}
         </div>
+        <div className="mt-5 rounded-[1.2rem] border border-white/70 bg-white/54 p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Ranking</p>
+              <h2 className="mt-1 text-lg font-semibold">听的次数排行</h2>
+            </div>
+            <Badge>{playlistPlayRanking.length ? `${playlistPlayRanking.length} 首` : "暂无"}</Badge>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {playlistPlayRanking.map((track, index) => (
+              <button
+                key={`ranking-${track.id}`}
+                className="grid grid-cols-[2rem_2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[0.95rem] p-2 text-left transition hover:bg-white/75"
+                onClick={() => onPickTrack(track.id)}
+              >
+                <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
+                <CoverArt track={track} className="size-11 rounded-xl" />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold">{track.title}</span>
+                  <span className="block truncate text-xs text-neutral-500">{track.artist}</span>
+                </span>
+                <Badge>{playCounts[track.id] ?? 0} 次</Badge>
+              </button>
+            ))}
+            {!playlistPlayRanking.length && <p className="text-sm text-neutral-500">播放几首这个歌单里的歌后，这里会自动排序。</p>}
+          </div>
+        </div>
         <div className="mt-6 grid gap-2">
           {sortedTracks.map((track, index) => (
             <button
@@ -3330,7 +3387,10 @@ function PlaylistSurface({
                 <p className="truncate font-semibold">{track.title}</p>
                 <p className="truncate text-sm text-neutral-500">{track.artist}</p>
               </div>
-              <Badge>{formatAudioDetail(track)}</Badge>
+              <span className="flex flex-wrap justify-end gap-2">
+                <Badge>{playCounts[track.id] ?? 0} 次</Badge>
+                <Badge>{formatAudioDetail(track)}</Badge>
+              </span>
             </button>
           ))}
           {!tracks.length && !loading && <EmptyState text="这个歌单暂时没有读取到曲目。" />}
@@ -3616,7 +3676,6 @@ function SettingsPanel({
   audioOutputMode,
   onAudioOutputModeChange,
   exclusiveMode,
-  onExclusiveModeChange,
   onClose,
 }: {
   backgroundEnabled: boolean;
@@ -3638,7 +3697,6 @@ function SettingsPanel({
   audioOutputMode: AudioOutputMode;
   onAudioOutputModeChange: (value: AudioOutputMode) => void;
   exclusiveMode: boolean;
-  onExclusiveModeChange: (value: boolean) => void;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
@@ -3818,32 +3876,75 @@ function SettingsPanel({
                 }
               />
             </div>
-            <div className="mt-4 space-y-2">
+            <div className="mt-4 rounded-[1.15rem] border border-white/70 bg-white/54 p-3 shadow-sm">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Output</p>
-                <Badge>{outputModeLabel}</Badge>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Output</p>
+                  <p className="mt-1 text-sm font-semibold">音频输出链路</p>
+                </div>
+                <Badge>{exclusiveReady ? "Locked" : outputModeLabel}</Badge>
               </div>
-              <div className="grid grid-cols-3 gap-2 rounded-[1rem] bg-neutral-950/[0.035] p-1">
-                {([
-                  ["system", "系统"],
-                  ["shared", "共享"],
-                  ["exclusive", "独占"],
-                ] as Array<[AudioOutputMode, string]>).map(([mode, label]) => {
+              <div className="mt-3 grid gap-2">
+                {[
+                  {
+                    mode: "system" as const,
+                    label: "系统音频",
+                    badge: "兼容",
+                    desc: "HTMLAudio 输出，频谱直接跟随播放器。",
+                    Icon: Volume2,
+                  },
+                  {
+                    mode: "shared" as const,
+                    label: "WASAPI 共享",
+                    badge: "HiFi",
+                    desc: "后端 mpv 播放，不独占设备。",
+                    Icon: Radio,
+                  },
+                  {
+                    mode: "exclusive" as const,
+                    label: "WASAPI 独占",
+                    badge: exclusiveReady ? "Locked" : "直通",
+                    desc: "独占端点，适合 DAC 或声卡直连。",
+                    Icon: Sparkles,
+                  },
+                ].map(({ mode, label, badge, desc, Icon }) => {
                   const disabled = mode !== "system" && !nativeAudioSupported;
+                  const active = audioOutputMode === mode;
                   return (
                     <button
                       key={mode}
                       type="button"
                       disabled={disabled}
                       className={cn(
-                        "rounded-[0.8rem] px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40",
-                        audioOutputMode === mode
-                          ? "bg-neutral-950 text-white shadow-sm"
-                          : "text-neutral-500 hover:bg-white/70 hover:text-neutral-950",
+                        "grid grid-cols-[2.4rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-45",
+                        active
+                          ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_34px_rgba(23,23,23,0.16)]"
+                          : "border-white/72 bg-white/72 text-neutral-950 hover:bg-white",
                       )}
                       onClick={() => onAudioOutputModeChange(mode)}
                     >
-                      {label}
+                      <span
+                        className={cn(
+                          "flex size-10 items-center justify-center rounded-full",
+                          active ? "bg-white/14 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
+                        )}
+                      >
+                        <Icon className="size-4" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">{label}</span>
+                        <span className={cn("mt-0.5 block truncate text-xs", active ? "text-white/62" : "text-neutral-500")}>
+                          {desc}
+                        </span>
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-xs font-semibold",
+                          active ? "bg-white text-neutral-950" : "bg-white/80 text-neutral-500 shadow-sm",
+                        )}
+                      >
+                        {badge}
+                      </span>
                     </button>
                   );
                 })}
@@ -3852,7 +3953,7 @@ function SettingsPanel({
                 value={selectedSinkId}
                 disabled={!deviceSwitchSupported}
                 onChange={(event) => onSelectedSinkIdChange(event.target.value)}
-                className="w-full rounded-[0.95rem] border border-white/70 bg-white/80 px-3 py-2 text-sm outline-none disabled:opacity-50"
+                className="mt-3 w-full rounded-[0.95rem] border border-white/70 bg-white/84 px-3 py-2 text-sm outline-none disabled:opacity-50"
               >
                 {audioOutputDevices.map((device) => (
                   <option key={device.id} value={device.id}>
@@ -3860,85 +3961,37 @@ function SettingsPanel({
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-neutral-500">
-                {nativeAudioSupported
-                  ? "系统模式使用浏览器音频；共享/独占模式使用内置 mpv WASAPI 输出。"
-                  : deviceSwitchSupported
-                    ? "切换到指定播放设备后会即时生效。"
-                    : "当前环境不支持在应用内切换播放设备。"}
+              <p className="mt-2 truncate text-xs text-neutral-500">
+                {nativeAudioState?.deviceId ? `当前设备: ${nativeAudioState.deviceId}` : "当前设备: 默认输出"}
               </p>
             </div>
-            <div className="mt-4 rounded-[1rem] bg-neutral-950/[0.03] p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold">HiFi 优先</p>
-                  <p className="mt-1 text-xs text-neutral-500">自动请求当前歌曲可用的最高音质。</p>
-                </div>
-                <button
+
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
+              <div>
+                <p className="text-sm font-semibold">HiFi 优先</p>
+                <p className="mt-1 text-xs text-neutral-500">自动请求当前歌曲可用的最高音质。</p>
+              </div>
+              <button
+                className={cn(
+                  "flex h-8 w-14 items-center rounded-full p-1 transition",
+                  hifiEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                )}
+                onClick={() => onHifiEnabledChange(!hifiEnabled)}
+                aria-label="切换 HiFi 优先"
+              >
+                <span
                   className={cn(
-                    "flex h-8 w-14 items-center rounded-full p-1 transition",
-                    hifiEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                    "size-6 rounded-full bg-white shadow-sm transition",
+                    hifiEnabled && "translate-x-6",
                   )}
-                  onClick={() => onHifiEnabledChange(!hifiEnabled)}
-                  aria-label="切换 HiFi 优先"
-                >
-                  <span
-                    className={cn(
-                      "size-6 rounded-full bg-white shadow-sm transition",
-                      hifiEnabled && "translate-x-6",
-                    )}
-                  />
-                </button>
-              </div>
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold">输出链路</p>
-                  <p className="mt-1 text-xs text-neutral-500">
-                    {nativeAudioSupported
-                      ? exclusiveMode
-                        ? exclusiveReady
-                          ? "已进入原生 WASAPI Exclusive，当前仍允许软件音量调节。"
-                          : "正在请求独占输出或设备拒绝独占，请检查设备属性里的独占权限。"
-                        : audioOutputMode === "shared"
-                          ? "当前使用 WASAPI Shared，声音由后端音频主机输出。"
-                          : "当前使用系统音频，优先保证兼容和稳定。"
-                      : "需要桌面版内置原生音频引擎，Web 预览里不会启用。"}
-                  </p>
-                </div>
-                <Badge>{exclusiveReady ? "Locked" : audioOutputMode === "shared" ? "Shared" : audioOutputMode === "exclusive" ? "Pending" : "System"}</Badge>
-              </div>
-              <div className="mt-2 text-[11px] leading-5 text-neutral-500">
-                {exclusiveMode && nativeAudioSupported
-                  ? "直通模式下播放由原生宿主完成，频谱和进度由分析器与宿主状态共同驱动。"
-                  : audioOutputMode === "shared" && nativeAudioSupported
-                    ? "共享模式由 native 主机播放，但不独占设备；加载失败会自动退回系统播放。"
-                    : "系统模式使用 HTMLAudio，频谱和声音在同一条浏览器音频图里。"}
-              </div>
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-xs text-neutral-500">
-                    {nativeAudioState?.deviceId ? `当前设备: ${nativeAudioState.deviceId}` : "当前设备: --"}
-                  </p>
-                </div>
-                <button
-                  className={cn(
-                    "flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition disabled:cursor-not-allowed disabled:opacity-45",
-                    exclusiveMode ? "bg-neutral-950" : "bg-neutral-200",
-                  )}
-                  disabled={!nativeAudioSupported}
-                  onClick={() => onExclusiveModeChange(!exclusiveMode)}
-                  aria-label="切换独占输出"
-                >
-                  <span
-                    className={cn(
-                      "size-6 rounded-full bg-white shadow-sm transition",
-                      exclusiveMode && "translate-x-6",
-                    )}
-                  />
-                </button>
-              </div>
+                />
+              </button>
             </div>
           </section>
+        </div>
+        <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400">
+          <span>Aria Desktop</span>
+          <span>v{__APP_VERSION__}</span>
         </div>
       </motion.aside>
     </motion.div>
@@ -4101,6 +4154,8 @@ function CoverArt({
               key={`blur-${track.coverUrl}`}
               src={track.coverUrl}
               alt=""
+              loading={large ? "eager" : "lazy"}
+              decoding="async"
               className="absolute inset-0 size-full scale-110 object-cover opacity-55 blur-2xl"
               onError={() => setImageFailed(true)}
             />
@@ -4109,6 +4164,8 @@ function CoverArt({
             key={track.coverUrl}
             src={track.coverUrl}
             alt=""
+            loading={large ? "eager" : "lazy"}
+            decoding="async"
             className={cn("absolute inset-0 size-full", fit === "contain" ? "object-contain" : "object-cover")}
             onError={() => setImageFailed(true)}
           />
