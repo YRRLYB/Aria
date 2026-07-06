@@ -490,7 +490,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [folderName, setFolderName] = useState("未选择");
   const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
-  const [nativeAudioSupported, setNativeAudioSupported] = useState(false);
+  const [nativeAudioSupported, setNativeAudioSupported] = useState(() => Boolean(window.ariaDesktop?.nativeAudio?.supported));
   const [nativeAudioState, setNativeAudioState] = useState<NativeAudioState | null>(null);
   const [selectedSinkId, setSelectedSinkId] = useState(() => readCachedAudioSettings().sinkId ?? "default");
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
@@ -516,19 +516,22 @@ export default function App() {
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
-  const lastExclusiveModeRef = useRef(false);
+  const lastNativePlaybackRef = useRef(false);
   const nativeLoadedUrlRef = useRef<string | null>(null);
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
+  const nativePlaybackEnabled = nativeAudioSupported;
   const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
   const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
-  const nativePlaybackVolume = desktopExclusiveActive ? 100 : volume;
+  const nativePlaybackVolume = volume;
   const allTracks = useMemo(
     () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
     [localTracks, neteaseTracks, roamTracks, playlistTracks],
   );
   const requestedActiveTrack = allTracks.find((track) => track.id === activeTrackId);
-  const activeTrack = requestedActiveTrack ?? allTracks[0] ?? idleTrack;
+  const activeTrack =
+    requestedActiveTrack ??
+    (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
     const levels = activeTrack.availableLevels ?? [];
@@ -848,12 +851,6 @@ export default function App() {
   }, [exclusiveMode, hifiEnabled, selectedSinkId]);
 
   useEffect(() => {
-    if (!desktopExclusiveActive) return;
-    if (volume === 100) return;
-    setVolume(100);
-  }, [desktopExclusiveActive, volume]);
-
-  useEffect(() => {
     if (!audioOutputDevices.length) return;
     if (audioOutputDevices.some((device) => device.id === selectedSinkId)) return;
     setSelectedSinkId("default");
@@ -861,7 +858,7 @@ export default function App() {
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
     setNativeAudioState(state);
-    if (desktopExclusiveActive || state.active || state.kind === "ended") {
+    if (nativePlaybackEnabled || state.active || state.kind === "ended") {
       if (typeof state.duration === "number" && state.duration > 0) {
         setDurationSeconds(state.duration);
       }
@@ -900,17 +897,17 @@ export default function App() {
   }, [syncNativeAudioState]);
 
   useEffect(() => {
-    if (nativeAudioSupported) return;
+    if (nativePlaybackEnabled) return;
     const audio = audioRef.current as (HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }) | null;
     if (!audio?.setSinkId) return;
     audio.setSinkId(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => {
       // Device switching is optional; keep current output if the platform rejects it.
     });
-  }, [audioElementKey, nativeAudioSupported, selectedSinkId]);
+  }, [audioElementKey, nativePlaybackEnabled, selectedSinkId]);
 
   useEffect(() => {
-    if (lastExclusiveModeRef.current === desktopExclusiveActive) return;
-    lastExclusiveModeRef.current = desktopExclusiveActive;
+    if (lastNativePlaybackRef.current === nativePlaybackEnabled) return;
+    lastNativePlaybackRef.current = nativePlaybackEnabled;
 
     pendingSeekRef.current = audioRef.current?.currentTime || currentTime || 0;
     if (visualizerFrameRef.current) {
@@ -925,22 +922,14 @@ export default function App() {
     audioContextRef.current = null;
     setDurationSeconds(0);
     setAudioElementKey((key) => key + 1);
-  }, [currentTime, desktopExclusiveActive]);
+  }, [currentTime, nativePlaybackEnabled]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.volume = Math.max(0, Math.min(1, nativePlaybackVolume / 100));
+    audio.muted = nativePlaybackEnabled;
+    audio.volume = nativePlaybackEnabled ? 0 : Math.max(0, Math.min(1, nativePlaybackVolume / 100));
     audio.preload = hifiEnabled ? "auto" : "metadata";
-
-    if (desktopExclusiveActive) {
-      audio.pause();
-      if (audio.src) {
-        audio.removeAttribute("src");
-        audio.load();
-      }
-      return;
-    }
 
     if (!activeStreamUrl) {
       audio.pause();
@@ -954,11 +943,23 @@ export default function App() {
     }
 
     if (playing) {
-      audio.play().catch(() => setPlaying(false));
+      audio.play().catch(() => {
+        if (!nativePlaybackEnabled) setPlaying(false);
+      });
     } else {
       audio.pause();
     }
-  }, [activeStreamUrl, audioElementKey, desktopExclusiveActive, hifiEnabled, nativePlaybackVolume, playing]);
+  }, [activeStreamUrl, audioElementKey, hifiEnabled, nativePlaybackEnabled, nativePlaybackVolume, playing]);
+
+  useEffect(() => {
+    if (!nativePlaybackEnabled) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const desiredTime = nativeAudioState?.position ?? currentTime;
+    if (!Number.isFinite(desiredTime)) return;
+    if (Math.abs((audio.currentTime || 0) - desiredTime) < 0.45) return;
+    audio.currentTime = Math.max(0, desiredTime);
+  }, [currentTime, nativeAudioState?.position, nativePlaybackEnabled]);
 
   useEffect(() => {
     if (activeTrack.source !== "netease" || !activeTrack.providerId) return;
@@ -982,14 +983,21 @@ export default function App() {
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativeAudio?.supported) return;
-    if (desktopExclusiveActive) return;
+    if (nativePlaybackEnabled) return;
     nativeLoadedUrlRef.current = null;
     nativeAudio.stop?.().catch(() => undefined);
-  }, [desktopExclusiveActive]);
+  }, [nativePlaybackEnabled]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
+    pendingSeekRef.current = currentTime;
+    nativeLoadedUrlRef.current = null;
+  }, [exclusiveMode, nativePlaybackEnabled, selectedSinkId]);
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
 
     if (!activeStreamUrl || activeTrack.id === idleTrack.id) {
       nativeLoadedUrlRef.current = null;
@@ -1008,7 +1016,7 @@ export default function App() {
         position: pendingSeekRef.current || 0,
         paused: !playing,
         volume: nativePlaybackVolume,
-        exclusive: true,
+        exclusive: exclusiveMode,
         deviceId: selectedSinkId,
       })
       .then((state) => {
@@ -1020,33 +1028,26 @@ export default function App() {
   }, [
     activeStreamUrl,
     activeTrack.id,
-    desktopExclusiveActive,
+    nativePlaybackEnabled,
     nativeAudioState?.trackId,
     playing,
     selectedSinkId,
     syncNativeAudioState,
+    exclusiveMode,
     nativePlaybackVolume,
   ]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
     nativeAudio.setPaused?.(!playing).catch(() => undefined);
-  }, [desktopExclusiveActive, playing]);
+  }, [nativePlaybackEnabled, playing]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
     nativeAudio.setVolume?.(nativePlaybackVolume).catch(() => undefined);
-  }, [desktopExclusiveActive, nativePlaybackVolume]);
-
-  useEffect(() => {
-    const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
-    nativeAudio
-      .configure?.({ exclusive: true, deviceId: selectedSinkId, volume: nativePlaybackVolume })
-      .catch(() => undefined);
-  }, [desktopExclusiveActive, nativePlaybackVolume, selectedSinkId]);
+  }, [nativePlaybackEnabled, nativePlaybackVolume]);
 
   useEffect(() => {
     if (!activeTrack.coverUrl) {
@@ -1077,6 +1078,7 @@ export default function App() {
 
   useEffect(() => {
     if (activeTrack.id === idleTrack.id) return;
+    if (activeTrack.id !== activeTrackId) return;
     if (countedTrackRef.current === activeTrack.id) return;
 
     countedTrackRef.current = activeTrack.id;
@@ -1096,7 +1098,7 @@ export default function App() {
   }, [activeTrack.id, activeTrack.bpm]);
 
   useEffect(() => {
-    if (!playing || !activeStreamUrl || !pageVisible || desktopExclusiveActive) {
+    if (!playing || !activeStreamUrl || !pageVisible) {
       if (visualizerFrameRef.current) {
         window.cancelAnimationFrame(visualizerFrameRef.current);
         visualizerFrameRef.current = null;
@@ -1122,7 +1124,9 @@ export default function App() {
       analyserRef.current.minDecibels = -92;
       analyserRef.current.maxDecibels = -10;
       audioSourceRef.current.connect(analyserRef.current);
-      analyserRef.current.connect(context.destination);
+      if (!nativePlaybackEnabled) {
+        analyserRef.current.connect(context.destination);
+      }
     }
 
     context.resume();
@@ -1191,7 +1195,7 @@ export default function App() {
         visualizerFrameRef.current = null;
       }
     };
-  }, [activeStreamUrl, activeTrack.id, desktopExclusiveActive, pageVisible, playing]);
+  }, [activeStreamUrl, activeTrack.id, nativePlaybackEnabled, pageVisible, playing]);
 
   useEffect(() => {
     if (activeTrack.id === idleTrack.id || activeTrack.lyricStatus === "linked") return;
@@ -1268,7 +1272,7 @@ export default function App() {
       const randomTrack = chooseRandomTrack(activeTrack.id);
       if (randomTrack) {
         if (randomTrack.id === activeTrack.id) {
-          if (desktopExclusiveActive) {
+          if (nativePlaybackEnabled) {
             seekTo(0);
           } else if (audioRef.current) {
             audioRef.current.currentTime = 0;
@@ -1286,7 +1290,7 @@ export default function App() {
     const nextIndex = (safeIndex + direction + queue.length) % queue.length;
     const nextTrack = queue[nextIndex];
     if (nextTrack.id === activeTrack.id) {
-      if (desktopExclusiveActive) {
+      if (nativePlaybackEnabled) {
         seekTo(0);
       } else if (audioRef.current) {
         audioRef.current.currentTime = 0;
@@ -1302,7 +1306,7 @@ export default function App() {
     pendingSeekRef.current = 0;
     setCurrentTime(0);
     setPlaying(true);
-    if (desktopExclusiveActive) {
+    if (nativePlaybackEnabled) {
       window.ariaDesktop?.nativeAudio?.seek?.(0).catch(() => undefined);
       window.ariaDesktop?.nativeAudio?.setPaused?.(false).catch(() => undefined);
       return;
@@ -1322,7 +1326,7 @@ export default function App() {
   }
 
   function handleAudioError() {
-    if (desktopExclusiveActive) return;
+    if (nativePlaybackEnabled) return;
     if (!activeStreamUrl || !playing) return;
 
     const now = Date.now();
@@ -1339,7 +1343,7 @@ export default function App() {
   }
 
   function seekTo(nextTime: number) {
-    if (desktopExclusiveActive) {
+    if (nativePlaybackEnabled) {
       pendingSeekRef.current = nextTime;
       setCurrentTime(nextTime);
       window.ariaDesktop?.nativeAudio?.seek?.(nextTime).catch(() => undefined);
@@ -1563,19 +1567,25 @@ export default function App() {
         ref={audioRef}
         crossOrigin="anonymous"
         preload={hifiEnabled ? "auto" : "metadata"}
-        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime || 0)}
+        onTimeUpdate={(event) => {
+          if (nativePlaybackEnabled) return;
+          setCurrentTime(event.currentTarget.currentTime || 0);
+        }}
         onLoadedMetadata={(event) => {
           audioErrorRef.current = { count: 0, lastAt: 0 };
           const duration = event.currentTarget.duration || 0;
-          setDurationSeconds(duration);
+          if (!nativePlaybackEnabled) setDurationSeconds(duration);
           if (pendingSeekRef.current > 0) {
             const nextTime = Math.min(pendingSeekRef.current, Math.max(0, duration - 1));
             event.currentTarget.currentTime = nextTime;
-            setCurrentTime(nextTime);
+            if (!nativePlaybackEnabled) setCurrentTime(nextTime);
             pendingSeekRef.current = 0;
           }
         }}
-        onEnded={handleTrackEnded}
+        onEnded={() => {
+          if (nativePlaybackEnabled) return;
+          handleTrackEnded();
+        }}
         onError={handleAudioError}
       />
       <div className="noise" />
@@ -1753,7 +1763,7 @@ export default function App() {
                   activeTrack={activeTrack}
                   palette={activePalette}
                   playing={playing}
-                  visualizerActive={pageVisible && !desktopExclusiveActive}
+                  visualizerActive={pageVisible}
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
                   onTogglePlay={() => setPlaying((value) => !value)}
@@ -1806,6 +1816,7 @@ export default function App() {
                   playlists={providerPlaylists}
                   selectedPlaylist={selectedPlaylist}
                   tracks={playlistTracks}
+                  playCounts={playCounts}
                   loading={playlistLoading}
                   onOpenPlaylist={openPlaylist}
                   onClosePlaylist={() => setSelectedPlaylist(null)}
@@ -3198,6 +3209,7 @@ function PlaylistSurface({
   playlists,
   selectedPlaylist,
   tracks,
+  playCounts,
   loading,
   onOpenPlaylist,
   onClosePlaylist,
@@ -3206,11 +3218,39 @@ function PlaylistSurface({
   playlists: ProviderPlaylist[];
   selectedPlaylist: ProviderPlaylist | null;
   tracks: Track[];
+  playCounts: Record<string, number>;
   loading: boolean;
   onOpenPlaylist: (playlist: ProviderPlaylist) => void;
   onClosePlaylist: () => void;
   onPickTrack: (id: string) => void;
 }) {
+  const [sortMode, setSortMode] = useState<"added-desc" | "added-asc" | "title-asc" | "title-desc" | "plays-desc">("added-desc");
+  const sortedTracks = useMemo(() => {
+    const indexed = tracks.map((track, index) => ({ track, index }));
+    switch (sortMode) {
+      case "added-asc":
+        return [...indexed].reverse().map((item) => item.track);
+      case "title-asc":
+        return [...indexed]
+          .sort((left, right) => left.track.title.localeCompare(right.track.title, "zh-CN"))
+          .map((item) => item.track);
+      case "title-desc":
+        return [...indexed]
+          .sort((left, right) => right.track.title.localeCompare(left.track.title, "zh-CN"))
+          .map((item) => item.track);
+      case "plays-desc":
+        return [...indexed]
+          .sort((left, right) => {
+            const byCount = (playCounts[right.track.id] ?? 0) - (playCounts[left.track.id] ?? 0);
+            if (byCount !== 0) return byCount;
+            return left.index - right.index;
+          })
+          .map((item) => item.track);
+      default:
+        return indexed.map((item) => item.track);
+    }
+  }, [playCounts, sortMode, tracks]);
+
   if (selectedPlaylist) {
     return (
       <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
@@ -3221,12 +3261,32 @@ function PlaylistSurface({
               返回歌单
             </Button>
             <h1 className="mt-4 truncate text-3xl font-semibold sm:text-5xl">{selectedPlaylist.name}</h1>
-            <p className="mt-2 text-sm text-neutral-500">{tracks.length} 首 · 按歌单顺序播放</p>
+            <p className="mt-2 text-sm text-neutral-500">{tracks.length} 首 · 原始顺序来自歌单</p>
           </div>
           <Badge>{loading ? "读取中" : "Ready"}</Badge>
         </div>
+        <div className="mt-5 flex flex-wrap gap-2">
+          {[
+            ["added-desc", "添加倒序"],
+            ["added-asc", "添加正序"],
+            ["title-asc", "名字 A-Z"],
+            ["title-desc", "名字 Z-A"],
+            ["plays-desc", "听的次数"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              className={cn(
+                "rounded-full border px-3 py-1.5 text-sm transition",
+                sortMode === value ? "border-neutral-950 bg-neutral-950 text-white" : "border-white/70 bg-white/65 text-neutral-500",
+              )}
+              onClick={() => setSortMode(value as typeof sortMode)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="mt-6 grid gap-2">
-          {tracks.map((track, index) => (
+          {sortedTracks.map((track, index) => (
             <button
               key={track.id}
               className="grid grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
@@ -3711,8 +3771,7 @@ function SettingsPanel({
                 max={100}
                 value={volume}
                 onChange={(event) => onVolumeChange(Number(event.target.value))}
-                disabled={exclusiveMode && nativeAudioSupported}
-                className="aria-range w-full disabled:cursor-not-allowed disabled:opacity-45"
+                className="aria-range w-full"
                 style={
                   {
                     "--range-color": "#171717",
@@ -3775,7 +3834,7 @@ function SettingsPanel({
                     {nativeAudioSupported
                       ? exclusiveMode
                         ? exclusiveReady
-                          ? "已进入原生 WASAPI Exclusive，数字音量固定为 100。"
+                          ? "已进入原生 WASAPI Exclusive，当前仍允许软件音量调节。"
                           : "正在请求独占输出或设备拒绝独占，请检查设备属性里的独占权限。"
                         : "关闭时仍使用应用内标准播放链路。"
                       : "需要桌面版内置原生音频引擎，Web 预览里不会启用。"}
@@ -3785,8 +3844,8 @@ function SettingsPanel({
               </div>
               <div className="mt-2 text-[11px] leading-5 text-neutral-500">
                 {exclusiveMode && nativeAudioSupported
-                  ? "独占模式下软件数字音量会锁定 100，音量请交给 DAC、耳放或系统硬件旋钮处理。"
-                  : "普通模式下可以继续使用应用内音量与实时频谱。"}
+                  ? "直通模式下播放由原生宿主完成，频谱和进度由分析器与宿主状态共同驱动。"
+                  : "普通模式下也会继续使用原生宿主播放，只是不申请独占设备。"}
               </div>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <div className="min-w-0">

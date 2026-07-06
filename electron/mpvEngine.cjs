@@ -234,7 +234,10 @@ class MpvAudioEngine {
           await this.setPaused(pendingPause);
         })
         .catch((error) => {
-          this.writeLog("native-audio.log", `post-load sync failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+          const message = error instanceof Error ? error.stack || error.message : String(error);
+          if (!/being restarted/i.test(message)) {
+            this.writeLog("native-audio.log", `post-load sync failed: ${message}`);
+          }
         });
       this.emit({ kind: "loaded" });
       return;
@@ -299,6 +302,7 @@ class MpvAudioEngine {
   }
 
   async load({ trackId, url, position = 0, paused = true, volume = 72, exclusive = false, deviceId = "default" }) {
+    await this.teardown();
     await this.ensureProcess();
     this.pendingSeek = Math.max(0, Number(position) || 0);
     this.pendingPause = Boolean(paused);

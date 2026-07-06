@@ -142,12 +142,19 @@ export class NeteaseClient {
   async getPlaylistTracks(playlistId: string | number) {
     const { cookie } = await this.requireSession();
     const tracks = await rememberPersistent(`netease:playlist-tracks:${playlistId}`, shortTtl, async () => {
-      const response = await neteaseApi.playlist_track_all({
-        id: playlistId,
-        limit: 200,
-        cookie,
-      });
-      const songs = (response.body?.songs as NeteaseSong[] | undefined) ?? [];
+      const songs: NeteaseSong[] = [];
+      const pageSize = 1000;
+      for (let offset = 0; offset < 20_000; offset += pageSize) {
+        const response = await neteaseApi.playlist_track_all({
+          id: playlistId,
+          limit: pageSize,
+          offset,
+          cookie,
+        });
+        const batch = (response.body?.songs as NeteaseSong[] | undefined) ?? [];
+        songs.push(...batch);
+        if (batch.length < pageSize) break;
+      }
       return songs.map(normalizeSong);
     });
     return this.attachCachedMetadata(tracks);
