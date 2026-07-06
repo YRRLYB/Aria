@@ -3,6 +3,59 @@ import type { LyricCandidate } from "@/data/music";
 declare global {
   interface Window {
     ariaDesktop?: {
+      nativeAudio?: {
+        supported?: boolean;
+        isSupported?: () => Promise<boolean>;
+        listDevices?: () => Promise<Array<{ id: string; label: string }>>;
+        getState?: () => Promise<{
+          supported: boolean;
+          ready: boolean;
+          active: boolean;
+          trackId: string | null;
+          url: string | null;
+          position: number;
+          duration: number;
+          paused: boolean;
+          volume: number;
+          exclusive: boolean;
+          deviceId: string;
+          bitrate: number | null;
+          kind?: string;
+        }>;
+        load?: (payload: {
+          trackId: string;
+          url: string;
+          position?: number;
+          paused?: boolean;
+          volume?: number;
+          exclusive?: boolean;
+          deviceId?: string;
+        }) => Promise<unknown>;
+        setPaused?: (paused: boolean) => Promise<unknown>;
+        seek?: (position: number) => Promise<unknown>;
+        setVolume?: (volume: number) => Promise<unknown>;
+        configure?: (payload: {
+          exclusive?: boolean;
+          deviceId?: string;
+          volume?: number;
+        }) => Promise<unknown>;
+        stop?: () => Promise<unknown>;
+        onEvent?: (callback: (payload: {
+          supported: boolean;
+          ready: boolean;
+          active: boolean;
+          trackId: string | null;
+          url: string | null;
+          position: number;
+          duration: number;
+          paused: boolean;
+          volume: number;
+          exclusive: boolean;
+          deviceId: string;
+          bitrate: number | null;
+          kind?: string;
+        }) => void) => () => void;
+      };
       apiBase?: string;
       minimizeToTray?: () => void;
       minimizeWindow?: () => void;

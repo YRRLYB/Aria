@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } = require("electr
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { MpvAudioEngine } = require("./mpvEngine.cjs");
 
 try {
   const earlyLogDir = path.join(app.getPath("appData"), "aria", "logs");
@@ -20,6 +21,7 @@ let backendProcess = null;
 let isQuitting = false;
 let backgroundEnabled = true;
 let rendererRecoveries = 0;
+let nativeAudioEngine = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -43,6 +45,19 @@ function writeLog(fileName, message) {
   } catch {
     // Logging should never become a reason for the app to exit.
   }
+}
+
+function getNativeAudioEngine() {
+  if (!nativeAudioEngine) {
+    nativeAudioEngine = new MpvAudioEngine({
+      app,
+      writeLog,
+      sendEvent: (payload) => {
+        mainWindow?.webContents.send("aria:native-audio-event", payload);
+      },
+    });
+  }
+  return nativeAudioEngine;
 }
 
 process.on("uncaughtException", (error) => {
@@ -291,6 +306,42 @@ ipcMain.handle("aria:set-background-enabled", (_event, enabled) => {
   return backgroundEnabled;
 });
 
+ipcMain.handle("aria:native-audio:supported", () => {
+  return getNativeAudioEngine().isSupported();
+});
+
+ipcMain.handle("aria:native-audio:devices", async () => {
+  return getNativeAudioEngine().listDevices();
+});
+
+ipcMain.handle("aria:native-audio:state", () => {
+  return getNativeAudioEngine().snapshot();
+});
+
+ipcMain.handle("aria:native-audio:load", async (_event, payload) => {
+  return getNativeAudioEngine().load(payload);
+});
+
+ipcMain.handle("aria:native-audio:pause", async (_event, paused) => {
+  return getNativeAudioEngine().setPaused(Boolean(paused));
+});
+
+ipcMain.handle("aria:native-audio:seek", async (_event, position) => {
+  return getNativeAudioEngine().seek(Number(position) || 0);
+});
+
+ipcMain.handle("aria:native-audio:volume", async (_event, volume) => {
+  return getNativeAudioEngine().setVolume(Number(volume) || 0);
+});
+
+ipcMain.handle("aria:native-audio:configure", async (_event, payload) => {
+  return getNativeAudioEngine().applyOutputSettings(payload || {});
+});
+
+ipcMain.handle("aria:native-audio:stop", async () => {
+  return getNativeAudioEngine().stop();
+});
+
 app.on("second-instance", showWindow);
 
 app.whenReady().then(createWindow);
@@ -311,4 +362,5 @@ app.on("will-quit", () => {
   if (backendProcess && !backendProcess.killed) {
     backendProcess.kill();
   }
+  nativeAudioEngine?.teardown?.();
 });

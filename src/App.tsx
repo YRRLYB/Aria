@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
@@ -48,6 +48,21 @@ const sourceLabel: Record<Track["source"], string> = {
 type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
 type CoverPalette = { primary: string; secondary: string };
 type PlayerSideView = "lyrics" | "queue";
+type NativeAudioState = {
+  supported: boolean;
+  ready: boolean;
+  active: boolean;
+  trackId: string | null;
+  url: string | null;
+  position: number;
+  duration: number;
+  paused: boolean;
+  volume: number;
+  exclusive: boolean;
+  deviceId: string;
+  bitrate: number | null;
+  kind?: string;
+};
 type CachedPlayerState = {
   activeTrackId?: string;
   activeView?: ViewId;
@@ -152,6 +167,14 @@ function readCachedAudioSettings() {
     };
   } catch {
     return {};
+  }
+}
+
+function disconnectAudioNode(node: AudioNode | null) {
+  try {
+    node?.disconnect();
+  } catch {
+    // Nodes may already be disconnected while rebuilding the playback chain.
   }
 }
 
@@ -467,9 +490,12 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [folderName, setFolderName] = useState("未选择");
   const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
+  const [nativeAudioSupported, setNativeAudioSupported] = useState(false);
+  const [nativeAudioState, setNativeAudioState] = useState<NativeAudioState | null>(null);
   const [selectedSinkId, setSelectedSinkId] = useState(() => readCachedAudioSettings().sinkId ?? "default");
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
-  const [exclusiveMode] = useState(() => readCachedAudioSettings().exclusiveMode ?? false);
+  const [exclusiveMode, setExclusiveMode] = useState(() => readCachedAudioSettings().exclusiveMode ?? false);
+  const [audioElementKey, setAudioElementKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -490,8 +516,11 @@ export default function App() {
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
+  const lastExclusiveModeRef = useRef(false);
+  const nativeLoadedUrlRef = useRef<string | null>(null);
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
+  const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
   const allTracks = useMemo(
     () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
     [localTracks, neteaseTracks, roamTracks, playlistTracks],
@@ -606,15 +635,16 @@ export default function App() {
   }
 
   function warmNeteaseTrackCache(tracksToWarm: Track[]) {
+    const warmupLevel = hifiEnabled ? "jymaster" : qualityLevel;
     const warmupItems = tracksToWarm
       .filter((track) => track.source === "netease" && track.providerId)
-      .map((track) => ({ id: track.providerId as string, key: `${qualityLevel}:${track.providerId}` }))
+      .map((track) => ({ id: track.providerId as string, key: `${warmupLevel}:${track.providerId}` }))
       .filter((item) => !neteaseWarmupRef.current.has(item.key))
       .slice(0, 300);
     const ids = warmupItems.map((item) => item.id);
     if (!ids.length) return;
     warmupItems.forEach((item) => neteaseWarmupRef.current.add(item.key));
-    api.warmNeteaseCache(ids, qualityLevel).catch(() => {
+    api.warmNeteaseCache(ids, warmupLevel).catch(() => {
       warmupItems.forEach((item) => neteaseWarmupRef.current.delete(item.key));
     });
   }
@@ -622,7 +652,7 @@ export default function App() {
   useEffect(() => {
     const tracksToWarm = playQueueTracks.length ? playQueueTracks : visibleTracks.slice(0, 80);
     warmNeteaseTrackCache(tracksToWarm);
-  }, [qualityLevel, playQueueTracks, visibleTracks]);
+  }, [hifiEnabled, qualityLevel, playQueueTracks, visibleTracks]);
 
   useEffect(() => {
     api
@@ -755,6 +785,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (nativeAudio?.supported) {
+      nativeAudio
+        .isSupported?.()
+        .then((supported) => {
+          setNativeAudioSupported(Boolean(supported));
+          if (!supported) return [];
+          return nativeAudio.listDevices?.() ?? [];
+        })
+        .then((devices) => {
+          if (Array.isArray(devices) && devices.length) {
+            setAudioOutputDevices(devices);
+          }
+        })
+        .catch(() => {
+          setNativeAudioSupported(false);
+        });
+      return;
+    }
+
     if (!navigator.mediaDevices?.enumerateDevices) return;
 
     let cancelled = false;
@@ -796,17 +846,93 @@ export default function App() {
   }, [exclusiveMode, hifiEnabled, selectedSinkId]);
 
   useEffect(() => {
+    if (!audioOutputDevices.length) return;
+    if (audioOutputDevices.some((device) => device.id === selectedSinkId)) return;
+    setSelectedSinkId("default");
+  }, [audioOutputDevices, selectedSinkId]);
+
+  const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
+    setNativeAudioState(state);
+    if (desktopExclusiveActive || state.active || state.kind === "ended") {
+      if (typeof state.duration === "number" && state.duration > 0) {
+        setDurationSeconds(state.duration);
+      }
+      if (typeof state.position === "number") {
+        setCurrentTime(state.position);
+      }
+      if (typeof state.paused === "boolean") {
+        setPlaying(!state.paused);
+      }
+    }
+    if (state.kind === "ended") {
+      handleTrackEnded();
+    }
+  });
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativeAudio?.supported) return;
+
+    let cancelled = false;
+    nativeAudio
+      .getState?.()
+      .then((state) => {
+        if (!cancelled && state) syncNativeAudioState(state as NativeAudioState);
+      })
+      .catch(() => undefined);
+
+    const dispose = nativeAudio.onEvent?.((payload) => {
+      if (!cancelled) syncNativeAudioState(payload as NativeAudioState);
+    });
+
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [syncNativeAudioState]);
+
+  useEffect(() => {
+    if (nativeAudioSupported) return;
     const audio = audioRef.current as (HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }) | null;
     if (!audio?.setSinkId) return;
     audio.setSinkId(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => {
       // Device switching is optional; keep current output if the platform rejects it.
     });
-  }, [selectedSinkId]);
+  }, [audioElementKey, nativeAudioSupported, selectedSinkId]);
+
+  useEffect(() => {
+    if (lastExclusiveModeRef.current === desktopExclusiveActive) return;
+    lastExclusiveModeRef.current = desktopExclusiveActive;
+
+    pendingSeekRef.current = audioRef.current?.currentTime || currentTime || 0;
+    if (visualizerFrameRef.current) {
+      window.cancelAnimationFrame(visualizerFrameRef.current);
+      visualizerFrameRef.current = null;
+    }
+    disconnectAudioNode(analyserRef.current);
+    disconnectAudioNode(audioSourceRef.current);
+    audioContextRef.current?.close().catch(() => undefined);
+    analyserRef.current = null;
+    audioSourceRef.current = null;
+    audioContextRef.current = null;
+    setDurationSeconds(0);
+    setAudioElementKey((key) => key + 1);
+  }, [currentTime, desktopExclusiveActive]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.volume = Math.max(0, Math.min(1, volume / 100));
+    audio.preload = hifiEnabled ? "auto" : "metadata";
+
+    if (desktopExclusiveActive) {
+      audio.pause();
+      if (audio.src) {
+        audio.removeAttribute("src");
+        audio.load();
+      }
+      return;
+    }
 
     if (!activeStreamUrl) {
       audio.pause();
@@ -824,7 +950,7 @@ export default function App() {
     } else {
       audio.pause();
     }
-  }, [activeStreamUrl, playing, volume]);
+  }, [activeStreamUrl, audioElementKey, desktopExclusiveActive, hifiEnabled, playing, volume]);
 
   useEffect(() => {
     if (activeTrack.source !== "netease" || !activeTrack.providerId) return;
@@ -844,6 +970,75 @@ export default function App() {
       cancelled = true;
     };
   }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel]);
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativeAudio?.supported) return;
+    if (desktopExclusiveActive) return;
+    nativeLoadedUrlRef.current = null;
+    nativeAudio.stop?.().catch(() => undefined);
+  }, [desktopExclusiveActive]);
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+
+    if (!activeStreamUrl || activeTrack.id === idleTrack.id) {
+      nativeLoadedUrlRef.current = null;
+      nativeAudio.stop?.().catch(() => undefined);
+      return;
+    }
+
+    const nextUrl = new URL(activeStreamUrl, window.location.href).href;
+    if (nativeLoadedUrlRef.current === nextUrl && nativeAudioState?.trackId === activeTrack.id) return;
+
+    nativeLoadedUrlRef.current = nextUrl;
+    nativeAudio
+      .load?.({
+        trackId: activeTrack.id,
+        url: nextUrl,
+        position: pendingSeekRef.current || 0,
+        paused: !playing,
+        volume,
+        exclusive: true,
+        deviceId: selectedSinkId,
+      })
+      .then((state) => {
+        if (state) syncNativeAudioState(state as NativeAudioState);
+      })
+      .catch(() => {
+        nativeLoadedUrlRef.current = null;
+      });
+  }, [
+    activeStreamUrl,
+    activeTrack.id,
+    desktopExclusiveActive,
+    nativeAudioState?.trackId,
+    playing,
+    selectedSinkId,
+    syncNativeAudioState,
+    volume,
+  ]);
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+    nativeAudio.setPaused?.(!playing).catch(() => undefined);
+  }, [desktopExclusiveActive, playing]);
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+    nativeAudio.setVolume?.(volume).catch(() => undefined);
+  }, [desktopExclusiveActive, volume]);
+
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!desktopExclusiveActive || !nativeAudio?.supported) return;
+    nativeAudio
+      .configure?.({ exclusive: true, deviceId: selectedSinkId, volume })
+      .catch(() => undefined);
+  }, [desktopExclusiveActive, selectedSinkId, volume]);
 
   useEffect(() => {
     if (!activeTrack.coverUrl) {
@@ -893,7 +1088,7 @@ export default function App() {
   }, [activeTrack.id, activeTrack.bpm]);
 
   useEffect(() => {
-    if (!playing || !activeStreamUrl || !pageVisible) {
+    if (!playing || !activeStreamUrl || !pageVisible || desktopExclusiveActive) {
       if (visualizerFrameRef.current) {
         window.cancelAnimationFrame(visualizerFrameRef.current);
         visualizerFrameRef.current = null;
@@ -988,7 +1183,7 @@ export default function App() {
         visualizerFrameRef.current = null;
       }
     };
-  }, [activeStreamUrl, pageVisible, playing]);
+  }, [activeStreamUrl, activeTrack.id, desktopExclusiveActive, pageVisible, playing]);
 
   useEffect(() => {
     if (activeTrack.id === idleTrack.id || activeTrack.lyricStatus === "linked") return;
@@ -1042,12 +1237,9 @@ export default function App() {
     try {
       const result = await api.getNeteasePlaylistTracks(playlist.id);
       const uiTracks = result.tracks.map((track, index) => providerTrackToUiTrack(track, index));
-      pendingSeekRef.current = 0;
       setPlaylistTracks(uiTracks);
-      setPlayQueueIds(uiTracks.filter((track) => track.streamUrl).map((track) => track.id));
       setNeteaseTracks((current) => mergeTracks([...current, ...uiTracks]));
       warmNeteaseTrackCache(uiTracks);
-      if (uiTracks[0]) setActiveTrackId(uiTracks[0].id);
     } finally {
       setPlaylistLoading(false);
     }
@@ -1067,9 +1259,13 @@ export default function App() {
     if (shuffleEnabled) {
       const randomTrack = chooseRandomTrack(activeTrack.id);
       if (randomTrack) {
-        if (randomTrack.id === activeTrack.id && audioRef.current) {
-          audioRef.current.currentTime = 0;
-          audioRef.current.play().catch(() => setPlaying(false));
+        if (randomTrack.id === activeTrack.id) {
+          if (desktopExclusiveActive) {
+            seekTo(0);
+          } else if (audioRef.current) {
+            audioRef.current.currentTime = 0;
+            audioRef.current.play().catch(() => setPlaying(false));
+          }
         }
         setActiveTrackId(randomTrack.id);
         setCurrentTime(0);
@@ -1081,9 +1277,13 @@ export default function App() {
     const safeIndex = currentIndex >= 0 ? currentIndex : 0;
     const nextIndex = (safeIndex + direction + queue.length) % queue.length;
     const nextTrack = queue[nextIndex];
-    if (nextTrack.id === activeTrack.id && audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(() => setPlaying(false));
+    if (nextTrack.id === activeTrack.id) {
+      if (desktopExclusiveActive) {
+        seekTo(0);
+      } else if (audioRef.current) {
+        audioRef.current.currentTime = 0;
+        audioRef.current.play().catch(() => setPlaying(false));
+      }
     }
     setActiveTrackId(nextTrack.id);
     setCurrentTime(0);
@@ -1091,12 +1291,17 @@ export default function App() {
   }
 
   function restartActiveTrack() {
-    const audio = audioRef.current;
-    if (!audio) return;
     pendingSeekRef.current = 0;
-    audio.currentTime = 0;
     setCurrentTime(0);
     setPlaying(true);
+    if (desktopExclusiveActive) {
+      window.ariaDesktop?.nativeAudio?.seek?.(0).catch(() => undefined);
+      window.ariaDesktop?.nativeAudio?.setPaused?.(false).catch(() => undefined);
+      return;
+    }
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = 0;
     audio.play().catch(() => setPlaying(false));
   }
 
@@ -1109,6 +1314,7 @@ export default function App() {
   }
 
   function handleAudioError() {
+    if (desktopExclusiveActive) return;
     if (!activeStreamUrl || !playing) return;
 
     const now = Date.now();
@@ -1122,6 +1328,21 @@ export default function App() {
     }
 
     window.setTimeout(() => pickRelativeTrack(1), 650);
+  }
+
+  function seekTo(nextTime: number) {
+    if (desktopExclusiveActive) {
+      pendingSeekRef.current = nextTime;
+      setCurrentTime(nextTime);
+      window.ariaDesktop?.nativeAudio?.seek?.(nextTime).catch(() => undefined);
+      if (!playing) setPlaying(true);
+      return;
+    }
+
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = nextTime;
+    setCurrentTime(nextTime);
+    if (!playing) setPlaying(true);
   }
 
   function resolveQueueForTrack(trackId: string) {
@@ -1330,8 +1551,10 @@ export default function App() {
   return (
     <main className="relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950">
       <audio
+        key={audioElementKey}
         ref={audioRef}
         crossOrigin="anonymous"
+        preload={hifiEnabled ? "auto" : "metadata"}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime || 0)}
         onLoadedMetadata={(event) => {
           audioErrorRef.current = { count: 0, lastAt: 0 };
@@ -1522,7 +1745,7 @@ export default function App() {
                   activeTrack={activeTrack}
                   palette={activePalette}
                   playing={playing}
-                  visualizerActive={pageVisible}
+                  visualizerActive={pageVisible && !desktopExclusiveActive}
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
                   onTogglePlay={() => setPlaying((value) => !value)}
@@ -1535,18 +1758,18 @@ export default function App() {
                   volume={volume}
                   onVolumeChange={setVolume}
                   qualityLevel={effectiveQualityLevel}
-                  onQualityLevelChange={setQualityLevel}
+                  onQualityLevelChange={(level) => {
+                    setQualityLevel(level);
+                    if (hifiEnabled) setHifiEnabled(false);
+                  }}
                   hifiEnabled={hifiEnabled}
+                  exclusiveMode={exclusiveMode}
                   currentTime={currentTime}
                   durationSeconds={durationSeconds}
                   spectrum={spectrum}
                   analyserRef={analyserRef}
                   detectedBpm={detectedBpm}
-                  onSeek={(nextTime) => {
-                    if (!audioRef.current) return;
-                    audioRef.current.currentTime = nextTime;
-                    setCurrentTime(nextTime);
-                  }}
+                  onSeek={seekTo}
                 />
               )}
               {activeView === "local" && (
@@ -1614,12 +1837,7 @@ export default function App() {
               tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
               activeTrackId={activeTrackId}
               onPickTrack={chooseTrack}
-              onSeek={(nextTime) => {
-                if (!audioRef.current) return;
-                audioRef.current.currentTime = nextTime;
-                setCurrentTime(nextTime);
-                if (!playing) setPlaying(true);
-              }}
+              onSeek={seekTo}
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
@@ -1685,7 +1903,9 @@ export default function App() {
               onSelectedSinkIdChange={setSelectedSinkId}
               hifiEnabled={hifiEnabled}
               onHifiEnabledChange={setHifiEnabled}
+              nativeAudioSupported={nativeAudioSupported}
               exclusiveMode={exclusiveMode}
+              onExclusiveModeChange={setExclusiveMode}
               onClose={() => setSettingsOpen(false)}
             />
           )}
@@ -2261,6 +2481,7 @@ function PlayerSurface({
   qualityLevel,
   onQualityLevelChange,
   hifiEnabled,
+  exclusiveMode,
   currentTime,
   durationSeconds,
   spectrum,
@@ -2286,6 +2507,7 @@ function PlayerSurface({
   qualityLevel: QualityLevel;
   onQualityLevelChange: (level: QualityLevel) => void;
   hifiEnabled: boolean;
+  exclusiveMode: boolean;
   currentTime: number;
   durationSeconds: number;
   spectrum: number[];
@@ -2396,6 +2618,8 @@ function PlayerSurface({
               <Badge>{formatAudioDetail(activeTrack, resolvedQualityLevel)}</Badge>
               <Badge>{activeTrack.duration}</Badge>
               <Badge>{bpmLabel}</Badge>
+              {hifiEnabled && <Badge>HiFi</Badge>}
+              {exclusiveMode && <Badge>直通</Badge>}
             </div>
             <h1 className="mt-6 line-clamp-3 max-w-xl text-[clamp(2.2rem,4.3vw,4.6rem)] font-semibold leading-[1.02] text-neutral-950">
               {activeTrack.title}
@@ -3170,18 +3394,21 @@ function FloatingNav({
   onRequestClose: () => void;
   onPick: (id: ViewId) => void;
 }) {
-  const nodes = navItems.slice(5);
+  const nodes = (["player", "daily", "radar", "cloud", "stats"] as ViewId[])
+    .map((id) => navItems.find((item) => item.id === id))
+    .filter((item): item is (typeof navItems)[number] => Boolean(item));
   const nodePositions = [
     { x: 120, y: 24 },
     { x: 120, y: 78 },
     { x: 120, y: 132 },
     { x: 120, y: 186 },
+    { x: 120, y: 240 },
   ];
-  const center = { x: 42, y: 240 };
+  const center = { x: 42, y: 304 };
 
   return (
     <div
-      className="absolute bottom-8 left-7 z-40 h-[276px] w-[188px]"
+      className="absolute bottom-8 left-7 z-40 h-[340px] w-[188px]"
       onMouseEnter={() => onOpenChange(true)}
       onMouseLeave={onRequestClose}
     >
@@ -3283,7 +3510,9 @@ function SettingsPanel({
   onSelectedSinkIdChange,
   hifiEnabled,
   onHifiEnabledChange,
+  nativeAudioSupported,
   exclusiveMode,
+  onExclusiveModeChange,
   onClose,
 }: {
   backgroundEnabled: boolean;
@@ -3300,14 +3529,14 @@ function SettingsPanel({
   onSelectedSinkIdChange: (value: string) => void;
   hifiEnabled: boolean;
   onHifiEnabledChange: (value: boolean) => void;
+  nativeAudioSupported: boolean;
   exclusiveMode: boolean;
+  onExclusiveModeChange: (value: boolean) => void;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
   const desktopReady = Boolean(window.ariaDesktop);
   const deviceSwitchSupported =
-    typeof HTMLMediaElement !== "undefined" &&
-    "setSinkId" in HTMLMediaElement.prototype &&
     audioOutputDevices.length > 0;
 
   function refreshApiState() {
@@ -3483,7 +3712,7 @@ function SettingsPanel({
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Output</p>
-                <Badge>{deviceSwitchSupported ? "Device" : "Default"}</Badge>
+                <Badge>{nativeAudioSupported ? "WASAPI" : deviceSwitchSupported ? "Device" : "Default"}</Badge>
               </div>
               <select
                 value={selectedSinkId}
@@ -3498,7 +3727,11 @@ function SettingsPanel({
                 ))}
               </select>
               <p className="text-xs text-neutral-500">
-                {deviceSwitchSupported ? "切换到指定播放设备后会即时生效。" : "当前环境不支持在应用内切换播放设备。"}
+                {nativeAudioSupported
+                  ? "独占模式会使用这里选择的 WASAPI 输出设备。"
+                  : deviceSwitchSupported
+                    ? "切换到指定播放设备后会即时生效。"
+                    : "当前环境不支持在应用内切换播放设备。"}
               </p>
             </div>
             <div className="mt-4 rounded-[1rem] bg-neutral-950/[0.03] p-3">
@@ -3526,9 +3759,30 @@ function SettingsPanel({
               <div className="mt-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold">独占输出</p>
-                  <p className="mt-1 text-xs text-neutral-500">需要原生音频引擎，当前版本先保留为待实现。</p>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    {nativeAudioSupported
+                      ? exclusiveMode
+                        ? "当前走原生 WASAPI Exclusive，浏览器音频链已旁路。"
+                        : "关闭时仍使用应用内标准播放链路。"
+                      : "需要桌面版内置原生音频引擎，Web 预览里不会启用。"}
+                  </p>
                 </div>
-                <Badge>{exclusiveMode ? "Planned" : "Unavailable"}</Badge>
+                <button
+                  className={cn(
+                    "flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition disabled:cursor-not-allowed disabled:opacity-45",
+                    exclusiveMode ? "bg-neutral-950" : "bg-neutral-200",
+                  )}
+                  disabled={!nativeAudioSupported}
+                  onClick={() => onExclusiveModeChange(!exclusiveMode)}
+                  aria-label="切换独占输出"
+                >
+                  <span
+                    className={cn(
+                      "size-6 rounded-full bg-white shadow-sm transition",
+                      exclusiveMode && "translate-x-6",
+                    )}
+                  />
+                </button>
               </div>
             </div>
           </section>

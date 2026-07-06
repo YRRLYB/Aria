@@ -4,4 +4,7 @@ dist-server/
 release/
 release-fixed/
 .musicbox/
+.cache/
+.tmp-mpv/
+vendor/mpv/
 /main.cjs

@@ -16,4 +16,21 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   showApp: () => ipcRenderer.invoke("aria:show"),
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
+  nativeAudio: {
+    supported: process.platform === "win32",
+    isSupported: () => ipcRenderer.invoke("aria:native-audio:supported"),
+    listDevices: () => ipcRenderer.invoke("aria:native-audio:devices"),
+    getState: () => ipcRenderer.invoke("aria:native-audio:state"),
+    load: (payload) => ipcRenderer.invoke("aria:native-audio:load", payload),
+    setPaused: (paused) => ipcRenderer.invoke("aria:native-audio:pause", Boolean(paused)),
+    seek: (position) => ipcRenderer.invoke("aria:native-audio:seek", Number(position) || 0),
+    setVolume: (volume) => ipcRenderer.invoke("aria:native-audio:volume", Number(volume) || 0),
+    configure: (payload) => ipcRenderer.invoke("aria:native-audio:configure", payload),
+    stop: () => ipcRenderer.invoke("aria:native-audio:stop"),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on("aria:native-audio-event", handler);
+      return () => ipcRenderer.removeListener("aria:native-audio-event", handler);
+    },
+  },
 });
