@@ -17,6 +17,7 @@ class MpvAudioEngine {
     this.ensurePromise = null;
     this.pendingSeek = 0;
     this.pendingPause = true;
+    this.lastRecoveryAt = 0;
     this.state = {
       supported: this.isSupported(),
       ready: false,
@@ -342,6 +343,38 @@ class MpvAudioEngine {
     this.state.volume = Math.max(0, Math.min(100, Number(volume) || 0));
     await this.command("set_property", "volume", this.state.volume);
     this.emit({ kind: "volume" });
+    return this.snapshot();
+  }
+
+  async recoverOutput(reason = "system-resume") {
+    if (!this.process || !this.socket || this.socket.destroyed || !this.state.active) {
+      return this.snapshot({ kind: "recover-skipped", reason });
+    }
+
+    const now = Date.now();
+    if (now - this.lastRecoveryAt < 2500) {
+      return this.snapshot({ kind: "recover-throttled", reason });
+    }
+    this.lastRecoveryAt = now;
+
+    const wasPaused = this.state.paused;
+    const position = this.state.position;
+    this.writeLog("native-audio.log", `recover output: reason=${reason} paused=${wasPaused} position=${position}`);
+
+    try {
+      await this.command("set_property", "pause", true).catch(() => undefined);
+      await this.command("ao-reload").catch(() => undefined);
+      await this.command("audio-reload", 1).catch(() => undefined);
+      if (position > 0) {
+        await this.command("seek", Math.max(0, position), "absolute+exact").catch(() => undefined);
+      }
+      await this.command("set_property", "pause", wasPaused);
+      this.state.paused = wasPaused;
+      this.emit({ kind: "recover", reason });
+    } catch (error) {
+      this.writeLog("native-audio.log", `recover output failed: ${error?.stack || error}`);
+      this.emit({ kind: "recover-failed", reason });
+    }
     return this.snapshot();
   }
 

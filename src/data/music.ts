@@ -53,6 +53,7 @@ export type ViewId =
   | "local"
   | "liked"
   | "playlists"
+  | "artists"
   | "daily"
   | "radar"
   | "cloud"
@@ -64,6 +65,7 @@ export const navItems = [
   { id: "local" as const, label: "本地搜索", icon: FolderSearch },
   { id: "liked" as const, label: "我喜欢", icon: Heart },
   { id: "playlists" as const, label: "歌单", icon: Cloud },
+  { id: "artists" as const, label: "歌手", icon: Music2 },
   { id: "daily" as const, label: "每日推荐", icon: Compass },
   { id: "radar" as const, label: "私人漫游", icon: Radar },
   { id: "cloud" as const, label: "音乐云盘", icon: Cloud },

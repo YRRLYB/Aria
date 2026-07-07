@@ -135,6 +135,15 @@ export type ProviderPlaylist = {
   coverUrl?: string | null;
 };
 
+export type ProviderArtist = {
+  id: string;
+  name: string;
+  source: string;
+  avatarUrl?: string | null;
+  trackCount?: number | null;
+  albumCount?: number | null;
+};
+
 export type ProviderDailyBundle = {
   date: string;
   tracks: ProviderTrack[];
@@ -265,6 +274,22 @@ export const api = {
   },
   getProviderRoam(providerId = "netease", limit = 18) {
     return request<ProviderDailyBundle>(`/api/providers/${providerId}/roam?limit=${limit}`);
+  },
+  searchLibraryAndStream(query: string, limit = 24) {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    return request<{
+      query: string;
+      localTracks: ApiScannedTrack[];
+      neteaseTracks: ProviderTrack[];
+      artists: ProviderArtist[];
+    }>(`/api/search?${params}`);
+  },
+  lookupArtist(name: string) {
+    const params = new URLSearchParams({ name });
+    return request<{ artist: ProviderArtist | null }>(`/api/artists/lookup?${params}`);
+  },
+  getNeteaseArtistTracks(artistId: string) {
+    return request<{ tracks: ProviderTrack[] }>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}/tracks`);
   },
   getNeteaseLyrics(trackId: string) {
     return request<{ lyrics: Array<{ time: string; text: string }> }>(

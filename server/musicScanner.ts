@@ -75,11 +75,22 @@ async function readTrackMetadata(filePath: string): Promise<ScannedTrack | null>
 
 function extractBpm(metadata: IAudioMetadata) {
   const candidates: unknown[] = [metadata.common.bpm];
-  const bpmTagIds = new Set(["bpm", "tbpm", "tbp", "tmpo", "wm/beatsperminute", "beatsperminute"]);
+  const bpmTagIds = new Set([
+    "bpm",
+    "tbpm",
+    "tbp",
+    "tmpo",
+    "tempo",
+    "wm/beatsperminute",
+    "beatsperminute",
+    "com.apple.itunes:bpm",
+    "com.apple.quicktime.bpm",
+  ]);
 
   for (const tags of Object.values(metadata.native)) {
     for (const tag of tags) {
-      if (bpmTagIds.has(String(tag.id).toLowerCase())) {
+      const tagId = String(tag.id).toLowerCase();
+      if (bpmTagIds.has(tagId) || tagId.includes("bpm") || tagId.includes("beatsperminute")) {
         candidates.push(tag.value);
       }
     }
@@ -123,7 +134,7 @@ function parseBpmValue(value: unknown): number | null {
 function normalizeBpm(value: number) {
   if (!Number.isFinite(value)) return null;
   const rounded = Math.round(value);
-  return rounded >= 40 && rounded <= 260 ? rounded : null;
+  return rounded >= 40 && rounded <= 240 ? rounded : null;
 }
 
 function detectQuality(

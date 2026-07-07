@@ -330,6 +330,64 @@ app.get("/api/library", async (_req, res, next) => {
   }
 });
 
+app.get("/api/search", async (req, res, next) => {
+  try {
+    const query = z
+      .object({
+        q: z.string().min(1).max(120),
+        limit: z.coerce.number().int().min(1).max(50).optional().default(24),
+      })
+      .parse(req.query);
+    const normalized = query.q.trim().toLowerCase();
+    const library = await readLibrary();
+    const localTracks = library.tracks
+      .filter((track) =>
+        [track.title, track.artist, track.album, track.format, track.quality]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalized),
+      )
+      .slice(0, query.limit);
+
+    let neteaseTracks: Awaited<ReturnType<typeof neteaseClient.searchTracks>> = [];
+    let artists: Awaited<ReturnType<typeof neteaseClient.searchArtists>> = [];
+    try {
+      [neteaseTracks, artists] = await Promise.all([
+        neteaseClient.searchTracks(query.q, query.limit),
+        neteaseClient.searchArtists(query.q, Math.min(query.limit, 18)),
+      ]);
+    } catch {
+      // Local search remains useful when NetEase credentials are missing or temporarily rejected.
+    }
+
+    res.json({ query: query.q, localTracks, neteaseTracks, artists });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/artists/lookup", async (req, res, next) => {
+  try {
+    const query = z
+      .object({
+        name: z.string().min(1).max(120),
+      })
+      .parse(req.query);
+    const [artist] = await neteaseClient.searchArtists(query.name, 1);
+    res.json({ artist: artist ?? null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/providers/netease/artists/:artistId/tracks", async (req, res, next) => {
+  try {
+    res.json({ tracks: await neteaseClient.getArtistTopTracks(req.params.artistId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete("/api/library", async (_req, res, next) => {
   try {
     res.json(await clearLibrary());

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -22,6 +22,7 @@ let isQuitting = false;
 let backgroundEnabled = true;
 let rendererRecoveries = 0;
 let nativeAudioEngine = null;
+let powerRecoveryAttached = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -60,6 +61,22 @@ function getNativeAudioEngine() {
     });
   }
   return nativeAudioEngine;
+}
+
+function scheduleNativeAudioRecovery(reason, delayMs = 900) {
+  setTimeout(() => {
+    nativeAudioEngine?.recoverOutput?.(reason).catch((error) => {
+      writeLog("native-audio.log", `scheduled recovery failed: ${error?.stack || error}`);
+    });
+  }, delayMs);
+}
+
+function attachPowerRecoveryHandlers() {
+  if (powerRecoveryAttached) return;
+  powerRecoveryAttached = true;
+  powerMonitor.on("resume", () => scheduleNativeAudioRecovery("system-resume", 1100));
+  powerMonitor.on("unlock-screen", () => scheduleNativeAudioRecovery("unlock-screen", 700));
+  powerMonitor.on("suspend", () => writeLog("native-audio.log", "system suspend"));
 }
 
 process.on("uncaughtException", (error) => {
@@ -346,7 +363,10 @@ ipcMain.handle("aria:native-audio:stop", async () => {
 
 app.on("second-instance", showWindow);
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  attachPowerRecoveryHandlers();
+  await createWindow();
+});
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

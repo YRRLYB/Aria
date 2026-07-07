@@ -1,5 +1,5 @@
 import neteaseApi from "NeteaseCloudMusicApi";
-import type { ProviderDailyBundle, ProviderPlaylist, ProviderTrack } from "../providers/musicProvider";
+import type { ProviderArtist, ProviderDailyBundle, ProviderPlaylist, ProviderTrack } from "../providers/musicProvider";
 import { getNeteaseAccountSummary } from "../services/neteaseService";
 import { readStore } from "../store";
 import { HttpError } from "../utils/httpError";
@@ -36,6 +36,15 @@ type NeteasePlaylist = {
   trackCount?: number;
   subscribed?: boolean;
   coverImgUrl?: string;
+};
+
+type NeteaseArtist = {
+  id: number | string;
+  name: string;
+  picUrl?: string | null;
+  img1v1Url?: string | null;
+  musicSize?: number;
+  albumSize?: number;
 };
 
 type NeteaseTrackId = {
@@ -156,6 +165,51 @@ export class NeteaseClient {
         if (batch.length < pageSize) break;
       }
       return songs.map(normalizeSong);
+    });
+    return this.attachCachedMetadata(tracks);
+  }
+
+  async searchTracks(keywords: string, limit = 24) {
+    const { cookie } = await this.requireSession();
+    const safeKeywords = keywords.trim().slice(0, 120);
+    if (!safeKeywords) return [];
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const tracks = await rememberPersistent(`netease:search:tracks:${safeKeywords}:${safeLimit}`, 5 * 60_000, async () => {
+      const response = await neteaseApi.cloudsearch({
+        keywords: safeKeywords,
+        type: 1,
+        limit: safeLimit,
+        cookie,
+      });
+      const result = response.body?.result as { songs?: NeteaseSong[] } | undefined;
+      return (result?.songs ?? []).map(normalizeSong);
+    });
+    return this.attachCachedMetadata(tracks);
+  }
+
+  async searchArtists(keywords: string, limit = 18) {
+    const { cookie } = await this.requireSession();
+    const safeKeywords = keywords.trim().slice(0, 120);
+    if (!safeKeywords) return [];
+    const safeLimit = Math.max(1, Math.min(40, Math.floor(limit)));
+    return rememberPersistent(`netease:search:artists:${safeKeywords}:${safeLimit}`, dayTtl, async () => {
+      const response = await neteaseApi.cloudsearch({
+        keywords: safeKeywords,
+        type: 100,
+        limit: safeLimit,
+        cookie,
+      });
+      const result = response.body?.result as { artists?: NeteaseArtist[] } | undefined;
+      return (result?.artists ?? []).map(normalizeArtist);
+    });
+  }
+
+  async getArtistTopTracks(artistId: string | number) {
+    const { cookie } = await this.requireSession();
+    const tracks = await rememberPersistent(`netease:artist-top:${artistId}`, dayTtl, async () => {
+      const response = await neteaseApi.artist_top_song({ id: artistId, cookie });
+      const songs = (response.body?.songs as NeteaseSong[] | undefined) ?? [];
+      return songs.slice(0, 60).map(normalizeSong);
     });
     return this.attachCachedMetadata(tracks);
   }
@@ -395,6 +449,17 @@ function normalizePlaylist(playlist: NeteasePlaylist): ProviderPlaylist {
     subscribed: Boolean(playlist.subscribed),
     coverColor: "#d85f6a",
     coverUrl: playlist.coverImgUrl ?? null,
+  };
+}
+
+function normalizeArtist(artist: NeteaseArtist): ProviderArtist {
+  return {
+    id: String(artist.id),
+    name: artist.name,
+    source: "netease",
+    avatarUrl: artist.img1v1Url ?? artist.picUrl ?? null,
+    trackCount: artist.musicSize ?? null,
+    albumCount: artist.albumSize ?? null,
   };
 }
 

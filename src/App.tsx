@@ -36,7 +36,14 @@ import {
   type Track,
   type ViewId,
 } from "@/data/music";
-import { api, type ApiScannedTrack, type NeteaseAccountSummary, type ProviderPlaylist, type ProviderTrack } from "@/lib/api";
+import {
+  api,
+  type ApiScannedTrack,
+  type NeteaseAccountSummary,
+  type ProviderArtist,
+  type ProviderPlaylist,
+  type ProviderTrack,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const sourceLabel: Record<Track["source"], string> = {
@@ -49,6 +56,20 @@ type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "j
 type CoverPalette = { primary: string; secondary: string };
 type PlayerSideView = "lyrics" | "queue";
 type AudioOutputMode = "system" | "shared" | "exclusive";
+type ArtistSummary = {
+  id: string;
+  name: string;
+  source: "local" | "netease" | "mixed";
+  avatarUrl?: string | null;
+  trackCount: number;
+  albumCount?: number | null;
+  providerId?: string | null;
+};
+type SearchBundle = {
+  localTracks: Track[];
+  neteaseTracks: Track[];
+  artists: ArtistSummary[];
+};
 type NativeAudioState = {
   supported: boolean;
   ready: boolean;
@@ -251,6 +272,33 @@ function parseDuration(value: string) {
   return parts[0] || 0;
 }
 
+function normalizeDetectedBpm(value: number) {
+  if (!Number.isFinite(value)) return null;
+  let bpm = value;
+  while (bpm < 72) bpm *= 2;
+  while (bpm > 188) bpm /= 2;
+  const rounded = Math.round(bpm);
+  return rounded >= 48 && rounded <= 220 ? rounded : null;
+}
+
+function estimateBpmFromPeaks(peaks: number[]) {
+  if (peaks.length < 4) return null;
+  const buckets = new Map<number, number>();
+  for (let index = 1; index < peaks.length; index += 1) {
+    const start = Math.max(0, index - 10);
+    for (let cursor = start; cursor < index; cursor += 1) {
+      const interval = peaks[index] - peaks[cursor];
+      if (interval < 300 || interval > 2400) continue;
+      const bpm = normalizeDetectedBpm(60000 / interval);
+      if (!bpm) continue;
+      const bucket = Math.round(bpm / 2) * 2;
+      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+    }
+  }
+  const [winner] = [...buckets.entries()].sort((left, right) => right[1] - left[1]);
+  return winner && winner[1] >= 3 ? winner[0] : null;
+}
+
 function getActiveLyricIndex(lyrics: Track["lyrics"], currentTime: number) {
   if (!lyrics.length) return 0;
   let activeIndex = 0;
@@ -373,6 +421,13 @@ function formatAudioDetail(track: Track, level?: QualityLevel, compact = true) {
   return [qualityLabel, bitrate, sampleRate].filter(Boolean).join(" · ");
 }
 
+function splitArtistNames(value: string) {
+  return value
+    .split(/\s*(?:\/|、|,|，|&|\+| feat\. | ft\. )\s*/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
   const cachedLyrics = readCachedLyrics(track.id);
   return {
@@ -436,6 +491,18 @@ function providerTrackToUiTrack(track: ProviderTrack, index: number): Track {
   };
 }
 
+function providerArtistToUiArtist(artist: ProviderArtist): ArtistSummary {
+  return {
+    id: `${artist.source}:${artist.id}`,
+    name: artist.name,
+    source: artist.source === "netease" ? "netease" : "mixed",
+    avatarUrl: artist.avatarUrl ? api.getNeteaseCoverUrl(artist.avatarUrl) : null,
+    trackCount: artist.trackCount ?? 0,
+    albumCount: artist.albumCount ?? null,
+    providerId: artist.id,
+  };
+}
+
 function mergeTracks(tracksToMerge: Track[]) {
   const seen = new Set<string>();
   return tracksToMerge.filter((track) => {
@@ -443,6 +510,38 @@ function mergeTracks(tracksToMerge: Track[]) {
     seen.add(track.id);
     return true;
   });
+}
+
+function trimTrackCache(tracksToMerge: Track[], maxItems = 1400) {
+  const merged = mergeTracks(tracksToMerge);
+  return merged.length > maxItems ? merged.slice(merged.length - maxItems) : merged;
+}
+
+function mergeArtists(artistsToMerge: ArtistSummary[]) {
+  const byName = new Map<string, ArtistSummary>();
+  for (const artist of artistsToMerge) {
+    const key = artist.name.toLowerCase();
+    const current = byName.get(key);
+    if (!current) {
+      byName.set(key, artist);
+      continue;
+    }
+    byName.set(key, {
+      ...current,
+      source: current.source === artist.source ? current.source : "mixed",
+      avatarUrl: current.avatarUrl ?? artist.avatarUrl,
+      trackCount: Math.max(current.trackCount, artist.trackCount),
+      albumCount: Math.max(current.albumCount ?? 0, artist.albumCount ?? 0),
+      providerId: current.providerId ?? artist.providerId,
+    });
+  }
+  return [...byName.values()];
+}
+
+function artistSourceLabel(source: ArtistSummary["source"]) {
+  if (source === "local") return "本地";
+  if (source === "netease") return "网易云";
+  return "混合";
 }
 
 function isLikedPlaylist(playlist: ProviderPlaylist | null | undefined, index?: number) {
@@ -493,6 +592,11 @@ export default function App() {
   const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
   const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
+  const [searchBundle, setSearchBundle] = useState<SearchBundle>({ localTracks: [], neteaseTracks: [], artists: [] });
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [selectedArtist, setSelectedArtist] = useState<ArtistSummary | null>(null);
+  const [artistTracks, setArtistTracks] = useState<Track[]>([]);
+  const [artistAvatarCache, setArtistAvatarCache] = useState<Record<string, string | null>>({});
   const [folderName, setFolderName] = useState("未选择");
   const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
   const [nativeAudioSupported, setNativeAudioSupported] = useState(() => Boolean(window.ariaDesktop?.nativeAudio?.supported));
@@ -519,6 +623,8 @@ export default function App() {
   const lyricSyncingRef = useRef<Set<string>>(new Set());
   const artworkSyncingRef = useRef<Set<string>>(new Set());
   const neteaseWarmupRef = useRef<Set<string>>(new Set());
+  const artistRequestRef = useRef<Set<string>>(new Set());
+  const artistAvatarLookupRef = useRef<Set<string>>(new Set());
   const bpmSavedRef = useRef<Record<string, number>>({});
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
@@ -536,6 +642,36 @@ export default function App() {
     () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
     [localTracks, neteaseTracks, roamTracks, playlistTracks],
   );
+  const artistSummaries = useMemo(() => {
+    const artists = new Map<string, ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> }>();
+    for (const track of allTracks) {
+      for (const artistName of splitArtistNames(track.artist)) {
+        const key = artistName.toLowerCase();
+        const current =
+          artists.get(key) ??
+          ({
+            id: `artist:${key}`,
+            name: artistName,
+            source: track.source === "netease" ? "netease" : "local",
+            avatarUrl: null,
+            trackCount: 0,
+            albumCount: 0,
+            providerId: null,
+            albums: new Set<string>(),
+            sources: new Set<Track["source"]>(),
+          } satisfies ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> });
+        current.trackCount += 1;
+        current.albums.add(track.album);
+        current.sources.add(track.source);
+        current.source = current.sources.size > 1 ? "mixed" : current.sources.has("netease") ? "netease" : "local";
+        current.avatarUrl = current.avatarUrl ?? (track.source === "netease" ? track.coverUrl : null);
+        artists.set(key, current);
+      }
+    }
+    return [...artists.values()]
+      .map(({ albums, sources, ...artist }) => ({ ...artist, albumCount: albums.size }))
+      .sort((left, right) => right.trackCount - left.trackCount || left.name.localeCompare(right.name, "zh-CN"));
+  }, [allTracks]);
   const requestedActiveTrack = allTracks.find((track) => track.id === activeTrackId);
   const activeTrack =
     requestedActiveTrack ??
@@ -657,6 +793,9 @@ export default function App() {
     const ids = warmupItems.map((item) => item.id);
     if (!ids.length) return;
     warmupItems.forEach((item) => neteaseWarmupRef.current.add(item.key));
+    if (neteaseWarmupRef.current.size > 1200) {
+      neteaseWarmupRef.current = new Set([...neteaseWarmupRef.current].slice(-700));
+    }
     api.warmNeteaseCache(ids, warmupLevel).catch(() => {
       warmupItems.forEach((item) => neteaseWarmupRef.current.delete(item.key));
     });
@@ -666,6 +805,63 @@ export default function App() {
     const tracksToWarm = playQueueTracks.length ? playQueueTracks : visibleTracks.slice(0, 80);
     warmNeteaseTrackCache(tracksToWarm);
   }, [hifiEnabled, qualityLevel, playQueueTracks, visibleTracks]);
+
+  useEffect(() => {
+    const text = query.trim();
+    if (!text) {
+      setSearchBundle({ localTracks: [], neteaseTracks: [], artists: [] });
+      setSearchLoading(false);
+      return;
+    }
+
+    const localMatches = localTracks.filter((track) =>
+      [track.title, track.artist, track.album, track.quality].join(" ").toLowerCase().includes(text.toLowerCase()),
+    );
+    const localArtists = artistSummaries
+      .filter((artist) => artist.name.toLowerCase().includes(text.toLowerCase()))
+      .slice(0, 10);
+    setSearchBundle((current) => ({
+      ...current,
+      localTracks: localMatches.slice(0, 24),
+      artists: localArtists,
+    }));
+    setSearchLoading(true);
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      api
+        .searchLibraryAndStream(text, 24)
+        .then((result) => {
+          if (cancelled) return;
+          const neteaseUiTracks = result.neteaseTracks.map((track, index) => providerTrackToUiTrack(track, index));
+          const localUiTracks = result.localTracks.map(localTrackToUiTrack);
+          const remoteArtists = result.artists.map(providerArtistToUiArtist);
+          setNeteaseTracks((current) => trimTrackCache([...current, ...neteaseUiTracks]));
+          setSearchBundle({
+            localTracks: mergeTracks([...localMatches, ...localUiTracks]).slice(0, 28),
+            neteaseTracks: neteaseUiTracks,
+            artists: mergeArtists([...localArtists, ...remoteArtists]).slice(0, 18),
+          });
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSearchBundle({
+              localTracks: localMatches.slice(0, 28),
+              neteaseTracks: [],
+              artists: localArtists,
+            });
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setSearchLoading(false);
+        });
+    }, 360);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [artistSummaries, localTracks, query]);
 
   useEffect(() => {
     api
@@ -678,6 +874,93 @@ export default function App() {
         setLibraryMeta({ roots: 0, updatedAt: null });
       });
   }, []);
+
+  useEffect(() => {
+    if (!selectedArtist) {
+      setArtistTracks([]);
+      return;
+    }
+
+    const localArtistTracks = allTracks.filter((track) =>
+      splitArtistNames(track.artist).some((artistName) => artistName.toLowerCase() === selectedArtist.name.toLowerCase()),
+    );
+    setArtistTracks(localArtistTracks);
+
+    let cancelled = false;
+    const providerId = selectedArtist.providerId;
+    if (providerId) {
+      const requestKey = `tracks:${providerId}`;
+      if (!artistRequestRef.current.has(requestKey)) {
+        artistRequestRef.current.add(requestKey);
+        api
+          .getNeteaseArtistTracks(providerId)
+          .then((result) => {
+            if (cancelled) return;
+            const remoteTracks = result.tracks.map((track, index) => providerTrackToUiTrack(track, index));
+            setNeteaseTracks((current) => trimTrackCache([...current, ...remoteTracks]));
+            setArtistTracks(mergeTracks([...localArtistTracks, ...remoteTracks]));
+          })
+          .catch(() => {
+            artistRequestRef.current.delete(requestKey);
+          });
+      }
+    } else if (!selectedArtist.avatarUrl && !artistAvatarCache[selectedArtist.name.toLowerCase()]) {
+      const requestKey = `lookup:${selectedArtist.name.toLowerCase()}`;
+      if (!artistRequestRef.current.has(requestKey)) {
+        artistRequestRef.current.add(requestKey);
+        api
+          .lookupArtist(selectedArtist.name)
+          .then((result) => {
+            if (cancelled || !result.artist) return;
+            const remoteArtist = providerArtistToUiArtist(result.artist);
+            setArtistAvatarCache((current) => ({
+              ...current,
+              [selectedArtist.name.toLowerCase()]: remoteArtist.avatarUrl ?? null,
+            }));
+            setSelectedArtist((current) =>
+              current?.name === selectedArtist.name
+                ? { ...current, ...remoteArtist, source: current.source === "local" ? "mixed" : current.source }
+                : current,
+            );
+          })
+          .catch(() => {
+            artistRequestRef.current.delete(requestKey);
+          });
+      }
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allTracks, artistAvatarCache, selectedArtist]);
+
+  useEffect(() => {
+    const candidates = artistSummaries
+      .filter((artist) => {
+        const key = artist.name.toLowerCase();
+        return !artist.avatarUrl && !(key in artistAvatarCache) && !artistAvatarLookupRef.current.has(key);
+      })
+      .slice(0, 8);
+    if (!candidates.length) return;
+
+    candidates.forEach((artist) => {
+      const key = artist.name.toLowerCase();
+      artistAvatarLookupRef.current.add(key);
+      api
+        .lookupArtist(artist.name)
+        .then((result) => {
+          const remoteArtist = result.artist ? providerArtistToUiArtist(result.artist) : null;
+          setArtistAvatarCache((current) => ({
+            ...current,
+            [key]: remoteArtist?.avatarUrl ?? null,
+          }));
+        })
+        .catch(() => {
+          setArtistAvatarCache((current) => ({ ...current, [key]: null }));
+          artistAvatarLookupRef.current.delete(key);
+        });
+    });
+  }, [artistAvatarCache, artistSummaries]);
 
   useEffect(() => {
     const boundTracks = localTracks
@@ -1218,34 +1501,27 @@ export default function App() {
       const now = performance.now();
       bpmEnergyRef.current = baseline;
 
-      if (!bpmLockedRef.current && lowEnergy > baseline * 1.3 && lowEnergy > 34) {
+      if (!bpmLockedRef.current && lowEnergy > baseline * 1.18 && lowEnergy > 24) {
         const peaks = bpmPeaksRef.current;
-        if (!peaks.length || now - peaks[peaks.length - 1] > 280) {
-          bpmPeaksRef.current = [...peaks, now].slice(-24);
+        if (!peaks.length || now - peaks[peaks.length - 1] > 250) {
+          bpmPeaksRef.current = [...peaks, now].slice(-36);
         }
       }
 
-      if (!bpmLockedRef.current && now - lastBpmStateRef.current > 2600 && bpmPeaksRef.current.length >= 5) {
-        const intervals = bpmPeaksRef.current
-          .slice(1)
-          .map((peak, index) => peak - bpmPeaksRef.current[index])
-          .filter((interval) => interval >= 330 && interval <= 950)
-          .sort((a, b) => a - b);
-        const median = intervals[Math.floor(intervals.length / 2)];
-        if (median) {
-          const bpm = Math.round(60000 / median);
-          if (bpm >= 60 && bpm <= 190) {
-            const nextSamples = [...bpmSamplesRef.current, bpm].slice(-3);
-            bpmSamplesRef.current = nextSamples;
-            const spread = Math.max(...nextSamples) - Math.min(...nextSamples);
-            if (nextSamples.length >= 3 && spread <= 3) {
-              const stableBpm = Math.round(nextSamples.reduce((sum, value) => sum + value, 0) / nextSamples.length);
-              bpmLockedRef.current = true;
-              setDetectedBpm(stableBpm);
-              applyBpmToTrack(activeTrack.id, stableBpm);
-            }
-            lastBpmStateRef.current = now;
+      if (!bpmLockedRef.current && now - lastBpmStateRef.current > 1800 && bpmPeaksRef.current.length >= 5) {
+        const bpm = estimateBpmFromPeaks(bpmPeaksRef.current);
+        if (bpm) {
+          setDetectedBpm(bpm);
+          const nextSamples = [...bpmSamplesRef.current, bpm].slice(-4);
+          bpmSamplesRef.current = nextSamples;
+          const spread = Math.max(...nextSamples) - Math.min(...nextSamples);
+          if (nextSamples.length >= 2 && spread <= 8) {
+            const stableBpm = Math.round(nextSamples.reduce((sum, value) => sum + value, 0) / nextSamples.length);
+            bpmLockedRef.current = true;
+            setDetectedBpm(stableBpm);
+            applyBpmToTrack(activeTrack.id, stableBpm);
           }
+          lastBpmStateRef.current = now;
         }
       }
       visualizerFrameRef.current = window.requestAnimationFrame(tick);
@@ -1675,7 +1951,10 @@ export default function App() {
           <div className="flex min-w-0 items-center gap-3" style={noDragRegionStyle}>
             <button
               className="flex min-w-0 items-center gap-2 rounded-full px-3 py-2 text-left transition hover:bg-white/65"
-              onClick={() => setActiveView("home")}
+              onClick={() => {
+                setQuery("");
+                setActiveView("home");
+              }}
             >
               <img src={ariaIconUrl} alt="" className="size-10 shrink-0 rounded-2xl object-cover" />
               <p className="truncate text-3xl font-semibold">Aria</p>
@@ -1686,7 +1965,7 @@ export default function App() {
             className="hidden rounded-full border border-white/70 bg-white/45 p-1 shadow-sm backdrop-blur-xl xl:flex"
             style={noDragRegionStyle}
           >
-            {navItems.slice(0, 5).map((item) => {
+            {navItems.slice(0, 6).map((item) => {
               const Icon = item.icon;
               const active = activeView === item.id;
 
@@ -1697,7 +1976,10 @@ export default function App() {
                     "flex h-9 items-center gap-2 rounded-full px-3 text-sm font-medium text-neutral-500 transition hover:text-neutral-950",
                     active && "bg-white text-neutral-950 shadow-sm",
                   )}
-                  onClick={() => setActiveView(item.id)}
+                  onClick={() => {
+                    setQuery("");
+                    setActiveView(item.id);
+                  }}
                 >
                   <Icon className="size-4" />
                   <span>{item.label}</span>
@@ -1799,7 +2081,7 @@ export default function App() {
         >
           <AnimatePresence mode="wait">
             <motion.div
-              key={activeView}
+              key={query.trim() ? "search" : activeView}
               variants={panelVariants}
               initial="initial"
               animate="animate"
@@ -1807,6 +2089,26 @@ export default function App() {
               transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
               className="min-h-0 min-w-0"
             >
+              {query.trim() ? (
+                <SearchSurface
+                  query={query.trim()}
+                  loading={searchLoading}
+                  localTracks={searchBundle.localTracks}
+                  neteaseTracks={searchBundle.neteaseTracks}
+                  artists={searchBundle.artists}
+                  artistAvatarCache={artistAvatarCache}
+                  onPickTrack={(id) => {
+                    chooseTrack(id);
+                    setQuery("");
+                  }}
+                  onPickArtist={(artist) => {
+                    setSelectedArtist(artist);
+                    setActiveView("artists");
+                    setQuery("");
+                  }}
+                />
+              ) : (
+                <>
               {activeView === "home" && (
                 <HomeSurface
                   activeTrack={activeTrack}
@@ -1903,8 +2205,21 @@ export default function App() {
                   onPickTrack={chooseTrack}
                 />
               )}
+              {activeView === "artists" && (
+                <ArtistsSurface
+                  artists={artistSummaries}
+                  selectedArtist={selectedArtist}
+                  tracks={artistTracks}
+                  artistAvatarCache={artistAvatarCache}
+                  onPickArtist={(artist) => setSelectedArtist(artist)}
+                  onBack={() => setSelectedArtist(null)}
+                  onPickTrack={chooseTrack}
+                />
+              )}
               {activeView === "cloud" && <CloudSurface />}
               {activeView === "stats" && <StatsSurface tracks={allTracks} playCounts={playCounts} />}
+                </>
+              )}
             </motion.div>
           </AnimatePresence>
 
@@ -2014,6 +2329,7 @@ export default function App() {
             }, 180);
           }}
           onPick={(id) => {
+            setQuery("");
             setActiveView(id);
             setNavOpen(false);
           }}
@@ -2183,6 +2499,252 @@ function HomeSurface({
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function SearchSurface({
+  query,
+  loading,
+  localTracks,
+  neteaseTracks,
+  artists,
+  artistAvatarCache,
+  onPickTrack,
+  onPickArtist,
+}: {
+  query: string;
+  loading: boolean;
+  localTracks: Track[];
+  neteaseTracks: Track[];
+  artists: ArtistSummary[];
+  artistAvatarCache: Record<string, string | null>;
+  onPickTrack: (id: string) => void;
+  onPickArtist: (artist: ArtistSummary) => void;
+}) {
+  const tracks = useMemo(() => mergeTracks([...localTracks, ...neteaseTracks]).slice(0, 36), [localTracks, neteaseTracks]);
+
+  return (
+    <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]">
+      <section className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <Badge>{loading ? "搜索中" : "Search"}</Badge>
+            <h1 className="mt-3 truncate text-3xl font-semibold">搜索：{query}</h1>
+            <p className="mt-2 text-sm text-neutral-500">本地音乐和网易云结果会合并显示，点击歌曲直接播放。</p>
+          </div>
+          <Search className="size-6 shrink-0 text-neutral-400" />
+        </div>
+        <div className="no-scrollbar mt-5 grid max-h-[calc(100%-6.5rem)] gap-2 overflow-y-auto pr-1">
+          {tracks.map((track) => (
+            <button
+              key={track.id}
+              className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.2rem] bg-white/50 p-3 text-left shadow-sm transition hover:bg-white"
+              onClick={() => onPickTrack(track.id)}
+            >
+              <CoverArt track={track} className="size-14 rounded-2xl" />
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{track.title}</p>
+                <p className="truncate text-sm text-neutral-500">{track.artist}</p>
+                <p className="mt-1 truncate text-xs text-neutral-400">{track.album}</p>
+              </div>
+              <div className="flex flex-col items-end gap-2">
+                <Badge>{sourceLabel[track.source]}</Badge>
+                <span className="text-xs text-neutral-500">{formatAudioDetail(track)}</span>
+              </div>
+            </button>
+          ))}
+          {!tracks.length && <EmptyState text={loading ? "正在搜索曲库和网易云。" : "没有找到相关歌曲。"} />}
+        </div>
+      </section>
+
+      <section className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Artists</p>
+            <h2 className="mt-1 text-2xl font-semibold">歌手</h2>
+          </div>
+          <Badge>{artists.length}</Badge>
+        </div>
+        <div className="no-scrollbar mt-5 grid max-h-[calc(100%-5rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+          {artists.map((artist) => (
+            <ArtistCard
+              key={artist.id}
+              artist={artist}
+              avatarUrl={artist.avatarUrl ?? artistAvatarCache[artist.name.toLowerCase()] ?? null}
+              onPick={onPickArtist}
+            />
+          ))}
+          {!artists.length && <EmptyState text={loading ? "正在查找歌手头像和资料。" : "没有找到相关歌手。"} />}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ArtistsSurface({
+  artists,
+  selectedArtist,
+  tracks,
+  artistAvatarCache,
+  onPickArtist,
+  onBack,
+  onPickTrack,
+}: {
+  artists: ArtistSummary[];
+  selectedArtist: ArtistSummary | null;
+  tracks: Track[];
+  artistAvatarCache: Record<string, string | null>;
+  onPickArtist: (artist: ArtistSummary) => void;
+  onBack: () => void;
+  onPickTrack: (id: string) => void;
+}) {
+  const featuredArtists = artists.slice(0, 80);
+
+  if (selectedArtist) {
+    const avatarUrl = selectedArtist.avatarUrl ?? artistAvatarCache[selectedArtist.name.toLowerCase()] ?? null;
+    return (
+      <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(340px,0.72fr)_minmax(0,1.28fr)]">
+        <section className="glass relative min-h-0 overflow-hidden rounded-[1.5rem] p-6">
+          <div className="absolute inset-0 bg-gradient-to-br from-white/80 via-white/30 to-neutral-200/45" />
+          <div className="relative z-10 flex h-full min-h-0 flex-col justify-between">
+            <button
+              className="w-fit rounded-full bg-white/70 px-4 py-2 text-sm font-medium shadow-sm transition hover:bg-white"
+              onClick={onBack}
+            >
+              返回歌手墙
+            </button>
+            <div className="py-8">
+              <ArtistAvatar name={selectedArtist.name} avatarUrl={avatarUrl} className="size-44 rounded-[2rem]" />
+              <Badge className="mt-6">{artistSourceLabel(selectedArtist.source)}</Badge>
+              <h1 className="mt-4 break-words text-4xl font-semibold leading-tight">{selectedArtist.name}</h1>
+              <div className="mt-6 grid grid-cols-2 gap-3">
+                <Metric value={String(tracks.length || selectedArtist.trackCount || 0)} label="曲目" />
+                <Metric value={String(selectedArtist.albumCount ?? 0)} label="专辑" />
+              </div>
+            </div>
+          </div>
+        </section>
+        <section className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Tracks</p>
+              <h2 className="mt-1 text-2xl font-semibold">歌曲</h2>
+            </div>
+            <Badge>{tracks.length}</Badge>
+          </div>
+          <div className="no-scrollbar mt-5 grid max-h-[calc(100%-5rem)] gap-2 overflow-y-auto pr-1">
+            {tracks.map((track) => (
+              <button
+                key={track.id}
+                className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.2rem] bg-white/50 p-3 text-left shadow-sm transition hover:bg-white"
+                onClick={() => onPickTrack(track.id)}
+              >
+                <CoverArt track={track} className="size-14 rounded-2xl" />
+                <div className="min-w-0">
+                  <p className="truncate font-semibold">{track.title}</p>
+                  <p className="truncate text-sm text-neutral-500">{track.album}</p>
+                </div>
+                <Badge>{formatAudioDetail(track)}</Badge>
+              </button>
+            ))}
+            {!tracks.length && <EmptyState text="正在整理这个歌手的歌曲。" />}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <section className="glass h-full min-h-0 overflow-hidden rounded-[1.5rem] p-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <Badge>Artists</Badge>
+          <h1 className="mt-3 text-3xl font-semibold">歌手</h1>
+          <p className="mt-2 text-sm text-neutral-500">本地与网易云曲库合并统计，头像会从线上轻量补全。</p>
+        </div>
+        <UserRound className="size-7 text-neutral-400" />
+      </div>
+      <div className="no-scrollbar mt-5 grid max-h-[calc(100%-6.5rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {featuredArtists.map((artist) => (
+          <ArtistCard
+            key={artist.id}
+            artist={artist}
+            avatarUrl={artist.avatarUrl ?? artistAvatarCache[artist.name.toLowerCase()] ?? null}
+            onPick={onPickArtist}
+          />
+        ))}
+        {!featuredArtists.length && <EmptyState text="导入音乐或同步网易云后会生成歌手页。" />}
+      </div>
+    </section>
+  );
+}
+
+function ArtistCard({
+  artist,
+  avatarUrl,
+  onPick,
+}: {
+  artist: ArtistSummary;
+  avatarUrl: string | null;
+  onPick: (artist: ArtistSummary) => void;
+}) {
+  return (
+    <button
+      className="group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 text-left shadow-sm transition hover:bg-white"
+      onClick={() => onPick({ ...artist, avatarUrl: artist.avatarUrl ?? avatarUrl })}
+    >
+      <ArtistAvatar name={artist.name} avatarUrl={avatarUrl} className="size-16 rounded-2xl" />
+      <div className="min-w-0">
+        <p className="truncate font-semibold group-hover:text-neutral-700">{artist.name}</p>
+        <p className="mt-1 truncate text-xs text-neutral-500">
+          {artistSourceLabel(artist.source)} · {artist.trackCount || 0} 首
+        </p>
+        <p className="mt-1 truncate text-xs text-neutral-400">{artist.albumCount ?? 0} 张专辑</p>
+      </div>
+    </button>
+  );
+}
+
+function ArtistAvatar({
+  name,
+  avatarUrl,
+  className,
+}: {
+  name: string;
+  avatarUrl: string | null;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [avatarUrl]);
+
+  return (
+    <div
+      className={cn(
+        "relative flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br from-neutral-200 via-white to-neutral-300 text-neutral-500 shadow-sm",
+        className,
+      )}
+    >
+      {avatarUrl && !failed ? (
+        <img
+          src={avatarUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 size-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <>
+          <UserRound className="size-1/2" />
+          <span className="absolute bottom-2 right-2 rounded-full bg-white/85 px-2 py-1 text-xs font-semibold">
+            {name.slice(0, 1).toUpperCase()}
+          </span>
+        </>
+      )}
     </div>
   );
 }
@@ -3555,7 +4117,7 @@ function FloatingNav({
   onRequestClose: () => void;
   onPick: (id: ViewId) => void;
 }) {
-  const nodes = (["player", "daily", "radar", "cloud", "stats"] as ViewId[])
+  const nodes = (["player", "artists", "daily", "radar", "stats"] as ViewId[])
     .map((id) => navItems.find((item) => item.id === id))
     .filter((item): item is (typeof navItems)[number] => Boolean(item));
   const nodePositions = [

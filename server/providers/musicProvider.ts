@@ -32,6 +32,15 @@ export type ProviderPlaylist = {
   coverUrl?: string | null;
 };
 
+export type ProviderArtist = {
+  id: string;
+  name: string;
+  source: string;
+  avatarUrl?: string | null;
+  trackCount?: number | null;
+  albumCount?: number | null;
+};
+
 export type ProviderDailyBundle = {
   date: string;
   tracks: ProviderTrack[];
