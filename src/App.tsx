@@ -1,8 +1,6 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ChevronDown,
-  Cloud,
   Cookie,
   FolderOpen,
   Heart,
@@ -12,7 +10,6 @@ import {
   Minus,
   Pause,
   Play,
-  Plus,
   Radio,
   RefreshCw,
   Repeat2,
@@ -28,14 +25,17 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import ariaIconUrl from "../build/icon.png";
 import {
-  capabilities,
-  navItems,
-  type LyricCandidate,
-  type Track,
-  type ViewId,
-} from "@/data/music";
+  CloudSurface,
+  CollectionSurface,
+  LikedSurface,
+  PlaylistSurface,
+  StatsSurface,
+} from "@/components/music/CollectionSurfaces";
+import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
+import { ArtistAvatar, CoverArt, EmptyState, Metric, StatTile } from "@/components/music/shared";
+import ariaIconUrl from "../build/icon.png";
+import { navItems, type LyricCandidate, type Track, type ViewId } from "@/data/music";
 import {
   api,
   type ApiScannedTrack,
@@ -44,6 +44,30 @@ import {
   type ProviderPlaylist,
   type ProviderTrack,
 } from "@/lib/api";
+import {
+  colorWithAlpha,
+  estimateBpmFromPeaks,
+  extractDominantColors,
+  formatAudioDetail,
+  formatDuration,
+  getActiveLyricIndex,
+  mergeTracks,
+  normalizeQuality,
+  parseDuration,
+  qualityOptions,
+  readCachedAudioSettings,
+  readCachedBpm,
+  readCachedLyrics,
+  readCachedPlayerState,
+  splitArtistNames,
+  trimTrackCache,
+  writeCachedBpm,
+  writeCachedLyrics,
+  type AudioOutputMode,
+  type CoverPalette,
+  type PlayerSideView,
+  type QualityLevel,
+} from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
 
 const sourceLabel: Record<Track["source"], string> = {
@@ -52,10 +76,6 @@ const sourceLabel: Record<Track["source"], string> = {
   netease: "网易云",
 };
 
-type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
-type CoverPalette = { primary: string; secondary: string };
-type PlayerSideView = "lyrics" | "queue";
-type AudioOutputMode = "system" | "shared" | "exclusive";
 type ArtistSummary = {
   id: string;
   name: string;
@@ -85,148 +105,8 @@ type NativeAudioState = {
   bitrate: number | null;
   kind?: string;
 };
-type CachedPlayerState = {
-  activeTrackId?: string;
-  activeView?: ViewId;
-  playerSideView?: PlayerSideView;
-  playQueueIds?: string[];
-  currentTime?: number;
-  volume?: number;
-  qualityLevel?: QualityLevel;
-  shuffleEnabled?: boolean;
-  repeatMode?: "all" | "one";
-  playing?: boolean;
-};
-
-const playerCacheKey = "aria-player-state";
-const bpmCacheKey = "aria-bpm-cache";
-const lyricCacheKey = "aria-lyrics-cache";
-const audioSettingsKey = "aria-audio-settings";
 const dragRegionStyle = { WebkitAppRegion: "drag" } as CSSProperties;
 const noDragRegionStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
-
-const qualityOptions: Array<{ value: QualityLevel; label: string }> = [
-  { value: "standard", label: "标准" },
-  { value: "higher", label: "较高" },
-  { value: "exhigh", label: "极高" },
-  { value: "lossless", label: "无损" },
-  { value: "hires", label: "Hi-Res" },
-  { value: "jymaster", label: "臻品" },
-];
-
-const qualityLevelLabels: Record<QualityLevel, string> = {
-  standard: "标准",
-  higher: "较高",
-  exhigh: "320K",
-  lossless: "无损",
-  hires: "Hi-Res",
-  jymaster: "臻品",
-};
-
-function readCachedPlayerState(): CachedPlayerState {
-  try {
-    const raw = window.localStorage.getItem(playerCacheKey);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as CachedPlayerState;
-    const navIds = new Set(navItems.map((item) => item.id));
-    const qualityIds = new Set(qualityOptions.map((item) => item.value));
-
-    return {
-      activeTrackId: typeof parsed.activeTrackId === "string" ? parsed.activeTrackId : undefined,
-      activeView: parsed.activeView && navIds.has(parsed.activeView) ? parsed.activeView : undefined,
-      playerSideView: parsed.playerSideView === "queue" ? "queue" : parsed.playerSideView === "lyrics" ? "lyrics" : undefined,
-      playQueueIds: Array.isArray(parsed.playQueueIds)
-        ? parsed.playQueueIds.filter((id): id is string => typeof id === "string")
-        : undefined,
-      currentTime:
-        typeof parsed.currentTime === "number" && Number.isFinite(parsed.currentTime)
-          ? Math.max(0, parsed.currentTime)
-          : undefined,
-      volume: typeof parsed.volume === "number" && Number.isFinite(parsed.volume) ? Math.max(0, Math.min(100, parsed.volume)) : undefined,
-      qualityLevel: parsed.qualityLevel && qualityIds.has(parsed.qualityLevel) ? parsed.qualityLevel : undefined,
-      shuffleEnabled: typeof parsed.shuffleEnabled === "boolean" ? parsed.shuffleEnabled : undefined,
-      repeatMode: parsed.repeatMode === "one" ? "one" : parsed.repeatMode === "all" ? "all" : undefined,
-      playing: typeof parsed.playing === "boolean" ? parsed.playing : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function readCachedLyrics(trackId?: string) {
-  if (!trackId) return [];
-  try {
-    const raw = window.localStorage.getItem(lyricCacheKey);
-    if (!raw) return [];
-    const cache = JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>;
-    return Array.isArray(cache[trackId]) ? cache[trackId] : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCachedLyrics(trackId: string, lyrics: Array<{ time: string; text: string }>) {
-  if (!lyrics.length) return;
-  try {
-    const raw = window.localStorage.getItem(lyricCacheKey);
-    const cache = raw ? (JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>) : {};
-    const entries = Object.entries({ ...cache, [trackId]: lyrics }).slice(-80);
-    window.localStorage.setItem(lyricCacheKey, JSON.stringify(Object.fromEntries(entries)));
-  } catch {
-    // Lyric caching is best-effort.
-  }
-}
-
-function readCachedAudioSettings() {
-  try {
-    const raw = window.localStorage.getItem(audioSettingsKey);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as {
-      sinkId?: string;
-      hifiEnabled?: boolean;
-      exclusiveMode?: boolean;
-      outputMode?: AudioOutputMode;
-    };
-    const outputMode =
-      parsed.outputMode === "shared" || parsed.outputMode === "exclusive" || parsed.outputMode === "system"
-        ? parsed.outputMode
-        : parsed.exclusiveMode
-          ? "exclusive"
-          : "system";
-    return {
-      sinkId: typeof parsed.sinkId === "string" ? parsed.sinkId : "default",
-      hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
-      exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
-      outputMode,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function readCachedBpm(trackId?: string) {
-  if (!trackId) return null;
-  try {
-    const raw = window.localStorage.getItem(bpmCacheKey);
-    if (!raw) return null;
-    const cache = JSON.parse(raw) as Record<string, number>;
-    const bpm = cache[trackId];
-    return typeof bpm === "number" && bpm >= 40 && bpm <= 240 ? bpm : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedBpm(trackId: string, bpm: number) {
-  try {
-    const raw = window.localStorage.getItem(bpmCacheKey);
-    const cache = raw ? (JSON.parse(raw) as Record<string, number>) : {};
-    cache[trackId] = Math.round(bpm);
-    window.localStorage.setItem(bpmCacheKey, JSON.stringify(cache));
-  } catch {
-    // Keep BPM caching best-effort.
-  }
-}
 
 const panelVariants = {
   initial: { opacity: 0, y: 18, filter: "blur(18px)" },
@@ -255,178 +135,6 @@ const idleTrack: Track = {
   lyricStatus: "missing",
   lyrics: [{ time: "00:00", text: "暂无歌词" }],
 };
-
-function formatDuration(seconds: number | null) {
-  if (!seconds || Number.isNaN(seconds)) return "--:--";
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.floor(seconds % 60);
-  return `${minutes}:${String(rest).padStart(2, "0")}`;
-}
-
-function parseDuration(value: string) {
-  const cleanValue = value.replace(/[[\]]/g, "").trim();
-  const parts = cleanValue.split(":").map(Number);
-  if (parts.some((part) => !Number.isFinite(part))) return 0;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0] || 0;
-}
-
-function normalizeDetectedBpm(value: number) {
-  if (!Number.isFinite(value)) return null;
-  let bpm = value;
-  while (bpm < 72) bpm *= 2;
-  while (bpm > 188) bpm /= 2;
-  const rounded = Math.round(bpm);
-  return rounded >= 48 && rounded <= 220 ? rounded : null;
-}
-
-function estimateBpmFromPeaks(peaks: number[]) {
-  if (peaks.length < 4) return null;
-  const buckets = new Map<number, number>();
-  for (let index = 1; index < peaks.length; index += 1) {
-    const start = Math.max(0, index - 10);
-    for (let cursor = start; cursor < index; cursor += 1) {
-      const interval = peaks[index] - peaks[cursor];
-      if (interval < 300 || interval > 2400) continue;
-      const bpm = normalizeDetectedBpm(60000 / interval);
-      if (!bpm) continue;
-      const bucket = Math.round(bpm / 2) * 2;
-      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
-    }
-  }
-  const [winner] = [...buckets.entries()].sort((left, right) => right[1] - left[1]);
-  return winner && winner[1] >= 3 ? winner[0] : null;
-}
-
-function getActiveLyricIndex(lyrics: Track["lyrics"], currentTime: number) {
-  if (!lyrics.length) return 0;
-  let activeIndex = 0;
-  lyrics.forEach((line, index) => {
-    if (parseDuration(line.time) <= currentTime + 0.2) {
-      activeIndex = index;
-    }
-  });
-  return activeIndex;
-}
-
-function extractDominantColors(image: HTMLImageElement): CoverPalette {
-  const canvas = document.createElement("canvas");
-  const size = 72;
-  canvas.width = size;
-  canvas.height = size;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("Canvas is unavailable");
-
-  context.drawImage(image, 0, 0, size, size);
-  const pixels = context.getImageData(0, 0, size, size).data;
-  const buckets = new Map<string, { count: number; saturation: number; lightness: number }>();
-
-  for (let index = 0; index < pixels.length; index += 4) {
-    const alpha = pixels[index + 3];
-    if (alpha < 180) continue;
-
-    const red = pixels[index];
-    const green = pixels[index + 1];
-    const blue = pixels[index + 2];
-    const max = Math.max(red, green, blue);
-    const min = Math.min(red, green, blue);
-    const lightness = (max + min) / 510;
-    const saturation = max === 0 ? 0 : (max - min) / max;
-
-    if (lightness > 0.9 || lightness < 0.08) continue;
-    if (saturation < 0.12 && lightness > 0.62) continue;
-
-    const bucket = [red, green, blue].map((value) => Math.round(value / 24) * 24);
-    const key = rgbToHex(bucket[0], bucket[1], bucket[2]);
-    const current = buckets.get(key);
-    buckets.set(key, {
-      count: (current?.count ?? 0) + 1,
-      saturation,
-      lightness,
-    });
-  }
-
-  const ranked = [...buckets.entries()]
-    .map(([color, item]) => ({
-      color,
-      score: item.count * (0.72 + item.saturation * 0.42) * (item.lightness > 0.82 ? 0.72 : 1),
-    }))
-    .sort((a, b) => b.score - a.score);
-
-  const primary = ranked[0]?.color ?? "#7b8494";
-  const secondary = ranked.find((item) => colorDistance(item.color, primary) > 72)?.color ?? ranked[1]?.color ?? primary;
-  return { primary, secondary };
-}
-
-function rgbToHex(red: number, green: number, blue: number) {
-  return `#${[red, green, blue]
-    .map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
-function colorDistance(first: string, second: string) {
-  const a = hexToRgb(first);
-  const b = hexToRgb(second);
-  return Math.hypot(a.red - b.red, a.green - b.green, a.blue - b.blue);
-}
-
-function hexToRgb(hex: string) {
-  const normalized = hex.replace("#", "");
-  return {
-    red: Number.parseInt(normalized.slice(0, 2), 16),
-    green: Number.parseInt(normalized.slice(2, 4), 16),
-    blue: Number.parseInt(normalized.slice(4, 6), 16),
-  };
-}
-
-function colorWithAlpha(hex: string, alpha: number) {
-  const { red, green, blue } = hexToRgb(hex);
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
-}
-
-function normalizeQuality(quality: string): Track["quality"] {
-  if (quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K") {
-    return quality;
-  }
-  return "320K";
-}
-
-const qualityLevelBitrates: Record<QualityLevel, string> = {
-  standard: "128 kbps",
-  higher: "192 kbps",
-  exhigh: "320 kbps",
-  lossless: "1411 kbps",
-  hires: "24bit / 96 kHz",
-  jymaster: "24bit / 192 kHz",
-};
-
-function formatBitrate(value?: number | null, compact = false) {
-  if (!value || !Number.isFinite(value)) return null;
-  return compact ? `${Math.round(value / 1000)}k` : `${Math.round(value / 1000)} kbps`;
-}
-
-function formatSampleRate(value?: number | null, compact = false) {
-  if (!value || !Number.isFinite(value)) return null;
-  const khz = value / 1000;
-  const rendered = Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1);
-  return compact ? `${rendered}kHz` : `${rendered} kHz`;
-}
-
-function formatAudioDetail(track: Track, level?: QualityLevel, compact = true) {
-  const resolvedLevel = track.currentLevel ?? level ?? null;
-  const qualityLabel = resolvedLevel ? qualityLevelLabels[resolvedLevel] : track.quality;
-  const bitrate = track.bitrate ? formatBitrate(track.bitrate, compact) : null;
-  const sampleRate = formatSampleRate(track.sampleRate, compact);
-  return [qualityLabel, bitrate, sampleRate].filter(Boolean).join(" · ");
-}
-
-function splitArtistNames(value: string) {
-  return value
-    .split(/\s*(?:\/|、|,|，|&|\+| feat\. | ft\. )\s*/i)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
 
 function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
   const cachedLyrics = readCachedLyrics(track.id);
@@ -501,20 +209,6 @@ function providerArtistToUiArtist(artist: ProviderArtist): ArtistSummary {
     albumCount: artist.albumCount ?? null,
     providerId: artist.id,
   };
-}
-
-function mergeTracks(tracksToMerge: Track[]) {
-  const seen = new Set<string>();
-  return tracksToMerge.filter((track) => {
-    if (seen.has(track.id)) return false;
-    seen.add(track.id);
-    return true;
-  });
-}
-
-function trimTrackCache(tracksToMerge: Track[], maxItems = 1400) {
-  const merged = mergeTracks(tracksToMerge);
-  return merged.length > maxItems ? merged.slice(merged.length - maxItems) : merged;
 }
 
 function mergeArtists(artistsToMerge: ArtistSummary[]) {
@@ -625,11 +319,14 @@ export default function App() {
   const neteaseWarmupRef = useRef<Set<string>>(new Set());
   const artistRequestRef = useRef<Set<string>>(new Set());
   const artistAvatarLookupRef = useRef<Set<string>>(new Set());
+  const artistAvatarCacheRef = useRef<Record<string, string | null>>({});
   const bpmSavedRef = useRef<Record<string, number>>({});
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
   const nativeLoadedUrlRef = useRef<string | null>(null);
+  const lastNativeRenderRef = useRef({ at: 0, position: initialPlayerCache.currentTime ?? 0 });
+  const lastCurrentTimeRenderRef = useRef({ at: 0, time: initialPlayerCache.currentTime ?? 0 });
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
   const nativePlaybackRequested = Boolean(nativeAudioSupported && audioOutputMode !== "system");
@@ -757,6 +454,22 @@ export default function App() {
     [allTracks.length, linkedLyricCount],
   );
 
+  function commitCurrentTime(nextTime: number, force = false) {
+    const safeTime = Math.max(0, Number(nextTime) || 0);
+    const now = performance.now();
+    const previous = lastCurrentTimeRenderRef.current;
+    if (!force && Math.abs(safeTime - previous.time) < 0.3 && now - previous.at < 320) {
+      return;
+    }
+    lastCurrentTimeRenderRef.current = { at: now, time: safeTime };
+    setCurrentTime(safeTime);
+  }
+
+  function trimStringSet(ref: { current: Set<string> }, maxItems = 600) {
+    if (ref.current.size <= maxItems) return;
+    ref.current = new Set([...ref.current].slice(-Math.floor(maxItems * 0.72)));
+  }
+
   async function refreshNeteaseData() {
     const [liked, daily, roam, playlists] = await Promise.all([
       api.getProviderLiked(),
@@ -802,9 +515,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    const tracksToWarm = playQueueTracks.length ? playQueueTracks : visibleTracks.slice(0, 80);
-    warmNeteaseTrackCache(tracksToWarm);
-  }, [hifiEnabled, qualityLevel, playQueueTracks, visibleTracks]);
+    const sourceTracks = playQueueTracks.length ? playQueueTracks : visibleTracks;
+    const tracksToWarm = sourceTracks.slice(0, playing ? 24 : 80);
+    const timer = window.setTimeout(() => warmNeteaseTrackCache(tracksToWarm), playing ? 1600 : 260);
+    return () => window.clearTimeout(timer);
+  }, [hifiEnabled, playing, qualityLevel, playQueueTracks, visibleTracks]);
 
   useEffect(() => {
     const text = query.trim();
@@ -821,9 +536,16 @@ export default function App() {
       .filter((artist) => artist.name.toLowerCase().includes(text.toLowerCase()))
       .slice(0, 10);
     setSearchBundle((current) => ({
-      ...current,
       localTracks: localMatches.slice(0, 24),
-      artists: localArtists,
+      neteaseTracks: current.neteaseTracks.filter((track) =>
+        [track.title, track.artist, track.album].join(" ").toLowerCase().includes(text.toLowerCase()),
+      ),
+      artists: mergeArtists([
+        ...localArtists,
+        ...current.artists.filter(
+          (artist) => artist.source !== "local" && artist.name.toLowerCase().includes(text.toLowerCase()),
+        ),
+      ]).slice(0, 18),
     }));
     setSearchLoading(true);
 
@@ -892,6 +614,7 @@ export default function App() {
       const requestKey = `tracks:${providerId}`;
       if (!artistRequestRef.current.has(requestKey)) {
         artistRequestRef.current.add(requestKey);
+        trimStringSet(artistRequestRef, 360);
         api
           .getNeteaseArtistTracks(providerId)
           .then((result) => {
@@ -904,10 +627,11 @@ export default function App() {
             artistRequestRef.current.delete(requestKey);
           });
       }
-    } else if (!selectedArtist.avatarUrl && !artistAvatarCache[selectedArtist.name.toLowerCase()]) {
+    } else if (!selectedArtist.avatarUrl && !artistAvatarCacheRef.current[selectedArtist.name.toLowerCase()]) {
       const requestKey = `lookup:${selectedArtist.name.toLowerCase()}`;
       if (!artistRequestRef.current.has(requestKey)) {
         artistRequestRef.current.add(requestKey);
+        trimStringSet(artistRequestRef, 360);
         api
           .lookupArtist(selectedArtist.name)
           .then((result) => {
@@ -932,35 +656,44 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [allTracks, artistAvatarCache, selectedArtist]);
+  }, [allTracks, selectedArtist]);
 
   useEffect(() => {
     const candidates = artistSummaries
       .filter((artist) => {
         const key = artist.name.toLowerCase();
-        return !artist.avatarUrl && !(key in artistAvatarCache) && !artistAvatarLookupRef.current.has(key);
+        return !artist.avatarUrl && !(key in artistAvatarCacheRef.current) && !artistAvatarLookupRef.current.has(key);
       })
-      .slice(0, 8);
+      .slice(0, 6);
     if (!candidates.length) return;
 
-    candidates.forEach((artist) => {
-      const key = artist.name.toLowerCase();
-      artistAvatarLookupRef.current.add(key);
-      api
-        .lookupArtist(artist.name)
-        .then((result) => {
-          const remoteArtist = result.artist ? providerArtistToUiArtist(result.artist) : null;
-          setArtistAvatarCache((current) => ({
-            ...current,
-            [key]: remoteArtist?.avatarUrl ?? null,
-          }));
-        })
-        .catch(() => {
-          setArtistAvatarCache((current) => ({ ...current, [key]: null }));
-          artistAvatarLookupRef.current.delete(key);
-        });
+    let cancelled = false;
+    candidates.forEach((artist) => artistAvatarLookupRef.current.add(artist.name.toLowerCase()));
+    trimStringSet(artistAvatarLookupRef, 520);
+    Promise.allSettled(
+      candidates.map(async (artist) => {
+        const result = await api.lookupArtist(artist.name);
+        const remoteArtist = result.artist ? providerArtistToUiArtist(result.artist) : null;
+        return [artist.name.toLowerCase(), remoteArtist?.avatarUrl ?? null] as const;
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      const entries = results.map((result, index) =>
+        result.status === "fulfilled" ? result.value : ([candidates[index].name.toLowerCase(), null] as const),
+      );
+      setArtistAvatarCache((current) => {
+        const next = { ...current };
+        for (const [key, avatarUrl] of entries) {
+          next[key] = avatarUrl;
+        }
+        return Object.fromEntries(Object.entries(next).slice(-260));
+      });
     });
-  }, [artistAvatarCache, artistSummaries]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artistSummaries]);
 
   useEffect(() => {
     const boundTracks = localTracks
@@ -1013,6 +746,10 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("aria-liked-track-ids", JSON.stringify(likedTrackIds));
   }, [likedTrackIds]);
+
+  useEffect(() => {
+    artistAvatarCacheRef.current = artistAvatarCache;
+  }, [artistAvatarCache]);
 
   useEffect(() => {
     window.localStorage.setItem("aria-background-enabled", String(backgroundEnabled));
@@ -1188,7 +925,16 @@ export default function App() {
   }, [audioOutputDevices, selectedSinkId]);
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
-    setNativeAudioState(state);
+    const now = performance.now();
+    const previousNativeRender = lastNativeRenderRef.current;
+    const shouldRenderNativeState =
+      state.kind !== "progress" ||
+      now - previousNativeRender.at > 500 ||
+      Math.abs((state.position ?? 0) - previousNativeRender.position) > 0.8;
+    if (shouldRenderNativeState) {
+      lastNativeRenderRef.current = { at: now, position: state.position ?? previousNativeRender.position };
+      setNativeAudioState(state);
+    }
     const currentTrackMatches = Boolean(state.trackId && state.trackId === activeTrackId);
     const shouldSyncPlayback =
       currentTrackMatches &&
@@ -1205,7 +951,7 @@ export default function App() {
         setDurationSeconds(state.duration);
       }
       if (typeof state.position === "number") {
-        setCurrentTime(state.position);
+        commitCurrentTime(state.position, state.kind === "loaded" || state.kind === "seek" || state.kind === "ended");
       }
       if (typeof state.paused === "boolean") {
         setPlaying(!state.paused);
@@ -1907,7 +1653,7 @@ export default function App() {
         preload={hifiEnabled ? "auto" : "metadata"}
         onTimeUpdate={(event) => {
           if (nativePlaybackEnabled) return;
-          setCurrentTime(event.currentTarget.currentTime || 0);
+          commitCurrentTime(event.currentTarget.currentTime || 0);
         }}
         onLoadedMetadata={(event) => {
           audioErrorRef.current = { count: 0, lastAt: 0 };
@@ -1916,7 +1662,7 @@ export default function App() {
           if (pendingSeekRef.current > 0) {
             const nextTime = Math.min(pendingSeekRef.current, Math.max(0, duration - 1));
             event.currentTarget.currentTime = nextTime;
-            if (!nativePlaybackEnabled) setCurrentTime(nextTime);
+            if (!nativePlaybackEnabled) commitCurrentTime(nextTime, true);
             pendingSeekRef.current = 0;
           }
         }}
@@ -2604,21 +2350,25 @@ function ArtistsSurface({
   if (selectedArtist) {
     const avatarUrl = selectedArtist.avatarUrl ?? artistAvatarCache[selectedArtist.name.toLowerCase()] ?? null;
     return (
-      <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(340px,0.72fr)_minmax(0,1.28fr)]">
+      <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(420px,0.82fr)_minmax(0,1.18fr)]">
         <section className="glass relative min-h-0 overflow-hidden rounded-[1.5rem] p-6">
           <div className="absolute inset-0 bg-gradient-to-br from-white/80 via-white/30 to-neutral-200/45" />
-          <div className="relative z-10 flex h-full min-h-0 flex-col justify-between">
+          <div className="relative z-10 flex h-full min-h-0 flex-col">
             <button
               className="w-fit rounded-full bg-white/70 px-4 py-2 text-sm font-medium shadow-sm transition hover:bg-white"
               onClick={onBack}
             >
               返回歌手墙
             </button>
-            <div className="py-8">
-              <ArtistAvatar name={selectedArtist.name} avatarUrl={avatarUrl} className="size-44 rounded-[2rem]" />
-              <Badge className="mt-6">{artistSourceLabel(selectedArtist.source)}</Badge>
-              <h1 className="mt-4 break-words text-4xl font-semibold leading-tight">{selectedArtist.name}</h1>
-              <div className="mt-6 grid grid-cols-2 gap-3">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-8 text-center">
+              <ArtistAvatar
+                name={selectedArtist.name}
+                avatarUrl={avatarUrl}
+                className="size-64 rounded-[2.4rem] 2xl:size-80"
+              />
+              <Badge className="mt-7">{artistSourceLabel(selectedArtist.source)}</Badge>
+              <h1 className="mt-4 max-w-[26rem] break-words text-4xl font-semibold leading-tight 2xl:text-5xl">{selectedArtist.name}</h1>
+              <div className="mt-6 grid w-full max-w-sm grid-cols-2 gap-3">
                 <Metric value={String(tracks.length || selectedArtist.trackCount || 0)} label="曲目" />
                 <Metric value={String(selectedArtist.albumCount ?? 0)} label="专辑" />
               </div>
@@ -2703,66 +2453,6 @@ function ArtistCard({
         <p className="mt-1 truncate text-xs text-neutral-400">{artist.albumCount ?? 0} 张专辑</p>
       </div>
     </button>
-  );
-}
-
-function ArtistAvatar({
-  name,
-  avatarUrl,
-  className,
-}: {
-  name: string;
-  avatarUrl: string | null;
-  className?: string;
-}) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [avatarUrl]);
-
-  return (
-    <div
-      className={cn(
-        "relative flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br from-neutral-200 via-white to-neutral-300 text-neutral-500 shadow-sm",
-        className,
-      )}
-    >
-      {avatarUrl && !failed ? (
-        <img
-          src={avatarUrl}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className="absolute inset-0 size-full object-cover"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <>
-          <UserRound className="size-1/2" />
-          <span className="absolute bottom-2 right-2 rounded-full bg-white/85 px-2 py-1 text-xs font-semibold">
-            {name.slice(0, 1).toUpperCase()}
-          </span>
-        </>
-      )}
-    </div>
-  );
-}
-
-function StatTile({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
-  return (
-    <div className="rounded-[1.15rem] bg-white/58 p-4 shadow-sm">
-      <p className="text-sm text-neutral-500">{label}</p>
-      <p className={cn("mt-2 truncate font-semibold", compact ? "text-xl" : "text-3xl")}>{value}</p>
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="rounded-[1.15rem] border border-dashed border-neutral-300/70 bg-white/45 p-5 text-sm text-neutral-500">
-      {text}
-    </div>
   );
 }
 
@@ -2942,163 +2632,6 @@ function SidebarLyrics({
       </div>
     </div>
   );
-}
-
-function SpectrumCanvas({
-  analyserRef,
-  playing,
-  active,
-  palette,
-  fallback,
-}: {
-  analyserRef: { current: AnalyserNode | null };
-  playing: boolean;
-  active: boolean;
-  palette: CoverPalette;
-  fallback: number[];
-}) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const levelsRef = useRef<number[]>(Array.from({ length: 42 }, () => 0.1));
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (!active && !playing) return;
-
-    let frame = 0;
-    let frequencyData = new Uint8Array(0);
-    let timeData = new Uint8Array(0);
-    const draw = () => {
-      const context = canvas.getContext("2d");
-      if (!context) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(1.75, Math.max(1, window.devicePixelRatio || 1));
-      const width = Math.max(1, Math.floor(rect.width * dpr));
-      const height = Math.max(1, Math.floor(rect.height * dpr));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-
-      const analyser = analyserRef.current;
-      if (analyser) {
-        if (frequencyData.length !== analyser.frequencyBinCount) {
-          frequencyData = new Uint8Array(analyser.frequencyBinCount);
-        }
-        if (timeData.length !== analyser.fftSize) {
-          timeData = new Uint8Array(analyser.fftSize);
-        }
-        analyser.getByteFrequencyData(frequencyData);
-        analyser.getByteTimeDomainData(timeData);
-      }
-
-      const barCount = levelsRef.current.length;
-      const now = performance.now();
-      const globalWave = analyser
-        ? timeData.reduce((sum, value) => sum + Math.abs(value - 128), 0) / timeData.length / 48
-        : 0;
-
-      context.clearRect(0, 0, width, height);
-      const gap = 6 * dpr;
-      const barWidth = Math.max(2 * dpr, (width - gap * (barCount - 1)) / barCount);
-      const baseline = height * 0.82;
-      const maxBarHeight = height * 0.58;
-      const barGradient = context.createLinearGradient(0, baseline - maxBarHeight, 0, baseline);
-      barGradient.addColorStop(0, colorWithAlpha(palette.secondary, 0.9));
-      barGradient.addColorStop(0.75, colorWithAlpha(palette.primary, 0.82));
-      barGradient.addColorStop(1, colorWithAlpha(palette.primary, 0.56));
-
-      context.strokeStyle = colorWithAlpha(palette.primary, 0.2);
-      context.lineWidth = 1 * dpr;
-      context.beginPath();
-      context.moveTo(0, baseline + 0.5 * dpr);
-      context.lineTo(width, baseline + 0.5 * dpr);
-      context.stroke();
-
-      for (let index = 0; index < barCount; index += 1) {
-        const logStart = Math.floor(Math.pow(index / barCount, 1.18) * frequencyData.length * 0.82);
-        const logEnd = Math.max(
-          logStart + 1,
-          Math.floor(Math.pow((index + 1) / barCount, 1.18) * frequencyData.length * 0.82),
-        );
-        const foldedBand = Math.max(1, Math.floor(frequencyData.length * 0.42));
-        const foldedIndex = frequencyData.length
-          ? (index * 3 + Math.floor(index / 4)) % foldedBand
-          : 0;
-        const linearIndex = Math.min(
-          frequencyData.length - 1,
-          Math.floor((index / Math.max(1, barCount - 1)) * (frequencyData.length - 1)),
-        );
-        const mirrorIndex = Math.max(0, frequencyData.length - 1 - linearIndex);
-        let bandEnergy = 0;
-        for (let cursor = logStart; cursor < logEnd; cursor += 1) {
-          bandEnergy += frequencyData[cursor] ?? 0;
-        }
-        const timeIndex = timeData.length ? Math.floor((index / barCount) * timeData.length) : 0;
-        const timeEnergy = timeData.length ? Math.abs((timeData[timeIndex] ?? 128) - 128) / 96 : 0;
-        const spectralEnergy = analyser
-          ? (bandEnergy / (logEnd - logStart) +
-              (frequencyData[linearIndex] ?? 0) * 0.28 +
-              (frequencyData[mirrorIndex] ?? 0) * 0.08 +
-              (frequencyData[foldedIndex] ?? 0) * 0.36 +
-              (frequencyData[Math.max(1, foldedIndex - 1)] ?? 0) * 0.16) /
-            (255 * 1.6)
-          : (fallback[index % fallback.length] ?? 18) / 100;
-        const energy = analyser
-          ? Math.pow(Math.min(1, spectralEnergy * 1.7 + timeEnergy * 0.3 + globalWave * 0.12), 0.88)
-          : spectralEnergy;
-
-        const phase = Math.sin(now / (210 + index * 3.2) + index * 0.42);
-        const breathing = playing
-          ? (phase + 1) * 0.032 + Math.abs(Math.sin(now / 320 + index * 0.42)) * 0.028
-          : 0;
-        const target = playing
-          ? Math.min(1, Math.max(0.08, energy * 0.86 + globalWave * 0.24 + breathing))
-          : Math.max(0.05, levelsRef.current[index] * 0.92);
-        levelsRef.current[index] = levelsRef.current[index] * 0.72 + target * 0.28;
-
-        const x = index * (barWidth + gap);
-        const barHeight = Math.max(3 * dpr, levelsRef.current[index] * maxBarHeight);
-        const radius = Math.min(barWidth / 2, 10 * dpr);
-
-        context.fillStyle = barGradient;
-        roundedRect(context, x, baseline - barHeight, barWidth, barHeight, radius);
-        context.fill();
-      }
-
-      frame = window.requestAnimationFrame(draw);
-    };
-
-    draw();
-    return () => {
-      if (frame) window.cancelAnimationFrame(frame);
-    };
-  }, [active, analyserRef, fallback, palette.primary, palette.secondary, playing]);
-
-  return <canvas ref={canvasRef} className="block h-36 w-full sm:h-40 2xl:h-56" aria-hidden="true" />;
-}
-
-function roundedRect(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  const safeRadius = Math.min(radius, width / 2, Math.abs(height) / 2);
-  context.beginPath();
-  context.moveTo(x + safeRadius, y);
-  context.lineTo(x + width - safeRadius, y);
-  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
-  context.lineTo(x + width, y + height - safeRadius);
-  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
-  context.lineTo(x + safeRadius, y + height);
-  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
-  context.lineTo(x, y + safeRadius);
-  context.quadraticCurveTo(x, y, x + safeRadius, y);
-  context.closePath();
 }
 
 function PlayerSurface({
@@ -3703,407 +3236,6 @@ function LyricCandidateCard({
   );
 }
 
-function CollectionSurface({
-  title,
-  subtitle,
-  icon,
-  tracks: collectionTracks,
-  onPickTrack,
-}: {
-  title: string;
-  subtitle: string;
-  icon: React.ReactNode;
-  tracks: Track[];
-  onPickTrack: (id: string) => void;
-}) {
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center gap-4">
-        <div className="flex size-14 items-center justify-center rounded-full bg-white shadow-sm">
-          {icon}
-        </div>
-        <div>
-          <p className="text-neutral-500">{subtitle}</p>
-          <h1 className="text-4xl font-semibold sm:text-6xl">{title}</h1>
-        </div>
-      </div>
-      <div className="mt-10 grid gap-4 md:grid-cols-3">
-        {collectionTracks.map((track) => (
-          <button
-            key={track.id}
-            className="group overflow-hidden rounded-[1.75rem] bg-white/54 p-3 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
-            onClick={() => onPickTrack(track.id)}
-          >
-            <CoverArt track={track} className="aspect-square w-full rounded-[1.35rem]" />
-            <div className="p-2">
-              <p className="truncate font-semibold">{track.title}</p>
-              <p className="truncate text-sm text-neutral-500">{track.artist}</p>
-            </div>
-          </button>
-        ))}
-      </div>
-      {!collectionTracks.length && <EmptyState text="暂无同步数据，绑定有效 Cookie 后再刷新。" />}
-    </div>
-  );
-}
-
-function LikedSurface({
-  localTracks,
-  neteaseTracks,
-  onPickTrack,
-}: {
-  localTracks: Track[];
-  neteaseTracks: Track[];
-  onPickTrack: (id: string) => void;
-}) {
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Badge>Favorite</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">我喜欢</h1>
-          <p className="mt-3 text-neutral-500">本地红心和网易云红心分开放，后面同步时不会混乱。</p>
-        </div>
-        <Button variant="glass">
-          <Heart className="fill-current" />
-          同步红心
-        </Button>
-      </div>
-
-      <div className="mt-8 grid gap-5 xl:grid-cols-2">
-        <LikedColumn title="本地我喜欢" subtitle="来自本地音乐库" tracks={localTracks} onPickTrack={onPickTrack} />
-        <LikedColumn title="网易云我喜欢" subtitle="Cookie 登录后读取" tracks={neteaseTracks} onPickTrack={onPickTrack} />
-      </div>
-    </div>
-  );
-}
-
-function LikedColumn({
-  title,
-  subtitle,
-  tracks: likedTracks,
-  onPickTrack,
-}: {
-  title: string;
-  subtitle: string;
-  tracks: Track[];
-  onPickTrack: (id: string) => void;
-}) {
-  return (
-    <section className="rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">{title}</h2>
-          <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
-        </div>
-        <Badge>{likedTracks.length} 首</Badge>
-      </div>
-      <div className="mt-4 grid gap-2">
-        {likedTracks.map((track) => (
-          <button
-            key={track.id}
-            className="grid grid-cols-[3rem_minmax(0,1fr)_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
-            onClick={() => onPickTrack(track.id)}
-          >
-            <CoverArt track={track} className="size-12 rounded-xl" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">{track.title}</p>
-              <p className="truncate text-xs text-neutral-500">{track.artist}</p>
-            </div>
-            <span className="flex size-7 items-center justify-center rounded-full bg-white/70">
-              <Heart className="size-4 fill-neutral-950" />
-            </span>
-          </button>
-        ))}
-        {!likedTracks.length && <EmptyState text="暂无歌曲，先扫描本地目录或同步网易云。" />}
-      </div>
-    </section>
-  );
-}
-
-function PlaylistSurface({
-  playlists,
-  selectedPlaylist,
-  tracks,
-  playCounts,
-  loading,
-  onOpenPlaylist,
-  onClosePlaylist,
-  onPickTrack,
-}: {
-  playlists: ProviderPlaylist[];
-  selectedPlaylist: ProviderPlaylist | null;
-  tracks: Track[];
-  playCounts: Record<string, number>;
-  loading: boolean;
-  onOpenPlaylist: (playlist: ProviderPlaylist) => void;
-  onClosePlaylist: () => void;
-  onPickTrack: (id: string) => void;
-}) {
-  const [sortMode, setSortMode] = useState<"added-desc" | "added-asc" | "title-asc" | "title-desc" | "plays-desc">("added-desc");
-  const sortedTracks = useMemo(() => {
-    const indexed = tracks.map((track, index) => ({ track, index }));
-    switch (sortMode) {
-      case "added-asc":
-        return [...indexed].reverse().map((item) => item.track);
-      case "title-asc":
-        return [...indexed]
-          .sort((left, right) => left.track.title.localeCompare(right.track.title, "zh-CN"))
-          .map((item) => item.track);
-      case "title-desc":
-        return [...indexed]
-          .sort((left, right) => right.track.title.localeCompare(left.track.title, "zh-CN"))
-          .map((item) => item.track);
-      case "plays-desc":
-        return [...indexed]
-          .sort((left, right) => {
-            const byCount = (playCounts[right.track.id] ?? 0) - (playCounts[left.track.id] ?? 0);
-            if (byCount !== 0) return byCount;
-            return left.index - right.index;
-          })
-          .map((item) => item.track);
-      default:
-        return indexed.map((item) => item.track);
-    }
-  }, [playCounts, sortMode, tracks]);
-  const playlistPlayRanking = useMemo(
-    () =>
-      [...tracks]
-        .filter((track) => (playCounts[track.id] ?? 0) > 0)
-        .sort((left, right) => (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0))
-        .slice(0, 3),
-    [playCounts, tracks],
-  );
-
-  if (selectedPlaylist) {
-    return (
-      <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <Button variant="ghost" size="sm" onClick={onClosePlaylist}>
-              <ChevronDown className="rotate-90" />
-              返回歌单
-            </Button>
-            <h1 className="mt-4 truncate text-3xl font-semibold sm:text-5xl">{selectedPlaylist.name}</h1>
-            <p className="mt-2 text-sm text-neutral-500">{tracks.length} 首 · 原始顺序来自歌单</p>
-          </div>
-          <Badge>{loading ? "读取中" : "Ready"}</Badge>
-        </div>
-        <div className="mt-5 flex flex-wrap gap-2">
-          {[
-            ["added-desc", "添加倒序"],
-            ["added-asc", "添加正序"],
-            ["title-asc", "名字 A-Z"],
-            ["title-desc", "名字 Z-A"],
-            ["plays-desc", "听的次数"],
-          ].map(([value, label]) => (
-            <button
-              key={value}
-              className={cn(
-                "rounded-full border px-3 py-1.5 text-sm transition",
-                sortMode === value ? "border-neutral-950 bg-neutral-950 text-white" : "border-white/70 bg-white/65 text-neutral-500",
-              )}
-              onClick={() => setSortMode(value as typeof sortMode)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="mt-5 rounded-[1.2rem] border border-white/70 bg-white/54 p-4 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Ranking</p>
-              <h2 className="mt-1 text-lg font-semibold">听的次数排行</h2>
-            </div>
-            <Badge>{playlistPlayRanking.length ? `${playlistPlayRanking.length} 首` : "暂无"}</Badge>
-          </div>
-          <div className="mt-3 grid gap-2">
-            {playlistPlayRanking.map((track, index) => (
-              <button
-                key={`ranking-${track.id}`}
-                className="grid grid-cols-[2rem_2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[0.95rem] p-2 text-left transition hover:bg-white/75"
-                onClick={() => onPickTrack(track.id)}
-              >
-                <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
-                <CoverArt track={track} className="size-11 rounded-xl" />
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold">{track.title}</span>
-                  <span className="block truncate text-xs text-neutral-500">{track.artist}</span>
-                </span>
-                <Badge>{playCounts[track.id] ?? 0} 次</Badge>
-              </button>
-            ))}
-            {!playlistPlayRanking.length && <p className="text-sm text-neutral-500">播放几首这个歌单里的歌后，这里会自动排序。</p>}
-          </div>
-        </div>
-        <div className="mt-6 grid gap-2">
-          {sortedTracks.map((track, index) => (
-            <button
-              key={track.id}
-              className="grid grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
-              onClick={() => onPickTrack(track.id)}
-            >
-              <span className="text-center text-sm text-neutral-400">{index + 1}</span>
-              <CoverArt track={track} className="size-14 rounded-2xl" />
-              <div className="min-w-0">
-                <p className="truncate font-semibold">{track.title}</p>
-                <p className="truncate text-sm text-neutral-500">{track.artist}</p>
-              </div>
-              <span className="flex flex-wrap justify-end gap-2">
-                <Badge>{playCounts[track.id] ?? 0} 次</Badge>
-                <Badge>{formatAudioDetail(track)}</Badge>
-              </span>
-            </button>
-          ))}
-          {!tracks.length && !loading && <EmptyState text="这个歌单暂时没有读取到曲目。" />}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <Badge>Playlist</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">歌单</h1>
-        </div>
-        <Button>
-          <Plus />
-          新建
-        </Button>
-      </div>
-      <div className="mt-8 grid gap-4 md:grid-cols-3">
-        {playlists.map((playlist) => (
-          <button
-            key={playlist.id}
-            className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
-            onClick={() => onOpenPlaylist(playlist)}
-          >
-            {playlist.coverUrl ? (
-              <img src={playlist.coverUrl} alt="" className="size-16 rounded-2xl object-cover shadow-sm" />
-            ) : (
-              <Cloud className="size-6 text-neutral-500" />
-            )}
-            <h2 className="mt-8 text-2xl font-semibold">{playlist.name}</h2>
-            <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount} 首</p>
-            <Badge className="mt-5">{playlist.subscribed ? "收藏歌单" : "创建歌单"}</Badge>
-          </button>
-        ))}
-      </div>
-      {!playlists.length && <EmptyState text="暂无歌单数据，绑定有效网易云 Cookie 后同步。" />}
-      {selectedPlaylist && (
-        <section className="mt-6 rounded-[1.35rem] bg-white/52 p-4 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">Playlist Tracks</p>
-              <h2 className="mt-1 truncate text-2xl font-semibold">{selectedPlaylist.name}</h2>
-            </div>
-            <Badge>{loading ? "读取中" : `${tracks.length} 首`}</Badge>
-          </div>
-          <div className="mt-4 grid gap-2">
-            {tracks.map((track, index) => (
-              <button
-                key={track.id}
-                className="grid grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
-                onClick={() => onPickTrack(track.id)}
-              >
-                <span className="text-center text-sm text-neutral-400">{index + 1}</span>
-                <CoverArt track={track} className="size-12 rounded-xl" />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">{track.title}</p>
-                  <p className="truncate text-xs text-neutral-500">{track.artist}</p>
-                </div>
-                <Badge>{formatAudioDetail(track)}</Badge>
-              </button>
-            ))}
-            {!tracks.length && !loading && <EmptyState text="这个歌单暂时没有读取到曲目。" />}
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-function CloudSurface() {
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <Badge>Cloud</Badge>
-      <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">音乐云盘</h1>
-      <div className="mt-8 grid gap-4 md:grid-cols-2">
-        {capabilities.map((item) => (
-          <div key={item.title} className="rounded-[1.75rem] bg-white/54 p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">{item.title}</h2>
-            <p className="mt-3 text-sm leading-6 text-neutral-500">{item.desc}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-6 flex flex-wrap gap-3">
-        <Button>
-          <Cloud />
-          上传
-        </Button>
-        <Button variant="glass">
-          <ChevronDown />
-          下载
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCounts: Record<string, number> }) {
-  const mostPlayed = [...tracks]
-    .sort((left, right) => (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0))
-    .slice(0, 3);
-
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <Badge>Stats</Badge>
-      <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">听歌统计</h1>
-      <div className="mt-10 grid gap-3">
-        {[
-          ["全部", String(tracks.length), tracks[0]?.title ?? "暂无歌曲"],
-          ["本地", String(tracks.filter((track) => track.source === "local").length), tracks.find((track) => track.source === "local")?.title ?? "暂无歌曲"],
-          ["网易云", String(tracks.filter((track) => track.source === "netease").length), tracks.find((track) => track.source === "netease")?.title ?? "暂无歌曲"],
-        ].map(([label, count, top]) => (
-          <div
-            key={label}
-            className="grid grid-cols-[5rem_1fr] gap-4 rounded-[1.75rem] bg-white/54 p-5 shadow-sm sm:grid-cols-[7rem_1fr_auto]"
-          >
-            <p className="font-semibold">{label}</p>
-            <p className="text-neutral-500">{top}</p>
-            <p className="text-3xl font-semibold">{count}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-8 rounded-[1.5rem] bg-white/54 p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-xl font-semibold">播放次数</h2>
-          <Badge>{mostPlayed.length} 首</Badge>
-        </div>
-        <div className="mt-4 grid gap-3">
-          {mostPlayed.map((track, index) => (
-            <div
-              key={track.id}
-              className="grid grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.15rem] bg-white/72 p-3"
-            >
-              <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
-              <CoverArt track={track} className="size-12 rounded-xl" />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">{track.title}</p>
-                <p className="truncate text-xs text-neutral-500">{track.artist}</p>
-              </div>
-              <span className="text-sm font-medium text-neutral-500">{playCounts[track.id] ?? 0} 次</span>
-            </div>
-          ))}
-          {!mostPlayed.length && <EmptyState text="先播放几首歌，统计就会开始累计。" />}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function FloatingNav({
   activeView,
   open,
@@ -4673,79 +3805,5 @@ function AccountPanel({
         <Metric value={account?.connected ? "Ready" : "--"} label="同步" />
       </div>
     </motion.div>
-  );
-}
-
-function Metric({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="rounded-2xl bg-white/62 px-2 py-3">
-      <p className="text-base font-semibold text-neutral-950">{value}</p>
-      <p className="mt-1">{label}</p>
-    </div>
-  );
-}
-
-function CoverArt({
-  track,
-  className,
-  large = false,
-  fit = "cover",
-}: {
-  track: Track;
-  className?: string;
-  large?: boolean;
-  fit?: "cover" | "contain";
-}) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const hasImage = Boolean(track.coverUrl) && !imageFailed;
-
-  useEffect(() => {
-    setImageFailed(false);
-  }, [track.id, track.coverUrl]);
-
-  return (
-    <div
-      className={cn("relative shrink-0 overflow-hidden bg-neutral-950", className)}
-      style={{ background: track.cover }}
-      aria-hidden="true"
-    >
-      {hasImage ? (
-        <>
-          {fit === "contain" && (
-            <img
-              key={`blur-${track.coverUrl}`}
-              src={track.coverUrl}
-              alt=""
-              loading={large ? "eager" : "lazy"}
-              decoding="async"
-              className="absolute inset-0 size-full scale-110 object-cover opacity-55 blur-2xl"
-              onError={() => setImageFailed(true)}
-            />
-          )}
-          <img
-            key={track.coverUrl}
-            src={track.coverUrl}
-            alt=""
-            loading={large ? "eager" : "lazy"}
-            decoding="async"
-            className={cn("absolute inset-0 size-full", fit === "contain" ? "object-contain" : "object-cover")}
-            onError={() => setImageFailed(true)}
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-white/8" />
-        </>
-      ) : (
-        <>
-          <div className="absolute inset-0 opacity-95" style={{ background: track.cover }} />
-          <div className="absolute inset-0 bg-gradient-to-br from-white/22 via-transparent to-black/32" />
-          <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(255,255,255,0.12),transparent_42%,rgba(0,0,0,0.18))]" />
-          {large && (
-            <div className="absolute inset-x-7 bottom-7 z-10 text-white">
-              <p className="line-clamp-3 text-3xl font-semibold leading-tight drop-shadow">{track.title}</p>
-              <p className="mt-2 truncate text-sm font-medium text-white/74">{track.artist}</p>
-            </div>
-          )}
-        </>
-      )}
-    </div>
   );
 }

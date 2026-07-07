@@ -1,0 +1,327 @@
+import { navItems, type Track, type ViewId } from "@/data/music";
+
+export type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
+export type CoverPalette = { primary: string; secondary: string };
+export type PlayerSideView = "lyrics" | "queue";
+export type AudioOutputMode = "system" | "shared" | "exclusive";
+
+export type CachedPlayerState = {
+  activeTrackId?: string;
+  activeView?: ViewId;
+  playerSideView?: PlayerSideView;
+  playQueueIds?: string[];
+  currentTime?: number;
+  volume?: number;
+  qualityLevel?: QualityLevel;
+  shuffleEnabled?: boolean;
+  repeatMode?: "all" | "one";
+  playing?: boolean;
+};
+
+const playerCacheKey = "aria-player-state";
+const bpmCacheKey = "aria-bpm-cache";
+const lyricCacheKey = "aria-lyrics-cache";
+const audioSettingsKey = "aria-audio-settings";
+
+export const qualityOptions: Array<{ value: QualityLevel; label: string }> = [
+  { value: "standard", label: "标准" },
+  { value: "higher", label: "较高" },
+  { value: "exhigh", label: "极高" },
+  { value: "lossless", label: "无损" },
+  { value: "hires", label: "Hi-Res" },
+  { value: "jymaster", label: "臻品" },
+];
+
+const qualityLevelLabels: Record<QualityLevel, string> = {
+  standard: "标准",
+  higher: "较高",
+  exhigh: "320K",
+  lossless: "无损",
+  hires: "Hi-Res",
+  jymaster: "臻品",
+};
+
+export function readCachedPlayerState(): CachedPlayerState {
+  try {
+    const raw = window.localStorage.getItem(playerCacheKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as CachedPlayerState;
+    const navIds = new Set(navItems.map((item) => item.id));
+    const qualityIds = new Set(qualityOptions.map((item) => item.value));
+
+    return {
+      activeTrackId: typeof parsed.activeTrackId === "string" ? parsed.activeTrackId : undefined,
+      activeView: parsed.activeView && navIds.has(parsed.activeView) ? parsed.activeView : undefined,
+      playerSideView: parsed.playerSideView === "queue" ? "queue" : parsed.playerSideView === "lyrics" ? "lyrics" : undefined,
+      playQueueIds: Array.isArray(parsed.playQueueIds)
+        ? parsed.playQueueIds.filter((id): id is string => typeof id === "string")
+        : undefined,
+      currentTime:
+        typeof parsed.currentTime === "number" && Number.isFinite(parsed.currentTime)
+          ? Math.max(0, parsed.currentTime)
+          : undefined,
+      volume:
+        typeof parsed.volume === "number" && Number.isFinite(parsed.volume)
+          ? Math.max(0, Math.min(100, parsed.volume))
+          : undefined,
+      qualityLevel: parsed.qualityLevel && qualityIds.has(parsed.qualityLevel) ? parsed.qualityLevel : undefined,
+      shuffleEnabled: typeof parsed.shuffleEnabled === "boolean" ? parsed.shuffleEnabled : undefined,
+      repeatMode: parsed.repeatMode === "one" ? "one" : parsed.repeatMode === "all" ? "all" : undefined,
+      playing: typeof parsed.playing === "boolean" ? parsed.playing : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function readCachedLyrics(trackId?: string) {
+  if (!trackId) return [];
+  try {
+    const raw = window.localStorage.getItem(lyricCacheKey);
+    if (!raw) return [];
+    const cache = JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>;
+    return Array.isArray(cache[trackId]) ? cache[trackId] : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeCachedLyrics(trackId: string, lyrics: Array<{ time: string; text: string }>) {
+  if (!lyrics.length) return;
+  try {
+    const raw = window.localStorage.getItem(lyricCacheKey);
+    const cache = raw ? (JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>) : {};
+    const entries = Object.entries({ ...cache, [trackId]: lyrics }).slice(-80);
+    window.localStorage.setItem(lyricCacheKey, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Lyric caching is best-effort.
+  }
+}
+
+export function readCachedAudioSettings() {
+  try {
+    const raw = window.localStorage.getItem(audioSettingsKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as {
+      sinkId?: string;
+      hifiEnabled?: boolean;
+      exclusiveMode?: boolean;
+      outputMode?: AudioOutputMode;
+    };
+    const outputMode =
+      parsed.outputMode === "shared" || parsed.outputMode === "exclusive" || parsed.outputMode === "system"
+        ? parsed.outputMode
+        : parsed.exclusiveMode
+          ? "exclusive"
+          : "system";
+    return {
+      sinkId: typeof parsed.sinkId === "string" ? parsed.sinkId : "default",
+      hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
+      exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
+      outputMode,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function readCachedBpm(trackId?: string) {
+  if (!trackId) return null;
+  try {
+    const raw = window.localStorage.getItem(bpmCacheKey);
+    if (!raw) return null;
+    const cache = JSON.parse(raw) as Record<string, number>;
+    const bpm = cache[trackId];
+    return typeof bpm === "number" && bpm >= 40 && bpm <= 240 ? bpm : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeCachedBpm(trackId: string, bpm: number) {
+  try {
+    const raw = window.localStorage.getItem(bpmCacheKey);
+    const cache = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const entries = Object.entries({ ...cache, [trackId]: Math.round(bpm) }).slice(-1000);
+    window.localStorage.setItem(bpmCacheKey, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Keep BPM caching best-effort.
+  }
+}
+
+export function formatDuration(seconds: number | null) {
+  if (!seconds || Number.isNaN(seconds)) return "--:--";
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.floor(seconds % 60);
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+export function parseDuration(value: string) {
+  const cleanValue = value.replace(/[[\]]/g, "").trim();
+  const parts = cleanValue.split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+function normalizeDetectedBpm(value: number) {
+  if (!Number.isFinite(value)) return null;
+  let bpm = value;
+  while (bpm < 72) bpm *= 2;
+  while (bpm > 188) bpm /= 2;
+  const rounded = Math.round(bpm);
+  return rounded >= 48 && rounded <= 220 ? rounded : null;
+}
+
+export function estimateBpmFromPeaks(peaks: number[]) {
+  if (peaks.length < 4) return null;
+  const buckets = new Map<number, number>();
+  for (let index = 1; index < peaks.length; index += 1) {
+    const start = Math.max(0, index - 10);
+    for (let cursor = start; cursor < index; cursor += 1) {
+      const interval = peaks[index] - peaks[cursor];
+      if (interval < 300 || interval > 2400) continue;
+      const bpm = normalizeDetectedBpm(60000 / interval);
+      if (!bpm) continue;
+      const bucket = Math.round(bpm / 2) * 2;
+      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+    }
+  }
+  const [winner] = [...buckets.entries()].sort((left, right) => right[1] - left[1]);
+  return winner && winner[1] >= 3 ? winner[0] : null;
+}
+
+export function getActiveLyricIndex(lyrics: Track["lyrics"], currentTime: number) {
+  if (!lyrics.length) return 0;
+  let activeIndex = 0;
+  lyrics.forEach((line, index) => {
+    if (parseDuration(line.time) <= currentTime + 0.2) {
+      activeIndex = index;
+    }
+  });
+  return activeIndex;
+}
+
+export function extractDominantColors(image: HTMLImageElement): CoverPalette {
+  const canvas = document.createElement("canvas");
+  const size = 72;
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Canvas is unavailable");
+
+  context.drawImage(image, 0, 0, size, size);
+  const pixels = context.getImageData(0, 0, size, size).data;
+  const buckets = new Map<string, { count: number; saturation: number; lightness: number }>();
+
+  for (let index = 0; index < pixels.length; index += 4) {
+    const alpha = pixels[index + 3];
+    if (alpha < 180) continue;
+
+    const red = pixels[index];
+    const green = pixels[index + 1];
+    const blue = pixels[index + 2];
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    const lightness = (max + min) / 510;
+    const saturation = max === 0 ? 0 : (max - min) / max;
+
+    if (lightness > 0.9 || lightness < 0.08) continue;
+    if (saturation < 0.12 && lightness > 0.62) continue;
+
+    const bucket = [red, green, blue].map((value) => Math.round(value / 24) * 24);
+    const key = rgbToHex(bucket[0], bucket[1], bucket[2]);
+    const current = buckets.get(key);
+    buckets.set(key, {
+      count: (current?.count ?? 0) + 1,
+      saturation,
+      lightness,
+    });
+  }
+
+  const ranked = [...buckets.entries()]
+    .map(([color, item]) => ({
+      color,
+      score: item.count * (0.72 + item.saturation * 0.42) * (item.lightness > 0.82 ? 0.72 : 1),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const primary = ranked[0]?.color ?? "#7b8494";
+  const secondary = ranked.find((item) => colorDistance(item.color, primary) > 72)?.color ?? ranked[1]?.color ?? primary;
+  return { primary, secondary };
+}
+
+function rgbToHex(red: number, green: number, blue: number) {
+  return `#${[red, green, blue]
+    .map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function colorDistance(first: string, second: string) {
+  const a = hexToRgb(first);
+  const b = hexToRgb(second);
+  return Math.hypot(a.red - b.red, a.green - b.green, a.blue - b.blue);
+}
+
+function hexToRgb(hex: string) {
+  const normalized = hex.replace("#", "");
+  return {
+    red: Number.parseInt(normalized.slice(0, 2), 16),
+    green: Number.parseInt(normalized.slice(2, 4), 16),
+    blue: Number.parseInt(normalized.slice(4, 6), 16),
+  };
+}
+
+export function colorWithAlpha(hex: string, alpha: number) {
+  const { red, green, blue } = hexToRgb(hex);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+export function normalizeQuality(quality: string): Track["quality"] {
+  if (quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K") {
+    return quality;
+  }
+  return "320K";
+}
+
+export function formatBitrate(value?: number | null, compact = false) {
+  if (!value || !Number.isFinite(value)) return null;
+  return compact ? `${Math.round(value / 1000)}k` : `${Math.round(value / 1000)} kbps`;
+}
+
+export function formatSampleRate(value?: number | null, compact = false) {
+  if (!value || !Number.isFinite(value)) return null;
+  const khz = value / 1000;
+  const rendered = Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1);
+  return compact ? `${rendered}kHz` : `${rendered} kHz`;
+}
+
+export function formatAudioDetail(track: Track, level?: QualityLevel, compact = true) {
+  const resolvedLevel = track.currentLevel ?? level ?? null;
+  const qualityLabel = resolvedLevel ? qualityLevelLabels[resolvedLevel] : track.quality;
+  const bitrate = track.bitrate ? formatBitrate(track.bitrate, compact) : null;
+  const sampleRate = formatSampleRate(track.sampleRate, compact);
+  return [qualityLabel, bitrate, sampleRate].filter(Boolean).join(" · ");
+}
+
+export function splitArtistNames(value: string) {
+  return value
+    .split(/\s*(?:\/|、|,|，|&|\+| feat\. | ft\. )\s*/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function mergeTracks(tracksToMerge: Track[]) {
+  const seen = new Set<string>();
+  return tracksToMerge.filter((track) => {
+    if (seen.has(track.id)) return false;
+    seen.add(track.id);
+    return true;
+  });
+}
+
+export function trimTrackCache(tracksToMerge: Track[], maxItems = 1400) {
+  const merged = mergeTracks(tracksToMerge);
+  return merged.length > maxItems ? merged.slice(merged.length - maxItems) : merged;
+}

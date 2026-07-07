@@ -158,6 +158,7 @@ class MpvAudioEngine {
             socket.on("close", () => {
               this.socket = null;
               this.state.ready = false;
+              this.rejectPending(new Error("Native audio socket closed."));
             });
             resolve();
           });
@@ -264,8 +265,28 @@ class MpvAudioEngine {
 
     const requestId = ++this.requestId;
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(requestId, { resolve, reject });
-      this.socket.write(`${JSON.stringify({ ...payload, request_id: requestId })}\n`);
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Native audio command timed out: ${JSON.stringify(payload.command ?? payload)}`));
+      }, 8000);
+      timeout.unref?.();
+      this.pendingRequests.set(requestId, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      });
+      try {
+        this.socket.write(`${JSON.stringify({ ...payload, request_id: requestId })}\n`);
+      } catch (error) {
+        const pending = this.pendingRequests.get(requestId);
+        this.pendingRequests.delete(requestId);
+        pending?.reject(error);
+      }
     });
   }
 
