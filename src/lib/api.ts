@@ -108,6 +108,20 @@ export type NeteaseAccountSummary = {
   cookiePreview: string | null;
 };
 
+export type NeteaseQrStart = {
+  key: string;
+  qrUrl: string;
+  qrImage: string;
+  expiresIn: number;
+};
+
+export type NeteaseQrCheck = {
+  code: number;
+  status: "waiting" | "scanned" | "expired" | "success";
+  message: string;
+  account: NeteaseAccountSummary | null;
+};
+
 export type ProviderTrack = {
   id: string;
   title: string;
@@ -239,6 +253,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ cookie }),
     });
+  },
+  startNeteaseQrLogin() {
+    return request<NeteaseQrStart>("/api/settings/netease-qr/start", {
+      method: "POST",
+    });
+  },
+  checkNeteaseQrLogin(key: string) {
+    const params = new URLSearchParams({ key });
+    return request<NeteaseQrCheck>(`/api/settings/netease-qr/check?${params}`);
   },
   listProviders() {
     return request<{

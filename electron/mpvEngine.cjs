@@ -15,6 +15,7 @@ class MpvAudioEngine {
     this.requestId = 0;
     this.pendingRequests = new Map();
     this.ensurePromise = null;
+    this.loadToken = 0;
     this.pendingSeek = 0;
     this.pendingPause = true;
     this.lastRecoveryAt = 0;
@@ -112,6 +113,16 @@ class MpvAudioEngine {
           "--no-terminal",
           "--msg-level=all=warn",
           "--no-config",
+          "--cache=yes",
+          "--cache-pause=no",
+          "--cache-pause-initial=no",
+          "--cache-pause-wait=0.15",
+          "--demuxer-readahead-secs=4",
+          "--demuxer-max-bytes=32MiB",
+          "--demuxer-max-back-bytes=4MiB",
+          "--stream-buffer-size=512KiB",
+          "--audio-buffer=0.18",
+          "--gapless-audio=no",
           `--input-ipc-server=${this.pipePath}`,
         ],
         {
@@ -324,9 +335,19 @@ class MpvAudioEngine {
     return this.snapshot();
   }
 
-  async load({ trackId, url, position = 0, paused = true, volume = 72, exclusive = false, deviceId = "default" }) {
+  async load(options) {
     await this.ensureProcess();
-    await this.command("stop").catch(() => undefined);
+    const token = ++this.loadToken;
+    return this.performLoad(options, token);
+  }
+
+  isCurrentLoad(token) {
+    return token === this.loadToken;
+  }
+
+  async performLoad({ trackId, url, position = 0, paused = true, volume = 72, exclusive = false, deviceId = "default" }, token) {
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
+
     this.pendingSeek = Math.max(0, Number(position) || 0);
     this.pendingPause = Boolean(paused);
     this.state.trackId = trackId;
@@ -336,8 +357,17 @@ class MpvAudioEngine {
     this.state.active = false;
     this.state.paused = this.pendingPause;
     this.state.bitrate = null;
+    this.emit({ kind: "switching" });
+
+    await this.command("set_property", "pause", true).catch(() => undefined);
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
+
     await this.applyOutputSettings({ exclusive, deviceId, volume });
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
+
     await this.command("loadfile", url, "replace");
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
+
     this.emit({ kind: "loading" });
     return this.snapshot();
   }
@@ -400,6 +430,7 @@ class MpvAudioEngine {
   }
 
   async stop() {
+    this.loadToken += 1;
     if (!this.process) return this.snapshot();
     await this.command("stop").catch(() => undefined);
     this.state.active = false;
@@ -414,6 +445,7 @@ class MpvAudioEngine {
   }
 
   async teardown() {
+    this.loadToken += 1;
     this.rejectPending(new Error("Native audio engine is being restarted."));
     if (this.socket && !this.socket.destroyed) {
       this.socket.destroy();

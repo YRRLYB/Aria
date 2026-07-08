@@ -74,6 +74,14 @@ export function readCachedPlayerState(): CachedPlayerState {
   }
 }
 
+export function writeCachedPlayerState(state: CachedPlayerState & { updatedAt?: number }) {
+  try {
+    window.localStorage.setItem(playerCacheKey, JSON.stringify(state));
+  } catch {
+    // Player state cache is a comfort feature; playback should continue without it.
+  }
+}
+
 export function readCachedLyrics(trackId?: string) {
   if (!trackId) return [];
   try {
@@ -122,6 +130,19 @@ export function readCachedAudioSettings() {
     };
   } catch {
     return {};
+  }
+}
+
+export function writeCachedAudioSettings(settings: {
+  sinkId: string;
+  hifiEnabled: boolean;
+  exclusiveMode: boolean;
+  outputMode: AudioOutputMode;
+}) {
+  try {
+    window.localStorage.setItem(audioSettingsKey, JSON.stringify(settings));
+  } catch {
+    // Audio settings are best-effort.
   }
 }
 

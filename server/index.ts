@@ -13,7 +13,12 @@ import { resolveLyricLines, searchLyricCandidates } from "./lyrics";
 import { scanMusicFolder } from "./musicScanner";
 import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
-import { getNeteaseAccountSummary, saveNeteaseCookie } from "./services/neteaseService";
+import {
+  checkNeteaseQrLogin,
+  getNeteaseAccountSummary,
+  saveNeteaseCookie,
+  startNeteaseQrLogin,
+} from "./services/neteaseService";
 import { readStore, updateStore } from "./store";
 import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
@@ -301,6 +306,23 @@ app.post("/api/settings/netease-cookie", async (req, res, next) => {
     const body = z.object({ cookie: z.string().min(1) }).parse(req.body);
     const account = await saveNeteaseCookie(body.cookie);
     res.json({ ok: true, account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/settings/netease-qr/start", async (_req, res, next) => {
+  try {
+    res.json(await startNeteaseQrLogin());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/settings/netease-qr/check", async (req, res, next) => {
+  try {
+    const query = z.object({ key: z.string().min(1) }).parse(req.query);
+    res.json(await checkNeteaseQrLogin(query.key));
   } catch (error) {
     next(error);
   }

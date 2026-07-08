@@ -40,6 +40,7 @@ import {
   api,
   type ApiScannedTrack,
   type NeteaseAccountSummary,
+  type NeteaseQrStart,
   type ProviderArtist,
   type ProviderPlaylist,
   type ProviderTrack,
@@ -62,7 +63,9 @@ import {
   splitArtistNames,
   trimTrackCache,
   writeCachedBpm,
+  writeCachedAudioSettings,
   writeCachedLyrics,
+  writeCachedPlayerState,
   type AudioOutputMode,
   type CoverPalette,
   type PlayerSideView,
@@ -299,6 +302,7 @@ export default function App() {
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
   const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>(() => readCachedAudioSettings().outputMode ?? "system");
   const [nativePlaybackFailed, setNativePlaybackFailed] = useState(false);
+  const [nativeAnalyserWakeToken, setNativeAnalyserWakeToken] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -325,6 +329,8 @@ export default function App() {
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
   const nativeLoadedUrlRef = useRef<string | null>(null);
+  const nativeAnalyserDelayUntilRef = useRef(0);
+  const nativeLoadSequenceRef = useRef(0);
   const lastNativeRenderRef = useRef({ at: 0, position: initialPlayerCache.currentTime ?? 0 });
   const lastCurrentTimeRenderRef = useRef({ at: 0, time: initialPlayerCache.currentTime ?? 0 });
 
@@ -386,6 +392,14 @@ export default function App() {
     url.searchParams.set("level", effectiveQualityLevel);
     return url.href;
   }, [activeTrack, effectiveQualityLevel]);
+  const audioElementStreamUrl = useMemo(() => {
+    if (!activeTrack.streamUrl) return null;
+    const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
+    if (activeTrack.source === "netease") {
+      url.searchParams.set("level", nativePlaybackEnabled ? "exhigh" : effectiveQualityLevel);
+    }
+    return url.href;
+  }, [activeTrack, effectiveQualityLevel, nativePlaybackEnabled]);
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -433,12 +447,14 @@ export default function App() {
         return dailyTracks;
       case "radar":
         return roamTracks;
+      case "artists":
+        return artistTracks;
       case "home":
         return visibleTracks;
       default:
         return [];
     }
-  }, [activeView, dailyTracks, likedDisplayTracks, playlistTracks, roamTracks, visibleLocalTracks, visibleTracks]);
+  }, [activeView, artistTracks, dailyTracks, likedDisplayTracks, playlistTracks, roamTracks, visibleLocalTracks, visibleTracks]);
   const playQueueTracks = useMemo(() => {
     const byId = new Map(allTracks.map((track) => [track.id, track]));
     return playQueueIds
@@ -805,26 +821,19 @@ export default function App() {
     if (now - lastPlayerCacheWriteRef.current < 900) return;
     lastPlayerCacheWriteRef.current = now;
 
-    try {
-      window.localStorage.setItem(
-        playerCacheKey,
-        JSON.stringify({
-          activeTrackId: activeTrack.id,
-          activeView,
-          playerSideView,
-          playQueueIds,
-          currentTime,
-          volume,
-          qualityLevel,
-          shuffleEnabled,
-          repeatMode,
-          playing,
-          updatedAt: now,
-        }),
-      );
-    } catch {
-      // Player state cache is a comfort feature; playback should continue without it.
-    }
+    writeCachedPlayerState({
+      activeTrackId: activeTrack.id,
+      activeView,
+      playerSideView,
+      playQueueIds,
+      currentTime,
+      volume,
+      qualityLevel,
+      shuffleEnabled,
+      repeatMode,
+      playing,
+      updatedAt: now,
+    });
   }, [activeTrack.id, activeTrackId, activeView, currentTime, playQueueIds, playerSideView, playing, qualityLevel, repeatMode, shuffleEnabled, volume]);
 
   useEffect(() => {
@@ -898,25 +907,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        audioSettingsKey,
-        JSON.stringify({
-          sinkId: selectedSinkId,
-          hifiEnabled,
-          exclusiveMode,
-          outputMode: audioOutputMode,
-        }),
-      );
-    } catch {
-      // Audio settings are a comfort feature.
-    }
+    writeCachedAudioSettings({
+      sinkId: selectedSinkId,
+      hifiEnabled,
+      exclusiveMode,
+      outputMode: audioOutputMode,
+    });
   }, [audioOutputMode, exclusiveMode, hifiEnabled, selectedSinkId]);
 
   useEffect(() => {
     setNativePlaybackFailed(false);
     nativeLoadedUrlRef.current = null;
-  }, [activeTrack.id, activeStreamUrl, audioOutputMode, selectedSinkId]);
+    if (!nativePlaybackRequested) {
+      nativeAnalyserDelayUntilRef.current = 0;
+      setNativeAnalyserWakeToken((value) => value + 1);
+      return;
+    }
+
+    nativeAnalyserDelayUntilRef.current = performance.now() + 520;
+    const timer = window.setTimeout(() => {
+      setNativeAnalyserWakeToken((value) => value + 1);
+    }, 560);
+    return () => window.clearTimeout(timer);
+  }, [activeTrack.id, activeStreamUrl, audioOutputMode, nativePlaybackRequested, selectedSinkId]);
 
   useEffect(() => {
     if (!audioOutputDevices.length) return;
@@ -953,7 +966,7 @@ export default function App() {
       if (typeof state.position === "number") {
         commitCurrentTime(state.position, state.kind === "loaded" || state.kind === "seek" || state.kind === "ended");
       }
-      if (typeof state.paused === "boolean") {
+      if (state.kind === "pause" && typeof state.paused === "boolean") {
         setPlaying(!state.paused);
       }
     }
@@ -997,18 +1010,35 @@ export default function App() {
     const audio = audioRef.current;
     if (!audio) return;
     const nativeAnalyserBridgeReady = Boolean(nativePlaybackEnabled && audioSourceRef.current && nativeSilenceGainRef.current);
+    const nativeAnalyserReady =
+      !nativePlaybackEnabled ||
+      Boolean(
+        nativeAudioState?.trackId === activeTrack.id &&
+          nativeAudioState.active &&
+          performance.now() >= nativeAnalyserDelayUntilRef.current,
+      );
     audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
     audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : Math.max(0, Math.min(1, nativePlaybackVolume / 100));
-    audio.preload = nativePlaybackEnabled ? "metadata" : hifiEnabled ? "auto" : "metadata";
+    audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : hifiEnabled ? "auto" : "metadata";
 
-    if (!activeStreamUrl) {
+    if (!audioElementStreamUrl || !nativeAnalyserReady) {
       audio.pause();
+      if (nativePlaybackEnabled && audio.src) {
+        audio.removeAttribute("src");
+        audio.load();
+      }
       return;
     }
 
-    const nextSrc = new URL(activeStreamUrl, window.location.href).href;
+    const nextSrc = new URL(audioElementStreamUrl, window.location.href).href;
     if (audio.src !== nextSrc) {
+      audio.pause();
+      if (audio.src) {
+        audio.removeAttribute("src");
+        audio.load();
+      }
       audio.src = nextSrc;
+      audio.load();
       setDurationSeconds(0);
     }
 
@@ -1019,7 +1049,17 @@ export default function App() {
     } else {
       audio.pause();
     }
-  }, [activeStreamUrl, hifiEnabled, nativePlaybackEnabled, nativePlaybackVolume, playing]);
+  }, [
+    audioElementStreamUrl,
+    activeTrack.id,
+    hifiEnabled,
+    nativeAudioState?.active,
+    nativeAudioState?.trackId,
+    nativeAnalyserWakeToken,
+    nativePlaybackEnabled,
+    nativePlaybackVolume,
+    playing,
+  ]);
 
   useEffect(() => {
     if (!nativePlaybackEnabled) return;
@@ -1076,8 +1116,11 @@ export default function App() {
     }
 
     const nextUrl = new URL(activeStreamUrl, window.location.href).href;
-    if (nativeLoadedUrlRef.current === nextUrl && nativeAudioState?.trackId === activeTrack.id) return;
+    if (nativeLoadedUrlRef.current === nextUrl) return;
 
+    let cancelled = false;
+    const loadSequence = nativeLoadSequenceRef.current + 1;
+    nativeLoadSequenceRef.current = loadSequence;
     nativeLoadedUrlRef.current = nextUrl;
     nativeAudio
       .load?.({
@@ -1090,12 +1133,17 @@ export default function App() {
         deviceId: selectedSinkId,
       })
       .then((state) => {
+        if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
         if (state) syncNativeAudioState(state as NativeAudioState);
       })
       .catch(() => {
+        if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
         nativeLoadedUrlRef.current = null;
         setNativePlaybackFailed(true);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [
     activeStreamUrl,
     activeTrack.id,
@@ -1169,7 +1217,7 @@ export default function App() {
   }, [activeTrack.id, activeTrack.bpm]);
 
   useEffect(() => {
-    if (!playing || !activeStreamUrl || !pageVisible) {
+    if (!playing || !audioElementStreamUrl || !pageVisible) {
       if (visualizerFrameRef.current) {
         window.cancelAnimationFrame(visualizerFrameRef.current);
         visualizerFrameRef.current = null;
@@ -1280,7 +1328,7 @@ export default function App() {
         visualizerFrameRef.current = null;
       }
     };
-  }, [activeStreamUrl, activeTrack.id, nativePlaybackEnabled, pageVisible, playing]);
+  }, [audioElementStreamUrl, activeTrack.id, nativePlaybackEnabled, pageVisible, playing]);
 
   useEffect(() => {
     if (activeTrack.id === idleTrack.id || activeTrack.lyricStatus === "linked") return;
@@ -3643,18 +3691,51 @@ function SettingsPanel({
                   );
                 })}
               </div>
-              <select
-                value={selectedSinkId}
-                disabled={!deviceSwitchSupported}
-                onChange={(event) => onSelectedSinkIdChange(event.target.value)}
-                className="mt-3 w-full rounded-[0.95rem] border border-white/70 bg-white/84 px-3 py-2 text-sm outline-none disabled:opacity-50"
-              >
-                {audioOutputDevices.map((device) => (
-                  <option key={device.id} value={device.id}>
-                    {device.label}
-                  </option>
-                ))}
-              </select>
+              <div className="no-scrollbar mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
+                {audioOutputDevices.map((device) => {
+                  const active = selectedSinkId === device.id;
+                  return (
+                    <button
+                      key={device.id}
+                      type="button"
+                      disabled={!deviceSwitchSupported}
+                      onClick={() => onSelectedSinkIdChange(device.id)}
+                      className={cn(
+                        "grid w-full grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[0.95rem] border px-3 py-2.5 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
+                        active
+                          ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_30px_rgba(23,23,23,0.12)]"
+                          : "border-white/70 bg-white/70 hover:bg-white",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex size-8 items-center justify-center rounded-full",
+                          active ? "bg-white/15 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
+                        )}
+                      >
+                        <Volume2 className="size-4" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{device.label}</span>
+                        <span className={cn("mt-0.5 block truncate text-xs", active ? "text-white/60" : "text-neutral-400")}>
+                          {device.id === "default" ? "跟随系统默认输出" : device.id}
+                        </span>
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-xs font-semibold",
+                          active ? "bg-white text-neutral-950" : "bg-white/80 text-neutral-500 shadow-sm",
+                        )}
+                      >
+                        {active ? "当前" : "选择"}
+                      </span>
+                    </button>
+                  );
+                })}
+                {!audioOutputDevices.length && (
+                  <div className="rounded-[0.95rem] bg-white/65 px-3 py-4 text-sm text-neutral-500">没有检测到可用输出设备。</div>
+                )}
+              </div>
               <p className="mt-2 truncate text-xs text-neutral-500">
                 {nativeAudioState?.deviceId ? `当前设备: ${nativeAudioState.deviceId}` : "当前设备: 默认输出"}
               </p>
@@ -3703,7 +3784,11 @@ function AccountPanel({
 }) {
   const [cookie, setCookie] = useState("");
   const [account, setAccount] = useState<NeteaseAccountSummary | null>(null);
+  const [qrLogin, setQrLogin] = useState<NeteaseQrStart | null>(null);
+  const [qrStatus, setQrStatus] = useState("点击生成二维码后，用网易云音乐扫码登录。");
+  const [showCookie, setShowCookie] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [qrLoading, setQrLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -3723,6 +3808,57 @@ function AccountPanel({
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!qrLogin || account?.connected) return;
+
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const result = await api.checkNeteaseQrLogin(qrLogin.key);
+        if (cancelled) return;
+
+        if (result.status === "success" && result.account) {
+          setAccount(result.account);
+          onAccountChange?.(result.account);
+          setQrLogin(null);
+          setQrStatus("登录成功，账号信息已同步。");
+          setMessage("网易云账号已登录");
+          return;
+        }
+
+        if (result.status === "expired") {
+          setQrStatus("二维码已过期，请重新生成。");
+          return;
+        }
+
+        setQrStatus(result.status === "scanned" ? "已扫码，请在手机上确认登录。" : "等待扫码确认。");
+      } catch {
+        if (!cancelled) setQrStatus("扫码状态获取失败，稍后会自动重试。");
+      }
+    };
+
+    check();
+    const timer = window.setInterval(check, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [account?.connected, onAccountChange, qrLogin]);
+
+  async function startQrLogin() {
+    setQrLoading(true);
+    setMessage(null);
+    try {
+      const result = await api.startNeteaseQrLogin();
+      setQrLogin(result);
+      setQrStatus("请用网易云音乐 App 扫码。");
+    } catch {
+      setMessage("二维码生成失败，请确认后端正在运行。");
+    } finally {
+      setQrLoading(false);
+    }
+  }
 
   async function bindCookie() {
     if (!cookie.trim()) {
@@ -3751,7 +3887,7 @@ function AccountPanel({
       animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: -8, scale: 0.98, filter: "blur(12px)" }}
       transition={{ duration: 0.22 }}
-      className="glass absolute right-0 top-14 z-50 w-[min(24rem,calc(100vw-2rem))] rounded-[1.4rem] p-4"
+      className="glass absolute right-0 top-14 z-50 w-[min(25rem,calc(100vw-2rem))] rounded-[1.4rem] p-4"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -3765,7 +3901,7 @@ function AccountPanel({
           <div>
             <p className="font-semibold">{account?.nickname ?? "网易云账号"}</p>
             <p className="mt-1 text-xs text-neutral-500">
-              {account?.connected ? account.cookiePreview : "Cookie 未绑定"}
+              {account?.connected ? "已登录并同步 Cookie" : "扫码登录更适合日常使用"}
             </p>
           </div>
         </div>
@@ -3774,29 +3910,67 @@ function AccountPanel({
         </Button>
       </div>
 
-      <div className="mt-4 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
-        <label className="text-xs font-medium text-neutral-500" htmlFor="cookie">
-          网易云 Cookie
-        </label>
-        <textarea
-          id="cookie"
-          value={cookie}
-          onChange={(event) => setCookie(event.target.value)}
-          rows={4}
-          placeholder="MUSIC_U=...; NMTID=..."
-          className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
-        />
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onOpenSettings}>
-            <Settings2 />
-            设置
-          </Button>
-          <Button size="sm" onClick={bindCookie} disabled={saving}>
-            <Cookie />
-            {saving ? "保存中" : "绑定"}
-          </Button>
+      <div className="mt-4 rounded-[1.2rem] border border-white/70 bg-white/64 p-3 shadow-sm">
+        <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-3">
+          <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
+            {qrLogin?.qrImage ? (
+              <img src={qrLogin.qrImage} alt="网易云扫码登录二维码" className="size-full object-contain p-2" />
+            ) : account?.avatarUrl ? (
+              <img src={account.avatarUrl} alt="" className="size-full object-cover" />
+            ) : (
+              <UserRound className="size-9 text-neutral-300" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">{account?.connected ? "账号已同步" : "扫码登录"}</p>
+            <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{qrStatus}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" onClick={startQrLogin} disabled={qrLoading}>
+                <RefreshCw />
+                {qrLoading ? "生成中" : qrLogin ? "刷新二维码" : "生成二维码"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onOpenSettings}>
+                <Settings2 />
+                设置
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
+
+      <button
+        type="button"
+        className="mt-3 flex w-full items-center justify-between rounded-[1rem] bg-white/50 px-3 py-2 text-left text-sm font-medium shadow-sm transition hover:bg-white/72"
+        onClick={() => setShowCookie((value) => !value)}
+      >
+        <span className="flex items-center gap-2">
+          <Cookie className="size-4" />
+          Cookie 备用绑定
+        </span>
+        <span className="text-xs text-neutral-400">{showCookie ? "收起" : "展开"}</span>
+      </button>
+
+      {showCookie && (
+        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+          <label className="text-xs font-medium text-neutral-500" htmlFor="cookie">
+            网易云 Cookie
+          </label>
+          <textarea
+            id="cookie"
+            value={cookie}
+            onChange={(event) => setCookie(event.target.value)}
+            rows={4}
+            placeholder="MUSIC_U=...; NMTID=..."
+            className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+          />
+          <div className="mt-3 flex justify-end">
+            <Button size="sm" onClick={bindCookie} disabled={saving}>
+              <Cookie />
+              {saving ? "保存中" : "绑定 Cookie"}
+            </Button>
+          </div>
+        </div>
+      )}
       {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">

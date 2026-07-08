@@ -14,6 +14,61 @@ export async function saveNeteaseCookie(cookie: string) {
   return getNeteaseAccountSummary();
 }
 
+export async function startNeteaseQrLogin() {
+  const keyResponse = await neteaseApi.login_qr_key({ timestamp: Date.now() } as never);
+  const key = String((keyResponse.body?.data as { unikey?: string } | undefined)?.unikey ?? "");
+  if (!key) throw new Error("Failed to create Netease QR login key.");
+
+  const qrResponse = await neteaseApi.login_qr_create({
+    key,
+    qrimg: true,
+    platform: "web",
+    timestamp: Date.now(),
+  } as never);
+  const data = qrResponse.body?.data as { qrurl?: string; qrimg?: string } | undefined;
+
+  return {
+    key,
+    qrUrl: data?.qrurl ?? "",
+    qrImage: data?.qrimg ?? "",
+    expiresIn: 180,
+  };
+}
+
+export async function checkNeteaseQrLogin(key: string) {
+  const response = await neteaseApi.login_qr_check({
+    key,
+    timestamp: Date.now(),
+    noCookie: true,
+  } as never);
+  const body = response.body as { code?: number; message?: string; cookie?: string } | undefined;
+  const code = Number(body?.code ?? 0);
+  const cookie = typeof body?.cookie === "string" ? body.cookie : Array.isArray(response.cookie) ? response.cookie.join(";") : "";
+
+  if (code === 803) {
+    if (!cookie) throw new Error("Netease QR login succeeded without a cookie.");
+    const account = await saveNeteaseCookie(cookie);
+    return {
+      code,
+      status: "success" as const,
+      message: body?.message ?? "Login confirmed.",
+      account,
+    };
+  }
+
+  const status =
+    code === 800 ? "expired" :
+    code === 802 ? "scanned" :
+    "waiting";
+
+  return {
+    code,
+    status,
+    message: body?.message ?? (status === "expired" ? "QR code expired." : status === "scanned" ? "Waiting for confirmation." : "Waiting for scan."),
+    account: null,
+  };
+}
+
 export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary> {
   const store = await readStore();
   if (!store.neteaseCookie) {
