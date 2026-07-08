@@ -235,6 +235,37 @@ function mergeArtists(artistsToMerge: ArtistSummary[]) {
   return [...byName.values()];
 }
 
+function getTrackSearchSignature(tracks: Track[]) {
+  return tracks
+    .map((track) => [track.id, track.title, track.artist, track.album, track.quality].join("\u0000"))
+    .join("\u0001");
+}
+
+function createLocalArtistSummaries(tracks: Track[]) {
+  const artists = new Map<string, ArtistSummary & { albums: Set<string> }>();
+  for (const track of tracks) {
+    for (const artistName of splitArtistNames(track.artist)) {
+      const key = artistName.toLowerCase();
+      const current =
+        artists.get(key) ??
+        ({
+          id: `artist:${key}`,
+          name: artistName,
+          source: "local" as const,
+          avatarUrl: null,
+          trackCount: 0,
+          albumCount: 0,
+          providerId: null,
+          albums: new Set<string>(),
+        } satisfies ArtistSummary & { albums: Set<string> });
+      current.trackCount += 1;
+      current.albums.add(track.album);
+      artists.set(key, current);
+    }
+  }
+  return [...artists.values()].map(({ albums, ...artist }) => ({ ...artist, albumCount: albums.size }));
+}
+
 function artistSourceLabel(source: ArtistSummary["source"]) {
   if (source === "local") return "本地";
   if (source === "netease") return "网易云";
@@ -326,6 +357,7 @@ export default function App() {
   const artistAvatarCacheRef = useRef<Record<string, string | null>>({});
   const bpmSavedRef = useRef<Record<string, number>>({});
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
+  const localTracksRef = useRef<Track[]>([]);
   const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
   const lastPlayerCacheWriteRef = useRef(0);
   const nativeLoadedUrlRef = useRef<string | null>(null);
@@ -341,6 +373,7 @@ export default function App() {
   const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
   const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
   const nativePlaybackVolume = volume;
+  const localSearchSignature = useMemo(() => getTrackSearchSignature(localTracks), [localTracks]);
   const allTracks = useMemo(
     () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
     [localTracks, neteaseTracks, roamTracks, playlistTracks],
@@ -538,6 +571,10 @@ export default function App() {
   }, [hifiEnabled, playing, qualityLevel, playQueueTracks, visibleTracks]);
 
   useEffect(() => {
+    localTracksRef.current = localTracks;
+  }, [localTracks]);
+
+  useEffect(() => {
     const text = query.trim();
     if (!text) {
       setSearchBundle({ localTracks: [], neteaseTracks: [], artists: [] });
@@ -545,10 +582,11 @@ export default function App() {
       return;
     }
 
-    const localMatches = localTracks.filter((track) =>
+    const currentLocalTracks = localTracksRef.current;
+    const localMatches = currentLocalTracks.filter((track) =>
       [track.title, track.artist, track.album, track.quality].join(" ").toLowerCase().includes(text.toLowerCase()),
     );
-    const localArtists = artistSummaries
+    const localArtists = createLocalArtistSummaries(currentLocalTracks)
       .filter((artist) => artist.name.toLowerCase().includes(text.toLowerCase()))
       .slice(0, 10);
     setSearchBundle((current) => ({
@@ -599,7 +637,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [artistSummaries, localTracks, query]);
+  }, [localSearchSignature, query]);
 
   useEffect(() => {
     api
@@ -1790,6 +1828,10 @@ export default function App() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              autoComplete="off"
               placeholder="搜索音乐、歌手、专辑"
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-neutral-400"
             />
