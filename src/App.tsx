@@ -71,6 +71,7 @@ import {
   type PlayerSideView,
   type QualityLevel,
 } from "@/lib/playerPresentation";
+import { materializeQueueIds, orderedQueueIds, playableTracks } from "@/lib/playQueue";
 import { cn } from "@/lib/utils";
 
 const sourceLabel: Record<Track["source"], string> = {
@@ -365,6 +366,7 @@ export default function App() {
   const nativeLoadSequenceRef = useRef(0);
   const lastNativeRenderRef = useRef({ at: 0, position: initialPlayerCache.currentTime ?? 0 });
   const lastCurrentTimeRenderRef = useRef({ at: 0, time: initialPlayerCache.currentTime ?? 0 });
+  const rendererDiagnosticRef = useRef<Record<string, unknown>>({});
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
   const nativePlaybackRequested = Boolean(nativeAudioSupported && audioOutputMode !== "system");
@@ -494,6 +496,60 @@ export default function App() {
       .map((id) => byId.get(id))
       .filter((track): track is Track => Boolean(track?.streamUrl));
   }, [allTracks, playQueueIds]);
+  useEffect(() => {
+    rendererDiagnosticRef.current = {
+      activeTrackId: activeTrack.id,
+      activeTrackTitle: activeTrack.title,
+      activeView,
+      audioOutputMode,
+      nativePlaybackEnabled,
+      playing,
+      queueLength: playQueueTracks.length,
+      shuffleEnabled,
+    };
+  }, [activeTrack.id, activeTrack.title, activeView, audioOutputMode, nativePlaybackEnabled, playQueueTracks.length, playing, shuffleEnabled]);
+  useEffect(() => {
+    const log = window.ariaDesktop?.log;
+    if (!log) return;
+
+    const logError = (source: string, error: unknown, extra: Record<string, unknown> = {}) => {
+      const maybeError = error instanceof Error ? error : null;
+      log({
+        level: "error",
+        source,
+        message: maybeError?.message ?? String(error),
+        stack: maybeError?.stack,
+        context: {
+          ...rendererDiagnosticRef.current,
+          ...extra,
+        },
+      }).catch(() => undefined);
+    };
+
+    const onError = (event: ErrorEvent) => {
+      logError("window.error", event.error ?? event.message, {
+        filename: event.filename,
+        line: event.lineno,
+        column: event.colno,
+      });
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      logError("window.unhandledrejection", event.reason);
+    };
+
+    log({
+      level: "info",
+      source: "renderer.lifecycle",
+      message: "renderer mounted",
+      context: rendererDiagnosticRef.current,
+    }).catch(() => undefined);
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    };
+  }, []);
   const linkedLyricCount = useMemo(
     () => allTracks.filter((track) => track.lyricStatus === "linked").length,
     [allTracks],
@@ -1405,7 +1461,7 @@ export default function App() {
     const nextUiTracks = nextTracks.map(localTrackToUiTrack);
     pendingSeekRef.current = 0;
     setLocalTracks(nextUiTracks);
-    setPlayQueueIds(nextUiTracks.filter((track) => track.streamUrl).map((track) => track.id));
+    setPlayQueueIds(materializeQueueIds(nextUiTracks, nextUiTracks[0]?.id ?? activeTrack.id, shuffleEnabled));
     setLibraryMeta({
       roots: result.library?.roots.length ?? 1,
       updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
@@ -1428,34 +1484,18 @@ export default function App() {
     }
   }
 
-  function chooseRandomTrack(excludeId?: string) {
-    const queue = playQueueTracks.length ? playQueueTracks : playbackTracks.length ? playbackTracks : visibleTracks;
-    const candidates = queue.filter((track) => track.id !== excludeId);
-    if (!candidates.length) return queue[0] ?? null;
-    return candidates[Math.floor(Math.random() * candidates.length)] ?? null;
-  }
-
   function pickRelativeTrack(direction: 1 | -1) {
-    const queue = playQueueTracks.length ? playQueueTracks : playbackTracks.length ? playbackTracks : visibleTracks;
+    const fallbackQueue = playQueueTracks.length ? playQueueTracks : playbackTracks.length ? playbackTracks : visibleTracks;
+    const shouldRefreshShuffleQueue =
+      shuffleEnabled && (!playQueueTracks.length || !playQueueTracks.some((track) => track.id === activeTrack.id));
+    const nextQueueIds = shouldRefreshShuffleQueue
+      ? materializeQueueIds(fallbackQueue, activeTrack.id, true)
+      : orderedQueueIds(playQueueTracks.length ? playQueueTracks : fallbackQueue);
+    const byId = new Map([...playQueueTracks, ...fallbackQueue].map((track) => [track.id, track]));
+    const queue = nextQueueIds.map((id) => byId.get(id)).filter((track): track is Track => Boolean(track));
     if (!queue.length) return;
+    if (shouldRefreshShuffleQueue) setPlayQueueIds(nextQueueIds);
     pendingSeekRef.current = 0;
-    if (shuffleEnabled) {
-      const randomTrack = chooseRandomTrack(activeTrack.id);
-      if (randomTrack) {
-        if (randomTrack.id === activeTrack.id) {
-          if (nativePlaybackEnabled) {
-            seekTo(0);
-          } else if (audioRef.current) {
-            audioRef.current.currentTime = 0;
-            audioRef.current.play().catch(() => setPlaying(false));
-          }
-        }
-        setActiveTrackId(randomTrack.id);
-        setCurrentTime(0);
-        setPlaying(true);
-      }
-      return;
-    }
     const currentIndex = queue.findIndex((track) => track.id === activeTrack.id);
     const safeIndex = currentIndex >= 0 ? currentIndex : 0;
     const nextIndex = (safeIndex + direction + queue.length) % queue.length;
@@ -1529,8 +1569,7 @@ export default function App() {
   }
 
   function resolveQueueForTrack(trackId: string) {
-    const playable = (tracks: Track[]) => tracks.filter((track) => track.streamUrl);
-    const currentQueue = playable(contextualQueueTracks);
+    const currentQueue = playableTracks(contextualQueueTracks);
     if (activeView !== "home" && activeView !== "player" && currentQueue.some((track) => track.id === trackId)) {
       return currentQueue;
     }
@@ -1543,17 +1582,26 @@ export default function App() {
       neteaseLikedDisplayTracks,
       visibleLocalTracks,
       visibleTracks,
-    ].map(playable);
+    ].map(playableTracks);
     return candidateQueues.find((tracks) => tracks.some((track) => track.id === trackId)) ?? currentQueue;
   }
 
   function chooseTrack(trackId: string) {
-    const playableIds = resolveQueueForTrack(trackId).map((track) => track.id);
+    const queue = resolveQueueForTrack(trackId);
+    const playableIds = materializeQueueIds(queue, trackId, shuffleEnabled);
     if (playableIds.length) setPlayQueueIds(playableIds);
     pendingSeekRef.current = 0;
     setActiveTrackId(trackId);
     setCurrentTime(0);
     setPlaying(true);
+  }
+
+  function toggleShuffleQueue() {
+    const nextShuffleEnabled = !shuffleEnabled;
+    setShuffleEnabled(nextShuffleEnabled);
+    const queue = resolveQueueForTrack(activeTrack.id);
+    const playableIds = materializeQueueIds(queue.length ? queue : playQueueTracks, activeTrack.id, nextShuffleEnabled);
+    if (playableIds.length) setPlayQueueIds(playableIds);
   }
 
   function toggleLikeTrack(trackId: string) {
@@ -1967,7 +2015,7 @@ export default function App() {
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
                   onTogglePlay={() => setPlaying((value) => !value)}
-                  onToggleShuffle={() => setShuffleEnabled((value) => !value)}
+                  onToggleShuffle={toggleShuffleQueue}
                   onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
                   onNext={() => pickRelativeTrack(1)}
                   onPrevious={() => pickRelativeTrack(-1)}
@@ -1986,6 +2034,7 @@ export default function App() {
                   durationSeconds={durationSeconds}
                   spectrum={spectrum}
                   analyserRef={analyserRef}
+                  visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
                   detectedBpm={detectedBpm}
                   onSeek={seekTo}
                 />
@@ -2748,6 +2797,7 @@ function PlayerSurface({
   durationSeconds,
   spectrum,
   analyserRef,
+  visualizerMode,
   detectedBpm,
   onSeek,
 }: {
@@ -2774,6 +2824,7 @@ function PlayerSurface({
   durationSeconds: number;
   spectrum: number[];
   analyserRef: { current: AnalyserNode | null };
+  visualizerMode: AudioOutputMode;
   detectedBpm: number | null;
   onSeek: (time: number) => void;
 }) {
@@ -2898,6 +2949,7 @@ function PlayerSurface({
                 active={visualizerActive}
                 palette={palette}
                 fallback={visualizerBars}
+                outputMode={visualizerMode}
               />
               <div
                 className="hidden"

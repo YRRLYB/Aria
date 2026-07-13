@@ -65,6 +65,16 @@ declare global {
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
+      log?: (payload: {
+        level?: "debug" | "info" | "warn" | "error";
+        source?: string;
+        message?: string;
+        stack?: string;
+        filename?: string;
+        line?: number;
+        column?: number;
+        context?: Record<string, unknown>;
+      }) => Promise<unknown>;
     };
   }
 }

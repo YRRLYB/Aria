@@ -1,6 +1,55 @@
 import { useEffect, useRef } from "react";
-import type { CoverPalette } from "@/lib/playerPresentation";
+import type { AudioOutputMode, CoverPalette } from "@/lib/playerPresentation";
 import { colorWithAlpha } from "@/lib/playerPresentation";
+
+const spectrumProfiles: Record<
+  AudioOutputMode,
+  {
+    gain: number;
+    timeGain: number;
+    waveGain: number;
+    floor: number;
+    ceiling: number;
+    power: number;
+    smoothing: number;
+    release: number;
+    breathing: number;
+  }
+> = {
+  system: {
+    gain: 2.28,
+    timeGain: 0.36,
+    waveGain: 0.16,
+    floor: 0.06,
+    ceiling: 0.94,
+    power: 0.82,
+    smoothing: 0.33,
+    release: 0.7,
+    breathing: 0.04,
+  },
+  shared: {
+    gain: 0.82,
+    timeGain: 0.12,
+    waveGain: 0.04,
+    floor: 0.05,
+    ceiling: 0.7,
+    power: 1.26,
+    smoothing: 0.2,
+    release: 0.62,
+    breathing: 0.014,
+  },
+  exclusive: {
+    gain: 0.72,
+    timeGain: 0.1,
+    waveGain: 0.035,
+    floor: 0.045,
+    ceiling: 0.64,
+    power: 1.32,
+    smoothing: 0.18,
+    release: 0.58,
+    breathing: 0.012,
+  },
+};
 
 export function SpectrumCanvas({
   analyserRef,
@@ -8,12 +57,14 @@ export function SpectrumCanvas({
   active,
   palette,
   fallback,
+  outputMode,
 }: {
   analyserRef: { current: AnalyserNode | null };
   playing: boolean;
   active: boolean;
   palette: CoverPalette;
   fallback: number[];
+  outputMode: AudioOutputMode;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const levelsRef = useRef<number[]>(Array.from({ length: 42 }, () => 0.1));
@@ -21,23 +72,20 @@ export function SpectrumCanvas({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (!active || !playing) return;
+    if (!active || !playing) {
+      clearCanvas(canvas);
+      levelsRef.current = levelsRef.current.map(() => 0);
+      return;
+    }
 
     let frame = 0;
     let frequencyData = new Uint8Array(0);
     let timeData = new Uint8Array(0);
+    const profile = spectrumProfiles[outputMode];
     const draw = () => {
-      const context = canvas.getContext("2d");
-      if (!context) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(1.75, Math.max(1, window.devicePixelRatio || 1));
-      const width = Math.max(1, Math.floor(rect.width * dpr));
-      const height = Math.max(1, Math.floor(rect.height * dpr));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
+      const prepared = prepareCanvas(canvas);
+      if (!prepared) return;
+      const { context, dpr, height, width } = prepared;
 
       const analyser = analyserRef.current;
       if (analyser) {
@@ -104,17 +152,20 @@ export function SpectrumCanvas({
             (255 * 1.6)
           : (fallback[index % fallback.length] ?? 18) / 100;
         const energy = analyser
-          ? Math.pow(Math.min(1, spectralEnergy * 1.7 + timeEnergy * 0.3 + globalWave * 0.12), 0.88)
+          ? Math.pow(
+              Math.min(profile.ceiling, spectralEnergy * profile.gain + timeEnergy * profile.timeGain + globalWave * profile.waveGain),
+              profile.power,
+            )
           : spectralEnergy;
 
         const phase = Math.sin(now / (210 + index * 3.2) + index * 0.42);
         const breathing = playing
-          ? (phase + 1) * 0.032 + Math.abs(Math.sin(now / 320 + index * 0.42)) * 0.028
+          ? (phase + 1) * profile.breathing + Math.abs(Math.sin(now / 320 + index * 0.42)) * profile.breathing * 0.7
           : 0;
         const target = playing
-          ? Math.min(1, Math.max(0.08, energy * 0.86 + globalWave * 0.24 + breathing))
-          : Math.max(0.05, levelsRef.current[index] * 0.92);
-        levelsRef.current[index] = levelsRef.current[index] * 0.72 + target * 0.28;
+          ? Math.min(profile.ceiling, Math.max(profile.floor, energy + breathing))
+          : Math.max(0, levelsRef.current[index] * profile.release);
+        levelsRef.current[index] = levelsRef.current[index] * (1 - profile.smoothing) + target * profile.smoothing;
 
         const x = index * (barWidth + gap);
         const barHeight = Math.max(3 * dpr, levelsRef.current[index] * maxBarHeight);
@@ -132,9 +183,36 @@ export function SpectrumCanvas({
     return () => {
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [active, analyserRef, fallback, palette.primary, palette.secondary, playing]);
+  }, [active, analyserRef, fallback, outputMode, palette.primary, palette.secondary, playing]);
 
-  return <canvas ref={canvasRef} className="block h-36 w-full sm:h-40 2xl:h-56" aria-hidden="true" />;
+  return (
+    <canvas
+      ref={canvasRef}
+      className={`block h-36 w-full transition-opacity duration-300 sm:h-40 2xl:h-56 ${active && playing ? "opacity-100" : "opacity-0"}`}
+      aria-hidden="true"
+    />
+  );
+}
+
+function prepareCanvas(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.min(1.75, Math.max(1, window.devicePixelRatio || 1));
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return { context, dpr, height, width };
+}
+
+function clearCanvas(canvas: HTMLCanvasElement) {
+  const prepared = prepareCanvas(canvas);
+  if (!prepared) return;
+  prepared.context.clearRect(0, 0, prepared.width, prepared.height);
 }
 
 function roundedRect(

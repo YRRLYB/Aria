@@ -2,15 +2,12 @@ const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor } = r
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { createLogger, serializeError } = require("./logger.cjs");
 const { MpvAudioEngine } = require("./mpvEngine.cjs");
 
-try {
-  const earlyLogDir = path.join(app.getPath("appData"), "aria", "logs");
-  fs.mkdirSync(earlyLogDir, { recursive: true });
-  fs.appendFileSync(path.join(earlyLogDir, "desktop.log"), `[${new Date().toISOString()}] main loaded\n`, "utf8");
-} catch {
-  // Ignore early logging failures.
-}
+const logger = createLogger(app);
+const { writeLog } = logger;
+logger.writeRuntimeSnapshot("desktop.log", "main loaded");
 
 const apiPort = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
 const apiBase = `http://127.0.0.1:${apiPort}`;
@@ -32,21 +29,6 @@ if (!gotLock) {
 app.setName("Aria");
 app.setAppUserModelId("com.yrrlyb.aria");
 Menu.setApplicationMenu(null);
-
-function logDir() {
-  const baseDir = app.isReady() ? app.getPath("userData") : path.join(app.getPath("appData"), "Aria");
-  return path.join(baseDir, "logs");
-}
-
-function writeLog(fileName, message) {
-  try {
-    const dir = logDir();
-    fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(path.join(dir, fileName), `[${new Date().toISOString()}] ${message}\n`, "utf8");
-  } catch {
-    // Logging should never become a reason for the app to exit.
-  }
-}
 
 function getNativeAudioEngine() {
   if (!nativeAudioEngine) {
@@ -79,13 +61,7 @@ function attachPowerRecoveryHandlers() {
   powerMonitor.on("suspend", () => writeLog("native-audio.log", "system suspend"));
 }
 
-process.on("uncaughtException", (error) => {
-  writeLog("desktop.log", `uncaughtException: ${error?.stack || error}`);
-});
-
-process.on("unhandledRejection", (reason) => {
-  writeLog("desktop.log", `unhandledRejection: ${reason?.stack || reason}`);
-});
+logger.attachProcessHandlers("desktop.log");
 
 function resolveServerEntry() {
   if (app.isPackaged) {
@@ -323,6 +299,16 @@ ipcMain.handle("aria:quit", () => {
 ipcMain.handle("aria:set-background-enabled", (_event, enabled) => {
   backgroundEnabled = Boolean(enabled);
   return backgroundEnabled;
+});
+
+ipcMain.handle("aria:log", (_event, payload) => {
+  try {
+    logger.logRendererPayload(payload);
+    return true;
+  } catch (error) {
+    writeLog("renderer.log", "renderer log bridge failed", { error: serializeError(error) });
+    return false;
+  }
 });
 
 ipcMain.handle("aria:native-audio:supported", () => {

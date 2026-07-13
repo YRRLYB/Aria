@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   showApp: () => ipcRenderer.invoke("aria:show"),
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
+  log: (payload) => ipcRenderer.invoke("aria:log", payload),
   nativeAudio: {
     supported: process.platform === "win32",
     isSupported: () => ipcRenderer.invoke("aria:native-audio:supported"),

@@ -66,8 +66,8 @@ export function LikedSurface({
   onPickTrack: (id: string) => void;
 }) {
   return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
+      <div className="flex shrink-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <Badge>Favorite</Badge>
           <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">我喜欢</h1>
@@ -79,7 +79,7 @@ export function LikedSurface({
         </Button>
       </div>
 
-      <div className="mt-8 grid gap-5 xl:grid-cols-2">
+      <div className="mt-8 grid min-h-0 flex-1 gap-5 xl:grid-cols-2">
         <LikedColumn title="本地我喜欢" subtitle="来自本地音乐库" tracks={localTracks} onPickTrack={onPickTrack} />
         <LikedColumn title="网易云我喜欢" subtitle="Cookie 登录后读取" tracks={neteaseTracks} onPickTrack={onPickTrack} />
       </div>
@@ -99,19 +99,19 @@ function LikedColumn({
   onPickTrack: (id: string) => void;
 }) {
   return (
-    <section className="rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
+    <section className="flex min-h-0 flex-col rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
+      <div className="flex shrink-0 items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">{title}</h2>
           <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
         </div>
         <Badge>{tracks.length} 首</Badge>
       </div>
-      <div className="mt-4 grid gap-2">
+      <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         {tracks.map((track) => (
           <button
             key={track.id}
-            className="grid grid-cols-[3rem_minmax(0,1fr)_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
+            className="grid w-full grid-cols-[3rem_minmax(0,1fr)_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
             onClick={() => onPickTrack(track.id)}
           >
             <CoverArt track={track} className="size-12 rounded-xl" />
