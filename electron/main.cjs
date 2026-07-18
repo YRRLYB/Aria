@@ -172,6 +172,11 @@ function sendWindowVisibility(visible) {
   mainWindow?.webContents.send("aria:window-visibility", Boolean(visible));
 }
 
+function sendPlaybackCommand(command) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("aria:playback-command", command);
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(trayIcon());
@@ -179,6 +184,11 @@ function createTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "打开 Aria", click: showWindow },
+      { type: "separator" },
+      { label: "播放 / 暂停", click: () => sendPlaybackCommand("toggle") },
+      { label: "上一首", click: () => sendPlaybackCommand("previous") },
+      { label: "下一首", click: () => sendPlaybackCommand("next") },
+      { type: "separator" },
       { label: "后台托管", click: () => mainWindow?.hide() },
       { type: "separator" },
       {

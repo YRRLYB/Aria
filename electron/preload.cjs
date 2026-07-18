@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     ipcRenderer.on("aria:window-visibility", handler);
     return () => ipcRenderer.removeListener("aria:window-visibility", handler);
   },
+  onPlaybackCommand: (callback) => {
+    const handler = (_event, command) => callback(command);
+    ipcRenderer.on("aria:playback-command", handler);
+    return () => ipcRenderer.removeListener("aria:playback-command", handler);
+  },
   showApp: () => ipcRenderer.invoke("aria:show"),
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),

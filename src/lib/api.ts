@@ -62,6 +62,7 @@ declare global {
       toggleMaximizeWindow?: () => void;
       closeWindow?: () => void;
       onWindowVisibilityChange?: (callback: (visible: boolean) => void) => () => void;
+      onPlaybackCommand?: (callback: (command: "toggle" | "previous" | "next") => void) => () => void;
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;

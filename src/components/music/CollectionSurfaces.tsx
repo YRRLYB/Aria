@@ -7,7 +7,7 @@ import { capabilities } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
-import { CoverArt, EmptyState } from "./shared";
+import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
 export function CollectionSurface({
   title,
@@ -44,8 +44,12 @@ export function CollectionSurface({
             </span>
             <CoverArt track={track} className="size-14 rounded-2xl" />
             <div className="min-w-0">
-              <p className="truncate font-semibold">{track.title}</p>
-              <p className="truncate text-sm text-neutral-500">{track.artist}</p>
+              <p className="truncate font-semibold">
+                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+              </p>
+              <p className="truncate text-sm text-neutral-500">
+                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+              </p>
             </div>
             <Badge>{formatAudioDetail(track)}</Badge>
           </button>
@@ -116,8 +120,12 @@ function LikedColumn({
           >
             <CoverArt track={track} className="size-12 rounded-xl" />
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">{track.title}</p>
-              <p className="truncate text-xs text-neutral-500">{track.artist}</p>
+              <p className="truncate text-sm font-semibold">
+                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+              </p>
+              <p className="truncate text-xs text-neutral-500">
+                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+              </p>
             </div>
             <span className="flex size-7 items-center justify-center rounded-full bg-white/70">
               <Heart className="size-4 fill-neutral-950" />
@@ -220,8 +228,12 @@ export function PlaylistSurface({
               <span className="text-center text-sm text-neutral-400">{index + 1}</span>
               <CoverArt track={track} className="size-14 rounded-2xl" />
               <div className="min-w-0">
-                <p className="truncate font-semibold">{track.title}</p>
-                <p className="truncate text-sm text-neutral-500">{track.artist}</p>
+                <p className="truncate font-semibold">
+                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                </p>
+                <p className="truncate text-sm text-neutral-500">
+                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                </p>
               </div>
               <span className="flex flex-wrap justify-end gap-2">
                 <Badge>{playCounts[track.id] ?? 0} 次</Badge>
@@ -255,7 +267,7 @@ export function PlaylistSurface({
             onClick={() => onOpenPlaylist(playlist)}
           >
             {playlist.coverUrl ? (
-              <img src={playlist.coverUrl} alt="" className="size-16 rounded-2xl object-cover shadow-sm" />
+              <img src={playlist.coverUrl} alt="" draggable={false} className="size-16 rounded-2xl object-cover shadow-sm" />
             ) : (
               <Cloud className="size-6 text-neutral-500" />
             )}
@@ -344,8 +356,12 @@ export function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCoun
               <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
               <CoverArt track={track} className="size-12 rounded-xl" />
               <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">{track.title}</p>
-                <p className="truncate text-xs text-neutral-500">{track.artist}</p>
+                <p className="truncate text-sm font-semibold">
+                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                </p>
+                <p className="truncate text-xs text-neutral-500">
+                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                </p>
               </div>
               <span className="text-sm font-medium text-neutral-500">{playCounts[track.id] ?? 0} 次</span>
             </div>

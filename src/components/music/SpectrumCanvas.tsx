@@ -69,7 +69,7 @@ export function SpectrumCanvas({
       const loudness = analyser ? getFrameLoudness(frequencyData, timeData) : 0;
       const targetAutoGain = loudness > 0.01 ? Math.min(3.8, Math.max(0.82, 0.38 / loudness)) : 1.25;
       autoGainRef.current = autoGainRef.current * 0.95 + targetAutoGain * 0.05;
-      const audibleScale = outputMode === "system" ? 1 : Math.max(0.08, Math.min(1.05, outputVolume / 100));
+      const audibleScale = Math.max(0.08, Math.min(1.05, outputVolume / 100));
 
       context.clearRect(0, 0, width, height);
       const gap = 6 * dpr;

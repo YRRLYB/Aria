@@ -111,6 +111,7 @@ class MpvAudioEngine {
           "--force-window=no",
           "--keep-open=no",
           "--no-terminal",
+          "--audio-client-name=Aria",
           "--msg-level=all=warn",
           "--no-config",
           "--cache=yes",

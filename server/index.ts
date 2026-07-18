@@ -187,7 +187,7 @@ app.post("/api/providers/netease/cache/warmup", async (req, res, next) => {
   try {
     const body = z
       .object({
-        trackIds: z.array(z.union([z.string(), z.number()])).max(300),
+        trackIds: z.array(z.union([z.string(), z.number()])).max(160),
         level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional().default("lossless"),
       })
       .parse(req.body);

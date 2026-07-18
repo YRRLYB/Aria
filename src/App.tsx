@@ -33,7 +33,7 @@ import {
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
 import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
-import { ArtistAvatar, CoverArt, EmptyState, Metric, StatTile } from "@/components/music/shared";
+import { ArtistAvatar, CopyableTrackText, CoverArt, EmptyState, Metric, StatTile } from "@/components/music/shared";
 import ariaIconUrl from "../build/icon.png";
 import { navItems, type LyricCandidate, type Track, type ViewId } from "@/data/music";
 import {
@@ -91,6 +91,11 @@ type SearchBundle = {
   neteaseTracks: Track[];
   artists: ArtistSummary[];
 };
+type PlayHistoryEntry = {
+  track: Track;
+  playedAt: number;
+  count: number;
+};
 type NativeAudioState = {
   supported: boolean;
   ready: boolean;
@@ -108,6 +113,7 @@ type NativeAudioState = {
 };
 const dragRegionStyle = { WebkitAppRegion: "drag" } as CSSProperties;
 const noDragRegionStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
+const playHistoryCacheKey = "aria-play-history";
 
 const panelVariants = {
   initial: { opacity: 0, y: 18, filter: "blur(18px)" },
@@ -283,6 +289,33 @@ function createPlayerCacheSnapshot(track: Track): Track {
   };
 }
 
+function readPlayHistory(): PlayHistoryEntry[] {
+  try {
+    const raw = window.localStorage.getItem(playHistoryCacheKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as PlayHistoryEntry[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry) => entry?.track?.id && typeof entry.playedAt === "number")
+      .map((entry) => ({
+        track: createPlayerCacheSnapshot(entry.track),
+        playedAt: entry.playedAt,
+        count: typeof entry.count === "number" && entry.count > 0 ? Math.round(entry.count) : 1,
+      }))
+      .slice(0, 200);
+  } catch {
+    return [];
+  }
+}
+
+function writePlayHistory(history: PlayHistoryEntry[]) {
+  try {
+    window.localStorage.setItem(playHistoryCacheKey, JSON.stringify(history.slice(0, 200)));
+  } catch {
+    // History should never block playback.
+  }
+}
+
 export default function App() {
   const [initialPlayerCache] = useState(readCachedPlayerState);
   const [cachedActiveTrackSnapshot] = useState(() => initialPlayerCache.activeTrackSnapshot);
@@ -298,6 +331,7 @@ export default function App() {
   const [shuffleEnabled, setShuffleEnabled] = useState(initialPlayerCache.shuffleEnabled ?? false);
   const [repeatMode, setRepeatMode] = useState<"all" | "one">(initialPlayerCache.repeatMode ?? "all");
   const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
+  const [playHistory, setPlayHistory] = useState<PlayHistoryEntry[]>(readPlayHistory);
   const [likedTrackIds, setLikedTrackIds] = useState<Record<string, true>>({});
   const [neteaseLikedIds, setNeteaseLikedIds] = useState<Record<string, true>>({});
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
@@ -316,6 +350,7 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [immersiveOpen, setImmersiveOpen] = useState(false);
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === "visible");
   const [backgroundEnabled, setBackgroundEnabled] = useState(() => {
     try {
@@ -353,6 +388,7 @@ export default function App() {
   const navCloseTimer = useRef<number | null>(null);
   const lyricSyncingRef = useRef<Set<string>>(new Set());
   const artworkSyncingRef = useRef<Set<string>>(new Set());
+  const immersiveFullscreenRef = useRef(false);
   const neteaseWarmupRef = useRef<Set<string>>(new Set());
   const artistRequestRef = useRef<Set<string>>(new Set());
   const artistAvatarLookupRef = useRef<Set<string>>(new Set());
@@ -408,7 +444,7 @@ export default function App() {
     }
     return [...artists.values()]
       .map(({ albums, sources, ...artist }) => ({ ...artist, albumCount: albums.size }))
-      .sort((left, right) => right.trackCount - left.trackCount || left.name.localeCompare(right.name, "zh-CN"));
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN", { numeric: true }));
   }, [allTracks]);
   const requestedActiveTrack = allTracks.find((track) => track.id === activeTrackId);
   const activeTrack =
@@ -477,6 +513,8 @@ export default function App() {
         return visibleLocalTracks;
       case "liked":
         return likedDisplayTracks;
+      case "history":
+        return playHistory.map((entry) => entry.track);
       case "playlists":
         return playlistTracks;
       case "daily":
@@ -490,7 +528,7 @@ export default function App() {
       default:
         return [];
     }
-  }, [activeView, artistTracks, dailyTracks, likedDisplayTracks, playlistTracks, roamTracks, visibleLocalTracks, visibleTracks]);
+  }, [activeView, artistTracks, dailyTracks, likedDisplayTracks, playHistory, playlistTracks, roamTracks, visibleLocalTracks, visibleTracks]);
   const playQueueTracks = useMemo(() => {
     const byId = new Map(allTracks.map((track) => [track.id, track]));
     return playQueueIds
@@ -576,6 +614,97 @@ export default function App() {
     ref.current = new Set([...ref.current].slice(-Math.floor(maxItems * 0.72)));
   }
 
+  const handlePlaybackCommand = useEffectEvent((command: "toggle" | "previous" | "next") => {
+    if (command === "toggle") {
+      togglePlayback();
+      return;
+    }
+    if (command === "previous") {
+      pickRelativeTrack(-1);
+      return;
+    }
+    pickRelativeTrack(1);
+  });
+
+  useEffect(() => {
+    return window.ariaDesktop?.onPlaybackCommand?.(handlePlaybackCommand);
+  }, [handlePlaybackCommand]);
+
+  async function openImmersiveView() {
+    setImmersiveOpen(true);
+    if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
+    try {
+      await document.documentElement.requestFullscreen();
+      immersiveFullscreenRef.current = true;
+    } catch {
+      immersiveFullscreenRef.current = false;
+    }
+  }
+
+  async function closeImmersiveView() {
+    setImmersiveOpen(false);
+    if (!immersiveFullscreenRef.current || !document.fullscreenElement || !document.exitFullscreen) return;
+    immersiveFullscreenRef.current = false;
+    try {
+      await document.exitFullscreen();
+    } catch {
+      // Fullscreen exit can reject when the OS already handled it.
+    }
+  }
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement && immersiveFullscreenRef.current) {
+        immersiveFullscreenRef.current = false;
+        setImmersiveOpen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      const element = target instanceof HTMLElement ? target : null;
+      if (!element) return false;
+      return Boolean(element.closest("input, textarea, select, [contenteditable='true']"));
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isEditableTarget(event.target)) return;
+      if (event.key === " " || event.code === "Space" || event.key === "MediaPlayPause") {
+        event.preventDefault();
+        handlePlaybackCommand("toggle");
+        return;
+      }
+      if (event.key === "MediaTrackNext" || (event.altKey && event.key === "ArrowRight")) {
+        event.preventDefault();
+        handlePlaybackCommand("next");
+        return;
+      }
+      if (event.key === "MediaTrackPrevious" || (event.altKey && event.key === "ArrowLeft")) {
+        event.preventDefault();
+        handlePlaybackCommand("previous");
+        return;
+      }
+      if (event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        if (immersiveOpen) {
+          void closeImmersiveView();
+        } else {
+          void openImmersiveView();
+        }
+        return;
+      }
+      if (event.key === "Escape") {
+        void closeImmersiveView();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handlePlaybackCommand, immersiveOpen]);
+
   async function refreshNeteaseData() {
     const [liked, daily, roam, playlists] = await Promise.all([
       api.getProviderLiked(),
@@ -608,12 +737,12 @@ export default function App() {
       .filter((track) => track.source === "netease" && track.providerId)
       .map((track) => ({ id: track.providerId as string, key: `${warmupLevel}:${track.providerId}` }))
       .filter((item) => !neteaseWarmupRef.current.has(item.key))
-      .slice(0, 300);
+      .slice(0, 160);
     const ids = warmupItems.map((item) => item.id);
     if (!ids.length) return;
     warmupItems.forEach((item) => neteaseWarmupRef.current.add(item.key));
-    if (neteaseWarmupRef.current.size > 1200) {
-      neteaseWarmupRef.current = new Set([...neteaseWarmupRef.current].slice(-700));
+    if (neteaseWarmupRef.current.size > 700) {
+      neteaseWarmupRef.current = new Set([...neteaseWarmupRef.current].slice(-420));
     }
     api.warmNeteaseCache(ids, warmupLevel).catch(() => {
       warmupItems.forEach((item) => neteaseWarmupRef.current.delete(item.key));
@@ -622,7 +751,7 @@ export default function App() {
 
   useEffect(() => {
     const sourceTracks = playQueueTracks.length ? playQueueTracks : visibleTracks;
-    const tracksToWarm = sourceTracks.slice(0, playing ? 24 : 80);
+    const tracksToWarm = sourceTracks.slice(0, playing ? 12 : 36);
     const timer = window.setTimeout(() => warmNeteaseTrackCache(tracksToWarm), playing ? 1600 : 260);
     return () => window.clearTimeout(timer);
   }, [hifiEnabled, playing, qualityLevel, playQueueTracks, visibleTracks]);
@@ -853,6 +982,10 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("aria-play-counts", JSON.stringify(playCounts));
   }, [playCounts]);
+
+  useEffect(() => {
+    writePlayHistory(playHistory);
+  }, [playHistory]);
 
   useEffect(() => {
     window.localStorage.setItem("aria-liked-track-ids", JSON.stringify(likedTrackIds));
@@ -1296,6 +1429,15 @@ export default function App() {
       ...current,
       [activeTrack.id]: (current[activeTrack.id] ?? 0) + 1,
     }));
+    setPlayHistory((current) => {
+      const existing = current.find((entry) => entry.track.id === activeTrack.id);
+      const nextEntry = {
+        track: createPlayerCacheSnapshot(activeTrack),
+        playedAt: Date.now(),
+        count: (existing?.count ?? 0) + 1,
+      };
+      return [nextEntry, ...current.filter((entry) => entry.track.id !== activeTrack.id)].slice(0, 200);
+    });
   }, [activeTrack.id, activeTrackId, playing]);
 
   useEffect(() => {
@@ -1768,7 +1910,7 @@ export default function App() {
                 setActiveView("home");
               }}
             >
-              <img src={ariaIconUrl} alt="" className="size-10 shrink-0 rounded-2xl object-cover" />
+              <img src={ariaIconUrl} alt="" draggable={false} className="size-10 shrink-0 rounded-2xl object-cover" />
               <p className="truncate text-3xl font-semibold">Aria</p>
             </button>
           </div>
@@ -1832,6 +1974,7 @@ export default function App() {
                 <img
                   src={neteaseAccount.avatarUrl}
                   alt={neteaseAccount.nickname ?? "account"}
+                  draggable={false}
                   className="size-8 rounded-full object-cover"
                 />
               ) : (
@@ -1929,9 +2072,8 @@ export default function App() {
                 <HomeSurface
                   activeTrack={activeTrack}
                   tracks={visibleTracks}
-                  dailyTracks={dailyTracks}
-                  roamTracks={roamTracks}
                   playCounts={playCounts}
+                  playHistory={playHistory}
                   playing={playing}
                   localTrackCount={localTracks.length}
                   neteaseLikedCount={neteaseLikedDisplayTracks.length}
@@ -1939,7 +2081,6 @@ export default function App() {
                   onTogglePlay={togglePlayback}
                   onPickTrack={chooseTrack}
                   onOpenPlayer={() => setActiveView("player")}
-                  onOpenView={setActiveView}
                 />
               )}
               {activeView === "player" && (
@@ -1955,6 +2096,7 @@ export default function App() {
                   onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
                   onNext={() => pickRelativeTrack(1)}
                   onPrevious={() => pickRelativeTrack(-1)}
+                  onOpenImmersive={() => void openImmersiveView()}
                   liked={activeTrack.source === "netease" ? Boolean(neteaseLikedIds[activeTrack.id]) : Boolean(likedTrackIds[activeTrack.id])}
                   onToggleLike={() => toggleLikeTrack(activeTrack.id)}
                   volume={volume}
@@ -1992,6 +2134,12 @@ export default function App() {
                 <LikedSurface
                   localTracks={localLikedTracks}
                   neteaseTracks={neteaseLikedDisplayTracks}
+                  onPickTrack={chooseTrack}
+                />
+              )}
+              {activeView === "history" && (
+                <HistorySurface
+                  history={playHistory}
                   onPickTrack={chooseTrack}
                 />
               )}
@@ -2057,13 +2205,9 @@ export default function App() {
             />
           ) : activeView === "home" ? (
             <HomeSidePanel
-              localTrackCount={localTracks.length}
-              neteaseConnected={neteaseConnected}
-              neteaseLikedCount={neteaseLikedDisplayTracks.length}
-              playlistCount={providerPlaylists.length}
-              totalPlayCount={Object.values(playCounts).reduce((sum, count) => sum + count, 0)}
-              onOpenView={setActiveView}
-              onOpenSettings={() => setSettingsOpen(true)}
+              history={playHistory}
+              onOpenHistory={() => setActiveView("history")}
+              onPickTrack={chooseTrack}
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
@@ -2139,6 +2283,26 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        <AnimatePresence>
+          {immersiveOpen && (
+            <ImmersivePlayerView
+              activeTrack={activeTrack}
+              palette={activePalette}
+              playing={playing}
+              currentTime={currentTime}
+              durationSeconds={durationSeconds}
+              analyserRef={analyserRef}
+              visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
+              volume={volume}
+              onClose={() => void closeImmersiveView()}
+              onTogglePlay={togglePlayback}
+              onNext={() => pickRelativeTrack(1)}
+              onPrevious={() => pickRelativeTrack(-1)}
+              onSeek={seekTo}
+            />
+          )}
+        </AnimatePresence>
+
         <FloatingNav
           activeView={activeView}
           open={navOpen}
@@ -2170,75 +2334,48 @@ export default function App() {
 }
 
 function HomeSidePanel({
-  localTrackCount,
-  neteaseConnected,
-  neteaseLikedCount,
-  playlistCount,
-  totalPlayCount,
-  onOpenView,
-  onOpenSettings,
+  history,
+  onOpenHistory,
+  onPickTrack,
 }: {
-  localTrackCount: number;
-  neteaseConnected: boolean;
-  neteaseLikedCount: number;
-  playlistCount: number;
-  totalPlayCount: number;
-  onOpenView: (view: ViewId) => void;
-  onOpenSettings: () => void;
+  history: PlayHistoryEntry[];
+  onOpenHistory: () => void;
+  onPickTrack: (id: string) => void;
 }) {
-  const actions = [
-    { view: "local" as const, label: "本地扫描", detail: `${localTrackCount} 首`, icon: FolderOpen },
-    { view: "liked" as const, label: "我喜欢", detail: `${neteaseLikedCount} 首`, icon: Heart },
-    { view: "playlists" as const, label: "歌单", detail: `${playlistCount} 个`, icon: ListMusic },
-    { view: "stats" as const, label: "听歌统计", detail: `${totalPlayCount} 次`, icon: Sparkles },
-  ];
+  const recent = history.slice(0, 8);
 
   return (
     <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Aria</p>
-          <h2 className="mt-1 text-xl font-semibold">控制台</h2>
+          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">History</p>
+          <h2 className="mt-1 text-xl font-semibold">最近播放</h2>
         </div>
-        <Button variant="ghost" size="icon" aria-label="打开设置" onClick={onOpenSettings}>
-          <Settings2 />
+        <Button variant="ghost" size="icon" aria-label="打开播放历史" onClick={onOpenHistory}>
+          <ListMusic />
         </Button>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-2 text-center text-xs text-neutral-500">
-        <Metric value={String(localTrackCount)} label="本地" />
-        <Metric value={neteaseConnected ? "ON" : "--"} label="网易云" />
-        <Metric value={String(playlistCount)} label="歌单" />
-        <Metric value={String(totalPlayCount)} label="播放" />
-      </div>
-
-      <div className="mt-5 grid gap-3">
-        {actions.map((action) => {
-          const Icon = action.icon;
-          return (
-            <button
-              key={action.view}
-              className="grid grid-cols-[2.65rem_1fr_auto] items-center gap-3 rounded-[1.15rem] bg-white/58 p-3 text-left shadow-sm transition hover:bg-white"
-              onClick={() => onOpenView(action.view)}
-            >
-              <span className="flex size-10 items-center justify-center rounded-2xl bg-neutral-950 text-white">
-                <Icon className="size-4" />
+      <div className="no-scrollbar mt-5 grid min-h-0 gap-2 overflow-y-auto pr-1">
+        {recent.map((entry) => (
+          <button
+            key={`${entry.track.id}-${entry.playedAt}`}
+            className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.15rem] bg-white/54 p-2.5 text-left shadow-sm transition hover:bg-white"
+            onClick={() => onPickTrack(entry.track.id)}
+          >
+            <CoverArt track={entry.track} className="size-12 rounded-2xl" />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold">
+                <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
               </span>
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold">{action.label}</span>
-                <span className="block truncate text-xs text-neutral-500">进入页面</span>
+              <span className="block truncate text-xs text-neutral-500">
+                <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
               </span>
-              <Badge>{action.detail}</Badge>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="mt-auto rounded-[1.2rem] bg-white/52 p-4 shadow-sm">
-        <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Cache</p>
-        <p className="mt-2 text-sm text-neutral-500">
-          最近播放和封面会保留到下次启动，打开后保持暂停。
-        </p>
+            </span>
+            <Badge>{entry.count} 次</Badge>
+          </button>
+        ))}
+        {!recent.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
       </div>
     </aside>
   );
@@ -2247,9 +2384,8 @@ function HomeSidePanel({
 function HomeSurface({
   activeTrack,
   tracks: homeTracks,
-  dailyTracks,
-  roamTracks,
   playCounts,
+  playHistory,
   playing,
   localTrackCount,
   neteaseLikedCount,
@@ -2257,13 +2393,11 @@ function HomeSurface({
   onTogglePlay,
   onPickTrack,
   onOpenPlayer,
-  onOpenView,
 }: {
   activeTrack: Track;
   tracks: Track[];
-  dailyTracks: Track[];
-  roamTracks: Track[];
   playCounts: Record<string, number>;
+  playHistory: PlayHistoryEntry[];
   playing: boolean;
   localTrackCount: number;
   neteaseLikedCount: number;
@@ -2271,7 +2405,6 @@ function HomeSurface({
   onTogglePlay: () => void;
   onPickTrack: (id: string) => void;
   onOpenPlayer: () => void;
-  onOpenView: (view: ViewId) => void;
 }) {
   const rankedTracks = useMemo(
     () =>
@@ -2284,14 +2417,7 @@ function HomeSurface({
         .slice(0, 20),
     [homeTracks, playCounts],
   );
-  const totalPlays = useMemo(() => Object.values(playCounts).reduce((sum, count) => sum + count, 0), [playCounts]);
-  const cloudReadyCount = dailyTracks.length + roamTracks.length;
-  const quickActions = [
-    { id: "local" as const, label: "本地曲库", value: `${localTrackCount} 首`, icon: FolderOpen },
-    { id: "liked" as const, label: "我喜欢", value: `${neteaseLikedCount} 首`, icon: Heart },
-    { id: "daily" as const, label: "每日推荐", value: dailyTracks.length ? `${dailyTracks.length} 首` : "待同步", icon: Sparkles },
-    { id: "radar" as const, label: "私人漫游", value: roamTracks.length ? `${roamTracks.length} 首` : "待同步", icon: Radio },
-  ];
+  const recentHistory = playHistory.slice(0, 8);
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.86fr)_minmax(0,1.14fr)] gap-4 overflow-hidden">
@@ -2331,8 +2457,12 @@ function HomeSurface({
             </Button>
           </div>
           <div className="absolute bottom-5 left-5 right-5 z-20">
-            <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">{activeTrack.title}</h2>
-            <p className="mt-2 truncate text-base font-medium text-white/84">{activeTrack.artist}</p>
+            <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">
+              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+            </h2>
+            <p className="mt-2 truncate text-base font-medium text-white/84">
+              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+            </p>
             <p className="mt-1 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
               {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}
             </p>
@@ -2351,8 +2481,12 @@ function HomeSurface({
             </div>
             <div className="max-w-[24rem]">
               <p className="text-sm text-white/75">正在播放</p>
-              <h2 className="mt-2 line-clamp-2 max-w-[22rem] text-3xl font-semibold leading-tight text-white">{activeTrack.title}</h2>
-              <p className="mt-1 text-white/75">{activeTrack.artist}</p>
+              <h2 className="mt-2 line-clamp-2 max-w-[22rem] text-3xl font-semibold leading-tight text-white">
+                <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+              </h2>
+              <p className="mt-1 text-white/75">
+                <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+              </p>
               <p className="mt-3 line-clamp-2 max-w-md text-sm leading-6 text-white/72">
                 {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)} · {activeTrack.duration}
               </p>
@@ -2377,8 +2511,12 @@ function HomeSurface({
                 <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">{track.title}</p>
-                  <p className="truncate text-xs text-neutral-500">{track.artist}</p>
+                  <p className="truncate text-sm font-semibold">
+                    <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                  </p>
+                  <p className="truncate text-xs text-neutral-500">
+                    <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                  </p>
                 </div>
                 <span className="text-sm text-neutral-500">{playCounts[track.id] ? `${playCounts[track.id]} 次` : track.duration}</span>
               </button>
@@ -2389,41 +2527,90 @@ function HomeSurface({
 
         <div className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold">快捷功能</h2>
-            <Badge>Tools</Badge>
+            <h2 className="text-xl font-semibold">最近播放</h2>
+            <Badge>History</Badge>
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-            {quickActions.map((action) => {
-              const Icon = action.icon;
-              return (
-                <button
-                  key={action.id}
-                  className="grid grid-cols-[2.75rem_1fr_auto] items-center gap-3 rounded-[1.2rem] bg-white/58 p-3 text-left shadow-sm transition hover:bg-white"
-                  onClick={() => onOpenView(action.id)}
-                >
-                  <span className="flex size-11 items-center justify-center rounded-2xl bg-neutral-950 text-white shadow-sm">
-                    <Icon className="size-5" />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold">{action.label}</p>
-                    <p className="truncate text-xs text-neutral-500">打开对应页面</p>
-                  </div>
-                  <Badge>{action.value}</Badge>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="mt-4 rounded-[1.2rem] bg-white/52 p-4 shadow-sm">
-            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Library</p>
-            <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
-              <Metric value={String(homeTracks.length)} label="可播放" />
-              <Metric value={String(totalPlays)} label="播放" />
-              <Metric value={String(cloudReadyCount)} label="云推荐" />
-            </div>
+          <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-2 overflow-y-auto pr-1">
+            {recentHistory.map((entry) => (
+              <button
+                key={`${entry.track.id}-${entry.playedAt}`}
+                className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white"
+                onClick={() => onPickTrack(entry.track.id)}
+              >
+                <CoverArt track={entry.track} className="size-12 rounded-xl" />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">
+                    <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+                  </p>
+                  <p className="truncate text-xs text-neutral-500">
+                    <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
+                  </p>
+                </div>
+                <span className="text-sm text-neutral-500">{new Date(entry.playedAt).toLocaleDateString()}</span>
+              </button>
+            ))}
+            {!recentHistory.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function HistorySurface({
+  history,
+  onPickTrack,
+}: {
+  history: PlayHistoryEntry[];
+  onPickTrack: (id: string) => void;
+}) {
+  const totalPlays = history.reduce((sum, entry) => sum + entry.count, 0);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayCount = history.filter((entry) => entry.playedAt >= todayStart.getTime()).length;
+
+  return (
+    <div className="glass h-full min-h-[620px] overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <Badge>History</Badge>
+          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">播放历史</h1>
+          <p className="mt-3 text-neutral-500">最近听过的歌曲会按播放时间保留在这里。</p>
+        </div>
+        <div className="grid w-full gap-3 sm:w-auto sm:grid-cols-3">
+          <StatTile label="记录" value={String(history.length)} />
+          <StatTile label="播放" value={String(totalPlays)} />
+          <StatTile label="今天" value={String(todayCount)} />
+        </div>
+      </div>
+
+      <div className="no-scrollbar mt-8 grid max-h-[calc(100%-10rem)] gap-3 overflow-y-auto pr-1">
+        {history.map((entry, index) => (
+          <button
+            key={`${entry.track.id}-${entry.playedAt}`}
+            className="grid grid-cols-[2.5rem_3.75rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.35rem] bg-white/48 p-3 text-left shadow-sm transition hover:bg-white/78"
+            onClick={() => onPickTrack(entry.track.id)}
+          >
+            <span className="text-center text-sm font-semibold text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
+            <CoverArt track={entry.track} className="size-14 rounded-2xl" />
+            <span className="min-w-0">
+              <span className="block truncate font-semibold">
+                <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+              </span>
+              <span className="mt-1 block truncate text-sm text-neutral-500">
+                <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText> · {entry.track.album}
+              </span>
+            </span>
+            <span className="hidden flex-col items-end gap-2 sm:flex">
+              <Badge>{sourceLabel[entry.track.source]}</Badge>
+              <span className="text-xs text-neutral-500">
+                {new Date(entry.playedAt).toLocaleString()} · {entry.count} 次
+              </span>
+            </span>
+          </button>
+        ))}
+        {!history.length && <EmptyState text="还没有播放历史，播放一首歌后这里会开始记录。" />}
+      </div>
     </div>
   );
 }
@@ -2469,8 +2656,12 @@ function SearchSurface({
             >
               <CoverArt track={track} className="size-14 rounded-2xl" />
               <div className="min-w-0">
-                <p className="truncate font-semibold">{track.title}</p>
-                <p className="truncate text-sm text-neutral-500">{track.artist}</p>
+                <p className="truncate font-semibold">
+                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                </p>
+                <p className="truncate text-sm text-neutral-500">
+                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                </p>
                 <p className="mt-1 truncate text-xs text-neutral-400">{track.album}</p>
               </div>
               <div className="flex flex-col items-end gap-2">
@@ -2571,7 +2762,9 @@ function ArtistsSurface({
               >
                 <CoverArt track={track} className="size-14 rounded-2xl" />
                 <div className="min-w-0">
-                  <p className="truncate font-semibold">{track.title}</p>
+                  <p className="truncate font-semibold">
+                    <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                  </p>
                   <p className="truncate text-sm text-neutral-500">{track.album}</p>
                 </div>
                 <Badge>{formatAudioDetail(track)}</Badge>
@@ -2665,8 +2858,12 @@ function QueueList({
         >
           <CoverArt track={track} className="size-14 rounded-2xl" />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold">{track.title}</p>
-            <p className="truncate text-xs text-neutral-500">{track.artist}</p>
+            <p className="truncate text-sm font-semibold">
+              <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+            </p>
+            <p className="truncate text-xs text-neutral-500">
+              <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+            </p>
           </div>
           <Badge className="shrink-0">{formatAudioDetail(track)}</Badge>
         </button>
@@ -2771,8 +2968,12 @@ function SidebarLyrics({
   return (
     <div className="relative mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.25rem] bg-white p-4 shadow-sm">
       <div className="relative z-10 mb-3 min-w-0">
-        <p className="truncate text-sm font-semibold">{track.title}</p>
-        <p className="truncate text-xs text-neutral-500">{track.artist}</p>
+        <p className="truncate text-sm font-semibold">
+          <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+        </p>
+        <p className="truncate text-xs text-neutral-500">
+          <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+        </p>
       </div>
       <div
         className="no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
@@ -2825,6 +3026,7 @@ function PlayerSurface({
   onCycleRepeatMode,
   onNext,
   onPrevious,
+  onOpenImmersive,
   liked,
   onToggleLike,
   volume,
@@ -2851,6 +3053,7 @@ function PlayerSurface({
   onCycleRepeatMode: () => void;
   onNext: () => void;
   onPrevious: () => void;
+  onOpenImmersive: () => void;
   liked: boolean;
   onToggleLike: () => void;
   volume: number;
@@ -2922,8 +3125,12 @@ function PlayerSurface({
             {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
           </Button>
           <div className="pointer-events-none absolute inset-x-6 bottom-6 z-20 text-white">
-            <p className="line-clamp-3 text-4xl font-semibold leading-tight drop-shadow sm:text-5xl">{activeTrack.title}</p>
-            <p className="mt-3 truncate text-lg font-medium text-white/82">{activeTrack.artist}</p>
+            <p className="line-clamp-3 text-4xl font-semibold leading-tight drop-shadow sm:text-5xl">
+              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+            </p>
+            <p className="mt-3 truncate text-lg font-medium text-white/82">
+              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+            </p>
             <p className="mt-2 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
               {activeTrack.album} 路 {activeTrack.duration} 路 {activeTrack.quality}
             </p>
@@ -2950,8 +3157,12 @@ function PlayerSurface({
                 {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
               </Button>
               <div className="pointer-events-none absolute inset-x-5 bottom-5 z-50 rounded-[1.1rem] border border-white/16 bg-black/52 px-5 py-4 shadow-[0_20px_52px_rgba(0,0,0,0.28)]">
-                <p className="line-clamp-2 text-2xl font-semibold leading-tight text-white drop-shadow">{activeTrack.title}</p>
-                <p className="mt-1 truncate text-xs text-white/70">{activeTrack.artist} · {activeTrack.album}</p>
+                <p className="line-clamp-2 text-2xl font-semibold leading-tight text-white drop-shadow">
+                  <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+                </p>
+                <p className="mt-1 truncate text-xs text-white/70">
+                  <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText> · {activeTrack.album}
+                </p>
               </div>
             </motion.div>
           </div>
@@ -2969,11 +3180,17 @@ function PlayerSurface({
               <Badge>{activeTrack.duration}</Badge>
               {hifiEnabled && <Badge>HiFi</Badge>}
               {exclusiveMode && <Badge>直通</Badge>}
+              <Button variant="glass" size="sm" onClick={onOpenImmersive}>
+                <Maximize2 />
+                沉浸
+              </Button>
             </div>
             <h1 className="mt-6 line-clamp-3 max-w-xl text-[clamp(2.2rem,4.3vw,4.6rem)] font-semibold leading-[1.02] text-neutral-950">
-              {activeTrack.title}
+              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
             </h1>
-            <p className="mt-3 truncate text-xl text-neutral-500">{activeTrack.artist}</p>
+            <p className="mt-3 truncate text-xl text-neutral-500">
+              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+            </p>
             <p className="mt-1 text-sm text-neutral-400">{activeTrack.album}</p>
           </div>
 
@@ -3127,6 +3344,166 @@ function PlayerSurface({
   );
 }
 
+function ImmersivePlayerView({
+  activeTrack,
+  palette,
+  playing,
+  currentTime,
+  durationSeconds,
+  analyserRef,
+  visualizerMode,
+  volume,
+  onClose,
+  onTogglePlay,
+  onNext,
+  onPrevious,
+  onSeek,
+}: {
+  activeTrack: Track;
+  palette: CoverPalette;
+  playing: boolean;
+  currentTime: number;
+  durationSeconds: number;
+  analyserRef: { current: AnalyserNode | null };
+  visualizerMode: AudioOutputMode;
+  volume: number;
+  onClose: () => void;
+  onTogglePlay: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+  onSeek: (time: number) => void;
+}) {
+  const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
+  const progressPercent = resolvedDuration ? Math.min(100, Math.max(0, (currentTime / resolvedDuration) * 100)) : 0;
+  const lyricLines = activeTrack.lyrics.length ? activeTrack.lyrics : [{ time: "00:00", text: "暂无歌词" }];
+  const activeLyricIndex = getActiveLyricIndex(lyricLines, currentTime);
+  const immersiveLyricLines = lyricLines.slice(Math.max(0, activeLyricIndex - 2), Math.min(lyricLines.length, activeLyricIndex + 5));
+
+  return (
+    <motion.div
+      className="fixed inset-0 z-50 overflow-hidden bg-neutral-950 text-white"
+      initial={{ opacity: 0, filter: "blur(18px)" }}
+      animate={{ opacity: 1, filter: "blur(0px)" }}
+      exit={{ opacity: 0, filter: "blur(16px)" }}
+      transition={{ duration: 0.28 }}
+    >
+      <div className="absolute inset-0 opacity-70">
+        <CoverArt track={activeTrack} className="size-full" fit="cover" large />
+      </div>
+      <div
+        className="absolute inset-0"
+        style={{
+          background: `linear-gradient(110deg, rgba(0,0,0,0.84), ${colorWithAlpha(palette.primary, 0.38)} 48%, rgba(0,0,0,0.78))`,
+        }}
+      />
+      <div className="absolute inset-0 backdrop-blur-2xl" />
+
+      <div className="relative grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-8 py-6 2xl:px-14">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/48">Immersive</p>
+            <p className="mt-1 text-sm text-white/62">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
+          </div>
+          <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
+            <X />
+          </Button>
+        </div>
+
+        <div className="grid min-h-0 items-center gap-8 lg:grid-cols-[minmax(360px,0.86fr)_minmax(0,1.14fr)]">
+          <motion.div
+            key={activeTrack.id}
+            className="mx-auto aspect-square w-[min(68vh,560px)] overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]"
+            initial={{ opacity: 0, scale: 0.96, y: 18 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.38 }}
+          >
+            <CoverArt track={activeTrack} className="size-full" fit="cover" large />
+          </motion.div>
+
+          <div className="min-w-0">
+            <h1 className="max-w-5xl text-[clamp(3rem,7vw,8.4rem)] font-semibold leading-[0.96] tracking-normal">
+              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+            </h1>
+            <p className="mt-5 truncate text-2xl text-white/68">
+              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+            </p>
+            <p className="mt-2 truncate text-lg text-white/42">{activeTrack.album}</p>
+            <div className="no-scrollbar mt-8 max-h-[34vh] max-w-5xl overflow-y-auto pr-2">
+              <div className="space-y-2">
+                {immersiveLyricLines.map((line, index) => {
+                  const originalIndex = Math.max(0, activeLyricIndex - 2) + index;
+                  const active = originalIndex === activeLyricIndex;
+                  return (
+                    <motion.button
+                      key={`${activeTrack.id}-immersive-${line.time}-${line.text}-${originalIndex}`}
+                      className={cn(
+                        "grid w-full grid-cols-[4.5rem_minmax(0,1fr)] items-start gap-4 rounded-3xl px-4 py-3 text-left transition",
+                        active ? "bg-white/12 text-white" : "text-white/48 hover:bg-white/8 hover:text-white/72",
+                      )}
+                      initial={false}
+                      animate={{ opacity: active ? 1 : 0.68, y: active ? 0 : 2 }}
+                      onClick={() => onSeek(parseDuration(line.time))}
+                    >
+                      <span className={cn("pt-1 text-sm font-medium", active ? "text-white/70" : "text-white/34")}>
+                        {line.time}
+                      </span>
+                      <span className={cn("whitespace-pre-wrap break-words leading-relaxed", active ? "text-4xl font-semibold" : "text-xl")}>
+                        {line.text || "♪"}
+                      </span>
+                    </motion.button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mx-auto w-full max-w-6xl">
+          <SpectrumCanvas
+            analyserRef={analyserRef}
+            playing={playing}
+            active
+            palette={palette}
+            fallback={activeTrack.waveform}
+            outputMode={visualizerMode}
+            outputVolume={volume}
+          />
+          <input
+            aria-label="沉浸播放进度"
+            type="range"
+            min="0"
+            max={Math.max(1, resolvedDuration || 0)}
+            value={Math.min(currentTime, resolvedDuration || currentTime || 0)}
+            onChange={(event) => onSeek(Number(event.target.value))}
+            className="player-range mt-3 w-full"
+            style={
+              {
+                "--range-color": "#ffffff",
+                "--range-value": `${progressPercent}%`,
+              } as CSSProperties
+            }
+          />
+          <div className="mt-2 flex items-center justify-between text-xs font-medium text-white/54">
+            <span>{formatDuration(currentTime)}</span>
+            <span>{formatDuration(resolvedDuration)}</span>
+          </div>
+          <div className="mt-5 flex items-center justify-center gap-3">
+            <Button className="bg-white/12 text-white hover:bg-white/18" size="icon" aria-label="上一首" onClick={onPrevious}>
+              <SkipBack />
+            </Button>
+            <Button className="bg-white text-neutral-950 hover:bg-white/90" size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
+              {playing ? <Pause className="size-6 fill-current" /> : <Play className="size-6 fill-current" />}
+            </Button>
+            <Button className="bg-white/12 text-white hover:bg-white/18" size="icon" aria-label="下一首" onClick={onNext}>
+              <SkipForward />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 function LibrarySurface({
   folderName,
   onChooseFolder,
@@ -3247,9 +3624,11 @@ function LibrarySurface({
             </span>
             <CoverArt track={track} className="size-14 rounded-2xl" />
             <div className="min-w-0">
-              <p className="truncate font-semibold">{track.title}</p>
+              <p className="truncate font-semibold">
+                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+              </p>
               <p className="truncate text-sm text-neutral-500">
-                {track.artist} · {track.album}
+                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText> · {track.album}
               </p>
             </div>
             <div className="hidden items-center gap-2 sm:flex">
@@ -3332,9 +3711,11 @@ function LyricLookupPanel({
           <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
             Online Lyrics
           </p>
-          <h2 className="mt-1 truncate text-xl font-semibold">{track.title}</h2>
+          <h2 className="mt-1 truncate text-xl font-semibold">
+            <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+          </h2>
           <p className="truncate text-sm text-neutral-500">
-            {track.artist} · {track.album}
+            <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText> · {track.album}
           </p>
         </div>
         <Button variant="subtle" size="sm" onClick={searchLyrics} disabled={loading}>
@@ -3428,7 +3809,7 @@ function FloatingNav({
   onRequestClose: () => void;
   onPick: (id: ViewId) => void;
 }) {
-  const nodes = (["player", "artists", "daily", "radar", "stats"] as ViewId[])
+  const nodes = (["player", "history", "artists", "daily", "radar", "stats"] as ViewId[])
     .map((id) => navItems.find((item) => item.id === id))
     .filter((item): item is (typeof navItems)[number] => Boolean(item));
   const nodePositions = [
@@ -3437,12 +3818,13 @@ function FloatingNav({
     { x: 120, y: 132 },
     { x: 120, y: 186 },
     { x: 120, y: 240 },
+    { x: 120, y: 294 },
   ];
-  const center = { x: 42, y: 304 };
+  const center = { x: 42, y: 358 };
 
   return (
     <div
-      className="absolute bottom-8 left-7 z-40 h-[340px] w-[188px]"
+      className="absolute bottom-8 left-7 z-40 h-[394px] w-[188px]"
       onMouseEnter={() => onOpenChange(true)}
       onMouseLeave={onRequestClose}
     >
@@ -3709,7 +4091,7 @@ function SettingsPanel({
             </div>
             <div className="mt-4 flex items-center gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               {neteaseAccount?.avatarUrl ? (
-                <img src={neteaseAccount.avatarUrl} alt="" className="size-12 rounded-full object-cover" />
+                <img src={neteaseAccount.avatarUrl} alt="" draggable={false} className="size-12 rounded-full object-cover" />
               ) : (
                 <div className="flex size-12 items-center justify-center rounded-full bg-white shadow-sm">
                   <UserRound className="size-5" />
@@ -3757,7 +4139,7 @@ function SettingsPanel({
                 </div>
                 <Badge>{exclusiveReady ? "Locked" : outputModeLabel}</Badge>
               </div>
-              <div className="mt-3 grid gap-2">
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
                 {[
                   {
                     mode: "system" as const,
@@ -3789,38 +4171,47 @@ function SettingsPanel({
                       type="button"
                       disabled={disabled}
                       className={cn(
-                        "grid grid-cols-[2.4rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-45",
+                        "flex min-h-32 flex-col justify-between rounded-[1.15rem] border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-45",
                         active
                           ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_34px_rgba(23,23,23,0.16)]"
                           : "border-white/72 bg-white/72 text-neutral-950 hover:bg-white",
                       )}
                       onClick={() => onAudioOutputModeChange(mode)}
                     >
-                      <span
-                        className={cn(
-                          "flex size-10 items-center justify-center rounded-full",
-                          active ? "bg-white/14 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
-                        )}
-                      >
-                        <Icon className="size-4" />
+                      <span className="flex items-center justify-between gap-2">
+                        <span
+                          className={cn(
+                            "flex size-10 items-center justify-center rounded-full",
+                            active ? "bg-white/14 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
+                          )}
+                        >
+                          <Icon className="size-4" />
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded-full px-2.5 py-1 text-xs font-semibold",
+                            active ? "bg-white text-neutral-950" : "bg-white/80 text-neutral-500 shadow-sm",
+                          )}
+                        >
+                          {badge}
+                        </span>
                       </span>
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-semibold">{label}</span>
-                        <span className={cn("mt-0.5 block truncate text-xs", active ? "text-white/62" : "text-neutral-500")}>
+                        <span className={cn("mt-1 block text-xs leading-5", active ? "text-white/62" : "text-neutral-500")}>
                           {desc}
                         </span>
-                      </span>
-                      <span
-                        className={cn(
-                          "rounded-full px-2.5 py-1 text-xs font-semibold",
-                          active ? "bg-white text-neutral-950" : "bg-white/80 text-neutral-500 shadow-sm",
-                        )}
-                      >
-                        {badge}
                       </span>
                     </button>
                   );
                 })}
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Device</p>
+                  <p className="mt-1 text-sm font-semibold">播放设备</p>
+                </div>
+                <Badge>{deviceSwitchSupported ? "可切换" : "系统默认"}</Badge>
               </div>
               <div className="no-scrollbar mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
                 {audioOutputDevices.map((device) => {
@@ -3929,7 +4320,6 @@ function AccountPanel({
       .then((settings) => {
         if (mounted) {
           setAccount(settings.neteaseAccount);
-          onAccountChange?.(settings.neteaseAccount);
         }
       })
       .catch(() => {
@@ -4023,7 +4413,7 @@ function AccountPanel({
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           {account?.avatarUrl ? (
-            <img src={account.avatarUrl} alt="" className="size-12 rounded-full object-cover shadow-sm" />
+            <img src={account.avatarUrl} alt="" draggable={false} className="size-12 rounded-full object-cover shadow-sm" />
           ) : (
             <div className="flex size-12 items-center justify-center rounded-full bg-neutral-950 text-white">
               <UserRound className="size-5" />
@@ -4045,9 +4435,9 @@ function AccountPanel({
         <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-3">
           <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
             {qrLogin?.qrImage ? (
-              <img src={qrLogin.qrImage} alt="网易云扫码登录二维码" className="size-full object-contain p-2" />
+              <img src={qrLogin.qrImage} alt="网易云扫码登录二维码" draggable={false} className="size-full object-contain p-2" />
             ) : account?.avatarUrl ? (
-              <img src={account.avatarUrl} alt="" className="size-full object-cover" />
+              <img src={account.avatarUrl} alt="" draggable={false} className="size-full object-cover" />
             ) : (
               <UserRound className="size-9 text-neutral-300" />
             )}

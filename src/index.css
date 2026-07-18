@@ -16,6 +16,8 @@
 
 * {
   box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 html {
@@ -33,6 +35,19 @@ body {
 button,
 input {
   font: inherit;
+}
+
+img,
+svg {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 input[type="range"].aria-range,
@@ -73,7 +88,13 @@ button {
 }
 
 ::selection {
-  background: rgba(23, 23, 23, 0.12);
+  background: transparent;
+}
+
+input::selection,
+textarea::selection,
+[contenteditable="true"]::selection {
+  background: rgba(23, 23, 23, 0.16);
 }
 
 .glass {

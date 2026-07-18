@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { UserRound } from "lucide-react";
 import type { Track } from "@/data/music";
+import { copyArtworkToClipboard, copyTrackTextToClipboard, type TrackCopyField } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 
 export function StatTile({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
@@ -48,7 +49,9 @@ export function ArtistAvatar({
           alt=""
           loading="lazy"
           decoding="async"
+          draggable={false}
           className="absolute inset-0 size-full object-cover"
+          onDragStart={(event) => event.preventDefault()}
           onError={() => setFailed(true)}
         />
       ) : (
@@ -90,11 +93,19 @@ export function CoverArt({
     setImageFailed(false);
   }, [track.id, track.coverUrl]);
 
+  const copyArtwork = (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void copyArtworkToClipboard(track);
+  };
+
   return (
     <div
       className={cn("relative shrink-0 overflow-hidden bg-neutral-950", className)}
       style={{ background: track.cover }}
       aria-hidden="true"
+      onContextMenu={copyArtwork}
+      onDragStart={(event) => event.preventDefault()}
     >
       {hasImage ? (
         <>
@@ -105,7 +116,9 @@ export function CoverArt({
               alt=""
               loading={large ? "eager" : "lazy"}
               decoding="async"
+              draggable={false}
               className="absolute inset-0 size-full scale-110 object-cover opacity-55 blur-2xl"
+              onDragStart={(event) => event.preventDefault()}
               onError={() => setImageFailed(true)}
             />
           )}
@@ -115,7 +128,9 @@ export function CoverArt({
             alt=""
             loading={large ? "eager" : "lazy"}
             decoding="async"
+            draggable={false}
             className={cn("absolute inset-0 size-full", fit === "contain" ? "object-contain" : "object-cover")}
+            onDragStart={(event) => event.preventDefault()}
             onError={() => setImageFailed(true)}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-white/8" />
@@ -134,5 +149,30 @@ export function CoverArt({
         </>
       )}
     </div>
+  );
+}
+
+export function CopyableTrackText({
+  track,
+  field = "summary",
+  className,
+  children,
+}: {
+  track: Track;
+  field?: TrackCopyField;
+  className?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <span
+      className={cn("cursor-copy", className)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void copyTrackTextToClipboard(track, field);
+      }}
+    >
+      {children ?? (field === "artist" ? track.artist : field === "album" ? track.album : field === "title" ? track.title : `${track.title} - ${track.artist}`)}
+    </span>
   );
 }

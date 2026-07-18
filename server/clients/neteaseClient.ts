@@ -243,7 +243,7 @@ export class NeteaseClient {
 
   async warmupTracks(songIds: Array<string | number>, level = "lossless") {
     const { cookie } = await this.requireSession();
-    const uniqueIds = Array.from(new Set(songIds.map(String).filter(Boolean))).slice(0, 300);
+    const uniqueIds = Array.from(new Set(songIds.map(String).filter(Boolean))).slice(0, 160);
     let cached = 0;
     await promisePool(uniqueIds, 4, async (songId) => {
       await Promise.allSettled([this.getLyricsCached(songId), this.getSongUrlCached(songId, level, cookie)]);
