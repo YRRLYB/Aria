@@ -4,7 +4,7 @@ import { getNeteaseAccountSummary } from "../services/neteaseService";
 import { readStore } from "../store";
 import { HttpError } from "../utils/httpError";
 import { clearCache, remember } from "../utils/memoryCache";
-import { clearPersistent, getPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
+import { clearPersistent, rememberPersistent } from "../utils/persistentCache";
 
 type NeteaseSong = {
   id: number | string;
@@ -241,15 +241,6 @@ export class NeteaseClient {
     return { ok: true, liked };
   }
 
-  async saveBpm(songId: string | number, bpm: number) {
-    const safeBpm = Math.round(bpm);
-    if (safeBpm < 40 || safeBpm > 240) {
-      throw new HttpError(400, "BPM is out of range", "BPM_OUT_OF_RANGE");
-    }
-    await setPersistent(`netease:bpm:${songId}`, 365 * dayTtl, safeBpm);
-    return safeBpm;
-  }
-
   async warmupTracks(songIds: Array<string | number>, level = "lossless") {
     const { cookie } = await this.requireSession();
     const uniqueIds = Array.from(new Set(songIds.map(String).filter(Boolean))).slice(0, 300);
@@ -293,12 +284,7 @@ export class NeteaseClient {
   }
 
   private async attachCachedMetadata(tracks: ProviderTrack[]) {
-    return Promise.all(
-      tracks.map(async (track) => ({
-        ...track,
-        bpm: track.bpm ?? (await getPersistent<number>(`netease:bpm:${track.id}`)),
-      })),
-    );
+    return tracks.map((track) => ({ ...track, bpm: null }));
   }
 
   private async getLyricsCached(songId: string | number) {
@@ -365,7 +351,7 @@ function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> = {}): P
     streamUrl: `/api/providers/netease/tracks/${song.id}/stream`,
     coverUrl: song.al?.picUrl ?? song.album?.picUrl ?? null,
     likedAt: extra.likedAt ?? null,
-    bpm: extra.bpm ?? null,
+    bpm: null,
     bitrate: extra.bitrate ?? normalizeBitrate(qualityInfo?.br ?? qualityInfo?.bitrate),
     sampleRate: extra.sampleRate ?? normalizeSampleRate(qualityInfo?.sr ?? qualityInfo?.sampleRate),
     currentLevel,

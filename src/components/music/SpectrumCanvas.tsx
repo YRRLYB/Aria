@@ -2,53 +2,13 @@ import { useEffect, useRef } from "react";
 import type { AudioOutputMode, CoverPalette } from "@/lib/playerPresentation";
 import { colorWithAlpha } from "@/lib/playerPresentation";
 
-const spectrumProfiles: Record<
-  AudioOutputMode,
-  {
-    gain: number;
-    timeGain: number;
-    waveGain: number;
-    floor: number;
-    ceiling: number;
-    power: number;
-    smoothing: number;
-    release: number;
-    breathing: number;
-  }
-> = {
-  system: {
-    gain: 2.28,
-    timeGain: 0.36,
-    waveGain: 0.16,
-    floor: 0.06,
-    ceiling: 0.94,
-    power: 0.82,
-    smoothing: 0.33,
-    release: 0.7,
-    breathing: 0.04,
-  },
-  shared: {
-    gain: 0.82,
-    timeGain: 0.12,
-    waveGain: 0.04,
-    floor: 0.05,
-    ceiling: 0.7,
-    power: 1.26,
-    smoothing: 0.2,
-    release: 0.62,
-    breathing: 0.014,
-  },
-  exclusive: {
-    gain: 0.72,
-    timeGain: 0.1,
-    waveGain: 0.035,
-    floor: 0.045,
-    ceiling: 0.64,
-    power: 1.32,
-    smoothing: 0.18,
-    release: 0.58,
-    breathing: 0.012,
-  },
+const spectrumProfile = {
+  floor: 0.045,
+  ceiling: 0.94,
+  power: 0.86,
+  smoothing: 0.28,
+  release: 0.68,
+  breathing: 0.018,
 };
 
 export function SpectrumCanvas({
@@ -58,6 +18,7 @@ export function SpectrumCanvas({
   palette,
   fallback,
   outputMode,
+  outputVolume,
 }: {
   analyserRef: { current: AnalyserNode | null };
   playing: boolean;
@@ -65,9 +26,11 @@ export function SpectrumCanvas({
   palette: CoverPalette;
   fallback: number[];
   outputMode: AudioOutputMode;
+  outputVolume: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const levelsRef = useRef<number[]>(Array.from({ length: 42 }, () => 0.1));
+  const autoGainRef = useRef(1.25);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -81,7 +44,6 @@ export function SpectrumCanvas({
     let frame = 0;
     let frequencyData = new Uint8Array(0);
     let timeData = new Uint8Array(0);
-    const profile = spectrumProfiles[outputMode];
     const draw = () => {
       const prepared = prepareCanvas(canvas);
       if (!prepared) return;
@@ -104,6 +66,10 @@ export function SpectrumCanvas({
       const globalWave = analyser
         ? timeData.reduce((sum, value) => sum + Math.abs(value - 128), 0) / timeData.length / 48
         : 0;
+      const loudness = analyser ? getFrameLoudness(frequencyData, timeData) : 0;
+      const targetAutoGain = loudness > 0.01 ? Math.min(3.8, Math.max(0.82, 0.38 / loudness)) : 1.25;
+      autoGainRef.current = autoGainRef.current * 0.95 + targetAutoGain * 0.05;
+      const audibleScale = outputMode === "system" ? 1 : Math.max(0.08, Math.min(1.05, outputVolume / 100));
 
       context.clearRect(0, 0, width, height);
       const gap = 6 * dpr;
@@ -153,19 +119,24 @@ export function SpectrumCanvas({
           : (fallback[index % fallback.length] ?? 18) / 100;
         const energy = analyser
           ? Math.pow(
-              Math.min(profile.ceiling, spectralEnergy * profile.gain + timeEnergy * profile.timeGain + globalWave * profile.waveGain),
-              profile.power,
+              Math.min(
+                spectrumProfile.ceiling,
+                (spectralEnergy * 0.84 + timeEnergy * 0.34 + globalWave * 0.16) * autoGainRef.current * audibleScale,
+              ),
+              spectrumProfile.power,
             )
           : spectralEnergy;
 
         const phase = Math.sin(now / (210 + index * 3.2) + index * 0.42);
         const breathing = playing
-          ? (phase + 1) * profile.breathing + Math.abs(Math.sin(now / 320 + index * 0.42)) * profile.breathing * 0.7
+          ? (phase + 1) * spectrumProfile.breathing +
+            Math.abs(Math.sin(now / 320 + index * 0.42)) * spectrumProfile.breathing * 0.7
           : 0;
         const target = playing
-          ? Math.min(profile.ceiling, Math.max(profile.floor, energy + breathing))
-          : Math.max(0, levelsRef.current[index] * profile.release);
-        levelsRef.current[index] = levelsRef.current[index] * (1 - profile.smoothing) + target * profile.smoothing;
+          ? Math.min(spectrumProfile.ceiling, Math.max(spectrumProfile.floor, energy + breathing))
+          : Math.max(0, levelsRef.current[index] * spectrumProfile.release);
+        levelsRef.current[index] =
+          levelsRef.current[index] * (1 - spectrumProfile.smoothing) + target * spectrumProfile.smoothing;
 
         const x = index * (barWidth + gap);
         const barHeight = Math.max(3 * dpr, levelsRef.current[index] * maxBarHeight);
@@ -183,7 +154,7 @@ export function SpectrumCanvas({
     return () => {
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [active, analyserRef, fallback, outputMode, palette.primary, palette.secondary, playing]);
+  }, [active, analyserRef, fallback, outputMode, outputVolume, palette.primary, palette.secondary, playing]);
 
   return (
     <canvas
@@ -192,6 +163,32 @@ export function SpectrumCanvas({
       aria-hidden="true"
     />
   );
+}
+
+function getFrameLoudness(frequencyData: Uint8Array, timeData: Uint8Array) {
+  if (!frequencyData.length || !timeData.length) return 0;
+
+  let weightedFrequency = 0;
+  let weight = 0;
+  let peak = 0;
+  const usableBins = Math.max(1, Math.floor(frequencyData.length * 0.78));
+  for (let index = 1; index < usableBins; index += 1) {
+    const bin = (frequencyData[index] ?? 0) / 255;
+    const binWeight = 1 + Math.max(0, 1 - index / usableBins) * 0.8;
+    weightedFrequency += bin * binWeight;
+    weight += binWeight;
+    peak = Math.max(peak, bin);
+  }
+
+  let squareSum = 0;
+  for (let index = 0; index < timeData.length; index += 1) {
+    const centered = ((timeData[index] ?? 128) - 128) / 128;
+    squareSum += centered * centered;
+  }
+
+  const frequencyMean = weightedFrequency / Math.max(1, weight);
+  const rms = Math.sqrt(squareSum / timeData.length);
+  return frequencyMean * 0.68 + peak * 0.18 + rms * 1.15;
 }
 
 function prepareCanvas(canvas: HTMLCanvasElement) {

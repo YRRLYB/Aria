@@ -183,16 +183,6 @@ app.post("/api/providers/netease/tracks/:trackId/like", async (req, res, next) =
   }
 });
 
-app.post("/api/providers/netease/tracks/:trackId/bpm", async (req, res, next) => {
-  try {
-    const body = z.object({ bpm: z.number().min(40).max(240) }).parse(req.body);
-    const bpm = await neteaseClient.saveBpm(req.params.trackId, body.bpm);
-    res.json({ ok: true, bpm });
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.post("/api/providers/netease/cache/warmup", async (req, res, next) => {
   try {
     const body = z

@@ -7,6 +7,7 @@ export type AudioOutputMode = "system" | "shared" | "exclusive";
 
 export type CachedPlayerState = {
   activeTrackId?: string;
+  activeTrackSnapshot?: Track;
   activeView?: ViewId;
   playerSideView?: PlayerSideView;
   playQueueIds?: string[];
@@ -19,7 +20,6 @@ export type CachedPlayerState = {
 };
 
 const playerCacheKey = "aria-player-state";
-const bpmCacheKey = "aria-bpm-cache";
 const lyricCacheKey = "aria-lyrics-cache";
 const audioSettingsKey = "aria-audio-settings";
 
@@ -51,15 +51,13 @@ export function readCachedPlayerState(): CachedPlayerState {
 
     return {
       activeTrackId: typeof parsed.activeTrackId === "string" ? parsed.activeTrackId : undefined,
+      activeTrackSnapshot: normalizeTrackSnapshot(parsed.activeTrackSnapshot),
       activeView: parsed.activeView && navIds.has(parsed.activeView) ? parsed.activeView : undefined,
       playerSideView: parsed.playerSideView === "queue" ? "queue" : parsed.playerSideView === "lyrics" ? "lyrics" : undefined,
       playQueueIds: Array.isArray(parsed.playQueueIds)
         ? parsed.playQueueIds.filter((id): id is string => typeof id === "string")
         : undefined,
-      currentTime:
-        typeof parsed.currentTime === "number" && Number.isFinite(parsed.currentTime)
-          ? Math.max(0, parsed.currentTime)
-          : undefined,
+      currentTime: undefined,
       volume:
         typeof parsed.volume === "number" && Number.isFinite(parsed.volume)
           ? Math.max(0, Math.min(100, parsed.volume))
@@ -67,11 +65,52 @@ export function readCachedPlayerState(): CachedPlayerState {
       qualityLevel: parsed.qualityLevel && qualityIds.has(parsed.qualityLevel) ? parsed.qualityLevel : undefined,
       shuffleEnabled: typeof parsed.shuffleEnabled === "boolean" ? parsed.shuffleEnabled : undefined,
       repeatMode: parsed.repeatMode === "one" ? "one" : parsed.repeatMode === "all" ? "all" : undefined,
-      playing: typeof parsed.playing === "boolean" ? parsed.playing : undefined,
+      playing: false,
     };
   } catch {
     return {};
   }
+}
+
+function normalizeTrackSnapshot(value: unknown): Track | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const track = value as Partial<Track>;
+  if (typeof track.id !== "string" || typeof track.title !== "string" || typeof track.artist !== "string") {
+    return undefined;
+  }
+
+  return {
+    id: track.id,
+    providerId: typeof track.providerId === "string" ? track.providerId : undefined,
+    title: track.title,
+    artist: track.artist,
+    album: typeof track.album === "string" ? track.album : "Aria",
+    duration: typeof track.duration === "string" ? track.duration : "--:--",
+    quality:
+      track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K"
+        ? track.quality
+        : "320K",
+    source: track.source === "netease" || track.source === "cloud" || track.source === "local" ? track.source : "local",
+    streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
+    coverUrl: typeof track.coverUrl === "string" ? track.coverUrl : undefined,
+    bitrate: typeof track.bitrate === "number" ? track.bitrate : null,
+    sampleRate: typeof track.sampleRate === "number" ? track.sampleRate : null,
+    bpm: null,
+    likedAt: typeof track.likedAt === "number" ? track.likedAt : null,
+    currentLevel: track.currentLevel ?? null,
+    availableLevels: Array.isArray(track.availableLevels) ? track.availableLevels : [],
+    cover: typeof track.cover === "string" ? track.cover : "linear-gradient(135deg, #eef1f5 0%, #aeb7c6 50%, #586273 100%)",
+    accent: typeof track.accent === "string" ? track.accent : "#7b8494",
+    waveform:
+      Array.isArray(track.waveform) && track.waveform.some((item) => typeof item === "number")
+        ? track.waveform.filter((item): item is number => typeof item === "number")
+        : [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52],
+    lyrics: Array.isArray(track.lyrics) ? track.lyrics : [{ time: "00:00", text: "" }],
+    lyricStatus:
+      track.lyricStatus === "linked" || track.lyricStatus === "searchable" || track.lyricStatus === "missing"
+        ? track.lyricStatus
+        : "searchable",
+  };
 }
 
 export function writeCachedPlayerState(state: CachedPlayerState & { updatedAt?: number }) {
@@ -146,30 +185,6 @@ export function writeCachedAudioSettings(settings: {
   }
 }
 
-export function readCachedBpm(trackId?: string) {
-  if (!trackId) return null;
-  try {
-    const raw = window.localStorage.getItem(bpmCacheKey);
-    if (!raw) return null;
-    const cache = JSON.parse(raw) as Record<string, number>;
-    const bpm = cache[trackId];
-    return typeof bpm === "number" && bpm >= 40 && bpm <= 240 ? bpm : null;
-  } catch {
-    return null;
-  }
-}
-
-export function writeCachedBpm(trackId: string, bpm: number) {
-  try {
-    const raw = window.localStorage.getItem(bpmCacheKey);
-    const cache = raw ? (JSON.parse(raw) as Record<string, number>) : {};
-    const entries = Object.entries({ ...cache, [trackId]: Math.round(bpm) }).slice(-1000);
-    window.localStorage.setItem(bpmCacheKey, JSON.stringify(Object.fromEntries(entries)));
-  } catch {
-    // Keep BPM caching best-effort.
-  }
-}
-
 export function formatDuration(seconds: number | null) {
   if (!seconds || Number.isNaN(seconds)) return "--:--";
   const minutes = Math.floor(seconds / 60);
@@ -184,33 +199,6 @@ export function parseDuration(value: string) {
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
   if (parts.length === 2) return parts[0] * 60 + parts[1];
   return parts[0] || 0;
-}
-
-function normalizeDetectedBpm(value: number) {
-  if (!Number.isFinite(value)) return null;
-  let bpm = value;
-  while (bpm < 72) bpm *= 2;
-  while (bpm > 188) bpm /= 2;
-  const rounded = Math.round(bpm);
-  return rounded >= 48 && rounded <= 220 ? rounded : null;
-}
-
-export function estimateBpmFromPeaks(peaks: number[]) {
-  if (peaks.length < 4) return null;
-  const buckets = new Map<number, number>();
-  for (let index = 1; index < peaks.length; index += 1) {
-    const start = Math.max(0, index - 10);
-    for (let cursor = start; cursor < index; cursor += 1) {
-      const interval = peaks[index] - peaks[cursor];
-      if (interval < 300 || interval > 2400) continue;
-      const bpm = normalizeDetectedBpm(60000 / interval);
-      if (!bpm) continue;
-      const bucket = Math.round(bpm / 2) * 2;
-      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
-    }
-  }
-  const [winner] = [...buckets.entries()].sort((left, right) => right[1] - left[1]);
-  return winner && winner[1] >= 3 ? winner[0] : null;
 }
 
 export function getActiveLyricIndex(lyrics: Track["lyrics"], currentTime: number) {

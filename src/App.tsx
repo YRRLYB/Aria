@@ -47,7 +47,6 @@ import {
 } from "@/lib/api";
 import {
   colorWithAlpha,
-  estimateBpmFromPeaks,
   extractDominantColors,
   formatAudioDetail,
   formatDuration,
@@ -57,12 +56,10 @@ import {
   parseDuration,
   qualityOptions,
   readCachedAudioSettings,
-  readCachedBpm,
   readCachedLyrics,
   readCachedPlayerState,
   splitArtistNames,
   trimTrackCache,
-  writeCachedBpm,
   writeCachedAudioSettings,
   writeCachedLyrics,
   writeCachedPlayerState,
@@ -154,7 +151,7 @@ function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
     coverUrl: track.hasCover ? api.getTrackCoverUrl(track.id) : undefined,
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
-    bpm: track.bpm ?? readCachedBpm(track.id),
+    bpm: null,
     currentLevel: null,
     availableLevels: [],
     cover: localCoverPalettes[index % localCoverPalettes.length],
@@ -186,7 +183,7 @@ function providerTrackToUiTrack(track: ProviderTrack, index: number): Track {
     streamUrl: track.streamUrl ? api.resolveUrl(track.streamUrl) : undefined,
     coverUrl: track.coverUrl ? api.getNeteaseCoverUrl(track.coverUrl) : undefined,
     likedAt: track.likedAt ?? null,
-    bpm: track.bpm ?? readCachedBpm(`netease:${track.id}`) ?? readCachedBpm(track.id),
+    bpm: null,
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
     currentLevel: track.currentLevel ?? null,
@@ -278,13 +275,24 @@ function isLikedPlaylist(playlist: ProviderPlaylist | null | undefined, index?: 
   return index === 0 || /喜欢|我喜欢|liked|favorite/i.test(playlist.name);
 }
 
+function createPlayerCacheSnapshot(track: Track): Track {
+  return {
+    ...track,
+    lyrics: [{ time: "00:00", text: "" }],
+    lyricStatus: track.lyricStatus === "linked" ? "searchable" : track.lyricStatus,
+  };
+}
+
 export default function App() {
   const [initialPlayerCache] = useState(readCachedPlayerState);
+  const [cachedActiveTrackSnapshot] = useState(() => initialPlayerCache.activeTrackSnapshot);
   const [activeView, setActiveView] = useState<ViewId>("home");
-  const [activeTrackId, setActiveTrackId] = useState(initialPlayerCache.activeTrackId ?? idleTrack.id);
+  const [activeTrackId, setActiveTrackId] = useState(
+    initialPlayerCache.activeTrackId ?? cachedActiveTrackSnapshot?.id ?? idleTrack.id,
+  );
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
-  const [currentTime, setCurrentTime] = useState(initialPlayerCache.currentTime ?? 0);
+  const [currentTime, setCurrentTime] = useState(0);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [spectrum] = useState<number[]>([]);
   const [shuffleEnabled, setShuffleEnabled] = useState(initialPlayerCache.shuffleEnabled ?? false);
@@ -292,7 +300,6 @@ export default function App() {
   const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
   const [likedTrackIds, setLikedTrackIds] = useState<Record<string, true>>({});
   const [neteaseLikedIds, setNeteaseLikedIds] = useState<Record<string, true>>({});
-  const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
   const [qualityLevel, setQualityLevel] = useState<QualityLevel>(initialPlayerCache.qualityLevel ?? "lossless");
   const [localTracks, setLocalTracks] = useState<Track[]>([]);
@@ -342,12 +349,6 @@ export default function App() {
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const nativeSilenceGainRef = useRef<GainNode | null>(null);
   const analyserOutputModeRef = useRef<"audible" | "silent" | null>(null);
-  const visualizerFrameRef = useRef<number | null>(null);
-  const bpmPeaksRef = useRef<number[]>([]);
-  const bpmSamplesRef = useRef<number[]>([]);
-  const bpmEnergyRef = useRef(0);
-  const bpmLockedRef = useRef(false);
-  const lastBpmStateRef = useRef(0);
   const countedTrackRef = useRef<string | null>(null);
   const navCloseTimer = useRef<number | null>(null);
   const lyricSyncingRef = useRef<Set<string>>(new Set());
@@ -356,16 +357,15 @@ export default function App() {
   const artistRequestRef = useRef<Set<string>>(new Set());
   const artistAvatarLookupRef = useRef<Set<string>>(new Set());
   const artistAvatarCacheRef = useRef<Record<string, string | null>>({});
-  const bpmSavedRef = useRef<Record<string, number>>({});
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const localTracksRef = useRef<Track[]>([]);
-  const pendingSeekRef = useRef(initialPlayerCache.currentTime ?? 0);
+  const pendingSeekRef = useRef(0);
   const lastPlayerCacheWriteRef = useRef(0);
   const nativeLoadedUrlRef = useRef<string | null>(null);
   const nativeAnalyserDelayUntilRef = useRef(0);
   const nativeLoadSequenceRef = useRef(0);
-  const lastNativeRenderRef = useRef({ at: 0, position: initialPlayerCache.currentTime ?? 0 });
-  const lastCurrentTimeRenderRef = useRef({ at: 0, time: initialPlayerCache.currentTime ?? 0 });
+  const lastNativeRenderRef = useRef({ at: 0, position: 0 });
+  const lastCurrentTimeRenderRef = useRef({ at: 0, time: 0 });
   const rendererDiagnosticRef = useRef<Record<string, unknown>>({});
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
@@ -413,6 +413,7 @@ export default function App() {
   const requestedActiveTrack = allTracks.find((track) => track.id === activeTrackId);
   const activeTrack =
     requestedActiveTrack ??
+    (cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null) ??
     (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
@@ -880,10 +881,6 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      if (visualizerFrameRef.current) {
-        window.cancelAnimationFrame(visualizerFrameRef.current);
-        visualizerFrameRef.current = null;
-      }
       try {
         audioSourceRef.current?.disconnect();
       } catch {
@@ -917,18 +914,17 @@ export default function App() {
 
     writeCachedPlayerState({
       activeTrackId: activeTrack.id,
-      activeView,
+      activeTrackSnapshot: createPlayerCacheSnapshot(activeTrack),
       playerSideView,
       playQueueIds,
-      currentTime,
       volume,
       qualityLevel,
       shuffleEnabled,
       repeatMode,
-      playing,
+      playing: false,
       updatedAt: now,
     });
-  }, [activeTrack.id, activeTrackId, activeView, currentTime, playQueueIds, playerSideView, playing, qualityLevel, repeatMode, shuffleEnabled, volume]);
+  }, [activeTrack, activeTrack.id, activeTrackId, playQueueIds, playerSideView, qualityLevel, repeatMode, shuffleEnabled, volume]);
 
   useEffect(() => {
     api
@@ -1290,6 +1286,7 @@ export default function App() {
   }, [activeTrack.id, activeTrack.coverUrl, activeTrack.accent]);
 
   useEffect(() => {
+    if (!playing) return;
     if (activeTrack.id === idleTrack.id) return;
     if (activeTrack.id !== activeTrackId) return;
     if (countedTrackRef.current === activeTrack.id) return;
@@ -1299,23 +1296,10 @@ export default function App() {
       ...current,
       [activeTrack.id]: (current[activeTrack.id] ?? 0) + 1,
     }));
-  }, [activeTrack.id]);
-
-  useEffect(() => {
-    setDetectedBpm(activeTrack.bpm ?? null);
-    bpmPeaksRef.current = [];
-    bpmSamplesRef.current = [];
-    bpmEnergyRef.current = 0;
-    bpmLockedRef.current = Boolean(activeTrack.bpm);
-    lastBpmStateRef.current = 0;
-  }, [activeTrack.id, activeTrack.bpm]);
+  }, [activeTrack.id, activeTrackId, playing]);
 
   useEffect(() => {
     if (!playing || !audioElementStreamUrl || !pageVisible) {
-      if (visualizerFrameRef.current) {
-        window.cancelAnimationFrame(visualizerFrameRef.current);
-        visualizerFrameRef.current = null;
-      }
       return;
     }
 
@@ -1375,53 +1359,6 @@ export default function App() {
       audio.muted = false;
       audio.volume = 1;
     }
-
-    const frequencyData = new Uint8Array(analyser.frequencyBinCount);
-    const tick = () => {
-      analyser.getByteFrequencyData(frequencyData);
-      let lowEnergy = 0;
-      const lowBandEnd = Math.min(18, frequencyData.length);
-      for (let index = 1; index < lowBandEnd; index += 1) {
-        lowEnergy += frequencyData[index] ?? 0;
-      }
-      lowEnergy /= Math.max(1, lowBandEnd - 1);
-      const baseline = bpmEnergyRef.current ? bpmEnergyRef.current * 0.95 + lowEnergy * 0.05 : lowEnergy;
-      const now = performance.now();
-      bpmEnergyRef.current = baseline;
-
-      if (!bpmLockedRef.current && lowEnergy > baseline * 1.18 && lowEnergy > 24) {
-        const peaks = bpmPeaksRef.current;
-        if (!peaks.length || now - peaks[peaks.length - 1] > 250) {
-          bpmPeaksRef.current = [...peaks, now].slice(-36);
-        }
-      }
-
-      if (!bpmLockedRef.current && now - lastBpmStateRef.current > 1800 && bpmPeaksRef.current.length >= 5) {
-        const bpm = estimateBpmFromPeaks(bpmPeaksRef.current);
-        if (bpm) {
-          setDetectedBpm(bpm);
-          const nextSamples = [...bpmSamplesRef.current, bpm].slice(-4);
-          bpmSamplesRef.current = nextSamples;
-          const spread = Math.max(...nextSamples) - Math.min(...nextSamples);
-          if (nextSamples.length >= 2 && spread <= 8) {
-            const stableBpm = Math.round(nextSamples.reduce((sum, value) => sum + value, 0) / nextSamples.length);
-            bpmLockedRef.current = true;
-            setDetectedBpm(stableBpm);
-            applyBpmToTrack(activeTrack.id, stableBpm);
-          }
-          lastBpmStateRef.current = now;
-        }
-      }
-      visualizerFrameRef.current = window.requestAnimationFrame(tick);
-    };
-    tick();
-
-    return () => {
-      if (visualizerFrameRef.current) {
-        window.cancelAnimationFrame(visualizerFrameRef.current);
-        visualizerFrameRef.current = null;
-      }
-    };
   }, [audioElementStreamUrl, activeTrack.id, nativePlaybackEnabled, pageVisible, playing]);
 
   useEffect(() => {
@@ -1568,6 +1505,16 @@ export default function App() {
     if (!playing) setPlaying(true);
   }
 
+  function togglePlayback() {
+    if (activeStreamUrl && activeTrack.id !== idleTrack.id) {
+      setPlaying((value) => !value);
+      return;
+    }
+
+    const fallbackTrack = playableTracks(playQueueTracks)[0] ?? playableTracks(contextualQueueTracks)[0] ?? playbackTracks[0];
+    if (fallbackTrack) chooseTrack(fallbackTrack.id);
+  }
+
   function resolveQueueForTrack(trackId: string) {
     const currentQueue = playableTracks(contextualQueueTracks);
     if (activeView !== "home" && activeView !== "player" && currentQueue.some((track) => track.id === trackId)) {
@@ -1588,7 +1535,13 @@ export default function App() {
 
   function chooseTrack(trackId: string) {
     const queue = resolveQueueForTrack(trackId);
-    const playableIds = materializeQueueIds(queue, trackId, shuffleEnabled);
+    const targetTrack =
+      queue.find((track) => track.id === trackId) ??
+      allTracks.find((track) => track.id === trackId) ??
+      (cachedActiveTrackSnapshot?.id === trackId ? cachedActiveTrackSnapshot : null);
+    if (!targetTrack?.streamUrl) return;
+
+    const playableIds = materializeQueueIds(queue.length ? queue : [targetTrack], trackId, shuffleEnabled);
     if (playableIds.length) setPlayQueueIds(playableIds);
     pendingSeekRef.current = 0;
     setActiveTrackId(trackId);
@@ -1705,27 +1658,6 @@ export default function App() {
     setRoamTracks((current) => current.map(updateTrack));
     setNeteaseLikedTracks((current) => current.map(updateTrack));
     setPlaylistTracks((current) => current.map(updateTrack));
-  }
-
-  function applyBpmToTrack(trackId: string, bpm: number) {
-    const safeBpm = Math.round(bpm);
-    const updateTrack = (track: Track) => (track.id === trackId ? { ...track, bpm: safeBpm } : track);
-    writeCachedBpm(trackId, safeBpm);
-    setLocalTracks((current) => current.map(updateTrack));
-    setNeteaseTracks((current) => current.map(updateTrack));
-    setDailyTracks((current) => current.map(updateTrack));
-    setRoamTracks((current) => current.map(updateTrack));
-    setNeteaseLikedTracks((current) => current.map(updateTrack));
-    setPlaylistTracks((current) => current.map(updateTrack));
-
-    const track = allTracks.find((item) => item.id === trackId);
-    if (track?.source === "netease" && track.providerId && bpmSavedRef.current[track.id] !== safeBpm) {
-      bpmSavedRef.current[track.id] = safeBpm;
-      writeCachedBpm(track.providerId, safeBpm);
-      api.saveNeteaseBpm(track.providerId, safeBpm).catch(() => {
-        delete bpmSavedRef.current[track.id];
-      });
-    }
   }
 
   function applyStreamMetaToTrack(
@@ -2001,9 +1933,13 @@ export default function App() {
                   roamTracks={roamTracks}
                   playCounts={playCounts}
                   playing={playing}
-                  onTogglePlay={() => setPlaying((value) => !value)}
+                  localTrackCount={localTracks.length}
+                  neteaseLikedCount={neteaseLikedDisplayTracks.length}
+                  playlistCount={providerPlaylists.length}
+                  onTogglePlay={togglePlayback}
                   onPickTrack={chooseTrack}
                   onOpenPlayer={() => setActiveView("player")}
+                  onOpenView={setActiveView}
                 />
               )}
               {activeView === "player" && (
@@ -2014,7 +1950,7 @@ export default function App() {
                   visualizerActive={pageVisible}
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
-                  onTogglePlay={() => setPlaying((value) => !value)}
+                  onTogglePlay={togglePlayback}
                   onToggleShuffle={toggleShuffleQueue}
                   onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
                   onNext={() => pickRelativeTrack(1)}
@@ -2035,7 +1971,6 @@ export default function App() {
                   spectrum={spectrum}
                   analyserRef={analyserRef}
                   visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
-                  detectedBpm={detectedBpm}
                   onSeek={seekTo}
                 />
               )}
@@ -2119,6 +2054,16 @@ export default function App() {
               activeTrackId={activeTrackId}
               onPickTrack={chooseTrack}
               onSeek={seekTo}
+            />
+          ) : activeView === "home" ? (
+            <HomeSidePanel
+              localTrackCount={localTracks.length}
+              neteaseConnected={neteaseConnected}
+              neteaseLikedCount={neteaseLikedDisplayTracks.length}
+              playlistCount={providerPlaylists.length}
+              totalPlayCount={Object.values(playCounts).reduce((sum, count) => sum + count, 0)}
+              onOpenView={setActiveView}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
@@ -2224,6 +2169,81 @@ export default function App() {
   );
 }
 
+function HomeSidePanel({
+  localTrackCount,
+  neteaseConnected,
+  neteaseLikedCount,
+  playlistCount,
+  totalPlayCount,
+  onOpenView,
+  onOpenSettings,
+}: {
+  localTrackCount: number;
+  neteaseConnected: boolean;
+  neteaseLikedCount: number;
+  playlistCount: number;
+  totalPlayCount: number;
+  onOpenView: (view: ViewId) => void;
+  onOpenSettings: () => void;
+}) {
+  const actions = [
+    { view: "local" as const, label: "本地扫描", detail: `${localTrackCount} 首`, icon: FolderOpen },
+    { view: "liked" as const, label: "我喜欢", detail: `${neteaseLikedCount} 首`, icon: Heart },
+    { view: "playlists" as const, label: "歌单", detail: `${playlistCount} 个`, icon: ListMusic },
+    { view: "stats" as const, label: "听歌统计", detail: `${totalPlayCount} 次`, icon: Sparkles },
+  ];
+
+  return (
+    <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Aria</p>
+          <h2 className="mt-1 text-xl font-semibold">控制台</h2>
+        </div>
+        <Button variant="ghost" size="icon" aria-label="打开设置" onClick={onOpenSettings}>
+          <Settings2 />
+        </Button>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-2 text-center text-xs text-neutral-500">
+        <Metric value={String(localTrackCount)} label="本地" />
+        <Metric value={neteaseConnected ? "ON" : "--"} label="网易云" />
+        <Metric value={String(playlistCount)} label="歌单" />
+        <Metric value={String(totalPlayCount)} label="播放" />
+      </div>
+
+      <div className="mt-5 grid gap-3">
+        {actions.map((action) => {
+          const Icon = action.icon;
+          return (
+            <button
+              key={action.view}
+              className="grid grid-cols-[2.65rem_1fr_auto] items-center gap-3 rounded-[1.15rem] bg-white/58 p-3 text-left shadow-sm transition hover:bg-white"
+              onClick={() => onOpenView(action.view)}
+            >
+              <span className="flex size-10 items-center justify-center rounded-2xl bg-neutral-950 text-white">
+                <Icon className="size-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold">{action.label}</span>
+                <span className="block truncate text-xs text-neutral-500">进入页面</span>
+              </span>
+              <Badge>{action.detail}</Badge>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-auto rounded-[1.2rem] bg-white/52 p-4 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Cache</p>
+        <p className="mt-2 text-sm text-neutral-500">
+          最近播放和封面会保留到下次启动，打开后保持暂停。
+        </p>
+      </div>
+    </aside>
+  );
+}
+
 function HomeSurface({
   activeTrack,
   tracks: homeTracks,
@@ -2231,9 +2251,13 @@ function HomeSurface({
   roamTracks,
   playCounts,
   playing,
+  localTrackCount,
+  neteaseLikedCount,
+  playlistCount,
   onTogglePlay,
   onPickTrack,
   onOpenPlayer,
+  onOpenView,
 }: {
   activeTrack: Track;
   tracks: Track[];
@@ -2241,9 +2265,13 @@ function HomeSurface({
   roamTracks: Track[];
   playCounts: Record<string, number>;
   playing: boolean;
+  localTrackCount: number;
+  neteaseLikedCount: number;
+  playlistCount: number;
   onTogglePlay: () => void;
   onPickTrack: (id: string) => void;
   onOpenPlayer: () => void;
+  onOpenView: (view: ViewId) => void;
 }) {
   const rankedTracks = useMemo(
     () =>
@@ -2256,13 +2284,14 @@ function HomeSurface({
         .slice(0, 20),
     [homeTracks, playCounts],
   );
-  const mixedTracks = useMemo(
-    () => mergeTracks([...roamTracks.slice(0, 4), ...dailyTracks.slice(0, 6), ...homeTracks]).slice(0, 8),
-    [dailyTracks, homeTracks, roamTracks],
-  );
   const totalPlays = useMemo(() => Object.values(playCounts).reduce((sum, count) => sum + count, 0), [playCounts]);
-  const neteaseCount = useMemo(() => homeTracks.filter((track) => track.source === "netease").length, [homeTracks]);
-  const favoriteArtist = rankedTracks[0]?.artist ?? "等待播放";
+  const cloudReadyCount = dailyTracks.length + roamTracks.length;
+  const quickActions = [
+    { id: "local" as const, label: "本地曲库", value: `${localTrackCount} 首`, icon: FolderOpen },
+    { id: "liked" as const, label: "我喜欢", value: `${neteaseLikedCount} 首`, icon: Heart },
+    { id: "daily" as const, label: "每日推荐", value: dailyTracks.length ? `${dailyTracks.length} 首` : "待同步", icon: Sparkles },
+    { id: "radar" as const, label: "私人漫游", value: roamTracks.length ? `${roamTracks.length} 首` : "待同步", icon: Radio },
+  ];
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.86fr)_minmax(0,1.14fr)] gap-4 overflow-hidden">
@@ -2276,9 +2305,9 @@ function HomeSurface({
             把本地音乐、网易云喜欢、每日推荐和云盘放在同一个主页里。
           </p>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            <StatTile label="本周播放" value={String(totalPlays)} />
-            <StatTile label="网易云" value={String(neteaseCount)} />
-            <StatTile label="常听歌手" value={favoriteArtist} compact />
+            <StatTile label="本地曲库" value={String(localTrackCount)} />
+            <StatTile label="网易云喜欢" value={String(neteaseLikedCount)} />
+            <StatTile label="歌单" value={String(playlistCount)} />
           </div>
         </div>
         <button
@@ -2360,27 +2389,38 @@ function HomeSurface({
 
         <div className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold">每日混合</h2>
-            <Badge>Radar</Badge>
+            <h2 className="text-xl font-semibold">快捷功能</h2>
+            <Badge>Tools</Badge>
           </div>
-          <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-3 overflow-y-auto pr-1">
-            {mixedTracks.map((track, index) => (
-              <button
-                key={track.id}
-                className="grid grid-cols-[3.5rem_1fr_auto] items-center gap-3 rounded-[1.2rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
-                onClick={() => onPickTrack(track.id)}
-              >
-                <CoverArt track={track} className="size-14 rounded-2xl" />
-                <div className="min-w-0">
-                  <p className="truncate font-semibold">{track.title}</p>
-                  <p className="truncate text-xs text-neutral-500">
-                    {index === 0 ? "私人漫游" : index === 1 ? "每日推荐" : "相似单曲"}
-                  </p>
-                </div>
-                <Badge>{formatAudioDetail(track)}</Badge>
-              </button>
-            ))}
-            {!mixedTracks.length && <EmptyState text="暂无推荐数据，先同步网易云每日推荐。" />}
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+            {quickActions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <button
+                  key={action.id}
+                  className="grid grid-cols-[2.75rem_1fr_auto] items-center gap-3 rounded-[1.2rem] bg-white/58 p-3 text-left shadow-sm transition hover:bg-white"
+                  onClick={() => onOpenView(action.id)}
+                >
+                  <span className="flex size-11 items-center justify-center rounded-2xl bg-neutral-950 text-white shadow-sm">
+                    <Icon className="size-5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">{action.label}</p>
+                    <p className="truncate text-xs text-neutral-500">打开对应页面</p>
+                  </div>
+                  <Badge>{action.value}</Badge>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 rounded-[1.2rem] bg-white/52 p-4 shadow-sm">
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Library</p>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
+              <Metric value={String(homeTracks.length)} label="可播放" />
+              <Metric value={String(totalPlays)} label="播放" />
+              <Metric value={String(cloudReadyCount)} label="云推荐" />
+            </div>
           </div>
         </div>
       </section>
@@ -2798,7 +2838,6 @@ function PlayerSurface({
   spectrum,
   analyserRef,
   visualizerMode,
-  detectedBpm,
   onSeek,
 }: {
   activeTrack: Track;
@@ -2825,14 +2864,12 @@ function PlayerSurface({
   spectrum: number[];
   analyserRef: { current: AnalyserNode | null };
   visualizerMode: AudioOutputMode;
-  detectedBpm: number | null;
   onSeek: (time: number) => void;
 }) {
   const visualizerBars = spectrum.length ? spectrum : activeTrack.waveform;
   const themePrimary = colorWithAlpha(palette.primary, 0.34);
   const themeSecondary = colorWithAlpha(palette.secondary, 0.24);
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
-  const bpmLabel = activeTrack.bpm ? `${activeTrack.bpm} BPM` : detectedBpm ? `${detectedBpm} BPM` : "BPM --";
   const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
   const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
   const progressPercent = resolvedDuration ? Math.min(100, Math.max(0, (currentTime / resolvedDuration) * 100)) : 0;
@@ -2930,7 +2967,6 @@ function PlayerSurface({
               <Badge>{sourceLabel[activeTrack.source]}</Badge>
               <Badge>{formatAudioDetail(activeTrack, resolvedQualityLevel)}</Badge>
               <Badge>{activeTrack.duration}</Badge>
-              <Badge>{bpmLabel}</Badge>
               {hifiEnabled && <Badge>HiFi</Badge>}
               {exclusiveMode && <Badge>直通</Badge>}
             </div>
@@ -2950,6 +2986,7 @@ function PlayerSurface({
                 palette={palette}
                 fallback={visualizerBars}
                 outputMode={visualizerMode}
+                outputVolume={volume}
               />
               <div
                 className="hidden"

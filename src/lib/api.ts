@@ -341,12 +341,6 @@ export const api = {
       availableLevels: NonNullable<ProviderTrack["availableLevels"]>;
     }>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/stream-meta?${params}`);
   },
-  saveNeteaseBpm(trackId: string, bpm: number) {
-    return request<{ ok: boolean; bpm: number }>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/bpm`, {
-      method: "POST",
-      body: JSON.stringify({ bpm }),
-    });
-  },
   warmNeteaseCache(trackIds: string[], level = "lossless") {
     return request<{ ok: boolean; cached: number }>("/api/providers/netease/cache/warmup", {
       method: "POST",
