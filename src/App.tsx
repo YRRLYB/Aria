@@ -1,9 +1,11 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Copy,
   Cookie,
   FolderOpen,
   Heart,
+  ImagePlus,
   Languages,
   ListMusic,
   Maximize2,
@@ -36,6 +38,8 @@ import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
 import { ArtistAvatar, CopyableTrackText, CoverArt, EmptyState, Metric, StatTile } from "@/components/music/shared";
 import ariaIconUrl from "../build/icon.png";
 import { navItems, type LyricCandidate, type Track, type ViewId } from "@/data/music";
+import { createArtworkOverrideDataUrl, readCachedArtworkOverride, writeCachedArtworkOverride } from "@/lib/artworkOverrides";
+import { copyArtworkToClipboard } from "@/lib/clipboard";
 import {
   api,
   type ApiScannedTrack,
@@ -69,6 +73,7 @@ import {
   type QualityLevel,
 } from "@/lib/playerPresentation";
 import { materializeQueueIds, orderedQueueIds, playableTracks } from "@/lib/playQueue";
+import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
 import { cn } from "@/lib/utils";
 
 const sourceLabel: Record<Track["source"], string> = {
@@ -145,6 +150,7 @@ const idleTrack: Track = {
 
 function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
   const cachedLyrics = readCachedLyrics(track.id);
+  const artworkOverride = readCachedArtworkOverride(track.id);
   return {
     id: track.id,
     title: track.title,
@@ -154,7 +160,7 @@ function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
     quality: normalizeQuality(track.quality),
     source: "local",
     streamUrl: api.getTrackStreamUrl(track.id),
-    coverUrl: track.hasCover ? api.getTrackCoverUrl(track.id) : undefined,
+    coverUrl: artworkOverride ?? (track.hasCover ? api.getTrackCoverUrl(track.id) : undefined),
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
     bpm: null,
@@ -327,7 +333,6 @@ export default function App() {
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
   const [currentTime, setCurrentTime] = useState(0);
   const [durationSeconds, setDurationSeconds] = useState(0);
-  const [spectrum] = useState<number[]>([]);
   const [shuffleEnabled, setShuffleEnabled] = useState(initialPlayerCache.shuffleEnabled ?? false);
   const [repeatMode, setRepeatMode] = useState<"all" | "one">(initialPlayerCache.repeatMode ?? "all");
   const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
@@ -1147,10 +1152,10 @@ export default function App() {
       return;
     }
 
-    nativeAnalyserDelayUntilRef.current = performance.now() + 520;
+    nativeAnalyserDelayUntilRef.current = performance.now() + 260;
     const timer = window.setTimeout(() => {
       setNativeAnalyserWakeToken((value) => value + 1);
-    }, 560);
+    }, 300);
     return () => window.clearTimeout(timer);
   }, [activeTrack.id, activeStreamUrl, audioOutputMode, nativePlaybackRequested, selectedSinkId]);
 
@@ -1242,7 +1247,7 @@ export default function App() {
       );
     audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
     audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : Math.max(0, Math.min(1, nativePlaybackVolume / 100));
-    audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : hifiEnabled ? "auto" : "metadata";
+    audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "auto" : "none") : hifiEnabled ? "auto" : "metadata";
 
     if (!audioElementStreamUrl || !nativeAnalyserReady) {
       audio.pause();
@@ -1462,16 +1467,14 @@ export default function App() {
         return;
       }
       analyserRef.current = context.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      analyserRef.current.smoothingTimeConstant = 0.58;
-      analyserRef.current.minDecibels = -92;
-      analyserRef.current.maxDecibels = -10;
+      configureSpectrumAnalyser(analyserRef.current);
       audioSourceRef.current.connect(analyserRef.current);
     }
 
-    context.resume();
+    void context.resume();
     const analyser = analyserRef.current;
     if (!analyser) return;
+    configureSpectrumAnalyser(analyser);
 
     const desiredOutputMode = nativePlaybackEnabled ? "silent" : "audible";
     if (analyserOutputModeRef.current !== desiredOutputMode) {
@@ -1792,6 +1795,8 @@ export default function App() {
 
   function applyArtworkToTrack(trackId: string, coverUrl?: string | null) {
     if (!coverUrl) return;
+    const cachedOverride = readCachedArtworkOverride(trackId);
+    if (cachedOverride) return;
     const proxiedCoverUrl = api.getNeteaseCoverUrl(coverUrl);
     const updateTrack = (track: Track) => (track.id === trackId ? { ...track, coverUrl: proxiedCoverUrl } : track);
     setLocalTracks((current) => current.map(updateTrack));
@@ -1800,6 +1805,20 @@ export default function App() {
     setRoamTracks((current) => current.map(updateTrack));
     setNeteaseLikedTracks((current) => current.map(updateTrack));
     setPlaylistTracks((current) => current.map(updateTrack));
+  }
+
+  async function replaceLocalArtwork(trackId: string, file: File) {
+    const dataUrl = await createArtworkOverrideDataUrl(file);
+    writeCachedArtworkOverride(trackId, dataUrl);
+    const updateTrack = (track: Track) =>
+      track.id === trackId && track.source === "local" ? { ...track, coverUrl: dataUrl } : track;
+    setLocalTracks((current) => current.map(updateTrack));
+    setPlayHistory((current) =>
+      current.map((entry) => ({
+        ...entry,
+        track: updateTrack(entry.track),
+      })),
+    );
   }
 
   function applyStreamMetaToTrack(
@@ -2097,6 +2116,7 @@ export default function App() {
                   onNext={() => pickRelativeTrack(1)}
                   onPrevious={() => pickRelativeTrack(-1)}
                   onOpenImmersive={() => void openImmersiveView()}
+                  onReplaceLocalArtwork={replaceLocalArtwork}
                   liked={activeTrack.source === "netease" ? Boolean(neteaseLikedIds[activeTrack.id]) : Boolean(likedTrackIds[activeTrack.id])}
                   onToggleLike={() => toggleLikeTrack(activeTrack.id)}
                   volume={volume}
@@ -2110,7 +2130,6 @@ export default function App() {
                   exclusiveMode={exclusiveMode}
                   currentTime={currentTime}
                   durationSeconds={durationSeconds}
-                  spectrum={spectrum}
                   analyserRef={analyserRef}
                   visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
                   onSeek={seekTo}
@@ -3027,6 +3046,7 @@ function PlayerSurface({
   onNext,
   onPrevious,
   onOpenImmersive,
+  onReplaceLocalArtwork,
   liked,
   onToggleLike,
   volume,
@@ -3037,7 +3057,6 @@ function PlayerSurface({
   exclusiveMode,
   currentTime,
   durationSeconds,
-  spectrum,
   analyserRef,
   visualizerMode,
   onSeek,
@@ -3054,6 +3073,7 @@ function PlayerSurface({
   onNext: () => void;
   onPrevious: () => void;
   onOpenImmersive: () => void;
+  onReplaceLocalArtwork: (trackId: string, file: File) => Promise<void>;
   liked: boolean;
   onToggleLike: () => void;
   volume: number;
@@ -3064,18 +3084,50 @@ function PlayerSurface({
   exclusiveMode: boolean;
   currentTime: number;
   durationSeconds: number;
-  spectrum: number[];
   analyserRef: { current: AnalyserNode | null };
   visualizerMode: AudioOutputMode;
   onSeek: (time: number) => void;
 }) {
-  const visualizerBars = spectrum.length ? spectrum : activeTrack.waveform;
   const themePrimary = colorWithAlpha(palette.primary, 0.34);
   const themeSecondary = colorWithAlpha(palette.secondary, 0.24);
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
   const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
   const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
   const progressPercent = resolvedDuration ? Math.min(100, Math.max(0, (currentTime / resolvedDuration) * 100)) : 0;
+  const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const artworkFileInputRef = useRef<HTMLInputElement | null>(null);
+  const canReplaceArtwork = activeTrack.source === "local";
+
+  useEffect(() => {
+    setArtworkMenuPosition(null);
+  }, [activeTrack.id]);
+
+  useEffect(() => {
+    if (!artworkMenuPosition) return;
+    const closeMenu = () => setArtworkMenuPosition(null);
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("blur", closeMenu);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("blur", closeMenu);
+    };
+  }, [artworkMenuPosition]);
+
+  function openArtworkMenu(event: ReactMouseEvent<HTMLElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 190;
+    const menuHeight = canReplaceArtwork ? 108 : 58;
+    setArtworkMenuPosition({
+      x: Math.min(event.clientX, window.innerWidth - menuWidth - 12),
+      y: Math.min(event.clientY, window.innerHeight - menuHeight - 12),
+    });
+  }
+
+  async function handleArtworkFile(file: File | undefined) {
+    if (!file || !canReplaceArtwork) return;
+    await onReplaceLocalArtwork(activeTrack.id, file);
+  }
 
   return (
     <div
@@ -3085,6 +3137,47 @@ function PlayerSurface({
         background: `linear-gradient(135deg, ${themePrimary}, rgba(255,255,255,0.26) 42%, ${themeSecondary})`,
       }}
     >
+      <input
+        ref={artworkFileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          void handleArtworkFile(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+      {artworkMenuPosition && (
+        <div
+          className="fixed z-[120] w-48 rounded-[1rem] border border-white/80 bg-white/90 p-1.5 text-sm shadow-[0_18px_48px_rgba(23,23,23,0.16)] backdrop-blur-2xl"
+          style={{ left: artworkMenuPosition.x, top: artworkMenuPosition.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded-[0.8rem] px-3 py-2 text-left font-medium text-neutral-700 transition hover:bg-neutral-950 hover:text-white"
+            onClick={() => {
+              setArtworkMenuPosition(null);
+              void copyArtworkToClipboard(activeTrack);
+            }}
+          >
+            <Copy className="size-4" />
+            复制曲绘
+          </button>
+          {canReplaceArtwork && (
+            <button
+              className="mt-1 flex w-full items-center gap-2 rounded-[0.8rem] px-3 py-2 text-left font-medium text-neutral-700 transition hover:bg-neutral-950 hover:text-white"
+              onClick={() => {
+                setArtworkMenuPosition(null);
+                artworkFileInputRef.current?.click();
+              }}
+            >
+              <ImagePlus className="size-4" />
+              更换曲绘
+            </button>
+          )}
+        </div>
+      )}
       <div
         className="pointer-events-none absolute inset-0 opacity-70"
         style={{
@@ -3109,7 +3202,13 @@ function PlayerSurface({
             transition={{ duration: 0.42 }}
             className="absolute inset-0"
           >
-            <CoverArt track={activeTrack} className="size-full" fit="cover" large />
+            <CoverArt
+              track={activeTrack}
+              className="size-full"
+              fit="cover"
+              large
+              onArtworkContextMenu={openArtworkMenu}
+            />
           </motion.div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />
           <div className="hidden">
@@ -3201,30 +3300,10 @@ function PlayerSurface({
                 playing={playing}
                 active={visualizerActive}
                 palette={palette}
-                fallback={visualizerBars}
+                fallback={activeTrack.waveform}
                 outputMode={visualizerMode}
                 outputVolume={volume}
               />
-              <div
-                className="hidden"
-                style={{ background: `linear-gradient(180deg, ${themeSoft}, ${colorWithAlpha(palette.secondary, 0.08)})` }}
-              >
-                <div className="absolute inset-x-0 top-3 h-px bg-gradient-to-r from-transparent via-neutral-950/10 to-transparent" />
-                {visualizerBars.map((height, index) => (
-                  <motion.div
-                    key={`${activeTrack.id}-${index}`}
-                    initial={{ height: 8 }}
-                    animate={{ height: `${playing ? Math.max(8, height) : Math.max(6, height * 0.45)}%` }}
-                    transition={{
-                      delay: index * 0.025,
-                      duration: 0.18,
-                      ease: "easeInOut",
-                    }}
-                    className="relative z-10 min-w-2 flex-1 rounded-full"
-                    style={{ backgroundColor: palette.primary }}
-                  />
-                ))}
-              </div>
               <div className="mt-3">
               <input
                 aria-label="播放进度"

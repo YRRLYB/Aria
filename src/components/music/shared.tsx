@@ -80,11 +80,13 @@ export function CoverArt({
   className,
   large = false,
   fit = "cover",
+  onArtworkContextMenu,
 }: {
   track: Track;
   className?: string;
   large?: boolean;
   fit?: "cover" | "contain";
+  onArtworkContextMenu?: (event: MouseEvent<HTMLElement>, track: Track) => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const hasImage = Boolean(track.coverUrl) && !imageFailed;
@@ -96,6 +98,10 @@ export function CoverArt({
   const copyArtwork = (event: MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    if (onArtworkContextMenu) {
+      onArtworkContextMenu(event, track);
+      return;
+    }
     void copyArtworkToClipboard(track);
   };
 

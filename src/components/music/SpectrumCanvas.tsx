@@ -1,15 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { AudioOutputMode, CoverPalette } from "@/lib/playerPresentation";
 import { colorWithAlpha } from "@/lib/playerPresentation";
-
-const spectrumProfile = {
-  floor: 0.045,
-  ceiling: 0.94,
-  power: 0.86,
-  smoothing: 0.28,
-  release: 0.68,
-  breathing: 0.018,
-};
+import { RealtimeSpectrumEngine } from "@/lib/spectrumEngine";
 
 export function SpectrumCanvas({
   analyserRef,
@@ -29,125 +21,36 @@ export function SpectrumCanvas({
   outputVolume: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const levelsRef = useRef<number[]>(Array.from({ length: 42 }, () => 0.1));
-  const autoGainRef = useRef(1.25);
+  const engineRef = useRef(new RealtimeSpectrumEngine());
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (!active || !playing) {
-      clearCanvas(canvas);
-      levelsRef.current = levelsRef.current.map(() => 0);
+    if (!active) {
+      engineRef.current.reset();
+      const prepared = prepareCanvas(canvas);
+      if (prepared) prepared.context.clearRect(0, 0, prepared.width, prepared.height);
       return;
     }
 
     let frame = 0;
-    let frequencyData = new Uint8Array(0);
-    let timeData = new Uint8Array(0);
     const draw = () => {
       const prepared = prepareCanvas(canvas);
       if (!prepared) return;
-      const { context, dpr, height, width } = prepared;
 
-      const analyser = analyserRef.current;
-      if (analyser) {
-        if (frequencyData.length !== analyser.frequencyBinCount) {
-          frequencyData = new Uint8Array(analyser.frequencyBinCount);
-        }
-        if (timeData.length !== analyser.fftSize) {
-          timeData = new Uint8Array(analyser.fftSize);
-        }
-        analyser.getByteFrequencyData(frequencyData);
-        analyser.getByteTimeDomainData(timeData);
+      const snapshot = engineRef.current.read({
+        analyser: analyserRef.current,
+        fallback,
+        now: performance.now(),
+        outputMode,
+        outputVolume,
+        playing,
+      });
+
+      renderSpectrum(prepared, snapshot.levels, snapshot.peaks, palette, snapshot.live);
+      if (playing || snapshot.signal > 0.024) {
+        frame = window.requestAnimationFrame(draw);
       }
-
-      const barCount = levelsRef.current.length;
-      const now = performance.now();
-      const globalWave = analyser
-        ? timeData.reduce((sum, value) => sum + Math.abs(value - 128), 0) / timeData.length / 48
-        : 0;
-      const loudness = analyser ? getFrameLoudness(frequencyData, timeData) : 0;
-      const targetAutoGain = loudness > 0.01 ? Math.min(3.8, Math.max(0.82, 0.38 / loudness)) : 1.25;
-      autoGainRef.current = autoGainRef.current * 0.95 + targetAutoGain * 0.05;
-      const audibleScale = Math.max(0.08, Math.min(1.05, outputVolume / 100));
-
-      context.clearRect(0, 0, width, height);
-      const gap = 6 * dpr;
-      const barWidth = Math.max(2 * dpr, (width - gap * (barCount - 1)) / barCount);
-      const baseline = height * 0.82;
-      const maxBarHeight = height * 0.58;
-      const barGradient = context.createLinearGradient(0, baseline - maxBarHeight, 0, baseline);
-      barGradient.addColorStop(0, colorWithAlpha(palette.secondary, 0.9));
-      barGradient.addColorStop(0.75, colorWithAlpha(palette.primary, 0.82));
-      barGradient.addColorStop(1, colorWithAlpha(palette.primary, 0.56));
-
-      context.strokeStyle = colorWithAlpha(palette.primary, 0.2);
-      context.lineWidth = 1 * dpr;
-      context.beginPath();
-      context.moveTo(0, baseline + 0.5 * dpr);
-      context.lineTo(width, baseline + 0.5 * dpr);
-      context.stroke();
-
-      for (let index = 0; index < barCount; index += 1) {
-        const logStart = Math.floor(Math.pow(index / barCount, 1.18) * frequencyData.length * 0.82);
-        const logEnd = Math.max(
-          logStart + 1,
-          Math.floor(Math.pow((index + 1) / barCount, 1.18) * frequencyData.length * 0.82),
-        );
-        const foldedBand = Math.max(1, Math.floor(frequencyData.length * 0.42));
-        const foldedIndex = frequencyData.length
-          ? (index * 3 + Math.floor(index / 4)) % foldedBand
-          : 0;
-        const linearIndex = Math.min(
-          frequencyData.length - 1,
-          Math.floor((index / Math.max(1, barCount - 1)) * (frequencyData.length - 1)),
-        );
-        const mirrorIndex = Math.max(0, frequencyData.length - 1 - linearIndex);
-        let bandEnergy = 0;
-        for (let cursor = logStart; cursor < logEnd; cursor += 1) {
-          bandEnergy += frequencyData[cursor] ?? 0;
-        }
-        const timeIndex = timeData.length ? Math.floor((index / barCount) * timeData.length) : 0;
-        const timeEnergy = timeData.length ? Math.abs((timeData[timeIndex] ?? 128) - 128) / 96 : 0;
-        const spectralEnergy = analyser
-          ? (bandEnergy / (logEnd - logStart) +
-              (frequencyData[linearIndex] ?? 0) * 0.28 +
-              (frequencyData[mirrorIndex] ?? 0) * 0.08 +
-              (frequencyData[foldedIndex] ?? 0) * 0.36 +
-              (frequencyData[Math.max(1, foldedIndex - 1)] ?? 0) * 0.16) /
-            (255 * 1.6)
-          : (fallback[index % fallback.length] ?? 18) / 100;
-        const energy = analyser
-          ? Math.pow(
-              Math.min(
-                spectrumProfile.ceiling,
-                (spectralEnergy * 0.84 + timeEnergy * 0.34 + globalWave * 0.16) * autoGainRef.current * audibleScale,
-              ),
-              spectrumProfile.power,
-            )
-          : spectralEnergy;
-
-        const phase = Math.sin(now / (210 + index * 3.2) + index * 0.42);
-        const breathing = playing
-          ? (phase + 1) * spectrumProfile.breathing +
-            Math.abs(Math.sin(now / 320 + index * 0.42)) * spectrumProfile.breathing * 0.7
-          : 0;
-        const target = playing
-          ? Math.min(spectrumProfile.ceiling, Math.max(spectrumProfile.floor, energy + breathing))
-          : Math.max(0, levelsRef.current[index] * spectrumProfile.release);
-        levelsRef.current[index] =
-          levelsRef.current[index] * (1 - spectrumProfile.smoothing) + target * spectrumProfile.smoothing;
-
-        const x = index * (barWidth + gap);
-        const barHeight = Math.max(3 * dpr, levelsRef.current[index] * maxBarHeight);
-        const radius = Math.min(barWidth / 2, 10 * dpr);
-
-        context.fillStyle = barGradient;
-        roundedRect(context, x, baseline - barHeight, barWidth, barHeight, radius);
-        context.fill();
-      }
-
-      frame = window.requestAnimationFrame(draw);
     };
 
     draw();
@@ -156,47 +59,99 @@ export function SpectrumCanvas({
     };
   }, [active, analyserRef, fallback, outputMode, outputVolume, palette.primary, palette.secondary, playing]);
 
+  useEffect(() => {
+    engineRef.current.reset();
+  }, [fallback]);
+
   return (
     <canvas
       ref={canvasRef}
-      className={`block h-36 w-full transition-opacity duration-300 sm:h-40 2xl:h-56 ${active && playing ? "opacity-100" : "opacity-0"}`}
+      className={`block h-32 w-full transition-opacity duration-300 sm:h-36 2xl:h-48 ${active ? "opacity-100" : "opacity-0"}`}
       aria-hidden="true"
     />
   );
 }
 
-function getFrameLoudness(frequencyData: Uint8Array, timeData: Uint8Array) {
-  if (!frequencyData.length || !timeData.length) return 0;
+type PreparedCanvas = {
+  context: CanvasRenderingContext2D;
+  dpr: number;
+  height: number;
+  width: number;
+};
 
-  let weightedFrequency = 0;
-  let weight = 0;
-  let peak = 0;
-  const usableBins = Math.max(1, Math.floor(frequencyData.length * 0.78));
-  for (let index = 1; index < usableBins; index += 1) {
-    const bin = (frequencyData[index] ?? 0) / 255;
-    const binWeight = 1 + Math.max(0, 1 - index / usableBins) * 0.8;
-    weightedFrequency += bin * binWeight;
-    weight += binWeight;
-    peak = Math.max(peak, bin);
+function renderSpectrum(
+  { context, dpr, height, width }: PreparedCanvas,
+  levels: Float32Array,
+  peaks: Float32Array,
+  palette: CoverPalette,
+  live: boolean,
+) {
+  context.clearRect(0, 0, width, height);
+
+  const bandCount = levels.length;
+  const gap = Math.max(2.8 * dpr, Math.min(7 * dpr, width / 160));
+  const barWidth = Math.max(3 * dpr, (width - gap * (bandCount - 1)) / bandCount);
+  const baseline = height * 0.82;
+  const maxBarHeight = height * 0.7;
+  const radius = Math.min(barWidth / 2, 7 * dpr);
+
+  const hazeGradient = context.createLinearGradient(0, baseline - maxBarHeight, 0, height);
+  hazeGradient.addColorStop(0, colorWithAlpha(palette.secondary, live ? 0.18 : 0.08));
+  hazeGradient.addColorStop(0.58, colorWithAlpha(palette.primary, live ? 0.13 : 0.06));
+  hazeGradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = hazeGradient;
+  context.fillRect(0, Math.max(0, baseline - maxBarHeight - 10 * dpr), width, maxBarHeight + 24 * dpr);
+
+  const baselineGradient = context.createLinearGradient(0, 0, width, 0);
+  baselineGradient.addColorStop(0, "rgba(255,255,255,0)");
+  baselineGradient.addColorStop(0.16, colorWithAlpha(palette.primary, live ? 0.2 : 0.1));
+  baselineGradient.addColorStop(0.5, colorWithAlpha(palette.secondary, live ? 0.22 : 0.1));
+  baselineGradient.addColorStop(0.84, colorWithAlpha(palette.primary, live ? 0.2 : 0.1));
+  baselineGradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.strokeStyle = baselineGradient;
+  context.lineWidth = 1.2 * dpr;
+  context.beginPath();
+  context.moveTo(0, baseline + 1.5 * dpr);
+  context.lineTo(width, baseline + 1.5 * dpr);
+  context.stroke();
+
+  const barGradient = context.createLinearGradient(0, baseline - maxBarHeight, 0, baseline + 4 * dpr);
+  barGradient.addColorStop(0, colorWithAlpha(palette.secondary, 0.96));
+  barGradient.addColorStop(0.52, colorWithAlpha(palette.primary, 0.86));
+  barGradient.addColorStop(1, colorWithAlpha(palette.primary, 0.38));
+
+  context.shadowBlur = live ? 10 * dpr : 4 * dpr;
+  context.shadowColor = colorWithAlpha(palette.primary, live ? 0.2 : 0.1);
+  context.fillStyle = barGradient;
+
+  for (let index = 0; index < bandCount; index += 1) {
+    const x = index * (barWidth + gap);
+    const level = Math.max(0, levels[index]);
+    const heightRatio = Math.pow(level, 0.92);
+    const barHeight = Math.max(2.4 * dpr, heightRatio * maxBarHeight);
+    roundedRect(context, x, baseline - barHeight, barWidth, barHeight, radius);
+    context.fill();
   }
 
-  let squareSum = 0;
-  for (let index = 0; index < timeData.length; index += 1) {
-    const centered = ((timeData[index] ?? 128) - 128) / 128;
-    squareSum += centered * centered;
+  context.shadowBlur = 0;
+  context.fillStyle = colorWithAlpha(palette.secondary, live ? 0.88 : 0.38);
+  for (let index = 0; index < bandCount; index += 1) {
+    const peak = peaks[index];
+    if (peak < 0.055) continue;
+    const x = index * (barWidth + gap) + barWidth / 2;
+    const y = baseline - Math.max(3 * dpr, Math.pow(peak, 0.92) * maxBarHeight) - 4 * dpr;
+    context.beginPath();
+    context.arc(x, y, Math.min(2.15 * dpr, barWidth / 2), 0, Math.PI * 2);
+    context.fill();
   }
-
-  const frequencyMean = weightedFrequency / Math.max(1, weight);
-  const rms = Math.sqrt(squareSum / timeData.length);
-  return frequencyMean * 0.68 + peak * 0.18 + rms * 1.15;
 }
 
-function prepareCanvas(canvas: HTMLCanvasElement) {
-  const context = canvas.getContext("2d");
+function prepareCanvas(canvas: HTMLCanvasElement): PreparedCanvas | null {
+  const context = canvas.getContext("2d", { alpha: true });
   if (!context) return null;
 
   const rect = canvas.getBoundingClientRect();
-  const dpr = Math.min(1.75, Math.max(1, window.devicePixelRatio || 1));
+  const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
   const width = Math.max(1, Math.floor(rect.width * dpr));
   const height = Math.max(1, Math.floor(rect.height * dpr));
   if (canvas.width !== width || canvas.height !== height) {
@@ -204,12 +159,6 @@ function prepareCanvas(canvas: HTMLCanvasElement) {
     canvas.height = height;
   }
   return { context, dpr, height, width };
-}
-
-function clearCanvas(canvas: HTMLCanvasElement) {
-  const prepared = prepareCanvas(canvas);
-  if (!prepared) return;
-  prepared.context.clearRect(0, 0, prepared.width, prepared.height);
 }
 
 function roundedRect(
