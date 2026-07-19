@@ -66,6 +66,7 @@ declare global {
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
+      copyImageToClipboard?: (payload: { url?: string; dataUrl?: string }) => Promise<boolean>;
       log?: (payload: {
         level?: "debug" | "info" | "warn" | "error";
         source?: string;

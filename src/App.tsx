@@ -121,9 +121,9 @@ const noDragRegionStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
 const playHistoryCacheKey = "aria-play-history";
 
 const panelVariants = {
-  initial: { opacity: 0, y: 18, filter: "blur(18px)" },
-  animate: { opacity: 1, y: 0, filter: "blur(0px)" },
-  exit: { opacity: 0, y: -16, filter: "blur(16px)" },
+  initial: { opacity: 0, y: 18 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -16 },
 };
 
 const localCoverPalettes = [
@@ -288,10 +288,18 @@ function isLikedPlaylist(playlist: ProviderPlaylist | null | undefined, index?: 
 }
 
 function createPlayerCacheSnapshot(track: Track): Track {
+  return { ...track };
+}
+
+function hydrateHistoryTrack(track: Track): Track {
+  const cachedLyrics = readCachedLyrics(track.id);
+  if (!cachedLyrics.length) return track;
+  const hasLyrics = track.lyrics.some((line) => line.text.trim().length > 0);
+  if (hasLyrics) return track;
   return {
     ...track,
-    lyrics: [{ time: "00:00", text: "" }],
-    lyricStatus: track.lyricStatus === "linked" ? "searchable" : track.lyricStatus,
+    lyrics: cachedLyrics,
+    lyricStatus: "linked",
   };
 }
 
@@ -304,7 +312,7 @@ function readPlayHistory(): PlayHistoryEntry[] {
     return parsed
       .filter((entry) => entry?.track?.id && typeof entry.playedAt === "number")
       .map((entry) => ({
-        track: createPlayerCacheSnapshot(entry.track),
+        track: hydrateHistoryTrack(createPlayerCacheSnapshot(entry.track)),
         playedAt: entry.playedAt,
         count: typeof entry.count === "number" && entry.count > 0 ? Math.round(entry.count) : 1,
       }))
@@ -1152,10 +1160,10 @@ export default function App() {
       return;
     }
 
-    nativeAnalyserDelayUntilRef.current = performance.now() + 260;
+    nativeAnalyserDelayUntilRef.current = performance.now() + 220;
     const timer = window.setTimeout(() => {
       setNativeAnalyserWakeToken((value) => value + 1);
-    }, 300);
+    }, 260);
     return () => window.clearTimeout(timer);
   }, [activeTrack.id, activeStreamUrl, audioOutputMode, nativePlaybackRequested, selectedSinkId]);
 
@@ -1916,7 +1924,7 @@ export default function App() {
         }}
       />
 
-      <div className="app-shell relative z-10 flex h-full w-full flex-col overflow-hidden bg-white/64 backdrop-blur-3xl">
+      <div className="app-shell relative z-10 flex h-full w-full flex-col overflow-hidden bg-white/78">
         <header
           className="flex h-20 shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 sm:px-6"
           style={dragRegionStyle}
@@ -2107,7 +2115,6 @@ export default function App() {
                   activeTrack={activeTrack}
                   palette={activePalette}
                   playing={playing}
-                  visualizerActive={pageVisible}
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
                   onTogglePlay={togglePlayback}
@@ -2132,6 +2139,7 @@ export default function App() {
                   durationSeconds={durationSeconds}
                   analyserRef={analyserRef}
                   visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
+                  visualizerActive={pageVisible && !immersiveOpen}
                   onSeek={seekTo}
                 />
               )}
@@ -2318,6 +2326,7 @@ export default function App() {
               onNext={() => pickRelativeTrack(1)}
               onPrevious={() => pickRelativeTrack(-1)}
               onSeek={seekTo}
+              visualizerActive={pageVisible}
             />
           )}
         </AnimatePresence>
@@ -2485,31 +2494,6 @@ function HomeSurface({
             <p className="mt-1 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
               {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}
             </p>
-          </div>
-          <div className="hidden">
-            <div className="flex items-start justify-between gap-3">
-              <div className="rounded-full border border-white/26 bg-white/12 px-3 py-1.5 text-xs font-medium text-white/88 backdrop-blur-md">
-                {playing ? "播放中" : "暂停中"}
-              </div>
-              <Button className="bg-white text-neutral-950 shadow-sm hover:bg-white/90" size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={(event) => {
-                event.stopPropagation();
-                onTogglePlay();
-              }}>
-                {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
-              </Button>
-            </div>
-            <div className="max-w-[24rem]">
-              <p className="text-sm text-white/75">正在播放</p>
-              <h2 className="mt-2 line-clamp-2 max-w-[22rem] text-3xl font-semibold leading-tight text-white">
-                <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-              </h2>
-              <p className="mt-1 text-white/75">
-                <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
-              </p>
-              <p className="mt-3 line-clamp-2 max-w-md text-sm leading-6 text-white/72">
-                {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)} · {activeTrack.duration}
-              </p>
-            </div>
           </div>
         </button>
       </section>
@@ -2857,10 +2841,10 @@ function QueueList({
   onPickTrack: (id: string) => void;
 }) {
   const displayTracks = useMemo(() => {
-    const firstTracks = tracks.slice(0, 80);
+    const firstTracks = tracks.slice(0, 48);
     if (firstTracks.some((track) => track.id === activeTrackId)) return firstTracks;
     const activeTrack = tracks.find((track) => track.id === activeTrackId);
-    return activeTrack ? [activeTrack, ...firstTracks.slice(0, 79)] : firstTracks;
+    return activeTrack ? [activeTrack, ...firstTracks.slice(0, 47)] : firstTracks;
   }, [activeTrackId, tracks]);
   const hiddenCount = Math.max(0, tracks.length - displayTracks.length);
 
@@ -3211,61 +3195,6 @@ function PlayerSurface({
             />
           </motion.div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />
-          <div className="hidden">
-          <div className="pointer-events-none absolute left-6 top-6 z-20 rounded-full border border-white/16 bg-black/42 px-3 py-1.5 text-xs font-medium text-white/86">
-            {sourceLabel[activeTrack.source]} 路 {activeTrack.quality}
-          </div>
-          <Button
-            className="absolute right-6 top-6 z-20 bg-white text-neutral-950 shadow-[0_14px_34px_rgba(0,0,0,0.2)] hover:bg-white/92"
-            size="iconLg"
-            aria-label={playing ? "pause" : "play"}
-            onClick={onTogglePlay}
-          >
-            {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
-          </Button>
-          <div className="pointer-events-none absolute inset-x-6 bottom-6 z-20 text-white">
-            <p className="line-clamp-3 text-4xl font-semibold leading-tight drop-shadow sm:text-5xl">
-              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-            </p>
-            <p className="mt-3 truncate text-lg font-medium text-white/82">
-              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
-            </p>
-            <p className="mt-2 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
-              {activeTrack.album} 路 {activeTrack.duration} 路 {activeTrack.quality}
-            </p>
-          </div>
-          <div className="hidden">
-            <motion.div
-              key={activeTrack.id}
-              initial={{ opacity: 0, scale: 0.96, filter: "blur(18px)" }}
-              animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }}
-              transition={{ duration: 0.42 }}
-              className="relative aspect-square w-[min(86%,520px)] overflow-hidden rounded-[1.45rem] bg-neutral-950 shadow-[0_34px_90px_rgba(20,24,35,0.26)]"
-            >
-              <CoverArt track={activeTrack} className="size-full rounded-[1.45rem]" large />
-              <div className="pointer-events-none absolute inset-0 z-40 rounded-[1.45rem] border border-white/18 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]" />
-              <div className="pointer-events-none absolute left-5 top-5 z-50 rounded-full border border-white/18 bg-black/46 px-3 py-1.5 text-xs font-medium text-white/88">
-                {sourceLabel[activeTrack.source]} · {activeTrack.quality}
-              </div>
-              <Button
-                className="absolute right-5 top-5 z-50 bg-white text-neutral-950 shadow-[0_14px_34px_rgba(0,0,0,0.2)] hover:bg-white/92"
-                size="iconLg"
-                aria-label={playing ? "pause" : "play"}
-                onClick={onTogglePlay}
-              >
-                {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
-              </Button>
-              <div className="pointer-events-none absolute inset-x-5 bottom-5 z-50 rounded-[1.1rem] border border-white/16 bg-black/52 px-5 py-4 shadow-[0_20px_52px_rgba(0,0,0,0.28)]">
-                <p className="line-clamp-2 text-2xl font-semibold leading-tight text-white drop-shadow">
-                  <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-                </p>
-                <p className="mt-1 truncate text-xs text-white/70">
-                  <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText> · {activeTrack.album}
-                </p>
-              </div>
-            </motion.div>
-          </div>
-        </div>
         </div>
 
         <div
@@ -3432,6 +3361,7 @@ function ImmersivePlayerView({
   analyserRef,
   visualizerMode,
   volume,
+  visualizerActive,
   onClose,
   onTogglePlay,
   onNext,
@@ -3446,6 +3376,7 @@ function ImmersivePlayerView({
   analyserRef: { current: AnalyserNode | null };
   visualizerMode: AudioOutputMode;
   volume: number;
+  visualizerActive: boolean;
   onClose: () => void;
   onTogglePlay: () => void;
   onNext: () => void;
@@ -3461,21 +3392,17 @@ function ImmersivePlayerView({
   return (
     <motion.div
       className="fixed inset-0 z-50 overflow-hidden bg-neutral-950 text-white"
-      initial={{ opacity: 0, filter: "blur(18px)" }}
-      animate={{ opacity: 1, filter: "blur(0px)" }}
-      exit={{ opacity: 0, filter: "blur(16px)" }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       transition={{ duration: 0.28 }}
     >
-      <div className="absolute inset-0 opacity-70">
-        <CoverArt track={activeTrack} className="size-full" fit="cover" large />
-      </div>
       <div
         className="absolute inset-0"
         style={{
-          background: `linear-gradient(110deg, rgba(0,0,0,0.84), ${colorWithAlpha(palette.primary, 0.38)} 48%, rgba(0,0,0,0.78))`,
+          background: `radial-gradient(circle at 24% 28%, ${colorWithAlpha(palette.primary, 0.24)} 0, transparent 34%), radial-gradient(circle at 78% 72%, ${colorWithAlpha(palette.secondary, 0.18)} 0, transparent 30%), linear-gradient(110deg, rgba(0,0,0,0.86), ${colorWithAlpha(palette.primary, 0.36)} 48%, rgba(0,0,0,0.8))`,
         }}
       />
-      <div className="absolute inset-0 backdrop-blur-2xl" />
 
       <div className="relative grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-8 py-6 2xl:px-14">
         <div className="flex items-center justify-between">
@@ -3541,7 +3468,7 @@ function ImmersivePlayerView({
           <SpectrumCanvas
             analyserRef={analyserRef}
             playing={playing}
-            active
+            active={visualizerActive}
             palette={palette}
             fallback={activeTrack.waveform}
             outputMode={visualizerMode}

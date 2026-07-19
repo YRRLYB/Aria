@@ -39,6 +39,22 @@ export function copyTrackTextToClipboard(track: Track, field: TrackCopyField = "
 }
 
 export async function copyArtworkToClipboard(track: Track) {
+  const copyImageToClipboard = window.ariaDesktop?.copyImageToClipboard;
+  if (copyImageToClipboard) {
+    try {
+      const copied = await copyImageToClipboard(
+        track.coverUrl?.startsWith("data:")
+          ? { dataUrl: track.coverUrl }
+          : track.coverUrl
+            ? { url: track.coverUrl }
+            : {},
+      );
+      if (copied) return;
+    } catch {
+      // Use the renderer fallback below when the native bridge rejects.
+    }
+  }
+
   const ClipboardItemCtor = window.ClipboardItem;
   if (track.coverUrl && (await copyArtworkUrlToClipboard(track.coverUrl, ClipboardItemCtor))) return;
 

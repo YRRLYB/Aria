@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -309,6 +309,32 @@ ipcMain.handle("aria:quit", () => {
 ipcMain.handle("aria:set-background-enabled", (_event, enabled) => {
   backgroundEnabled = Boolean(enabled);
   return backgroundEnabled;
+});
+
+ipcMain.handle("aria:copy-image", async (_event, payload) => {
+  try {
+    const dataUrl = typeof payload?.dataUrl === "string" && payload.dataUrl.startsWith("data:")
+      ? payload.dataUrl
+      : null;
+    const url = typeof payload?.url === "string" && payload.url ? payload.url : null;
+    let image = null;
+
+    if (dataUrl) {
+      image = nativeImage.createFromDataURL(dataUrl);
+    } else if (url) {
+      const response = await fetch(url);
+      if (!response.ok) return false;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      image = nativeImage.createFromBuffer(buffer);
+    }
+
+    if (!image || image.isEmpty()) return false;
+    clipboard.writeImage(image);
+    return true;
+  } catch (error) {
+    writeLog("desktop.log", `copy image failed: ${error?.stack || error}`);
+    return false;
+  }
 });
 
 ipcMain.handle("aria:log", (_event, payload) => {

@@ -1,6 +1,6 @@
 const artworkOverrideKey = "aria-local-artwork-overrides";
-const maxStoredArtwork = 24;
-const maxArtworkDataUrlLength = 1_600_000;
+const maxStoredArtwork = 16;
+const maxArtworkDataUrlLength = 900_000;
 
 type ArtworkOverrideEntry = {
   dataUrl: string;
@@ -48,7 +48,7 @@ export async function createArtworkOverrideDataUrl(file: File) {
   const drawable = await decodeImage(file);
   const sourceWidth = drawable.width;
   const sourceHeight = drawable.height;
-  const targetSize = Math.min(1400, Math.max(640, Math.max(sourceWidth, sourceHeight)));
+  const targetSize = Math.min(1024, Math.max(560, Math.max(sourceWidth, sourceHeight)));
   const canvas = document.createElement("canvas");
   canvas.width = targetSize;
   canvas.height = targetSize;

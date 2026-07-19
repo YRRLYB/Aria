@@ -51,7 +51,7 @@ export function readCachedPlayerState(): CachedPlayerState {
 
     return {
       activeTrackId: typeof parsed.activeTrackId === "string" ? parsed.activeTrackId : undefined,
-      activeTrackSnapshot: normalizeTrackSnapshot(parsed.activeTrackSnapshot),
+      activeTrackSnapshot: hydrateTrackLyrics(normalizeTrackSnapshot(parsed.activeTrackSnapshot)),
       activeView: parsed.activeView && navIds.has(parsed.activeView) ? parsed.activeView : undefined,
       playerSideView: parsed.playerSideView === "queue" ? "queue" : parsed.playerSideView === "lyrics" ? "lyrics" : undefined,
       playQueueIds: Array.isArray(parsed.playQueueIds)
@@ -70,6 +70,19 @@ export function readCachedPlayerState(): CachedPlayerState {
   } catch {
     return {};
   }
+}
+
+function hydrateTrackLyrics(track?: Track): Track | undefined {
+  if (!track) return undefined;
+  const cachedLyrics = readCachedLyrics(track.id);
+  if (!cachedLyrics.length) return track;
+  const hasLyrics = track.lyrics.some((line) => line.text.trim().length > 0);
+  if (hasLyrics) return track;
+  return {
+    ...track,
+    lyrics: cachedLyrics,
+    lyricStatus: "linked",
+  };
 }
 
 function normalizeTrackSnapshot(value: unknown): Track | undefined {

@@ -24,7 +24,7 @@ const minRenderableLevel = 0.018;
 const noiseGate = 0.008;
 
 export function configureSpectrumAnalyser(analyser: AnalyserNode) {
-  analyser.fftSize = 2048;
+  analyser.fftSize = 1024;
   analyser.smoothingTimeConstant = 0.18;
   analyser.minDecibels = -100;
   analyser.maxDecibels = -8;
@@ -158,8 +158,7 @@ export class RealtimeSpectrumEngine {
       const noise = this.noiseFloor[band];
       this.noiseFloor[band] += (Math.min(raw, noise) - noise) * 0.006;
       const cleaned = Math.max(0, raw - noise * 0.72);
-      const fallbackFloor = getFallbackFloor(options.fallback, band, options.now);
-      bands[band] = clamp(cleaned * 0.86 + bandPeak * 0.22 + fallbackFloor, 0, 1);
+      bands[band] = clamp(cleaned * 0.98 + bandPeak * 0.2, 0, 1);
       signal += bands[band];
     }
 
