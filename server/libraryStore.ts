@@ -38,10 +38,13 @@ export async function writeLibrary(library: LibraryIndex) {
 
 export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
   const current = await readLibrary();
-  const normalizedRoot = path.resolve(root);
+  const normalizedRoot = normalizeLibraryRoot(root);
   const nextTracks = [
-    ...current.tracks.filter((track) => !path.resolve(track.path).startsWith(normalizedRoot)),
-    ...tracks,
+    ...current.tracks.filter((track) => !trackMatchesRoot(track, normalizedRoot)),
+    ...tracks.map((track) => ({
+      ...track,
+      libraryRoot: track.libraryRoot || normalizedRoot,
+    })),
   ];
   const roots = Array.from(new Set([...current.roots.filter((item) => item !== normalizedRoot), normalizedRoot]));
   const next: LibraryIndex = {
@@ -61,4 +64,25 @@ export async function clearLibrary() {
 export async function findTrack(trackId: string) {
   const library = await readLibrary();
   return library.tracks.find((track) => track.id === trackId) ?? null;
+}
+
+function normalizeLibraryRoot(root: string) {
+  if (root.startsWith("cd:")) return root;
+  return path.resolve(root);
+}
+
+function trackMatchesRoot(track: ScannedTrack, root: string) {
+  if (track.libraryRoot) {
+    return track.libraryRoot === root;
+  }
+
+  if (root.startsWith("cd:")) {
+    return false;
+  }
+
+  try {
+    return path.resolve(track.path).startsWith(root);
+  } catch {
+    return false;
+  }
 }

@@ -10,7 +10,7 @@ import { parseFile } from "music-metadata";
 import { z } from "zod";
 import { clearLibrary, findTrack, readLibrary, replaceLibraryRoot } from "./libraryStore";
 import { resolveLyricLines, searchLyricCandidates } from "./lyrics";
-import { scanMusicFolder } from "./musicScanner";
+import { listCdDrives, scanCdDrives, scanMusicFolder } from "./musicScanner";
 import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
 import {
@@ -328,6 +328,38 @@ app.post("/api/library/scan", async (req, res, next) => {
       .parse(req.body);
     const tracks = await scanMusicFolder(body.folderPath);
     const library = body.persist ? await replaceLibraryRoot(body.folderPath, tracks) : null;
+    res.json({ tracks, library });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/library/cd-drives", async (_req, res, next) => {
+  try {
+    res.json({ drives: await listCdDrives() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/library/scan-cd", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        persist: z.boolean().optional().default(true),
+      })
+      .parse(req.body);
+
+    const scans = await scanCdDrives();
+    const tracks = scans.flatMap((item) => item.tracks);
+    let library = body.persist ? await readLibrary() : null;
+
+    if (body.persist) {
+      for (const item of scans) {
+        library = await replaceLibraryRoot(`cd:${item.drive.deviceId}`, item.tracks);
+      }
+    }
+
     res.json({ tracks, library });
   } catch (error) {
     next(error);

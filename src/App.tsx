@@ -1,8 +1,10 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Album,
   Copy,
   Cookie,
+  Disc3,
   FolderOpen,
   Heart,
   ImagePlus,
@@ -151,21 +153,30 @@ const idleTrack: Track = {
 function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
   const cachedLyrics = readCachedLyrics(track.id);
   const artworkOverride = readCachedArtworkOverride(track.id);
+  const streamUrl = track.streamUrl ? api.resolveUrl(track.streamUrl) : api.getTrackStreamUrl(track.id);
   return {
     id: track.id,
     title: track.title,
     artist: track.artist,
     album: track.album,
+    albumArtist: track.albumArtist ?? null,
     duration: formatDuration(track.duration),
     quality: normalizeQuality(track.quality),
     source: "local",
-    streamUrl: api.getTrackStreamUrl(track.id),
+    streamUrl,
     coverUrl: artworkOverride ?? (track.hasCover ? api.getTrackCoverUrl(track.id) : undefined),
+    trackNumber: track.trackNumber ?? null,
+    discNumber: track.discNumber ?? null,
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
     bpm: null,
     currentLevel: null,
     availableLevels: [],
+    libraryRoot: track.libraryRoot,
+    mediaKind: track.mediaKind ?? "file",
+    nativeStart: track.nativeStart ?? null,
+    nativeEnd: track.nativeEnd ?? null,
+    requiresNativePlayback: Boolean(track.requiresNativePlayback),
     cover: localCoverPalettes[index % localCoverPalettes.length],
     accent: ["#5e8ab8", "#c6796d", "#5aa894", "#8680b4"][index % 4],
     waveform: [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48],
@@ -417,14 +428,6 @@ export default function App() {
   const lastCurrentTimeRenderRef = useRef({ at: 0, time: 0 });
   const rendererDiagnosticRef = useRef<Record<string, unknown>>({});
 
-  const neteaseConnected = Boolean(neteaseAccount?.connected);
-  const nativePlaybackRequested = Boolean(nativeAudioSupported && audioOutputMode !== "system");
-  const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
-  const exclusiveMode = audioOutputMode === "exclusive";
-  const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
-  const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
-  const nativePlaybackVolume = volume;
-  const localSearchSignature = useMemo(() => getTrackSearchSignature(localTracks), [localTracks]);
   const allTracks = useMemo(
     () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
     [localTracks, neteaseTracks, roamTracks, playlistTracks],
@@ -464,6 +467,16 @@ export default function App() {
     requestedActiveTrack ??
     (cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null) ??
     (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
+  const neteaseConnected = Boolean(neteaseAccount?.connected);
+  const nativePlaybackRequested = Boolean(
+    nativeAudioSupported && (audioOutputMode !== "system" || Boolean(activeTrack.requiresNativePlayback)),
+  );
+  const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
+  const exclusiveMode = audioOutputMode === "exclusive";
+  const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
+  const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
+  const nativePlaybackVolume = volume;
+  const localSearchSignature = useMemo(() => getTrackSearchSignature(localTracks), [localTracks]);
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
     const levels = activeTrack.availableLevels ?? [];
@@ -471,18 +484,19 @@ export default function App() {
   }, [activeTrack.availableLevels, activeTrack.source, hifiEnabled, qualityLevel]);
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
-    const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
-    if (activeTrack.source !== "netease") return url.href;
+    if (activeTrack.source !== "netease") return api.resolveUrl(activeTrack.streamUrl);
 
+    const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
     url.searchParams.set("level", effectiveQualityLevel);
     return url.href;
   }, [activeTrack, effectiveQualityLevel]);
   const audioElementStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
+    if (activeTrack.requiresNativePlayback) return null;
+    if (activeTrack.source !== "netease") return api.resolveUrl(activeTrack.streamUrl);
+
     const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
-    if (activeTrack.source === "netease") {
-      url.searchParams.set("level", nativePlaybackEnabled ? "exhigh" : effectiveQualityLevel);
-    }
+    url.searchParams.set("level", nativePlaybackEnabled ? "exhigh" : effectiveQualityLevel);
     return url.href;
   }, [activeTrack, effectiveQualityLevel, nativePlaybackEnabled]);
   const visibleTracks = useMemo(() => {
@@ -1266,7 +1280,7 @@ export default function App() {
       return;
     }
 
-    const nextSrc = new URL(audioElementStreamUrl, window.location.href).href;
+    const nextSrc = audioElementStreamUrl;
     if (audio.src !== nextSrc) {
       audio.pause();
       if (audio.src) {
@@ -1351,13 +1365,14 @@ export default function App() {
       return;
     }
 
-    const nextUrl = new URL(activeStreamUrl, window.location.href).href;
-    if (nativeLoadedUrlRef.current === nextUrl) return;
+    const nextUrl = activeStreamUrl;
+    const nextLoadKey = [nextUrl, activeTrack.nativeStart ?? "", activeTrack.nativeEnd ?? ""].join("\u0000");
+    if (nativeLoadedUrlRef.current === nextLoadKey) return;
 
     let cancelled = false;
     const loadSequence = nativeLoadSequenceRef.current + 1;
     nativeLoadSequenceRef.current = loadSequence;
-    nativeLoadedUrlRef.current = nextUrl;
+    nativeLoadedUrlRef.current = nextLoadKey;
     nativeAudio
       .load?.({
         trackId: activeTrack.id,
@@ -1367,6 +1382,8 @@ export default function App() {
         volume: nativePlaybackVolume,
         exclusive: exclusiveMode,
         deviceId: selectedSinkId,
+        startChapter: activeTrack.nativeStart ?? null,
+        endChapter: activeTrack.nativeEnd ?? null,
       })
       .then((state) => {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
@@ -1383,6 +1400,8 @@ export default function App() {
   }, [
     activeStreamUrl,
     activeTrack.id,
+    activeTrack.nativeEnd,
+    activeTrack.nativeStart,
     nativePlaybackEnabled,
     nativeAudioState?.trackId,
     playing,
@@ -1557,6 +1576,30 @@ export default function App() {
       updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
     });
     if (nextTracks[0]) setActiveTrackId(nextTracks[0].id);
+    setActiveView("local");
+  }
+
+  async function scanCdLibrary() {
+    const result = await api.scanCdDrives();
+    const nextTracks = result.library?.tracks ?? result.tracks;
+    const nextUiTracks = nextTracks.map(localTrackToUiTrack);
+    const scannedCdTracks = result.tracks.map(localTrackToUiTrack);
+    const firstCdTrack = scannedCdTracks[0];
+    pendingSeekRef.current = 0;
+    setLocalTracks(nextUiTracks);
+    setPlayQueueIds(
+      materializeQueueIds(
+        scannedCdTracks.length ? scannedCdTracks : nextUiTracks,
+        firstCdTrack?.id ?? activeTrack.id,
+        shuffleEnabled,
+      ),
+    );
+    setLibraryMeta({
+      roots: result.library?.roots.length ?? 0,
+      updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
+    });
+    if (firstCdTrack) setActiveTrackId(firstCdTrack.id);
+    setFolderName(firstCdTrack ? "光盘库" : "未检测到音频光盘");
     setActiveView("local");
   }
 
@@ -2153,6 +2196,7 @@ export default function App() {
                   activeTrackId={activeTrackId}
                   onPickTrack={chooseTrack}
                   onScanPath={scanBackendPath}
+                  onScanCd={scanCdLibrary}
                   onLyricsBound={applyLyricsToTrack}
                   onArtworkBound={applyArtworkToTrack}
                 />
@@ -3519,6 +3563,7 @@ function LibrarySurface({
   activeTrackId,
   onPickTrack,
   onScanPath,
+  onScanCd,
   onLyricsBound,
   onArtworkBound,
 }: {
@@ -3530,6 +3575,7 @@ function LibrarySurface({
   activeTrackId: string;
   onPickTrack: (id: string) => void;
   onScanPath: (folderPath: string) => Promise<void>;
+  onScanCd: () => Promise<void>;
   onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
   onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
 }) {
@@ -3537,6 +3583,10 @@ function LibrarySurface({
   const [boundCandidateId, setBoundCandidateId] = useState<string | null>(null);
   const [scanPath, setScanPath] = useState("");
   const [scanState, setScanState] = useState<"idle" | "scanning" | "error">("idle");
+  const [libraryView, setLibraryView] = useState<"tracks" | "albums">("tracks");
+  const [selectedAlbumKey, setSelectedAlbumKey] = useState<string | null>(null);
+  const albumGroups = useMemo(() => createLocalAlbumGroups(libraryTracks), [libraryTracks]);
+  const selectedAlbum = albumGroups.find((album) => album.key === selectedAlbumKey) ?? albumGroups[0] ?? null;
   const candidateTarget =
     libraryTracks.find((track) => track.lyricStatus !== "linked") ?? libraryTracks[0];
 
@@ -3549,6 +3599,51 @@ function LibrarySurface({
     } catch {
       setScanState("error");
     }
+  }
+
+  async function submitScanCd() {
+    setScanState("scanning");
+    try {
+      await onScanCd();
+      setScanState("idle");
+      setLibraryView("albums");
+    } catch {
+      setScanState("error");
+    }
+  }
+
+  function renderTrackRow(track: Track, index: number, label = String(index + 1).padStart(2, "0")) {
+    return (
+      <button
+        key={track.id}
+        className={cn(
+          "grid grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.5rem] bg-white/45 p-3 text-left transition hover:bg-white/75",
+          activeTrackId === track.id && "bg-white shadow-sm",
+        )}
+        onClick={() => onPickTrack(track.id)}
+      >
+        <span className="text-center text-sm font-medium text-neutral-400">{label}</span>
+        <CoverArt track={track} className="size-14 rounded-2xl" />
+        <div className="min-w-0">
+          <p className="truncate font-semibold">
+            <CopyableTrackText track={track} field="title">
+              {track.title}
+            </CopyableTrackText>
+          </p>
+          <p className="truncate text-sm text-neutral-500">
+            <CopyableTrackText track={track} field="artist">
+              {track.artist}
+            </CopyableTrackText>{" "}
+            · {track.album}
+          </p>
+        </div>
+        <div className="hidden items-center gap-2 sm:flex">
+          <Badge>{track.lyricStatus === "linked" ? "已同步" : "待匹配"}</Badge>
+          <Badge>{formatAudioDetail(track)}</Badge>
+          <span className="w-12 text-right text-sm text-neutral-500">{track.duration}</span>
+        </div>
+      </button>
+    );
   }
 
   return (
@@ -3564,6 +3659,10 @@ function LibrarySurface({
             {lookupOpen ? <X /> : <Languages />}
             {lookupOpen ? "收起搜词" : "联网搜词"}
           </Button>
+          <Button variant="glass" onClick={submitScanCd} disabled={scanState === "scanning"}>
+            <Disc3 className={cn(scanState === "scanning" && "animate-spin")} />
+            扫描光盘
+          </Button>
           <Button onClick={onChooseFolder}>
             <FolderOpen />
             选择文件夹
@@ -3571,13 +3670,25 @@ function LibrarySurface({
         </div>
       </div>
 
-      <div className="mt-6 grid gap-3 md:grid-cols-3">
+      <div className="mt-6 grid gap-3 md:grid-cols-4">
+        <LyricLookupCard label="专辑" value={`${albumGroups.length} 张`} />
         <LyricLookupCard label="索引曲目" value={`${localTrackCount} 首本地音乐`} />
         <LyricLookupCard label="目录数量" value={`${libraryMeta.roots} 个目录`} />
         <LyricLookupCard
           label="更新时间"
           value={libraryMeta.updatedAt ? new Date(libraryMeta.updatedAt).toLocaleString() : "尚未扫描"}
         />
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Button size="sm" variant={libraryView === "tracks" ? "default" : "glass"} onClick={() => setLibraryView("tracks")}>
+          <ListMusic />
+          曲目
+        </Button>
+        <Button size="sm" variant={libraryView === "albums" ? "default" : "glass"} onClick={() => setLibraryView("albums")}>
+          <Album />
+          专辑
+        </Button>
       </div>
 
       <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
@@ -3615,6 +3726,66 @@ function LibrarySurface({
         )}
       </AnimatePresence>
 
+      {libraryView === "albums" && (
+        <div className="mt-8 space-y-6">
+          <div className="grid gap-3 lg:grid-cols-2">
+            {albumGroups.map((album) => {
+              const active = selectedAlbum?.key === album.key;
+              return (
+                <button
+                  key={album.key}
+                  className={cn(
+                    "flex items-center gap-4 rounded-[1.45rem] bg-white/45 p-4 text-left transition hover:bg-white/72",
+                    active && "bg-white shadow-sm",
+                  )}
+                  onClick={() => setSelectedAlbumKey(album.key)}
+                >
+                  <CoverArt track={album.coverTrack} className="size-20 rounded-[1.25rem]" fit="contain" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xl font-semibold">
+                      <CopyableTrackText track={album.coverTrack} field="album">
+                        {album.title}
+                      </CopyableTrackText>
+                    </p>
+                    <p className="truncate text-sm text-neutral-500">{album.artist}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Badge>{album.trackCount} 首</Badge>
+                      <Badge>{album.discCount} 碟</Badge>
+                      <Badge>{formatAudioDetail(album.coverTrack)}</Badge>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {selectedAlbum && (
+            <section className="rounded-[1.45rem] bg-white/52 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">选中专辑</p>
+                  <h2 className="mt-1 text-2xl font-semibold">{selectedAlbum.title}</h2>
+                  <p className="text-sm text-neutral-500">{selectedAlbum.artist}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge>{selectedAlbum.trackCount} 首</Badge>
+                  <Badge>{selectedAlbum.discCount} 碟</Badge>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3">
+                {selectedAlbum.tracks.map((track, index) =>
+                  renderTrackRow(
+                    track,
+                    index,
+                    track.trackNumber ? String(track.trackNumber).padStart(2, "0") : String(index + 1).padStart(2, "0"),
+                  ),
+                )}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
+
       <div className="mt-8 grid gap-3">
         {libraryTracks.map((track, index) => (
           <button
@@ -3647,6 +3818,57 @@ function LibrarySurface({
       </div>
     </div>
   );
+}
+
+type LocalAlbumGroup = {
+  key: string;
+  title: string;
+  artist: string;
+  trackCount: number;
+  discCount: number;
+  tracks: Track[];
+  coverTrack: Track;
+};
+
+function createLocalAlbumGroups(tracks: Track[]): LocalAlbumGroup[] {
+  const groups = new Map<string, Track[]>();
+  for (const track of tracks) {
+    const key = [track.libraryRoot ?? track.source, track.albumArtist ?? track.artist, track.album].join("\u0000");
+    const current = groups.get(key) ?? [];
+    current.push(track);
+    groups.set(key, current);
+  }
+
+  return [...groups.entries()]
+    .map(([key, groupTracks]) => {
+      const sortedTracks = [...groupTracks].sort(compareLocalAlbumTracks);
+      const coverTrack = sortedTracks.find((track) => track.coverUrl) ?? sortedTracks[0] ?? groupTracks[0];
+      if (!coverTrack) return null;
+      const discCount = new Set(sortedTracks.map((track) => track.discNumber ?? 1)).size;
+      return {
+        key,
+        title: coverTrack.album,
+        artist: coverTrack.albumArtist ?? coverTrack.artist,
+        trackCount: sortedTracks.length,
+        discCount,
+        tracks: sortedTracks,
+        coverTrack,
+      } satisfies LocalAlbumGroup;
+    })
+    .filter((group): group is LocalAlbumGroup => Boolean(group))
+    .sort((left, right) => {
+      const artistCompare = left.artist.localeCompare(right.artist, "zh-CN", { numeric: true });
+      if (artistCompare !== 0) return artistCompare;
+      return left.title.localeCompare(right.title, "zh-CN", { numeric: true });
+    });
+}
+
+function compareLocalAlbumTracks(left: Track, right: Track) {
+  const discCompare = (left.discNumber ?? 0) - (right.discNumber ?? 0);
+  if (discCompare !== 0) return discCompare;
+  const trackCompare = (left.trackNumber ?? Number.MAX_SAFE_INTEGER) - (right.trackNumber ?? Number.MAX_SAFE_INTEGER);
+  if (trackCompare !== 0) return trackCompare;
+  return left.title.localeCompare(right.title, "zh-CN", { numeric: true });
 }
 
 function LyricLookupCard({ label, value }: { label: string; value: string }) {

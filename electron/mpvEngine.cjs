@@ -346,7 +346,20 @@ class MpvAudioEngine {
     return token === this.loadToken;
   }
 
-  async performLoad({ trackId, url, position = 0, paused = true, volume = 72, exclusive = false, deviceId = "default" }, token) {
+  async performLoad(
+    {
+      trackId,
+      url,
+      position = 0,
+      paused = true,
+      volume = 72,
+      exclusive = false,
+      deviceId = "default",
+      startChapter = null,
+      endChapter = null,
+    },
+    token,
+  ) {
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     this.pendingSeek = Math.max(0, Number(position) || 0);
@@ -366,7 +379,14 @@ class MpvAudioEngine {
     await this.applyOutputSettings({ exclusive, deviceId, volume });
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
-    await this.command("loadfile", url, "replace");
+    const fileOptions = {};
+    if (typeof startChapter === "string" && startChapter) fileOptions.start = startChapter;
+    if (typeof endChapter === "string" && endChapter) fileOptions.end = endChapter;
+    if (Object.keys(fileOptions).length) {
+      await this.command("loadfile", url, "replace", fileOptions);
+    } else {
+      await this.command("loadfile", url, "replace");
+    }
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     this.emit({ kind: "loading" });
