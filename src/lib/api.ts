@@ -30,8 +30,6 @@ declare global {
           volume?: number;
           exclusive?: boolean;
           deviceId?: string;
-          startChapter?: string | null;
-          endChapter?: string | null;
         }) => Promise<unknown>;
         setPaused?: (paused: boolean) => Promise<unknown>;
         seek?: (position: number) => Promise<unknown>;
@@ -95,26 +93,17 @@ export class ApiError extends Error {
 export type ApiScannedTrack = {
   id: string;
   path: string;
-  libraryRoot: string;
   title: string;
   artist: string;
   album: string;
-  albumArtist?: string | null;
   duration: number | null;
   quality: string;
   format: string;
   size: number;
-  trackNumber?: number | null;
-  discNumber?: number | null;
   bitrate?: number | null;
   sampleRate?: number | null;
   bpm?: number | null;
   hasCover?: boolean;
-  streamUrl?: string | null;
-  mediaKind?: "file" | "audio-cd";
-  nativeStart?: string | null;
-  nativeEnd?: string | null;
-  requiresNativePlayback?: boolean;
 };
 
 export type ApiLibraryIndex = {
@@ -190,7 +179,7 @@ export type ProviderDailyBundle = {
 const API_BASE = window.ariaDesktop?.apiBase ?? "";
 
 export function apiUrl(url: string) {
-  if (!API_BASE || /^[a-z][a-z\d+.-]*:/i.test(url)) return url;
+  if (!API_BASE || /^https?:\/\//i.test(url)) return url;
   return `${API_BASE}${url}`;
 }
 
@@ -229,15 +218,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ folderPath, persist }),
     });
-  },
-  scanCdDrives(persist = true) {
-    return request<{ tracks: ApiScannedTrack[]; library: ApiLibraryIndex | null }>("/api/library/scan-cd", {
-      method: "POST",
-      body: JSON.stringify({ persist }),
-    });
-  },
-  getCdDrives() {
-    return request<{ drives: Array<{ deviceId: string; volumeName: string | null; rootPath: string }> }>("/api/library/cd-drives");
   },
   getLibrary() {
     return request<ApiLibraryIndex>("/api/library");

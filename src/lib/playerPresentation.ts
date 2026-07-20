@@ -98,7 +98,6 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     title: track.title,
     artist: track.artist,
     album: typeof track.album === "string" ? track.album : "Aria",
-    albumArtist: typeof track.albumArtist === "string" ? track.albumArtist : null,
     duration: typeof track.duration === "string" ? track.duration : "--:--",
     quality:
       track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K"
@@ -107,19 +106,12 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     source: track.source === "netease" || track.source === "cloud" || track.source === "local" ? track.source : "local",
     streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
     coverUrl: typeof track.coverUrl === "string" ? track.coverUrl : undefined,
-    trackNumber: typeof track.trackNumber === "number" ? track.trackNumber : null,
-    discNumber: typeof track.discNumber === "number" ? track.discNumber : null,
     bitrate: typeof track.bitrate === "number" ? track.bitrate : null,
     sampleRate: typeof track.sampleRate === "number" ? track.sampleRate : null,
     bpm: null,
     likedAt: typeof track.likedAt === "number" ? track.likedAt : null,
     currentLevel: track.currentLevel ?? null,
     availableLevels: Array.isArray(track.availableLevels) ? track.availableLevels : [],
-    libraryRoot: typeof track.libraryRoot === "string" ? track.libraryRoot : undefined,
-    mediaKind: track.mediaKind === "audio-cd" ? "audio-cd" : track.mediaKind === "file" ? "file" : undefined,
-    nativeStart: typeof track.nativeStart === "string" ? track.nativeStart : null,
-    nativeEnd: typeof track.nativeEnd === "string" ? track.nativeEnd : null,
-    requiresNativePlayback: typeof track.requiresNativePlayback === "boolean" ? track.requiresNativePlayback : undefined,
     cover: typeof track.cover === "string" ? track.cover : "linear-gradient(135deg, #eef1f5 0%, #aeb7c6 50%, #586273 100%)",
     accent: typeof track.accent === "string" ? track.accent : "#7b8494",
     waveform:
