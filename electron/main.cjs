@@ -81,20 +81,25 @@ function resolveIcon() {
   return path.join(__dirname, "..", "build", "icon.ico");
 }
 
+function resolveTrayIcon() {
+  return path.join(__dirname, "..", "build", "icon.png");
+}
+
 function trayIcon() {
-  const iconPath = resolveIcon();
+  const iconPath = fs.existsSync(resolveTrayIcon()) ? resolveTrayIcon() : resolveIcon();
   if (fs.existsSync(iconPath)) {
     const icon = nativeImage.createFromPath(iconPath);
-    if (!icon.isEmpty()) return icon.resize({ width: 16, height: 16 });
+    if (!icon.isEmpty()) return icon.resize({ width: 18, height: 18 });
   }
 
   const svg = encodeURIComponent(`
     <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-      <rect width="32" height="32" rx="9" fill="#171717"/>
-      <path d="M9 23.5 15.2 7.8h3.4l6.4 15.7h-3.7l-1.2-3.1h-6.6l-1.1 3.1H9Zm5.6-6h4.4l-2.2-5.9-2.2 5.9Z" fill="#fff"/>
+      <rect width="32" height="32" rx="9" fill="#f7f8fb"/>
+      <path d="M9 23.5 15.2 7.8h3.4l6.4 15.7h-3.7l-1.2-3.1h-6.6l-1.1 3.1H9Zm5.6-6h4.4l-2.2-5.9-2.2 5.9Z" fill="#8fa7ff"/>
+      <path d="M17.8 8.2c3.7 2.9 5.6 8 4 11.6-.8 1.9-2.4 3-4.1 3.2 1.8-2.3 2-5.4.6-8.4-.7-1.6-1.4-3.5-.5-6.4Z" fill="#e58de7" opacity=".82"/>
     </svg>
   `);
-  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`).resize({ width: 16, height: 16 });
+  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`).resize({ width: 18, height: 18 });
 }
 
 async function apiOnline(timeoutMs = 8000) {

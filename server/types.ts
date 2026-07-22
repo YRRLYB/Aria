@@ -4,6 +4,7 @@ export type ScannedTrack = {
   title: string;
   artist: string;
   album: string;
+  albumArtist?: string | null;
   duration: number | null;
   quality: string;
   format: string;
@@ -12,6 +13,15 @@ export type ScannedTrack = {
   sampleRate?: number | null;
   bpm?: number | null;
   hasCover?: boolean;
+  trackNumber?: number | null;
+  discNumber?: number | null;
+  libraryRoot?: string;
+  mediaKind?: "file" | "audio-cd";
+  nativeDevice?: string | null;
+  streamUrl?: string | null;
+  nativeStart?: string | null;
+  nativeEnd?: string | null;
+  requiresNativePlayback?: boolean;
 };
 
 export type LyricCandidate = {

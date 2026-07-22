@@ -1,18 +1,16 @@
 import cors from "cors";
 import express from "express";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { parseFile } from "music-metadata";
 import { z } from "zod";
-import { clearLibrary, findTrack, readLibrary, replaceLibraryRoot } from "./libraryStore";
+import { readLibrary } from "./libraryStore";
 import { resolveLyricLines, searchLyricCandidates } from "./lyrics";
-import { scanMusicFolder } from "./musicScanner";
 import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
+import { createLibraryRouter } from "./routes/library";
 import {
   checkNeteaseQrLogin,
   getNeteaseAccountSummary,
@@ -32,6 +30,8 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, name: "aria-api" });
 });
+
+app.use("/api/library", createLibraryRouter());
 
 app.get("/api/settings", async (_req, res, next) => {
   try {
@@ -249,48 +249,6 @@ app.get("/api/providers/netease/cover", async (req, res, next) => {
   }
 });
 
-app.get("/api/library/tracks/:trackId/cover", async (req, res, next) => {
-  try {
-    const track = await findTrack(req.params.trackId);
-    if (!track) throw new HttpError(404, "Track not found", "TRACK_NOT_FOUND");
-
-    const fileStat = await stat(track.path);
-    const localCoverCacheDir = path.join(cacheDir, "local-covers");
-    const cacheKey = createHash("sha1").update(`${track.path}:${fileStat.mtimeMs}:${fileStat.size}`).digest("hex");
-    const cachedPath = path.join(localCoverCacheDir, `${cacheKey}.img`);
-    const cachedMetaPath = path.join(localCoverCacheDir, `${cacheKey}.json`);
-    try {
-      const [buffer, rawMeta] = await Promise.all([readFile(cachedPath), readFile(cachedMetaPath, "utf8")]);
-      const meta = JSON.parse(rawMeta) as { contentType?: string };
-      res.setHeader("Content-Type", meta.contentType || "image/jpeg");
-      res.setHeader("Cache-Control", "public, max-age=604800, immutable");
-      res.send(buffer);
-      return;
-    } catch {
-      // Cache miss; extract embedded cover once and persist it.
-    }
-
-    const metadata = await parseFile(track.path);
-    const picture = metadata.common.picture?.[0];
-    if (!picture) throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
-
-    const body = Buffer.from(picture.data);
-    const contentType = picture.format || "image/jpeg";
-    await mkdir(localCoverCacheDir, { recursive: true });
-    await Promise.all([
-      writeFile(cachedPath, body),
-      writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
-    ]);
-
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Length", String(body.byteLength));
-    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
-    res.send(body);
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.post("/api/settings/netease-cookie", async (req, res, next) => {
   try {
     const body = z.object({ cookie: z.string().min(1) }).parse(req.body);
@@ -313,30 +271,6 @@ app.get("/api/settings/netease-qr/check", async (req, res, next) => {
   try {
     const query = z.object({ key: z.string().min(1) }).parse(req.query);
     res.json(await checkNeteaseQrLogin(query.key));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/library/scan", async (req, res, next) => {
-  try {
-    const body = z
-      .object({
-        folderPath: z.string().min(1),
-        persist: z.boolean().optional().default(true),
-      })
-      .parse(req.body);
-    const tracks = await scanMusicFolder(body.folderPath);
-    const library = body.persist ? await replaceLibraryRoot(body.folderPath, tracks) : null;
-    res.json({ tracks, library });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/library", async (_req, res, next) => {
-  try {
-    res.json(await readLibrary());
   } catch (error) {
     next(error);
   }
@@ -400,54 +334,6 @@ app.get("/api/providers/netease/artists/:artistId/tracks", async (req, res, next
   }
 });
 
-app.delete("/api/library", async (_req, res, next) => {
-  try {
-    res.json(await clearLibrary());
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/library/tracks/:trackId/stream", async (req, res, next) => {
-  try {
-    const track = await findTrack(req.params.trackId);
-    if (!track) throw new HttpError(404, "Track not found", "TRACK_NOT_FOUND");
-
-    const fileStat = await stat(track.path);
-    const range = req.headers.range;
-    const contentType = mimeFromFormat(track.format);
-
-    if (!range) {
-      res.writeHead(200, {
-        "Content-Length": fileStat.size,
-        "Content-Type": contentType,
-        "Accept-Ranges": "bytes",
-      });
-      createReadStream(track.path).pipe(res);
-      return;
-    }
-
-    const match = range.match(/bytes=(\d*)-(\d*)/);
-    if (!match) throw new HttpError(416, "Invalid range", "INVALID_RANGE");
-
-    const start = match[1] ? Number(match[1]) : 0;
-    const end = match[2] ? Number(match[2]) : fileStat.size - 1;
-    if (start > end || end >= fileStat.size) {
-      throw new HttpError(416, "Range not satisfiable", "RANGE_NOT_SATISFIABLE");
-    }
-
-    res.writeHead(206, {
-      "Content-Range": `bytes ${start}-${end}/${fileStat.size}`,
-      "Accept-Ranges": "bytes",
-      "Content-Length": end - start + 1,
-      "Content-Type": contentType,
-    });
-    createReadStream(track.path, { start, end }).pipe(res);
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.get("/api/lyrics/search", async (req, res, next) => {
   try {
     const query = z
@@ -501,16 +387,6 @@ function resolveProvider(providerId: string) {
     throw new HttpError(404, `Unknown provider: ${providerId}`, "UNKNOWN_PROVIDER");
   }
   return provider;
-}
-
-function mimeFromFormat(format: string) {
-  const normalized = format.toLowerCase();
-  if (normalized.includes("flac")) return "audio/flac";
-  if (normalized.includes("wave") || normalized.includes("wav")) return "audio/wav";
-  if (normalized.includes("mpeg") || normalized.includes("mp3")) return "audio/mpeg";
-  if (normalized.includes("mp4") || normalized.includes("m4a")) return "audio/mp4";
-  if (normalized.includes("ogg")) return "audio/ogg";
-  return "application/octet-stream";
 }
 
 app.listen(port, "127.0.0.1", () => {

@@ -38,12 +38,18 @@ export async function writeLibrary(library: LibraryIndex) {
 
 export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
   const current = await readLibrary();
-  const normalizedRoot = path.resolve(root);
+  const normalizedRoot = normalizeLibraryRoot(root);
+  const normalizedTracks = tracks.map((track) => ({
+    ...track,
+    libraryRoot: track.libraryRoot ?? normalizedRoot,
+  }));
   const nextTracks = [
-    ...current.tracks.filter((track) => !path.resolve(track.path).startsWith(normalizedRoot)),
-    ...tracks,
+    ...current.tracks.filter((track) => !trackMatchesRoot(track, normalizedRoot)),
+    ...normalizedTracks,
   ];
-  const roots = Array.from(new Set([...current.roots.filter((item) => item !== normalizedRoot), normalizedRoot]));
+  const roots = Array.from(
+    new Set([...current.roots.filter((item) => normalizeLibraryRoot(item) !== normalizedRoot), normalizedRoot]),
+  );
   const next: LibraryIndex = {
     updatedAt: new Date().toISOString(),
     roots,
@@ -51,6 +57,16 @@ export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
   };
   await writeLibrary(next);
   return next;
+}
+
+export function normalizeLibraryRoot(root: string) {
+  return root.startsWith("cd:") ? root : path.resolve(root);
+}
+
+function trackMatchesRoot(track: ScannedTrack, root: string) {
+  if (track.libraryRoot) return normalizeLibraryRoot(track.libraryRoot) === root;
+  if (root.startsWith("cd:")) return track.path.startsWith(`${root}:`) || track.path.startsWith(root);
+  return path.resolve(track.path).startsWith(root);
 }
 
 export async function clearLibrary() {

@@ -28,9 +28,6 @@ export function SpectrumCanvas({
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (!active) {
-      engineRef.current.reset();
-      const prepared = prepareCanvas(canvas);
-      if (prepared) prepared.context.clearRect(0, 0, prepared.width, prepared.height);
       return;
     }
 
@@ -65,10 +62,6 @@ export function SpectrumCanvas({
       if (frame) window.cancelAnimationFrame(frame);
     };
   }, [active, analyserRef, fallback, outputMode, outputVolume, palette.primary, palette.secondary, playing]);
-
-  useEffect(() => {
-    engineRef.current.reset();
-  }, [fallback]);
 
   return (
     <canvas

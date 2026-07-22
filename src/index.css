@@ -115,6 +115,58 @@ textarea::selection,
     radial-gradient(circle at 68% 88%, rgba(182, 110, 95, 0.14), transparent 27rem);
 }
 
+.aria-night {
+  --page: #101116;
+  --ink: #f6f7fb;
+  --muted: #a9afbd;
+  color: var(--ink);
+  background: var(--page);
+}
+
+.aria-night .app-shell {
+  background: rgba(14, 15, 20, 0.92);
+}
+
+.aria-night .glass {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(27, 29, 37, 0.58);
+  box-shadow: 0 26px 86px rgba(0, 0, 0, 0.28);
+}
+
+.aria-night .noise {
+  opacity: 0.34;
+  background-image:
+    radial-gradient(circle at 20% 12%, rgba(112, 144, 214, 0.2), transparent 29rem),
+    radial-gradient(circle at 80% 18%, rgba(84, 190, 171, 0.14), transparent 27rem),
+    radial-gradient(circle at 66% 86%, rgba(216, 132, 112, 0.14), transparent 30rem);
+}
+
+.aria-night [class*="bg-white/"],
+.aria-night [class*="bg-white "] {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.aria-night [class*="border-white/"] {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.aria-night [class*="text-neutral-950"],
+.aria-night [class*="text-neutral-900"],
+.aria-night [class*="text-neutral-800"],
+.aria-night [class*="text-neutral-700"] {
+  color: #f6f7fb;
+}
+
+.aria-night [class*="text-neutral-600"],
+.aria-night [class*="text-neutral-500"],
+.aria-night [class*="text-neutral-400"] {
+  color: #a9afbd;
+}
+
+.aria-night input::placeholder {
+  color: rgba(214, 218, 226, 0.55);
+}
+
 .scrollbar-thin {
   scrollbar-width: thin;
   scrollbar-color: rgba(23, 23, 23, 0.18) transparent;

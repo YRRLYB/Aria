@@ -30,6 +30,9 @@ declare global {
           volume?: number;
           exclusive?: boolean;
           deviceId?: string;
+          nativeDevice?: string | null;
+          startChapter?: string | null;
+          endChapter?: string | null;
         }) => Promise<unknown>;
         setPaused?: (paused: boolean) => Promise<unknown>;
         seek?: (position: number) => Promise<unknown>;
@@ -96,6 +99,7 @@ export type ApiScannedTrack = {
   title: string;
   artist: string;
   album: string;
+  albumArtist?: string | null;
   duration: number | null;
   quality: string;
   format: string;
@@ -104,6 +108,15 @@ export type ApiScannedTrack = {
   sampleRate?: number | null;
   bpm?: number | null;
   hasCover?: boolean;
+  trackNumber?: number | null;
+  discNumber?: number | null;
+  libraryRoot?: string;
+  mediaKind?: "file" | "audio-cd";
+  nativeDevice?: string | null;
+  streamUrl?: string | null;
+  nativeStart?: string | null;
+  nativeEnd?: string | null;
+  requiresNativePlayback?: boolean;
 };
 
 export type ApiLibraryIndex = {
@@ -179,7 +192,7 @@ export type ProviderDailyBundle = {
 const API_BASE = window.ariaDesktop?.apiBase ?? "";
 
 export function apiUrl(url: string) {
-  if (!API_BASE || /^https?:\/\//i.test(url)) return url;
+  if (!API_BASE || /^[a-z][a-z\d+.-]*:/i.test(url)) return url;
   return `${API_BASE}${url}`;
 }
 
@@ -219,6 +232,19 @@ export const api = {
       body: JSON.stringify({ folderPath, persist }),
     });
   },
+  scanCdDrives(persist = true) {
+    return request<{
+      tracks: ApiScannedTrack[];
+      drives: Array<{ drive: string; label: string }>;
+      library: ApiLibraryIndex | null;
+    }>("/api/library/scan-cd", {
+      method: "POST",
+      body: JSON.stringify({ persist }),
+    });
+  },
+  getCdDrives() {
+    return request<{ drives: Array<{ drive: string; label: string }> }>("/api/library/cd-drives");
+  },
   getLibrary() {
     return request<ApiLibraryIndex>("/api/library");
   },
@@ -232,6 +258,12 @@ export const api = {
   },
   getTrackCoverUrl(trackId: string) {
     return apiUrl(`/api/library/tracks/${encodeURIComponent(trackId)}/cover`);
+  },
+  warmLocalCovers(trackIds: string[]) {
+    return request<{ ok: boolean; warmed: number }>("/api/library/tracks/covers/warmup", {
+      method: "POST",
+      body: JSON.stringify({ trackIds }),
+    });
   },
   getNeteaseCoverUrl(sourceUrl: string) {
     return apiUrl(`/api/providers/netease/cover?url=${encodeURIComponent(sourceUrl)}`);

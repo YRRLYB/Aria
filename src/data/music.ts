@@ -16,14 +16,23 @@ export type Track = {
   title: string;
   artist: string;
   album: string;
+  albumArtist?: string | null;
   duration: string;
   quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: "local" | "cloud" | "netease";
   streamUrl?: string;
   coverUrl?: string;
+  trackNumber?: number | null;
+  discNumber?: number | null;
   bitrate?: number | null;
   sampleRate?: number | null;
   bpm?: number | null;
+  libraryRoot?: string;
+  mediaKind?: "file" | "audio-cd";
+  nativeDevice?: string | null;
+  nativeStart?: string | null;
+  nativeEnd?: string | null;
+  requiresNativePlayback?: boolean;
   likedAt?: number | null;
   currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
   availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
@@ -64,7 +73,7 @@ export type ViewId =
 export const navItems = [
   { id: "home" as const, label: "主页", icon: Home },
   { id: "player" as const, label: "现在播放", icon: Music2 },
-  { id: "local" as const, label: "本地搜索", icon: FolderSearch },
+  { id: "local" as const, label: "本地音乐", icon: FolderSearch },
   { id: "liked" as const, label: "我喜欢", icon: Heart },
   { id: "history" as const, label: "播放历史", icon: History },
   { id: "playlists" as const, label: "歌单", icon: Cloud },

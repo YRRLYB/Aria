@@ -313,12 +313,21 @@ export function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCoun
   const mostPlayed = useMemo(
     () =>
       [...tracks]
+        .filter((track) => (playCounts[track.id] ?? 0) > 0)
         .sort((left, right) => (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0))
-        .slice(0, 3),
+        .slice(0, 20),
     [playCounts, tracks],
   );
   const localCount = useMemo(() => tracks.filter((track) => track.source === "local").length, [tracks]);
   const neteaseCount = useMemo(() => tracks.filter((track) => track.source === "netease").length, [tracks]);
+  const playedTrackCount = useMemo(
+    () => tracks.filter((track) => (playCounts[track.id] ?? 0) > 0).length,
+    [playCounts, tracks],
+  );
+  const totalPlays = useMemo(
+    () => tracks.reduce((sum, track) => sum + (playCounts[track.id] ?? 0), 0),
+    [playCounts, tracks],
+  );
   const firstLocal = tracks.find((track) => track.source === "local")?.title ?? "暂无歌曲";
   const firstNetease = tracks.find((track) => track.source === "netease")?.title ?? "暂无歌曲";
 
@@ -328,6 +337,8 @@ export function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCoun
       <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">听歌统计</h1>
       <div className="mt-10 grid gap-3">
         {[
+          ["累计播放", String(totalPlays), mostPlayed[0]?.title ?? "暂无记录"],
+          ["听过曲目", String(playedTrackCount), `${playedTrackCount} 首有播放记录`],
           ["全部", String(tracks.length), tracks[0]?.title ?? "暂无歌曲"],
           ["本地", String(localCount), firstLocal],
           ["网易云", String(neteaseCount), firstNetease],
@@ -344,7 +355,7 @@ export function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCoun
       </div>
       <div className="mt-8 rounded-[1.5rem] bg-white/54 p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-xl font-semibold">播放次数</h2>
+          <h2 className="text-xl font-semibold">常听排行</h2>
           <Badge>{mostPlayed.length} 首</Badge>
         </div>
         <div className="mt-4 grid gap-3">

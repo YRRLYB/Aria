@@ -3,13 +3,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Copy,
   Cookie,
-  FolderOpen,
   Heart,
   ImagePlus,
-  Languages,
   ListMusic,
   Maximize2,
   Minus,
+  Moon,
   Pause,
   Play,
   Radio,
@@ -21,6 +20,7 @@ import {
   SkipBack,
   SkipForward,
   Sparkles,
+  Sun,
   UserRound,
   Volume2,
   X,
@@ -34,10 +34,11 @@ import {
   PlaylistSurface,
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
+import { LibrarySurface as LibrarySurfacePanel } from "@/components/music/LibrarySurface";
 import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
 import { ArtistAvatar, CopyableTrackText, CoverArt, EmptyState, Metric, StatTile } from "@/components/music/shared";
 import ariaIconUrl from "../build/icon.png";
-import { navItems, type LyricCandidate, type Track, type ViewId } from "@/data/music";
+import { navItems, type Track, type ViewId } from "@/data/music";
 import { createArtworkOverrideDataUrl, readCachedArtworkOverride, writeCachedArtworkOverride } from "@/lib/artworkOverrides";
 import { copyArtworkToClipboard } from "@/lib/clipboard";
 import {
@@ -156,14 +157,23 @@ function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
     title: track.title,
     artist: track.artist,
     album: track.album,
+    albumArtist: track.albumArtist ?? null,
     duration: formatDuration(track.duration),
     quality: normalizeQuality(track.quality),
     source: "local",
-    streamUrl: api.getTrackStreamUrl(track.id),
+    streamUrl: track.streamUrl ? api.resolveUrl(track.streamUrl) : api.getTrackStreamUrl(track.id),
     coverUrl: artworkOverride ?? (track.hasCover ? api.getTrackCoverUrl(track.id) : undefined),
+    trackNumber: track.trackNumber ?? null,
+    discNumber: track.discNumber ?? null,
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
     bpm: null,
+    libraryRoot: track.libraryRoot,
+    mediaKind: track.mediaKind ?? "file",
+    nativeDevice: track.nativeDevice ?? null,
+    nativeStart: track.nativeStart ?? null,
+    nativeEnd: track.nativeEnd ?? null,
+    requiresNativePlayback: track.requiresNativePlayback ?? false,
     currentLevel: null,
     availableLevels: [],
     cover: localCoverPalettes[index % localCoverPalettes.length],
@@ -372,6 +382,13 @@ export default function App() {
       return false;
     }
   });
+  const [nightMode, setNightMode] = useState(() => {
+    try {
+      return window.localStorage.getItem("aria-night-mode") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [playerSideView, setPlayerSideView] = useState<PlayerSideView>(initialPlayerCache.playerSideView ?? "lyrics");
   const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
   const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
@@ -401,6 +418,7 @@ export default function App() {
   const navCloseTimer = useRef<number | null>(null);
   const lyricSyncingRef = useRef<Set<string>>(new Set());
   const artworkSyncingRef = useRef<Set<string>>(new Set());
+  const localCoverWarmupRef = useRef<Set<string>>(new Set());
   const immersiveFullscreenRef = useRef(false);
   const neteaseWarmupRef = useRef<Set<string>>(new Set());
   const artistRequestRef = useRef<Set<string>>(new Set());
@@ -418,8 +436,6 @@ export default function App() {
   const rendererDiagnosticRef = useRef<Record<string, unknown>>({});
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
-  const nativePlaybackRequested = Boolean(nativeAudioSupported && audioOutputMode !== "system");
-  const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
   const exclusiveMode = audioOutputMode === "exclusive";
   const desktopExclusiveActive = Boolean(nativeAudioSupported && exclusiveMode);
   const exclusiveReady = Boolean(desktopExclusiveActive && nativeAudioState?.exclusive);
@@ -464,6 +480,10 @@ export default function App() {
     requestedActiveTrack ??
     (cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null) ??
     (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
+  const nativePlaybackRequested = Boolean(
+    nativeAudioSupported && (audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
+  );
+  const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
     const levels = activeTrack.availableLevels ?? [];
@@ -471,15 +491,19 @@ export default function App() {
   }, [activeTrack.availableLevels, activeTrack.source, hifiEnabled, qualityLevel]);
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
-    const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
-    if (activeTrack.source !== "netease") return url.href;
+    const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
+    if (activeTrack.source !== "netease") return resolvedUrl;
 
+    const url = new URL(resolvedUrl, window.location.href);
     url.searchParams.set("level", effectiveQualityLevel);
     return url.href;
   }, [activeTrack, effectiveQualityLevel]);
   const audioElementStreamUrl = useMemo(() => {
-    if (!activeTrack.streamUrl) return null;
-    const url = new URL(api.resolveUrl(activeTrack.streamUrl), window.location.href);
+    if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
+    const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
+    if (activeTrack.source !== "netease") return resolvedUrl;
+
+    const url = new URL(resolvedUrl, window.location.href);
     if (activeTrack.source === "netease") {
       url.searchParams.set("level", nativePlaybackEnabled ? "exhigh" : effectiveQualityLevel);
     }
@@ -760,6 +784,47 @@ export default function App() {
     api.warmNeteaseCache(ids, warmupLevel).catch(() => {
       warmupItems.forEach((item) => neteaseWarmupRef.current.delete(item.key));
     });
+
+    const metadataItems = warmupItems.slice(0, playing ? 8 : 24);
+    void Promise.allSettled(
+      metadataItems.map((item) =>
+        api
+          .getNeteaseStreamMeta(item.id, warmupLevel)
+          .then((meta) => applyStreamMetaToTrack(`netease:${item.id}`, meta)),
+      ),
+    );
+  }
+
+  function warmLocalCoverCache(tracksToWarm: Track[]) {
+    preloadTrackCovers(tracksToWarm);
+    const ids = tracksToWarm
+      .filter((track) => track.source === "local" && track.coverUrl && !track.coverUrl.startsWith("data:"))
+      .map((track) => track.id)
+      .filter((id) => {
+        if (localCoverWarmupRef.current.has(id)) return false;
+        localCoverWarmupRef.current.add(id);
+        return true;
+      })
+      .slice(0, 72);
+    if (!ids.length) return;
+    if (localCoverWarmupRef.current.size > 900) {
+      localCoverWarmupRef.current = new Set([...localCoverWarmupRef.current].slice(-520));
+    }
+    api.warmLocalCovers(ids).catch(() => {
+      ids.forEach((id) => localCoverWarmupRef.current.delete(id));
+    });
+  }
+
+  function preloadTrackCovers(tracksToWarm: Track[], limit = 36) {
+    tracksToWarm
+      .map((track) => track.coverUrl)
+      .filter((url): url is string => Boolean(url))
+      .slice(0, limit)
+      .forEach((url) => {
+        const image = new Image();
+        image.decoding = "async";
+        image.src = url;
+      });
   }
 
   useEffect(() => {
@@ -768,6 +833,12 @@ export default function App() {
     const timer = window.setTimeout(() => warmNeteaseTrackCache(tracksToWarm), playing ? 1600 : 260);
     return () => window.clearTimeout(timer);
   }, [hifiEnabled, playing, qualityLevel, playQueueTracks, visibleTracks]);
+
+  useEffect(() => {
+    const tracksToWarm = [activeTrack, ...playQueueTracks.slice(0, 12), ...visibleTracks.slice(0, 24)];
+    const timer = window.setTimeout(() => warmLocalCoverCache(tracksToWarm), playing ? 700 : 120);
+    return () => window.clearTimeout(timer);
+  }, [activeTrack, playQueueTracks, playing, visibleTracks]);
 
   useEffect(() => {
     localTracksRef.current = localTracks;
@@ -842,7 +913,9 @@ export default function App() {
     api
       .getLibrary()
       .then((library) => {
-        setLocalTracks(library.tracks.map(localTrackToUiTrack));
+        const uiTracks = library.tracks.map(localTrackToUiTrack);
+        setLocalTracks(uiTracks);
+        warmLocalCoverCache(uiTracks);
         setLibraryMeta({ roots: library.roots.length, updatedAt: library.updatedAt });
       })
       .catch(() => {
@@ -1012,6 +1085,10 @@ export default function App() {
     window.localStorage.setItem("aria-background-enabled", String(backgroundEnabled));
     window.ariaDesktop?.setBackgroundEnabled?.(backgroundEnabled);
   }, [backgroundEnabled]);
+
+  useEffect(() => {
+    window.localStorage.setItem("aria-night-mode", String(nightMode));
+  }, [nightMode]);
 
   useEffect(() => {
     const updateVisibility = () => setPageVisible(document.visibilityState === "visible");
@@ -1351,13 +1428,19 @@ export default function App() {
       return;
     }
 
-    const nextUrl = new URL(activeStreamUrl, window.location.href).href;
-    if (nativeLoadedUrlRef.current === nextUrl) return;
+    const nextUrl = activeStreamUrl;
+    const nextLoadKey = [
+      nextUrl,
+      activeTrack.nativeDevice ?? "",
+      activeTrack.nativeStart ?? "",
+      activeTrack.nativeEnd ?? "",
+    ].join("\u0000");
+    if (nativeLoadedUrlRef.current === nextLoadKey) return;
 
     let cancelled = false;
     const loadSequence = nativeLoadSequenceRef.current + 1;
     nativeLoadSequenceRef.current = loadSequence;
-    nativeLoadedUrlRef.current = nextUrl;
+    nativeLoadedUrlRef.current = nextLoadKey;
     nativeAudio
       .load?.({
         trackId: activeTrack.id,
@@ -1367,6 +1450,9 @@ export default function App() {
         volume: nativePlaybackVolume,
         exclusive: exclusiveMode,
         deviceId: selectedSinkId,
+        nativeDevice: activeTrack.nativeDevice ?? null,
+        startChapter: activeTrack.nativeStart ?? null,
+        endChapter: activeTrack.nativeEnd ?? null,
       })
       .then((state) => {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
@@ -1383,6 +1469,9 @@ export default function App() {
   }, [
     activeStreamUrl,
     activeTrack.id,
+    activeTrack.nativeEnd,
+    activeTrack.nativeDevice,
+    activeTrack.nativeStart,
     nativePlaybackEnabled,
     nativeAudioState?.trackId,
     playing,
@@ -1551,12 +1640,34 @@ export default function App() {
     const nextUiTracks = nextTracks.map(localTrackToUiTrack);
     pendingSeekRef.current = 0;
     setLocalTracks(nextUiTracks);
+    warmLocalCoverCache(nextUiTracks);
     setPlayQueueIds(materializeQueueIds(nextUiTracks, nextUiTracks[0]?.id ?? activeTrack.id, shuffleEnabled));
     setLibraryMeta({
       roots: result.library?.roots.length ?? 1,
       updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
     });
     if (nextTracks[0]) setActiveTrackId(nextTracks[0].id);
+    setActiveView("local");
+  }
+
+  async function scanCdLibrary() {
+    const result = await api.scanCdDrives();
+    const nextTracks = result.library?.tracks ?? result.tracks;
+    const nextUiTracks = nextTracks.map(localTrackToUiTrack);
+    const scannedCdTracks = result.tracks.map(localTrackToUiTrack);
+    const queue = scannedCdTracks.length ? scannedCdTracks : nextUiTracks;
+
+    pendingSeekRef.current = 0;
+    setLocalTracks(nextUiTracks);
+    warmLocalCoverCache(nextUiTracks);
+    if (queue.length) {
+      setPlayQueueIds(materializeQueueIds(queue, queue[0].id, shuffleEnabled));
+    }
+    setLibraryMeta({
+      roots: result.library?.roots.length ?? result.drives.length,
+      updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
+    });
+    setFolderName(queue.length ? "光盘库" : "未检测到音频光盘");
     setActiveView("local");
   }
 
@@ -1668,7 +1779,10 @@ export default function App() {
     if (fallbackTrack) chooseTrack(fallbackTrack.id);
   }
 
-  function resolveQueueForTrack(trackId: string) {
+  function resolveQueueForTrack(trackId: string, preferredQueue?: Track[]) {
+    const preferredTracks = preferredQueue ? playableTracks(preferredQueue) : [];
+    if (preferredTracks.some((track) => track.id === trackId)) return preferredTracks;
+
     const currentQueue = playableTracks(contextualQueueTracks);
     if (activeView !== "home" && activeView !== "player" && currentQueue.some((track) => track.id === trackId)) {
       return currentQueue;
@@ -1686,8 +1800,8 @@ export default function App() {
     return candidateQueues.find((tracks) => tracks.some((track) => track.id === trackId)) ?? currentQueue;
   }
 
-  function chooseTrack(trackId: string) {
-    const queue = resolveQueueForTrack(trackId);
+  function chooseTrack(trackId: string, preferredQueue?: Track[]) {
+    const queue = resolveQueueForTrack(trackId, preferredQueue);
     const targetTrack =
       queue.find((track) => track.id === trackId) ??
       allTracks.find((track) => track.id === trackId) ??
@@ -1881,7 +1995,12 @@ export default function App() {
   }
 
   return (
-    <main className="relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950">
+    <main
+      className={cn(
+        "relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950 transition-colors duration-300",
+        nightMode && "aria-night",
+      )}
+    >
       <audio
         ref={audioRef}
         crossOrigin="anonymous"
@@ -1918,7 +2037,6 @@ export default function App() {
         onChange={(event) => {
           const file = event.target.files?.[0];
           const path = file?.webkitRelativePath || file?.name || "";
-          setFolderName(path.split("/")[0] || "已选择");
           setFolderName(path.split("/")[0] || "已选择");
           setActiveView("local");
         }}
@@ -1990,6 +2108,14 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2" style={noDragRegionStyle}>
+            <Button
+              variant="glass"
+              size="icon"
+              aria-label={nightMode ? "切换日间模式" : "切换夜晚模式"}
+              onClick={() => setNightMode((value) => !value)}
+            >
+              {nightMode ? <Sun /> : <Moon />}
+            </Button>
             <div className="relative">
             <Button
               variant="glass"
@@ -2144,7 +2270,7 @@ export default function App() {
                 />
               )}
               {activeView === "local" && (
-                <LibrarySurface
+                <LibrarySurfacePanel
                   folderName={folderName}
                   onChooseFolder={() => fileInputRef.current?.click()}
                   tracks={visibleLocalTracks}
@@ -2153,6 +2279,7 @@ export default function App() {
                   activeTrackId={activeTrackId}
                   onPickTrack={chooseTrack}
                   onScanPath={scanBackendPath}
+                  onScanCd={scanCdLibrary}
                   onLyricsBound={applyLyricsToTrack}
                   onArtworkBound={applyArtworkToTrack}
                 />
@@ -2453,7 +2580,7 @@ function HomeSurface({
         <div className="p-5 sm:p-7">
           <Badge>Home</Badge>
           <h1 className="mt-5 max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
-            今天想听点什么
+            音乐从这里开始
           </h1>
           <p className="mt-3 max-w-xl text-neutral-500">
             把本地音乐、网易云喜欢、每日推荐和云盘放在同一个主页里。
@@ -3510,298 +3637,6 @@ function ImmersivePlayerView({
   );
 }
 
-function LibrarySurface({
-  folderName,
-  onChooseFolder,
-  tracks: libraryTracks,
-  localTrackCount,
-  libraryMeta,
-  activeTrackId,
-  onPickTrack,
-  onScanPath,
-  onLyricsBound,
-  onArtworkBound,
-}: {
-  folderName: string;
-  onChooseFolder: () => void;
-  tracks: Track[];
-  localTrackCount: number;
-  libraryMeta: { roots: number; updatedAt: string | null };
-  activeTrackId: string;
-  onPickTrack: (id: string) => void;
-  onScanPath: (folderPath: string) => Promise<void>;
-  onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
-  onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
-}) {
-  const [lookupOpen, setLookupOpen] = useState(false);
-  const [boundCandidateId, setBoundCandidateId] = useState<string | null>(null);
-  const [scanPath, setScanPath] = useState("");
-  const [scanState, setScanState] = useState<"idle" | "scanning" | "error">("idle");
-  const candidateTarget =
-    libraryTracks.find((track) => track.lyricStatus !== "linked") ?? libraryTracks[0];
-
-  async function submitScanPath() {
-    if (!scanPath.trim()) return;
-    setScanState("scanning");
-    try {
-      await onScanPath(scanPath.trim());
-      setScanState("idle");
-    } catch {
-      setScanState("error");
-    }
-  }
-
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Badge>Folder</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">本地音乐</h1>
-          <p className="mt-3 text-neutral-500">{folderName}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="glass" onClick={() => setLookupOpen((value) => !value)}>
-            {lookupOpen ? <X /> : <Languages />}
-            {lookupOpen ? "收起搜词" : "联网搜词"}
-          </Button>
-          <Button onClick={onChooseFolder}>
-            <FolderOpen />
-            选择文件夹
-          </Button>
-        </div>
-      </div>
-
-      <div className="mt-6 grid gap-3 md:grid-cols-3">
-        <LyricLookupCard label="索引曲目" value={`${localTrackCount} 首本地音乐`} />
-        <LyricLookupCard label="目录数量" value={`${libraryMeta.roots} 个目录`} />
-        <LyricLookupCard
-          label="更新时间"
-          value={libraryMeta.updatedAt ? new Date(libraryMeta.updatedAt).toLocaleString() : "尚未扫描"}
-        />
-      </div>
-
-      <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">
-              Backend Scan
-            </p>
-            <input
-              value={scanPath}
-              onChange={(event) => setScanPath(event.target.value)}
-              placeholder="输入本机音乐目录路径，例如 E:\\Music"
-              className="mt-2 w-full rounded-full border border-white/70 bg-white/70 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
-            />
-          </div>
-          <Button onClick={submitScanPath} disabled={scanState === "scanning"}>
-            <RefreshCw className={cn(scanState === "scanning" && "animate-spin")} />
-            {scanState === "scanning" ? "扫描中" : "扫描目录"}
-          </Button>
-        </div>
-        {scanState === "error" && (
-          <p className="mt-3 text-sm text-neutral-500">扫描失败，请确认路径存在且后端服务正在运行。</p>
-        )}
-      </div>
-
-      <AnimatePresence initial={false}>
-        {lookupOpen && candidateTarget && (
-          <LyricLookupPanel
-            track={candidateTarget}
-            boundCandidateId={boundCandidateId}
-            onBind={setBoundCandidateId}
-            onLyricsBound={onLyricsBound}
-            onArtworkBound={onArtworkBound}
-          />
-        )}
-      </AnimatePresence>
-
-      <div className="mt-8 grid gap-3">
-        {libraryTracks.map((track, index) => (
-          <button
-            key={track.id}
-            className={cn(
-              "grid grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.5rem] bg-white/45 p-3 text-left transition hover:bg-white/75",
-              activeTrackId === track.id && "bg-white shadow-sm",
-            )}
-            onClick={() => onPickTrack(track.id)}
-          >
-            <span className="text-center text-sm font-medium text-neutral-400">
-              {String(index + 1).padStart(2, "0")}
-            </span>
-            <CoverArt track={track} className="size-14 rounded-2xl" />
-            <div className="min-w-0">
-              <p className="truncate font-semibold">
-                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-              </p>
-              <p className="truncate text-sm text-neutral-500">
-                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText> · {track.album}
-              </p>
-            </div>
-            <div className="hidden items-center gap-2 sm:flex">
-              <Badge>{track.lyricStatus === "linked" ? "有歌词" : "待匹配"}</Badge>
-              <Badge>{formatAudioDetail(track)}</Badge>
-              <span className="w-12 text-right text-sm text-neutral-500">{track.duration}</span>
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LyricLookupCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[1.15rem] bg-white/52 p-4 shadow-sm">
-      <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">{label}</p>
-      <p className="mt-2 text-sm font-semibold text-neutral-700">{value}</p>
-    </div>
-  );
-}
-
-function LyricLookupPanel({
-  track,
-  boundCandidateId,
-  onBind,
-  onLyricsBound,
-  onArtworkBound,
-}: {
-  track: Track;
-  boundCandidateId: string | null;
-  onBind: (id: string) => void;
-  onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
-  onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
-}) {
-  const [candidates, setCandidates] = useState<LyricCandidate[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function searchLyrics() {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await api.searchLyrics({
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-      });
-      setCandidates(result.candidates);
-    } catch {
-      setCandidates([]);
-      setError("歌词搜索失败，请确认后端服务正在运行");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function bindLyric(candidateId: string) {
-    onBind(candidateId);
-    onArtworkBound(track.id, candidates.find((candidate) => candidate.id === candidateId)?.coverUrl);
-    try {
-      const result = await api.bindLyric(track.id, candidateId);
-      onLyricsBound(track.id, result.lyrics);
-    } catch {
-      setError("后端保存失败，歌词绑定未写入本地索引");
-    }
-  }
-
-  return (
-    <motion.section
-      initial={{ opacity: 0, y: -10, filter: "blur(12px)" }}
-      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-      exit={{ opacity: 0, y: -8, filter: "blur(10px)" }}
-      transition={{ duration: 0.26 }}
-      className="mt-5 rounded-[1.35rem] border border-white/70 bg-white/50 p-4 shadow-sm"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
-            Online Lyrics
-          </p>
-          <h2 className="mt-1 truncate text-xl font-semibold">
-            <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-          </h2>
-          <p className="truncate text-sm text-neutral-500">
-            <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText> · {track.album}
-          </p>
-        </div>
-        <Button variant="subtle" size="sm" onClick={searchLyrics} disabled={loading}>
-          <RefreshCw className={cn(loading && "animate-spin")} />
-          {loading ? "搜索中" : "重新搜索"}
-        </Button>
-      </div>
-      {error && <p className="mt-3 text-xs text-neutral-500">{error}</p>}
-
-      <div className="mt-4 grid gap-3 xl:grid-cols-3">
-        {candidates.map((candidate) => (
-          <LyricCandidateCard
-            key={candidate.id}
-            candidate={candidate}
-            selected={boundCandidateId === candidate.id}
-            onBind={() => bindLyric(candidate.id)}
-          />
-        ))}
-      </div>
-      {!candidates.length && !loading && <EmptyState text="暂无歌词候选，点击重新搜索获取网易云结果。" />}
-    </motion.section>
-  );
-}
-
-function LyricCandidateCard({
-  candidate,
-  selected,
-  onBind,
-}: {
-  candidate: LyricCandidate;
-  selected: boolean;
-  onBind: () => void;
-}) {
-  return (
-    <article
-      className={cn(
-        "rounded-[1.15rem] bg-white/62 p-4 shadow-sm transition",
-        selected && "bg-neutral-950 text-white",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Badge className={cn(selected && "border-white/20 bg-white/12 text-white")}>
-            {candidate.source}
-          </Badge>
-          <h3 className="mt-3 truncate font-semibold">{candidate.title}</h3>
-          <p className={cn("truncate text-xs", selected ? "text-white/64" : "text-neutral-500")}>
-            {candidate.artist} · {candidate.album}
-          </p>
-        </div>
-        <span className={cn("text-2xl font-semibold", selected ? "text-white" : "text-neutral-950")}>
-          {candidate.score}
-        </span>
-      </div>
-      <div className="mt-4 space-y-2">
-        {candidate.preview.map((line) => (
-          <p
-            key={line}
-            className={cn(
-              "truncate text-sm",
-              selected ? "text-white/72" : "text-neutral-600",
-            )}
-          >
-            {line}
-          </p>
-        ))}
-      </div>
-      <Button
-        className="mt-4 w-full"
-        variant={selected ? "subtle" : "default"}
-        size="sm"
-        onClick={onBind}
-      >
-        <Languages />
-        {selected ? "已绑定" : "绑定歌词"}
-      </Button>
-    </article>
-  );
-}
-
 function FloatingNav({
   activeView,
   open,
@@ -3904,7 +3739,13 @@ function FloatingNav({
                 aria-label={item.label}
                 onClick={() => onPick(item.id)}
               >
-                <Icon className="size-5" />
+                {item.id === "artists" ? (
+                  <span className="relative flex size-7 items-center justify-center overflow-hidden rounded-full bg-white">
+                    <img src={ariaIconUrl} alt="" draggable={false} className="size-full object-cover" />
+                  </span>
+                ) : (
+                  <Icon className="size-5" />
+                )}
                 <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100">
                   {item.label}
                 </span>
@@ -4508,3 +4349,4 @@ function AccountPanel({
     </motion.div>
   );
 }
+

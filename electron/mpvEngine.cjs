@@ -346,7 +346,21 @@ class MpvAudioEngine {
     return token === this.loadToken;
   }
 
-  async performLoad({ trackId, url, position = 0, paused = true, volume = 72, exclusive = false, deviceId = "default" }, token) {
+  async performLoad(
+    {
+      trackId,
+      url,
+      position = 0,
+      paused = true,
+      volume = 72,
+      exclusive = false,
+      deviceId = "default",
+      nativeDevice = null,
+      startChapter = null,
+      endChapter = null,
+    },
+    token,
+  ) {
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     this.pendingSeek = Math.max(0, Number(position) || 0);
@@ -366,7 +380,15 @@ class MpvAudioEngine {
     await this.applyOutputSettings({ exclusive, deviceId, volume });
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
-    await this.command("loadfile", url, "replace");
+    if (String(url).startsWith("cdda://")) {
+      const loadOptions = {};
+      if (nativeDevice) loadOptions["cdda-device"] = nativeDevice;
+      if (startChapter) loadOptions.start = startChapter;
+      if (endChapter) loadOptions.end = endChapter;
+      await this.command("loadfile", url, "replace", -1, loadOptions);
+    } else {
+      await this.command("loadfile", url, "replace");
+    }
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     this.emit({ kind: "loading" });
