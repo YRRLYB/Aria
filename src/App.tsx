@@ -8,7 +8,6 @@ import {
   ListMusic,
   Maximize2,
   Minus,
-  Moon,
   Pause,
   Play,
   Radio,
@@ -20,7 +19,6 @@ import {
   SkipBack,
   SkipForward,
   Sparkles,
-  Sun,
   UserRound,
   Volume2,
   X,
@@ -378,13 +376,6 @@ export default function App() {
   const [backgroundEnabled, setBackgroundEnabled] = useState(() => {
     try {
       return window.localStorage.getItem("aria-background-enabled") === "true";
-    } catch {
-      return false;
-    }
-  });
-  const [nightMode, setNightMode] = useState(() => {
-    try {
-      return window.localStorage.getItem("aria-night-mode") === "true";
     } catch {
       return false;
     }
@@ -1087,10 +1078,6 @@ export default function App() {
   }, [backgroundEnabled]);
 
   useEffect(() => {
-    window.localStorage.setItem("aria-night-mode", String(nightMode));
-  }, [nightMode]);
-
-  useEffect(() => {
     const updateVisibility = () => setPageVisible(document.visibilityState === "visible");
     const disposeDesktopVisibility = window.ariaDesktop?.onWindowVisibilityChange?.((visible) => {
       setPageVisible(visible);
@@ -1652,9 +1639,15 @@ export default function App() {
 
   async function scanCdLibrary() {
     const result = await api.scanCdDrives();
-    const nextTracks = result.library?.tracks ?? result.tracks;
-    const nextUiTracks = nextTracks.map(localTrackToUiTrack);
     const scannedCdTracks = result.tracks.map(localTrackToUiTrack);
+    if (!result.library && !scannedCdTracks.length) {
+      setFolderName("未检测到音频光盘");
+      setActiveView("local");
+      return;
+    }
+    const nextUiTracks = result.library?.tracks
+      ? result.library.tracks.map(localTrackToUiTrack)
+      : mergeTracks([...localTracks, ...scannedCdTracks]);
     const queue = scannedCdTracks.length ? scannedCdTracks : nextUiTracks;
 
     pendingSeekRef.current = 0;
@@ -1667,7 +1660,7 @@ export default function App() {
       roots: result.library?.roots.length ?? result.drives.length,
       updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
     });
-    setFolderName(queue.length ? "光盘库" : "未检测到音频光盘");
+    setFolderName(scannedCdTracks.length ? "光盘库" : folderName);
     setActiveView("local");
   }
 
@@ -1995,12 +1988,7 @@ export default function App() {
   }
 
   return (
-    <main
-      className={cn(
-        "relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950 transition-colors duration-300",
-        nightMode && "aria-night",
-      )}
-    >
+    <main className="relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950">
       <audio
         ref={audioRef}
         crossOrigin="anonymous"
@@ -2108,14 +2096,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2" style={noDragRegionStyle}>
-            <Button
-              variant="glass"
-              size="icon"
-              aria-label={nightMode ? "切换日间模式" : "切换夜晚模式"}
-              onClick={() => setNightMode((value) => !value)}
-            >
-              {nightMode ? <Sun /> : <Moon />}
-            </Button>
             <div className="relative">
             <Button
               variant="glass"
@@ -2274,7 +2254,6 @@ export default function App() {
                   folderName={folderName}
                   onChooseFolder={() => fileInputRef.current?.click()}
                   tracks={visibleLocalTracks}
-                  localTrackCount={localTracks.length}
                   libraryMeta={libraryMeta}
                   activeTrackId={activeTrackId}
                   onPickTrack={chooseTrack}
@@ -2378,34 +2357,6 @@ export default function App() {
             </div>
 
             <QueueList tracks={playQueueTracks.length ? playQueueTracks : visibleTracks} activeTrackId={activeTrackId} onPickTrack={chooseTrack} />
-
-            <div className="mt-4 overflow-hidden rounded-[1.25rem] border border-white/70 bg-white/55 p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
-                    Library
-                  </p>
-                  <p className="mt-1 truncate text-sm font-semibold">本地与云端状态</p>
-                </div>
-                <Badge>Ready</Badge>
-              </div>
-
-              <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
-                <Metric value={String(allTracks.length)} label="曲目" />
-                <Metric value={String(linkedLyricCount)} label="歌词" />
-                <Metric value={String(allTracks.filter((track) => track.quality !== "320K").length)} label="无损" />
-              </div>
-
-              <div className="mt-4 rounded-2xl bg-white/56 p-3">
-                <div className="flex items-center justify-between text-xs text-neutral-500">
-                  <span>歌词匹配</span>
-                  <span>{lyricProgress}%</span>
-                </div>
-                <div className="mt-2 h-1 overflow-hidden rounded-full bg-neutral-950/8">
-                  <div className="h-full rounded-full bg-neutral-950/55" style={{ width: `${lyricProgress}%` }} />
-                </div>
-              </div>
-            </div>
           </aside>
           )}
         </section>
@@ -3665,14 +3616,14 @@ function FloatingNav({
 
   return (
     <div
-      className="absolute bottom-8 left-7 z-40 h-[394px] w-[188px]"
-      onMouseEnter={() => onOpenChange(true)}
-      onMouseLeave={onRequestClose}
+      className="pointer-events-none absolute bottom-8 left-7 z-40 h-[394px] w-[188px]"
     >
       <button
-        className="absolute z-30 flex size-16 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_18px_50px_rgba(47,55,76,0.16)]"
+        className="pointer-events-auto absolute z-30 flex size-16 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_18px_50px_rgba(47,55,76,0.16)]"
         style={{ left: center.x - 32, top: center.y - 32 }}
         aria-label="副导航"
+        onMouseEnter={() => onOpenChange(true)}
+        onMouseLeave={onRequestClose}
         onClick={() => onOpenChange(!open)}
       >
         <div
@@ -3717,7 +3668,7 @@ function FloatingNav({
         })}
       </svg>
 
-      <div className={cn("absolute inset-0", !open && "pointer-events-none")}>
+      <div className="pointer-events-none absolute inset-0">
         {nodes.map((item, index) => {
           const pos = nodePositions[index];
           const Icon = item.icon;
@@ -3728,6 +3679,7 @@ function FloatingNav({
               <button
                 className={cn(
                   "group absolute flex size-14 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_14px_34px_rgba(47,55,76,0.13)] transition duration-200 hover:border-neutral-300 hover:bg-neutral-50",
+                  open && "pointer-events-auto",
                   open ? "scale-100 opacity-100" : "scale-50 opacity-0",
                   active && "!bg-neutral-950 !text-white hover:!bg-neutral-900",
                 )}
@@ -3737,11 +3689,13 @@ function FloatingNav({
                   transitionDelay: open ? `${index * 35}ms` : "0ms",
                 }}
                 aria-label={item.label}
+                onMouseEnter={() => onOpenChange(true)}
+                onMouseLeave={onRequestClose}
                 onClick={() => onPick(item.id)}
               >
                 {item.id === "artists" ? (
-                  <span className="relative flex size-7 items-center justify-center overflow-hidden rounded-full bg-white">
-                    <img src={ariaIconUrl} alt="" draggable={false} className="size-full object-cover" />
+                  <span className="relative flex size-8 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7bd9c7] via-[#f5f7ff] to-[#f0a0c9] text-neutral-950">
+                    <UserRound className="size-4" />
                   </span>
                 ) : (
                   <Icon className="size-5" />

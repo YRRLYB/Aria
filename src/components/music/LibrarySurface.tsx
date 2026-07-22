@@ -13,7 +13,6 @@ type LibrarySurfaceProps = {
   folderName: string;
   onChooseFolder: () => void;
   tracks: Track[];
-  localTrackCount: number;
   libraryMeta: { roots: number; updatedAt: string | null };
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
@@ -37,7 +36,6 @@ export function LibrarySurface({
   folderName,
   onChooseFolder,
   tracks: libraryTracks,
-  localTrackCount,
   libraryMeta,
   activeTrackId,
   onPickTrack,
@@ -51,14 +49,16 @@ export function LibrarySurface({
   const [scanPath, setScanPath] = useState("");
   const [scanState, setScanState] = useState<"idle" | "scanning" | "error">("idle");
   const [cdScanState, setCdScanState] = useState<"idle" | "scanning" | "error">("idle");
-  const [mode, setMode] = useState<"tracks" | "albums">("albums");
-  const albums = useMemo(() => createAlbumGroups(libraryTracks), [libraryTracks]);
+  const [mode, setMode] = useState<"tracks" | "albums" | "cds">("albums");
+  const fileTracks = useMemo(() => libraryTracks.filter((track) => track.mediaKind !== "audio-cd"), [libraryTracks]);
+  const cdTracks = useMemo(() => libraryTracks.filter((track) => track.mediaKind === "audio-cd"), [libraryTracks]);
+  const albums = useMemo(() => createAlbumGroups(fileTracks), [fileTracks]);
   const [selectedAlbumKey, setSelectedAlbumKey] = useState<string | null>(null);
   const selectedAlbum = useMemo(
     () => albums.find((album) => album.key === selectedAlbumKey) ?? albums[0] ?? null,
     [albums, selectedAlbumKey],
   );
-  const candidateTarget = libraryTracks.find((track) => track.lyricStatus !== "linked") ?? libraryTracks[0];
+  const candidateTarget = fileTracks.find((track) => track.lyricStatus !== "linked") ?? fileTracks[0];
 
   async function submitScanPath() {
     if (!scanPath.trim()) return;
@@ -77,7 +77,7 @@ export function LibrarySurface({
     try {
       await onScanCd();
       setCdScanState("idle");
-      setMode("albums");
+      setMode("cds");
     } catch {
       setCdScanState("error");
     }
@@ -96,10 +96,6 @@ export function LibrarySurface({
             {lookupOpen ? <X /> : <Languages />}
             {lookupOpen ? "收起搜词" : "联网搜词"}
           </Button>
-          <Button variant="glass" onClick={submitCdScan} disabled={cdScanState === "scanning"}>
-            <Disc3 className={cn(cdScanState === "scanning" && "animate-spin")} />
-            {cdScanState === "scanning" ? "扫描光盘中" : "扫描光盘"}
-          </Button>
           <Button onClick={onChooseFolder}>
             <FolderOpen />
             选择文件夹
@@ -109,12 +105,9 @@ export function LibrarySurface({
 
       <div className="mt-6 grid gap-3 md:grid-cols-4">
         <LibraryInfoCard label="专辑" value={`${albums.length} 张`} />
-        <LibraryInfoCard label="索引曲目" value={`${localTrackCount} 首`} />
+        <LibraryInfoCard label="本地曲目" value={`${fileTracks.length} 首`} />
+        <LibraryInfoCard label="光盘曲目" value={`${cdTracks.length} 首`} />
         <LibraryInfoCard label="目录数量" value={`${libraryMeta.roots} 个`} />
-        <LibraryInfoCard
-          label="更新时间"
-          value={libraryMeta.updatedAt ? new Date(libraryMeta.updatedAt).toLocaleString() : "尚未扫描"}
-        />
       </div>
 
       <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
@@ -175,8 +168,18 @@ export function LibrarySurface({
             <ListMusic className="size-4" />
             曲目
           </button>
+          <button
+            className={cn(
+              "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition",
+              mode === "cds" && "bg-neutral-950 text-white",
+            )}
+            onClick={() => setMode("cds")}
+          >
+            <Disc3 className="size-4" />
+            光盘
+          </button>
         </div>
-        <Badge>{mode === "albums" ? "点击专辑进入曲目" : "按专辑顺序排列"}</Badge>
+        <Badge>{mode === "albums" ? "点击专辑进入曲目" : mode === "cds" ? "CD 独立管理" : "按专辑顺序排列"}</Badge>
       </div>
 
       {mode === "albums" ? (
@@ -187,8 +190,16 @@ export function LibrarySurface({
           onSelectAlbum={setSelectedAlbumKey}
           onPickTrack={onPickTrack}
         />
+      ) : mode === "cds" ? (
+        <CdLibraryView
+          tracks={cdTracks}
+          activeTrackId={activeTrackId}
+          scanState={cdScanState}
+          onScanCd={submitCdScan}
+          onPickTrack={onPickTrack}
+        />
       ) : (
-        <TrackListView tracks={libraryTracks} activeTrackId={activeTrackId} onPickTrack={onPickTrack} />
+        <TrackListView tracks={fileTracks} activeTrackId={activeTrackId} onPickTrack={onPickTrack} />
       )}
     </div>
   );
@@ -211,26 +222,25 @@ function AlbumLibraryView({
 
   return (
     <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,0.96fr)_minmax(360px,0.74fr)]">
-      <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+      <div className="no-scrollbar grid max-h-[calc(100vh-24rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 2xl:grid-cols-3">
         {albums.map((album) => {
           const active = selectedAlbum?.key === album.key;
           return (
             <button
               key={album.key}
               className={cn(
-                "group rounded-[1.25rem] bg-white/48 p-3 text-left shadow-sm transition hover:bg-white/75",
+                "group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 text-left shadow-sm transition hover:bg-white",
                 active && "bg-white shadow-md",
               )}
               onClick={() => onSelectAlbum(album.key)}
             >
-              <CoverArt track={album.coverTrack} className="aspect-square w-full rounded-[1rem]" />
-              <div className="mt-3 min-w-0">
-                <p className="line-clamp-2 font-semibold leading-tight">{album.title}</p>
+              <CoverArt track={album.coverTrack} className="size-16 rounded-2xl" />
+              <div className="min-w-0">
+                <p className="truncate font-semibold group-hover:text-neutral-700">{album.title}</p>
                 <p className="mt-1 truncate text-sm text-neutral-500">{album.artist}</p>
-                <div className="mt-3 flex items-center justify-between gap-2 text-xs text-neutral-500">
-                  <span>{album.tracks.length} 首</span>
-                  <span>{album.mediaKind === "audio-cd" ? "Audio CD" : album.totalDuration}</span>
-                </div>
+                <p className="mt-1 truncate text-xs text-neutral-400">
+                  {album.tracks.length} 首 · {album.totalDuration}
+                </p>
               </div>
             </button>
           );
@@ -288,6 +298,72 @@ function TrackListView({
         />
       ))}
     </div>
+  );
+}
+
+function CdLibraryView({
+  tracks,
+  activeTrackId,
+  scanState,
+  onScanCd,
+  onPickTrack,
+}: {
+  tracks: Track[];
+  activeTrackId: string;
+  scanState: "idle" | "scanning" | "error";
+  onScanCd: () => Promise<void>;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+}) {
+  const albums = useMemo(() => createAlbumGroups(tracks), [tracks]);
+
+  return (
+    <section className="mt-5 rounded-[1.35rem] bg-white/50 p-4 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Audio CD</p>
+          <h2 className="mt-1 text-2xl font-semibold">光盘音乐</h2>
+          <p className="mt-2 text-sm text-neutral-500">扫描光盘只会更新 CD 曲目，不会清空已有本地音乐。</p>
+        </div>
+        <Button variant="glass" onClick={onScanCd} disabled={scanState === "scanning"}>
+          <Disc3 className={cn(scanState === "scanning" && "animate-spin")} />
+          {scanState === "scanning" ? "扫描光盘中" : "扫描光盘"}
+        </Button>
+      </div>
+
+      {scanState === "error" && (
+        <p className="mt-3 text-sm text-neutral-500">没有读取到音频光盘曲目，或当前光驱不支持枚举。</p>
+      )}
+
+      <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(260px,0.44fr)_minmax(0,1fr)]">
+        <div className="grid gap-3">
+          {albums.map((album) => (
+            <div key={album.key} className="grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 shadow-sm">
+              <CoverArt track={album.coverTrack} className="size-16 rounded-2xl" />
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{album.title}</p>
+                <p className="mt-1 truncate text-sm text-neutral-500">{album.artist}</p>
+                <p className="mt-1 truncate text-xs text-neutral-400">{album.tracks.length} 首 CDDA</p>
+              </div>
+            </div>
+          ))}
+          {!albums.length && <EmptyState text="还没有光盘曲目。放入音频 CD 后点击扫描光盘。" />}
+        </div>
+
+        <div className="grid gap-2">
+          {tracks.map((track, index) => (
+            <TrackRow
+              key={track.id}
+              track={track}
+              index={index}
+              active={activeTrackId === track.id}
+              queue={tracks}
+              onPickTrack={onPickTrack}
+            />
+          ))}
+          {!tracks.length && <EmptyState text="光盘曲目会单独显示在这里，不会和本地文件列表混在一起。" />}
+        </div>
+      </div>
+    </section>
   );
 }
 
