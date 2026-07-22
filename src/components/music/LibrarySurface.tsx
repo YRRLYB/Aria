@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Album, Disc3, FolderOpen, Languages, ListMusic, RefreshCw, X } from "lucide-react";
+import { Album, ArrowLeft, Disc3, FolderOpen, Languages, ListMusic, RefreshCw, X } from "lucide-react";
 import type { LyricCandidate, Track } from "@/data/music";
 import { api } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
@@ -55,7 +55,7 @@ export function LibrarySurface({
   const albums = useMemo(() => createAlbumGroups(fileTracks), [fileTracks]);
   const [selectedAlbumKey, setSelectedAlbumKey] = useState<string | null>(null);
   const selectedAlbum = useMemo(
-    () => albums.find((album) => album.key === selectedAlbumKey) ?? albums[0] ?? null,
+    () => (selectedAlbumKey ? albums.find((album) => album.key === selectedAlbumKey) ?? null : null),
     [albums, selectedAlbumKey],
   );
   const candidateTarget = fileTracks.find((track) => track.lyricStatus !== "linked") ?? fileTracks[0];
@@ -163,7 +163,10 @@ export function LibrarySurface({
               "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition",
               mode === "tracks" && "bg-neutral-950 text-white",
             )}
-            onClick={() => setMode("tracks")}
+            onClick={() => {
+              setSelectedAlbumKey(null);
+              setMode("tracks");
+            }}
           >
             <ListMusic className="size-4" />
             曲目
@@ -173,7 +176,10 @@ export function LibrarySurface({
               "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition",
               mode === "cds" && "bg-neutral-950 text-white",
             )}
-            onClick={() => setMode("cds")}
+            onClick={() => {
+              setSelectedAlbumKey(null);
+              setMode("cds");
+            }}
           >
             <Disc3 className="size-4" />
             光盘
@@ -188,6 +194,7 @@ export function LibrarySurface({
           selectedAlbum={selectedAlbum}
           activeTrackId={activeTrackId}
           onSelectAlbum={setSelectedAlbumKey}
+          onBack={() => setSelectedAlbumKey(null)}
           onPickTrack={onPickTrack}
         />
       ) : mode === "cds" ? (
@@ -210,67 +217,106 @@ function AlbumLibraryView({
   selectedAlbum,
   activeTrackId,
   onSelectAlbum,
+  onBack,
   onPickTrack,
 }: {
   albums: LocalAlbumGroup[];
   selectedAlbum: LocalAlbumGroup | null;
   activeTrackId: string;
   onSelectAlbum: (key: string) => void;
+  onBack: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
   if (!albums.length) return <EmptyState text="还没有本地专辑。选择文件夹或扫描光盘后，这里会按专辑自动整理。" />;
+  if (selectedAlbum) {
+    return (
+      <AlbumDetailView
+        album={selectedAlbum}
+        activeTrackId={activeTrackId}
+        onBack={onBack}
+        onPickTrack={onPickTrack}
+      />
+    );
+  }
 
   return (
-    <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,0.96fr)_minmax(360px,0.74fr)]">
-      <div className="no-scrollbar grid max-h-[calc(100vh-24rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 2xl:grid-cols-3">
-        {albums.map((album) => {
-          const active = selectedAlbum?.key === album.key;
-          return (
-            <button
-              key={album.key}
-              className={cn(
-                "group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 text-left shadow-sm transition hover:bg-white",
-                active && "bg-white shadow-md",
-              )}
-              onClick={() => onSelectAlbum(album.key)}
-            >
-              <CoverArt track={album.coverTrack} className="size-16 rounded-2xl" />
-              <div className="min-w-0">
-                <p className="truncate font-semibold group-hover:text-neutral-700">{album.title}</p>
-                <p className="mt-1 truncate text-sm text-neutral-500">{album.artist}</p>
-                <p className="mt-1 truncate text-xs text-neutral-400">
-                  {album.tracks.length} 首 · {album.totalDuration}
-                </p>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+    <div className="no-scrollbar mt-5 grid max-h-[calc(100vh-24rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      {albums.map((album) => (
+        <button
+          key={album.key}
+          className="group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 text-left shadow-sm transition hover:bg-white"
+          onClick={() => onSelectAlbum(album.key)}
+        >
+          <CoverArt track={album.coverTrack} className="size-16 rounded-2xl" />
+          <div className="min-w-0">
+            <p className="truncate font-semibold group-hover:text-neutral-700">{album.title}</p>
+            <p className="mt-1 truncate text-sm text-neutral-500">{album.artist}</p>
+            <p className="mt-1 truncate text-xs text-neutral-400">
+              {album.tracks.length} 首 · {album.totalDuration}
+            </p>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
 
-      {selectedAlbum && (
-        <section className="rounded-[1.35rem] bg-white/50 p-4 shadow-sm">
-          <div className="flex gap-4">
-            <CoverArt track={selectedAlbum.coverTrack} className="size-24 rounded-[1.15rem]" />
-            <div className="min-w-0">
-              <Badge>{selectedAlbum.mediaKind === "audio-cd" ? "Audio CD" : "Album"}</Badge>
-              <h2 className="mt-3 line-clamp-2 text-2xl font-semibold leading-tight">{selectedAlbum.title}</h2>
-              <p className="mt-1 truncate text-sm text-neutral-500">{selectedAlbum.artist}</p>
+function AlbumDetailView({
+  album,
+  activeTrackId,
+  onBack,
+  onPickTrack,
+}: {
+  album: LocalAlbumGroup;
+  activeTrackId: string;
+  onBack: () => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+}) {
+  return (
+    <div className="mt-5 grid h-[calc(100vh-24rem)] min-h-[420px] gap-4 xl:grid-cols-[minmax(360px,0.42fr)_minmax(0,1fr)]">
+      <section className="relative min-h-0 overflow-hidden rounded-[1.5rem] bg-white/50 p-5 shadow-sm">
+        <div className="absolute inset-0 bg-gradient-to-br from-white/80 via-white/20 to-neutral-200/35" />
+        <div className="relative z-10 flex h-full min-h-0 flex-col">
+          <Button className="w-fit" variant="ghost" size="sm" onClick={onBack}>
+            <ArrowLeft />
+            返回专辑
+          </Button>
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-6 text-center">
+            <CoverArt track={album.coverTrack} className="size-56 rounded-[2.2rem] shadow-lg 2xl:size-72" />
+            <Badge className="mt-6">Album</Badge>
+            <h2 className="mt-4 max-w-[25rem] break-words text-3xl font-semibold leading-tight 2xl:text-5xl">
+              {album.title}
+            </h2>
+            <p className="mt-3 max-w-[24rem] truncate text-neutral-500">{album.artist}</p>
+            <div className="mt-6 grid w-full max-w-sm grid-cols-2 gap-3 text-center">
+              <LibraryInfoCard label="曲目" value={`${album.tracks.length} 首`} />
+              <LibraryInfoCard label="时长" value={album.totalDuration} />
             </div>
           </div>
-          <div className="mt-5 grid gap-2">
-            {selectedAlbum.tracks.map((track, index) => (
-              <TrackRow
-                key={track.id}
-                track={track}
-                index={index}
-                active={activeTrackId === track.id}
-                queue={selectedAlbum.tracks}
-                onPickTrack={onPickTrack}
-              />
-            ))}
+        </div>
+      </section>
+
+      <section className="min-h-0 overflow-hidden rounded-[1.5rem] bg-white/50 p-5 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Tracks</p>
+            <h3 className="mt-1 text-2xl font-semibold">歌曲</h3>
           </div>
-        </section>
-      )}
+          <Badge>{album.tracks.length}</Badge>
+        </div>
+        <div className="no-scrollbar mt-5 grid max-h-[calc(100%-5rem)] gap-2 overflow-y-auto pr-1">
+          {album.tracks.map((track, index) => (
+            <TrackRow
+              key={track.id}
+              track={track}
+              index={index}
+              active={activeTrackId === track.id}
+              queue={album.tracks}
+              onPickTrack={onPickTrack}
+            />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

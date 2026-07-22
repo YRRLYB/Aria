@@ -111,7 +111,7 @@ function LikedColumn({
         </div>
         <Badge>{tracks.length} 首</Badge>
       </div>
-      <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+      <div className="no-scrollbar mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         {tracks.map((track) => (
           <button
             key={track.id}
@@ -186,7 +186,7 @@ export function PlaylistSurface({
 
   if (selectedPlaylist) {
     return (
-      <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+      <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <Button variant="ghost" size="sm" onClick={onClosePlaylist}>
@@ -218,7 +218,7 @@ export function PlaylistSurface({
             </button>
           ))}
         </div>
-        <div className="mt-6 grid gap-2">
+        <div className="no-scrollbar mt-6 grid gap-2 overflow-y-auto pr-1">
           {sortedTracks.map((track, index) => (
             <button
               key={track.id}
@@ -248,7 +248,7 @@ export function PlaylistSurface({
   }
 
   return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
       <div className="flex items-center justify-between gap-4">
         <div>
           <Badge>Playlist</Badge>
