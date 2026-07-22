@@ -6,6 +6,7 @@ import type { Track } from "@/data/music";
 import { capabilities } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
+import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
@@ -23,8 +24,8 @@ export function CollectionSurface({
   onPickTrack: (id: string) => void;
 }) {
   return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center gap-3">
+    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
+      <div className="flex shrink-0 items-center gap-3">
         <div className="flex size-11 items-center justify-center rounded-full bg-white shadow-sm">{icon}</div>
         <div>
           <Badge>Collection</Badge>
@@ -32,30 +33,12 @@ export function CollectionSurface({
           <p className="mt-3 text-neutral-500">{subtitle}</p>
         </div>
       </div>
-      <div className="mt-8 grid gap-3">
-        {tracks.map((track, index) => (
-          <button
-            key={track.id}
-            className="grid grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.5rem] bg-white/45 p-3 text-left transition hover:bg-white/75"
-            onClick={() => onPickTrack(track.id)}
-          >
-            <span className="text-center text-sm font-medium text-neutral-400">
-              {String(index + 1).padStart(2, "0")}
-            </span>
-            <CoverArt track={track} className="size-14 rounded-2xl" />
-            <div className="min-w-0">
-              <p className="truncate font-semibold">
-                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-              </p>
-              <p className="truncate text-sm text-neutral-500">
-                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-              </p>
-            </div>
-            <Badge>{formatAudioDetail(track)}</Badge>
-          </button>
-        ))}
-        {!tracks.length && <EmptyState text="暂无曲目，先同步网易云或扫描本地音乐。" />}
-      </div>
+      <VirtualTrackList
+        className="mt-8"
+        tracks={tracks}
+        emptyText="暂无曲目，先同步网易云或扫描本地音乐。"
+        onPickTrack={onPickTrack}
+      />
     </div>
   );
 }
@@ -85,7 +68,7 @@ export function LikedSurface({
 
       <div className="mt-8 grid min-h-0 flex-1 gap-5 xl:grid-cols-2">
         <LikedColumn title="本地我喜欢" subtitle="来自本地音乐库" tracks={localTracks} onPickTrack={onPickTrack} />
-        <LikedColumn title="网易云我喜欢" subtitle="Cookie 登录后读取" tracks={neteaseTracks} onPickTrack={onPickTrack} />
+        <LikedColumn title="网易云我喜欢" subtitle="扫码或 Cookie 登录后读取" tracks={neteaseTracks} onPickTrack={onPickTrack} />
       </div>
     </div>
   );
@@ -102,6 +85,8 @@ function LikedColumn({
   tracks: Track[];
   onPickTrack: (id: string) => void;
 }) {
+  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 72, overscan: 10 });
+
   return (
     <section className="flex min-h-0 flex-col rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
       <div className="flex shrink-0 items-center justify-between gap-3">
@@ -111,27 +96,34 @@ function LikedColumn({
         </div>
         <Badge>{tracks.length} 首</Badge>
       </div>
-      <div className="no-scrollbar mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-        {tracks.map((track) => (
-          <button
-            key={track.id}
-            className="grid w-full grid-cols-[3rem_minmax(0,1fr)_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
-            onClick={() => onPickTrack(track.id)}
-          >
-            <CoverArt track={track} className="size-12 rounded-xl" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-              </p>
-              <p className="truncate text-xs text-neutral-500">
-                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-              </p>
-            </div>
-            <span className="flex size-7 items-center justify-center rounded-full bg-white/70">
-              <Heart className="size-4 fill-neutral-950" />
-            </span>
-          </button>
-        ))}
+      <div ref={virtual.containerRef} className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="relative" style={{ height: virtual.totalHeight }}>
+          {virtual.rows.map(({ index, offsetTop }) => {
+            const track = tracks[index];
+            if (!track) return null;
+            return (
+              <button
+                key={track.id}
+                className="absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
+                style={{ top: offsetTop }}
+                onClick={() => onPickTrack(track.id)}
+              >
+                <CoverArt track={track} className="size-12 rounded-xl" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                  </p>
+                  <p className="truncate text-xs text-neutral-500">
+                    <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                  </p>
+                </div>
+                <span className="flex size-7 items-center justify-center rounded-full bg-white/70">
+                  <Heart className="size-4 fill-neutral-950" />
+                </span>
+              </button>
+            );
+          })}
+        </div>
         {!tracks.length && <EmptyState text="暂无歌曲，先点亮播放页里的红心。" />}
       </div>
     </section>
@@ -157,7 +149,9 @@ export function PlaylistSurface({
   onClosePlaylist: () => void;
   onPickTrack: (id: string) => void;
 }) {
-  const [sortMode, setSortMode] = useState<"added-desc" | "added-asc" | "title-asc" | "title-desc" | "plays-desc">("added-desc");
+  const [sortMode, setSortMode] = useState<"added-desc" | "added-asc" | "title-asc" | "title-desc" | "plays-desc">(
+    "added-desc",
+  );
   const sortedTracks = useMemo(() => {
     const indexed = tracks.map((track, index) => ({ track, index }));
     switch (sortMode) {
@@ -186,8 +180,8 @@ export function PlaylistSurface({
 
   if (selectedPlaylist) {
     return (
-      <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-        <div className="flex items-center justify-between gap-4">
+      <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
+        <div className="flex shrink-0 items-center justify-between gap-4">
           <div className="min-w-0">
             <Button variant="ghost" size="sm" onClick={onClosePlaylist}>
               <ChevronDown className="rotate-90" />
@@ -198,7 +192,7 @@ export function PlaylistSurface({
           </div>
           <Badge>{loading ? "读取中" : "Ready"}</Badge>
         </div>
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="mt-5 flex shrink-0 flex-wrap gap-2">
           {[
             ["added-desc", "添加倒序"],
             ["added-asc", "添加正序"],
@@ -218,31 +212,18 @@ export function PlaylistSurface({
             </button>
           ))}
         </div>
-        <div className="no-scrollbar mt-6 grid gap-2 overflow-y-auto pr-1">
-          {sortedTracks.map((track, index) => (
-            <button
-              key={track.id}
-              className="grid grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
-              onClick={() => onPickTrack(track.id)}
-            >
-              <span className="text-center text-sm text-neutral-400">{index + 1}</span>
-              <CoverArt track={track} className="size-14 rounded-2xl" />
-              <div className="min-w-0">
-                <p className="truncate font-semibold">
-                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-                </p>
-                <p className="truncate text-sm text-neutral-500">
-                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-                </p>
-              </div>
-              <span className="flex flex-wrap justify-end gap-2">
-                <Badge>{playCounts[track.id] ?? 0} 次</Badge>
-                <Badge>{formatAudioDetail(track)}</Badge>
-              </span>
-            </button>
-          ))}
-          {!tracks.length && !loading && <EmptyState text="这个歌单暂时没有读取到曲目。" />}
-        </div>
+        <VirtualTrackList
+          className="mt-6"
+          tracks={sortedTracks}
+          emptyText="这个歌单暂时没有读取到曲目。"
+          onPickTrack={onPickTrack}
+          renderMeta={(track) => (
+            <>
+              <Badge>{playCounts[track.id] ?? 0} 次</Badge>
+              <Badge>{formatAudioDetail(track)}</Badge>
+            </>
+          )}
+        />
       </div>
     );
   }
@@ -380,6 +361,54 @@ export function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCoun
           {!mostPlayed.length && <EmptyState text="先播放几首歌，统计就会开始累计。" />}
         </div>
       </div>
+    </div>
+  );
+}
+
+function VirtualTrackList({
+  tracks,
+  emptyText,
+  className,
+  onPickTrack,
+  renderMeta,
+}: {
+  tracks: Track[];
+  emptyText: string;
+  className?: string;
+  onPickTrack: (id: string) => void;
+  renderMeta?: (track: Track) => React.ReactNode;
+}) {
+  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 88, overscan: 10 });
+
+  return (
+    <div ref={virtual.containerRef} className={cn("no-scrollbar min-h-0 flex-1 overflow-y-auto pr-1", className)}>
+      <div className="relative" style={{ height: virtual.totalHeight }}>
+        {virtual.rows.map(({ index, offsetTop }) => {
+          const track = tracks[index];
+          if (!track) return null;
+          return (
+            <button
+              key={track.id}
+              className="absolute left-0 right-0 grid h-20 grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
+              style={{ top: offsetTop }}
+              onClick={() => onPickTrack(track.id)}
+            >
+              <span className="text-center text-sm text-neutral-400">{index + 1}</span>
+              <CoverArt track={track} className="size-14 rounded-2xl" />
+              <div className="min-w-0">
+                <p className="truncate font-semibold">
+                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                </p>
+                <p className="truncate text-sm text-neutral-500">
+                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                </p>
+              </div>
+              <span className="flex flex-wrap justify-end gap-2">{renderMeta ? renderMeta(track) : <Badge>{formatAudioDetail(track)}</Badge>}</span>
+            </button>
+          );
+        })}
+      </div>
+      {!tracks.length && <EmptyState text={emptyText} />}
     </div>
   );
 }

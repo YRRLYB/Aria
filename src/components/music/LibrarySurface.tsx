@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Album, ArrowLeft, Disc3, FolderOpen, Languages, ListMusic, RefreshCw, X } from "lucide-react";
 import type { LyricCandidate, Track } from "@/data/music";
 import { api } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
+import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -272,6 +273,8 @@ function AlbumDetailView({
   onBack: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
+  const virtual = useVirtualRows({ count: album.tracks.length, rowHeight: 88, overscan: 10 });
+
   return (
     <div className="mt-5 grid h-[calc(100vh-24rem)] min-h-[420px] gap-4 xl:grid-cols-[minmax(360px,0.42fr)_minmax(0,1fr)]">
       <section className="relative min-h-0 overflow-hidden rounded-[1.5rem] bg-white/50 p-5 shadow-sm">
@@ -304,17 +307,28 @@ function AlbumDetailView({
           </div>
           <Badge>{album.tracks.length}</Badge>
         </div>
-        <div className="no-scrollbar mt-5 grid max-h-[calc(100%-5rem)] gap-2 overflow-y-auto pr-1">
-          {album.tracks.map((track, index) => (
-            <TrackRow
-              key={track.id}
-              track={track}
-              index={index}
-              active={activeTrackId === track.id}
-              queue={album.tracks}
-              onPickTrack={onPickTrack}
-            />
-          ))}
+        <div
+          ref={virtual.containerRef}
+          className="no-scrollbar mt-5 min-h-0 flex-1 overflow-y-auto pr-1"
+          style={{ maxHeight: "calc(100vh - 28rem)" }}
+        >
+          <div className="relative" style={{ height: virtual.totalHeight }}>
+            {virtual.rows.map(({ index, offsetTop }) => {
+              const track = album.tracks[index];
+              if (!track) return null;
+              return (
+                <TrackRow
+                  key={track.id}
+                  track={track}
+                  index={index}
+                  active={activeTrackId === track.id}
+                  queue={album.tracks}
+                  onPickTrack={onPickTrack}
+                  style={{ top: offsetTop }}
+                />
+              );
+            })}
+          </div>
         </div>
       </section>
     </div>
@@ -330,19 +344,32 @@ function TrackListView({
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
+  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 88, overscan: 10 });
+
   if (!tracks.length) return <EmptyState text="还没有扫描到本地音乐。你可以选择文件夹，或直接输入路径扫描。" />;
   return (
-    <div className="mt-5 grid gap-3">
-      {tracks.map((track, index) => (
-        <TrackRow
-          key={track.id}
-          track={track}
-          index={index}
-          active={activeTrackId === track.id}
-          queue={tracks}
-          onPickTrack={onPickTrack}
-        />
-      ))}
+    <div
+      ref={virtual.containerRef}
+      className="no-scrollbar mt-5 min-h-0 flex-1 overflow-y-auto pr-1"
+      style={{ maxHeight: "calc(100vh - 24rem)" }}
+    >
+      <div className="relative" style={{ height: virtual.totalHeight }}>
+        {virtual.rows.map(({ index, offsetTop }) => {
+          const track = tracks[index];
+          if (!track) return null;
+          return (
+            <TrackRow
+              key={track.id}
+              track={track}
+              index={index}
+              active={activeTrackId === track.id}
+              queue={tracks}
+              onPickTrack={onPickTrack}
+              style={{ top: offsetTop }}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -360,6 +387,7 @@ function CdLibraryView({
   onScanCd: () => Promise<void>;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
+  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 88, overscan: 10 });
   const albums = useMemo(() => createAlbumGroups(tracks), [tracks]);
 
   return (
@@ -395,17 +423,28 @@ function CdLibraryView({
           {!albums.length && <EmptyState text="还没有光盘曲目。放入音频 CD 后点击扫描光盘。" />}
         </div>
 
-        <div className="grid gap-2">
-          {tracks.map((track, index) => (
-            <TrackRow
-              key={track.id}
-              track={track}
-              index={index}
-              active={activeTrackId === track.id}
-              queue={tracks}
-              onPickTrack={onPickTrack}
-            />
-          ))}
+        <div
+          ref={virtual.containerRef}
+          className="no-scrollbar min-h-0 overflow-y-auto pr-1"
+          style={{ maxHeight: "calc(100vh - 28rem)" }}
+        >
+          <div className="relative" style={{ height: virtual.totalHeight }}>
+            {virtual.rows.map(({ index, offsetTop }) => {
+              const track = tracks[index];
+              if (!track) return null;
+              return (
+                <TrackRow
+                  key={track.id}
+                  track={track}
+                  index={index}
+                  active={activeTrackId === track.id}
+                  queue={tracks}
+                  onPickTrack={onPickTrack}
+                  style={{ top: offsetTop }}
+                />
+              );
+            })}
+          </div>
           {!tracks.length && <EmptyState text="光盘曲目会单独显示在这里，不会和本地文件列表混在一起。" />}
         </div>
       </div>
@@ -419,19 +458,22 @@ function TrackRow({
   active,
   queue,
   onPickTrack,
+  style,
 }: {
   track: Track;
   index: number;
   active: boolean;
   queue: Track[];
   onPickTrack: (id: string, queue?: Track[]) => void;
+  style?: CSSProperties;
 }) {
   return (
     <button
       className={cn(
-        "grid grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.3rem] bg-white/45 p-3 text-left transition hover:bg-white/75",
+        "absolute left-0 right-0 grid h-20 grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.3rem] bg-white/45 p-3 text-left transition hover:bg-white/75",
         active && "bg-white shadow-sm",
       )}
+      style={style}
       onClick={() => onPickTrack(track.id, queue)}
     >
       <span className="text-center text-sm font-medium text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
@@ -657,3 +699,5 @@ function parseDisplayDuration(value: string) {
   if (parts.length === 2) return parts[0] * 60 + parts[1];
   return 0;
 }
+
+
