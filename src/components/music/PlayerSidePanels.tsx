@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useRef } from "react";
+import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
 import type { Track } from "@/data/music";

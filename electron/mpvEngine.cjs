@@ -2,6 +2,7 @@ const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const { CdAudioRipper } = require("./cdAudioRipper.cjs");
 
 class MpvAudioEngine {
   constructor({ app, writeLog, sendEvent }) {
@@ -19,6 +20,7 @@ class MpvAudioEngine {
     this.pendingSeek = 0;
     this.pendingPause = true;
     this.lastRecoveryAt = 0;
+    this.cdRipper = new CdAudioRipper({ app, writeLog });
     this.state = {
       supported: this.isSupported(),
       ready: false,
@@ -337,6 +339,11 @@ class MpvAudioEngine {
   }
 
   async load(options) {
+    if (this.isCdLoad(options)) {
+      const token = ++this.loadToken;
+      return this.performCdLoad(options, token);
+    }
+
     await this.ensureProcess();
     const token = ++this.loadToken;
     return this.performLoad(options, token);
@@ -344,6 +351,100 @@ class MpvAudioEngine {
 
   isCurrentLoad(token) {
     return token === this.loadToken;
+  }
+
+  isCdLoad(options = {}) {
+    const url = String(options?.url ?? "");
+    return Boolean(
+      options?.nativeDevice ||
+        options?.startChapter ||
+        /^cdda:\/\//i.test(url) ||
+        /\.cda(?:$|[?#])/i.test(url),
+    );
+  }
+
+  parseCdTrackNumber(value) {
+    const match = String(value ?? "").match(/#?(\d+)/);
+    if (!match) return null;
+    const number = Number(match[1]);
+    return Number.isFinite(number) && number > 0 ? number : null;
+  }
+
+  normalizeCdDevice(device) {
+    const text = String(device ?? "").trim();
+    if (!text) return "";
+    if (/^[a-z]:$/i.test(text)) return `${text}\\`;
+    return text.endsWith("\\") ? text : `${text}\\`;
+  }
+
+  resolveCdTrackPath({ url, nativeDevice, startChapter }) {
+    const rawUrl = String(url ?? "");
+    if (/\.cda(?:$|[?#])/i.test(rawUrl)) return rawUrl;
+
+    const device = this.normalizeCdDevice(nativeDevice);
+    const trackNumber = this.parseCdTrackNumber(startChapter) ?? 1;
+    if (!device) {
+      throw new Error("Audio CD device is missing.");
+    }
+    return path.join(device, `Track${String(trackNumber).padStart(2, "0")}.cda`);
+  }
+
+  async performCdLoad(
+    {
+      trackId,
+      url,
+      position = 0,
+      paused = true,
+      volume = 72,
+      exclusive = false,
+      deviceId = "default",
+      nativeDevice = null,
+      startChapter = null,
+      endChapter = null,
+    },
+    token,
+  ) {
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
+
+    const cdPath = this.resolveCdTrackPath({ url, nativeDevice, startChapter });
+    const trackNumber = this.parseCdTrackNumber(startChapter) ?? this.parseCdTrackNumber(path.basename(cdPath)) ?? 1;
+    const cdDevice = nativeDevice || path.parse(cdPath).root;
+
+    this.pendingSeek = Math.max(0, Number(position) || 0);
+    this.pendingPause = Boolean(paused);
+    this.state.trackId = trackId;
+    this.state.url = cdPath;
+    this.state.position = this.pendingSeek;
+    this.state.duration = 0;
+    this.state.active = false;
+    this.state.paused = this.pendingPause;
+    this.state.volume = Math.max(0, Math.min(100, Number(volume) || 0));
+    this.state.exclusive = Boolean(exclusive);
+    this.state.bitrate = 1_411_200;
+    this.emit({ kind: "cd-ripping" });
+
+    if (this.process && this.socket && !this.socket.destroyed) {
+      await this.command("stop").catch(() => undefined);
+    }
+
+    const ripped = await this.cdRipper.ripTrack({ device: cdDevice, trackNumber });
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
+
+    return this.performLoad(
+      {
+        trackId,
+        url: ripped.path,
+        position,
+        paused,
+        volume,
+        exclusive,
+        deviceId,
+        nativeDevice: null,
+        startChapter: null,
+        endChapter: null,
+      },
+      token,
+    );
   }
 
   async performLoad(

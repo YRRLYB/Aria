@@ -95,7 +95,7 @@ async function scanCdDrive(drive: CdDrive): Promise<ScannedTrack[]> {
         discNumber: 1,
         libraryRoot: `cd:${drive.drive}`,
         mediaKind: "audio-cd",
-        streamUrl: "cdda://",
+        streamUrl: absolute,
         nativeDevice: drive.drive,
         nativeStart: `#${trackNumber}`,
         nativeEnd: trackNumber < cdaFiles.length ? `#${trackNumber + 1}` : null,
