@@ -28,9 +28,10 @@ class CdAudioRipper {
     return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
   }
 
-  async ripTrack({ device, trackNumber }) {
+  async ripTrack({ device, trackNumber, qualityMode = "high" }) {
     const normalizedDevice = this.normalizeDevice(device);
     const safeTrackNumber = this.parseTrackNumber(trackNumber);
+    const safeQualityMode = qualityMode === "low" ? "low" : "high";
     if (!normalizedDevice) throw new Error("Audio CD device is missing.");
     if (!safeTrackNumber) throw new Error("Audio CD track number is missing.");
 
@@ -56,6 +57,8 @@ class CdAudioRipper {
           String(safeTrackNumber),
           "-OutDir",
           outDir,
+          "-QualityMode",
+          safeQualityMode,
         ],
         { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
       );
@@ -96,7 +99,8 @@ class CdAudioRipper {
     return String.raw`param(
   [Parameter(Mandatory = $true)][string]$Drive,
   [Parameter(Mandatory = $true)][int]$Track,
-  [Parameter(Mandatory = $true)][string]$OutDir
+  [Parameter(Mandatory = $true)][string]$OutDir,
+  [ValidateSet("high","low")][string]$QualityMode = "high"
 )
 
 $ErrorActionPreference = "Stop"
@@ -120,6 +124,7 @@ public sealed class AriaCdRipResult {
   public int bitsPerSample { get; set; }
   public int channels { get; set; }
   public int bitrate { get; set; }
+  public string qualityMode { get; set; }
   public string discId { get; set; }
 }
 
@@ -135,6 +140,7 @@ public static class AriaCdRipper {
   const int CookedSectorBytes = 2048;
   const int FramesPerSecond = 75;
   const int SampleRate = 44100;
+  const int LowSampleRate = 22050;
   const short BitsPerSample = 16;
   const short Channels = 2;
 
@@ -173,9 +179,11 @@ public static class AriaCdRipper {
     IntPtr lpOverlapped
   );
 
-  public static AriaCdRipResult Rip(string drive, int track, string outDir) {
+  public static AriaCdRipResult Rip(string drive, int track, string outDir, string qualityMode) {
     if (track <= 0) throw new ArgumentOutOfRangeException("track");
     Directory.CreateDirectory(outDir);
+    bool highQuality = !String.Equals(qualityMode, "low", StringComparison.OrdinalIgnoreCase);
+    string normalizedQualityMode = highQuality ? "high" : "low";
 
     string normalizedDrive = NormalizeDrive(drive);
     string devicePath = @"\\.\" + normalizedDrive.TrimEnd('\\');
@@ -216,27 +224,28 @@ public static class AriaCdRipper {
         throw new InvalidOperationException("Invalid CDDA sector range for track " + track + ".");
       }
 
-      string safeName = "cd-" + discId + "-track-" + track.ToString("00") + ".wav";
+      string safeName = "cd-" + discId + "-track-" + track.ToString("00") + "-" + normalizedQualityMode + ".wav";
       string outputPath = Path.Combine(outDir, safeName);
-      long expectedLength = 44L + (long)sectorCount * RawSectorBytes;
+      long expectedLength = 44L + (long)sectorCount * OutputBytesPerSector(highQuality);
       if (File.Exists(outputPath) && new FileInfo(outputPath).Length == expectedLength) {
-        return Result(outputPath, true, track, startSector, sectorCount, discId);
+        return Result(outputPath, true, track, startSector, sectorCount, discId, normalizedQualityMode, highQuality);
       }
 
       string tempPath = outputPath + ".tmp";
       if (File.Exists(tempPath)) File.Delete(tempPath);
       using (FileStream output = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.Read)) {
-        WriteWavHeader(output, sectorCount);
-        CopyRawAudio(handle, output, startSector, sectorCount);
+        WriteWavHeader(output, sectorCount, highQuality);
+        CopyRawAudio(handle, output, startSector, sectorCount, highQuality);
       }
 
       if (File.Exists(outputPath)) File.Delete(outputPath);
       File.Move(tempPath, outputPath);
-      return Result(outputPath, false, track, startSector, sectorCount, discId);
+      return Result(outputPath, false, track, startSector, sectorCount, discId, normalizedQualityMode, highQuality);
     }
   }
 
-  static AriaCdRipResult Result(string path, bool cached, int track, int startSector, int sectorCount, string discId) {
+  static AriaCdRipResult Result(string path, bool cached, int track, int startSector, int sectorCount, string discId, string qualityMode, bool highQuality) {
+    int sampleRate = highQuality ? SampleRate : LowSampleRate;
     return new AriaCdRipResult {
       path = path,
       cached = cached,
@@ -244,10 +253,11 @@ public static class AriaCdRipper {
       startSector = startSector,
       sectorCount = sectorCount,
       duration = (double)sectorCount / FramesPerSecond,
-      sampleRate = SampleRate,
+      sampleRate = sampleRate,
       bitsPerSample = BitsPerSample,
       channels = Channels,
-      bitrate = SampleRate * BitsPerSample * Channels,
+      bitrate = sampleRate * BitsPerSample * Channels,
+      qualityMode = qualityMode,
       discId = discId
     };
   }
@@ -268,10 +278,15 @@ public static class AriaCdRipper {
     return toc;
   }
 
-  static void CopyRawAudio(SafeFileHandle handle, Stream output, int startSector, int totalSectors) {
+  static int OutputBytesPerSector(bool highQuality) {
+    return highQuality ? RawSectorBytes : RawSectorBytes / 2;
+  }
+
+  static void CopyRawAudio(SafeFileHandle handle, Stream output, int startSector, int totalSectors, bool highQuality) {
     const int sectorsPerRead = 16;
     byte[] rawReadInfo = new byte[16];
     byte[] buffer = new byte[RawSectorBytes * sectorsPerRead];
+    byte[] lowQualityBuffer = highQuality ? null : new byte[(RawSectorBytes / 2) * sectorsPerRead];
 
     int remaining = totalSectors;
     int sector = startSector;
@@ -291,19 +306,36 @@ public static class AriaCdRipper {
         throw new EndOfStreamException("Short CDDA read at sector " + sector + ".");
       }
 
-      output.Write(buffer, 0, bytesToRead);
+      if (highQuality) {
+        output.Write(buffer, 0, bytesToRead);
+      } else {
+        int outputLength = DownsampleStereoPcmByHalf(buffer, bytesToRead, lowQualityBuffer);
+        output.Write(lowQualityBuffer, 0, outputLength);
+      }
       sector += sectors;
       remaining -= sectors;
     }
+  }
+
+  static int DownsampleStereoPcmByHalf(byte[] source, int byteCount, byte[] target) {
+    int writeOffset = 0;
+    for (int offset = 0; offset + 7 < byteCount; offset += 8) {
+      target[writeOffset++] = source[offset];
+      target[writeOffset++] = source[offset + 1];
+      target[writeOffset++] = source[offset + 2];
+      target[writeOffset++] = source[offset + 3];
+    }
+    return writeOffset;
   }
 
   static int MsfToLba(byte minute, byte second, byte frame) {
     return ((minute * 60) + second) * FramesPerSecond + frame - 150;
   }
 
-  static void WriteWavHeader(Stream output, int sectorCount) {
-    int dataSize = checked(sectorCount * RawSectorBytes);
-    int byteRate = SampleRate * Channels * BitsPerSample / 8;
+  static void WriteWavHeader(Stream output, int sectorCount, bool highQuality) {
+    int sampleRate = highQuality ? SampleRate : LowSampleRate;
+    int dataSize = checked(sectorCount * OutputBytesPerSector(highQuality));
+    int byteRate = sampleRate * Channels * BitsPerSample / 8;
     short blockAlign = (short)(Channels * BitsPerSample / 8);
     using (BinaryWriter writer = new BinaryWriter(output, System.Text.Encoding.ASCII, true)) {
       writer.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
@@ -313,7 +345,7 @@ public static class AriaCdRipper {
       writer.Write(16);
       writer.Write((short)1);
       writer.Write(Channels);
-      writer.Write(SampleRate);
+      writer.Write(sampleRate);
       writer.Write(byteRate);
       writer.Write(blockAlign);
       writer.Write(BitsPerSample);
@@ -337,7 +369,7 @@ public static class AriaCdRipper {
 "@
 
 Add-Type -TypeDefinition $source -Language CSharp
-$result = [AriaCdRipper]::Rip($Drive, $Track, $OutDir)
+$result = [AriaCdRipper]::Rip($Drive, $Track, $OutDir, $QualityMode)
 $result | ConvertTo-Json -Compress
 `;
   }

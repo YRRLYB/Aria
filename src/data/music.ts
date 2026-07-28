@@ -32,6 +32,7 @@ export type Track = {
   nativeDevice?: string | null;
   nativeStart?: string | null;
   nativeEnd?: string | null;
+  cdReadQuality?: "high" | "low";
   requiresNativePlayback?: boolean;
   likedAt?: number | null;
   currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;

@@ -18,7 +18,7 @@ type LibrarySurfaceProps = {
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
   onScanPath: (folderPath: string) => Promise<void>;
-  onScanCd: () => Promise<void>;
+  onScanCd: (qualityMode: "high" | "low") => Promise<void>;
   onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
   onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
 };
@@ -50,6 +50,7 @@ export function LibrarySurface({
   const [scanPath, setScanPath] = useState("");
   const [scanState, setScanState] = useState<"idle" | "scanning" | "error">("idle");
   const [cdScanState, setCdScanState] = useState<"idle" | "scanning" | "error">("idle");
+  const [cdReadQuality, setCdReadQuality] = useState<"high" | "low">("high");
   const [mode, setMode] = useState<"tracks" | "albums" | "cds">("albums");
   const fileTracks = useMemo(() => libraryTracks.filter((track) => track.mediaKind !== "audio-cd"), [libraryTracks]);
   const cdTracks = useMemo(() => libraryTracks.filter((track) => track.mediaKind === "audio-cd"), [libraryTracks]);
@@ -76,7 +77,7 @@ export function LibrarySurface({
   async function submitCdScan() {
     setCdScanState("scanning");
     try {
-      await onScanCd();
+      await onScanCd(cdReadQuality);
       setCdScanState("idle");
       setMode("cds");
     } catch {
@@ -203,6 +204,8 @@ export function LibrarySurface({
           tracks={cdTracks}
           activeTrackId={activeTrackId}
           scanState={cdScanState}
+          readQuality={cdReadQuality}
+          onReadQualityChange={setCdReadQuality}
           onScanCd={submitCdScan}
           onPickTrack={onPickTrack}
         />
@@ -378,12 +381,16 @@ function CdLibraryView({
   tracks,
   activeTrackId,
   scanState,
+  readQuality,
+  onReadQualityChange,
   onScanCd,
   onPickTrack,
 }: {
   tracks: Track[];
   activeTrackId: string;
   scanState: "idle" | "scanning" | "error";
+  readQuality: "high" | "low";
+  onReadQualityChange: (quality: "high" | "low") => void;
   onScanCd: () => Promise<void>;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
@@ -397,6 +404,26 @@ function CdLibraryView({
           <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Audio CD</p>
           <h2 className="mt-1 text-2xl font-semibold">光盘音乐</h2>
           <p className="mt-2 text-sm text-neutral-500">扫描光盘只会更新 CD 曲目，不会清空已有本地音乐。</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">读取质量</span>
+            <div className="flex items-center gap-1 rounded-full bg-white/60 p-1">
+              {[
+                { value: "high" as const, label: "高音质" },
+                { value: "low" as const, label: "低音质" },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  className={cn(
+                    "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
+                    readQuality === option.value && "bg-neutral-950 text-white shadow-sm",
+                  )}
+                  onClick={() => onReadQualityChange(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
         <Button variant="glass" onClick={onScanCd} disabled={scanState === "scanning"}>
           <Disc3 className={cn(scanState === "scanning" && "animate-spin")} />

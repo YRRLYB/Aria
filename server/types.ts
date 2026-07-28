@@ -21,6 +21,7 @@ export type ScannedTrack = {
   streamUrl?: string | null;
   nativeStart?: string | null;
   nativeEnd?: string | null;
+  cdReadQuality?: "high" | "low";
   requiresNativePlayback?: boolean;
 };
 

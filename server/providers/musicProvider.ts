@@ -47,6 +47,11 @@ export type ProviderDailyBundle = {
   reason: string;
 };
 
+export type ProviderRoamOptions = {
+  refresh?: boolean;
+  excludeIds?: string[];
+};
+
 export type MusicProvider = {
   id: string;
   name: string;
@@ -54,5 +59,5 @@ export type MusicProvider = {
   getLikedTracks(): Promise<ProviderTrack[]>;
   getPlaylists(): Promise<ProviderPlaylist[]>;
   getDailyRecommendations(): Promise<ProviderDailyBundle>;
-  getPrivateRoaming(limit?: number): Promise<ProviderDailyBundle>;
+  getPrivateRoaming(limit?: number, options?: ProviderRoamOptions): Promise<ProviderDailyBundle>;
 };

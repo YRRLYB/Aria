@@ -122,6 +122,7 @@ function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
     nativeDevice: track.nativeDevice ?? null,
     nativeStart: track.nativeStart ?? null,
     nativeEnd: track.nativeEnd ?? null,
+    cdReadQuality: track.cdReadQuality ?? "high",
     requiresNativePlayback: track.requiresNativePlayback ?? false,
     currentLevel: null,
     availableLevels: [],
@@ -210,6 +211,7 @@ export default function App() {
   const [playQueueIds, setPlayQueueIds] = useState<string[]>(initialPlayerCache.playQueueIds ?? []);
   const [selectedPlaylist, setSelectedPlaylist] = useState<ProviderPlaylist | null>(null);
   const [playlistLoading, setPlaylistLoading] = useState(false);
+  const [roamRefreshing, setRoamRefreshing] = useState(false);
   const [providerPlaylists, setProviderPlaylists] = useState<ProviderPlaylist[]>([]);
   const [libraryMeta, setLibraryMeta] = useState({ roots: 0, updatedAt: null as string | null });
   const [navOpen, setNavOpen] = useState(false);
@@ -319,6 +321,9 @@ export default function App() {
     nativeAudioSupported && (audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
   );
   const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
+  const visualizerPlaying = nativePlaybackEnabled
+    ? Boolean(playing || (nativeAudioState?.active && !nativeAudioState.paused))
+    : playing;
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
     const levels = activeTrack.availableLevels ?? [];
@@ -596,6 +601,53 @@ export default function App() {
     if (activeTrackId === idleTrack.id && !localTracks.length && merged[0]) {
       setActiveTrackId(merged[0].id);
     }
+  }
+
+  async function refreshRoamData() {
+    if (roamRefreshing) return;
+    setRoamRefreshing(true);
+    try {
+      const currentSignature = trackIdSignature(roamTracks);
+      let excludeIds = providerIdsForTracks(roamTracks);
+      let nextRoamTracks: Track[] = [];
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const roam = await api.getProviderRoam("netease", 30, { refresh: true, excludeIds });
+        const candidateTracks = mergeTracks(
+          roam.tracks.map((track, index) => providerTrackToUiTrack(track, index + dailyTracks.length + attempt * 30)),
+        );
+        if (!candidateTracks.length) continue;
+
+        nextRoamTracks = candidateTracks;
+        if (trackIdSignature(candidateTracks) !== currentSignature) break;
+        excludeIds = [...new Set([...excludeIds, ...providerIdsForTracks(candidateTracks)])];
+      }
+
+      if (!nextRoamTracks.length) return;
+      setRoamTracks(nextRoamTracks);
+      setNeteaseTracks((current) => mergeTracks([...current, ...nextRoamTracks]));
+      warmNeteaseTrackCache(nextRoamTracks);
+
+      if (activeView === "radar") {
+        const queueTracks =
+          activeTrack.id !== idleTrack.id && !nextRoamTracks.some((track) => track.id === activeTrack.id)
+            ? [activeTrack, ...nextRoamTracks]
+            : nextRoamTracks;
+        const playableIds = materializeQueueIds(queueTracks, activeTrack.id, shuffleEnabled);
+        if (playableIds.length) setPlayQueueIds(playableIds);
+      }
+    } finally {
+      setRoamRefreshing(false);
+    }
+  }
+
+  function providerIdsForTracks(tracksToRead: Track[]) {
+    return tracksToRead
+      .map((track) => track.providerId ?? (track.id.startsWith("netease:") ? track.id.slice("netease:".length) : null))
+      .filter((id): id is string => Boolean(id));
+  }
+
+  function trackIdSignature(tracksToRead: Track[]) {
+    return tracksToRead.map((track) => track.id).join("|");
   }
 
   function warmNeteaseTrackCache(tracksToWarm: Track[]) {
@@ -1290,6 +1342,7 @@ export default function App() {
       activeTrack.nativeDevice ?? "",
       activeTrack.nativeStart ?? "",
       activeTrack.nativeEnd ?? "",
+      activeTrack.cdReadQuality ?? "high",
     ].join("\u0000");
     if (nativeLoadedUrlRef.current === nextLoadKey) return;
 
@@ -1309,6 +1362,7 @@ export default function App() {
         nativeDevice: activeTrack.nativeDevice ?? null,
         startChapter: activeTrack.nativeStart ?? null,
         endChapter: activeTrack.nativeEnd ?? null,
+        cdReadQuality: activeTrack.cdReadQuality ?? "high",
       })
       .then((state) => {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
@@ -1325,6 +1379,7 @@ export default function App() {
   }, [
     activeStreamUrl,
     activeTrack.id,
+    activeTrack.cdReadQuality,
     activeTrack.nativeEnd,
     activeTrack.nativeDevice,
     activeTrack.nativeStart,
@@ -1506,8 +1561,8 @@ export default function App() {
     setActiveView("local");
   }
 
-  async function scanCdLibrary() {
-    const result = await api.scanCdDrives();
+  async function scanCdLibrary(qualityMode: "high" | "low") {
+    const result = await api.scanCdDrives(true, qualityMode);
     const scannedCdTracks = result.tracks.map(localTrackToUiTrack);
     if (!result.library && !scannedCdTracks.length) {
       setFolderName("未检测到音频光盘");
@@ -2090,6 +2145,7 @@ export default function App() {
                   activeTrack={activeTrack}
                   palette={activePalette}
                   playing={playing}
+                  visualizerPlaying={visualizerPlaying}
                   shuffleEnabled={shuffleEnabled}
                   repeatMode={repeatMode}
                   onTogglePlay={togglePlayback}
@@ -2172,6 +2228,8 @@ export default function App() {
                   subtitle="基于最近偏好漫游"
                   icon={<Radio className="size-5" />}
                   tracks={roamTracks}
+                  refreshing={roamRefreshing}
+                  onRefresh={() => void refreshRoamData()}
                   onPickTrack={chooseTrack}
                 />
               )}
@@ -2263,6 +2321,7 @@ export default function App() {
               activeTrack={activeTrack}
               palette={activePalette}
               playing={playing}
+              visualizerPlaying={visualizerPlaying}
               currentTime={currentTime}
               durationSeconds={durationSeconds}
               analyserRef={analyserRef}

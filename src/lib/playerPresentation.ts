@@ -117,6 +117,7 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     nativeDevice: typeof track.nativeDevice === "string" ? track.nativeDevice : null,
     nativeStart: typeof track.nativeStart === "string" ? track.nativeStart : null,
     nativeEnd: typeof track.nativeEnd === "string" ? track.nativeEnd : null,
+    cdReadQuality: track.cdReadQuality === "low" ? "low" : "high",
     requiresNativePlayback: track.requiresNativePlayback === true,
     likedAt: typeof track.likedAt === "number" ? track.likedAt : null,
     currentLevel: track.currentLevel ?? null,

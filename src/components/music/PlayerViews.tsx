@@ -37,6 +37,7 @@ export function PlayerSurface({
   activeTrack,
   palette,
   playing,
+  visualizerPlaying,
   visualizerActive,
   shuffleEnabled,
   repeatMode,
@@ -64,6 +65,7 @@ export function PlayerSurface({
   activeTrack: Track;
   palette: CoverPalette;
   playing: boolean;
+  visualizerPlaying: boolean;
   visualizerActive: boolean;
   shuffleEnabled: boolean;
   repeatMode: "all" | "one";
@@ -229,7 +231,7 @@ export function PlayerSurface({
                 沉浸
               </Button>
             </div>
-            <h1 className="mt-6 line-clamp-3 max-w-xl text-[clamp(2.2rem,4.3vw,4.6rem)] font-semibold leading-[1.02] text-neutral-950">
+            <h1 className="mt-6 line-clamp-3 max-w-[min(100%,42rem)] overflow-hidden break-words text-[clamp(2rem,4vw,4.3rem)] font-semibold leading-[1.03] text-neutral-950 [overflow-wrap:anywhere]">
               <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
             </h1>
             <p className="mt-3 truncate text-xl text-neutral-500">
@@ -242,7 +244,7 @@ export function PlayerSurface({
             <div className="px-1">
               <SpectrumCanvas
                 analyserRef={analyserRef}
-                playing={playing}
+                playing={visualizerPlaying}
                 active={visualizerActive}
                 palette={palette}
                 fallback={activeTrack.waveform}
@@ -372,6 +374,7 @@ export function ImmersivePlayerView({
   activeTrack,
   palette,
   playing,
+  visualizerPlaying,
   currentTime,
   durationSeconds,
   analyserRef,
@@ -387,6 +390,7 @@ export function ImmersivePlayerView({
   activeTrack: Track;
   palette: CoverPalette;
   playing: boolean;
+  visualizerPlaying: boolean;
   currentTime: number;
   durationSeconds: number;
   analyserRef: { current: AnalyserNode | null };
@@ -442,8 +446,8 @@ export function ImmersivePlayerView({
             <CoverArt track={activeTrack} className="size-full" fit="cover" large />
           </motion.div>
 
-          <div className="min-w-0">
-            <h1 className="max-w-5xl text-[clamp(3rem,7vw,8.4rem)] font-semibold leading-[0.96] tracking-normal">
+          <div className="min-w-0 overflow-hidden">
+            <h1 className="line-clamp-3 max-w-[min(100%,58rem)] overflow-hidden break-words text-[clamp(2.25rem,5.2vw,6.2rem)] font-semibold leading-[0.98] tracking-normal [overflow-wrap:anywhere]">
               <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
             </h1>
             <p className="mt-5 truncate text-2xl text-white/68">
@@ -483,7 +487,7 @@ export function ImmersivePlayerView({
         <div className="mx-auto w-full max-w-6xl">
           <SpectrumCanvas
             analyserRef={analyserRef}
-            playing={playing}
+            playing={visualizerPlaying}
             active={visualizerActive}
             palette={palette}
             fallback={activeTrack.waveform}

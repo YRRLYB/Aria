@@ -1,4 +1,4 @@
-import type { MusicProvider } from "./musicProvider";
+import type { MusicProvider, ProviderRoamOptions } from "./musicProvider";
 import { neteaseClient } from "../clients/neteaseClient";
 
 export const neteaseProvider: MusicProvider = {
@@ -22,7 +22,7 @@ export const neteaseProvider: MusicProvider = {
   async getDailyRecommendations() {
     return neteaseClient.getDailyRecommendations();
   },
-  async getPrivateRoaming(limit?: number) {
-    return neteaseClient.getPrivateRoaming(limit);
+  async getPrivateRoaming(limit?: number, options?: ProviderRoamOptions) {
+    return neteaseClient.getPrivateRoaming(limit, options);
   },
 };

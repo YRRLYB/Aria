@@ -102,9 +102,17 @@ app.get("/api/providers/:providerId/roam", async (req, res, next) => {
     const query = z
       .object({
         limit: z.coerce.number().int().min(3).max(30).optional(),
+        refresh: z.string().optional(),
+        exclude: z.string().optional(),
       })
       .parse(req.query);
-    res.json(await provider.getPrivateRoaming(query.limit));
+    const refresh = query.refresh === "1" || query.refresh === "true";
+    const excludeIds = (query.exclude ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .slice(0, 120);
+    res.json(await provider.getPrivateRoaming(query.limit, { refresh, excludeIds }));
   } catch (error) {
     next(error);
   }

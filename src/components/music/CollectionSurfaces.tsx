@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, Cloud, Heart, Plus } from "lucide-react";
+import { ChevronDown, Cloud, Heart, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
@@ -15,23 +15,35 @@ export function CollectionSurface({
   subtitle,
   icon,
   tracks,
+  refreshing = false,
+  onRefresh,
   onPickTrack,
 }: {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
   tracks: Track[];
+  refreshing?: boolean;
+  onRefresh?: () => void;
   onPickTrack: (id: string) => void;
 }) {
   return (
     <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex shrink-0 items-center gap-3">
-        <div className="flex size-11 items-center justify-center rounded-full bg-white shadow-sm">{icon}</div>
-        <div>
-          <Badge>Collection</Badge>
-          <h1 className="mt-3 text-4xl font-semibold sm:text-6xl">{title}</h1>
-          <p className="mt-3 text-neutral-500">{subtitle}</p>
+      <div className="flex shrink-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">{icon}</div>
+          <div className="min-w-0">
+            <Badge>Collection</Badge>
+            <h1 className="mt-3 truncate text-4xl font-semibold sm:text-6xl">{title}</h1>
+            <p className="mt-3 text-neutral-500">{subtitle}</p>
+          </div>
         </div>
+        {onRefresh && (
+          <Button variant="glass" size="sm" disabled={refreshing} onClick={onRefresh}>
+            <RefreshCw className={cn(refreshing && "animate-spin")} />
+            {refreshing ? "刷新中" : "刷新"}
+          </Button>
+        )}
       </div>
       <VirtualTrackList
         className="mt-8"

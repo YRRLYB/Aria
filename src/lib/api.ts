@@ -33,6 +33,7 @@ declare global {
           nativeDevice?: string | null;
           startChapter?: string | null;
           endChapter?: string | null;
+          cdReadQuality?: "high" | "low";
         }) => Promise<unknown>;
         setPaused?: (paused: boolean) => Promise<unknown>;
         seek?: (position: number) => Promise<unknown>;
@@ -116,6 +117,7 @@ export type ApiScannedTrack = {
   streamUrl?: string | null;
   nativeStart?: string | null;
   nativeEnd?: string | null;
+  cdReadQuality?: "high" | "low";
   requiresNativePlayback?: boolean;
 };
 
@@ -232,14 +234,14 @@ export const api = {
       body: JSON.stringify({ folderPath, persist }),
     });
   },
-  scanCdDrives(persist = true) {
+  scanCdDrives(persist = true, qualityMode: "high" | "low" = "high") {
     return request<{
       tracks: ApiScannedTrack[];
       drives: Array<{ drive: string; label: string }>;
       library: ApiLibraryIndex | null;
     }>("/api/library/scan-cd", {
       method: "POST",
-      body: JSON.stringify({ persist }),
+      body: JSON.stringify({ persist, qualityMode }),
     });
   },
   getCdDrives() {
@@ -339,8 +341,11 @@ export const api = {
   getProviderDaily(providerId = "netease") {
     return request<ProviderDailyBundle>(`/api/providers/${providerId}/daily`);
   },
-  getProviderRoam(providerId = "netease", limit = 18) {
-    return request<ProviderDailyBundle>(`/api/providers/${providerId}/roam?limit=${limit}`);
+  getProviderRoam(providerId = "netease", limit = 18, options: { refresh?: boolean; excludeIds?: string[] } = {}) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (options.refresh) params.set("refresh", "1");
+    if (options.excludeIds?.length) params.set("exclude", options.excludeIds.join(","));
+    return request<ProviderDailyBundle>(`/api/providers/${providerId}/roam?${params}`);
   },
   searchLibraryAndStream(query: string, limit = 24) {
     const params = new URLSearchParams({ q: query, limit: String(limit) });

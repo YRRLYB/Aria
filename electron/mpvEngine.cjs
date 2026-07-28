@@ -401,6 +401,7 @@ class MpvAudioEngine {
       nativeDevice = null,
       startChapter = null,
       endChapter = null,
+      cdReadQuality = "high",
     },
     token,
   ) {
@@ -420,14 +421,14 @@ class MpvAudioEngine {
     this.state.paused = this.pendingPause;
     this.state.volume = Math.max(0, Math.min(100, Number(volume) || 0));
     this.state.exclusive = Boolean(exclusive);
-    this.state.bitrate = 1_411_200;
+    this.state.bitrate = cdReadQuality === "low" ? 705_600 : 1_411_200;
     this.emit({ kind: "cd-ripping" });
 
     if (this.process && this.socket && !this.socket.destroyed) {
       await this.command("stop").catch(() => undefined);
     }
 
-    const ripped = await this.cdRipper.ripTrack({ device: cdDevice, trackNumber });
+    const ripped = await this.cdRipper.ripTrack({ device: cdDevice, trackNumber, qualityMode: cdReadQuality });
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     return this.performLoad(

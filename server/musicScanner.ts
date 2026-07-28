@@ -26,6 +26,8 @@ export type CdDrive = {
   label: string;
 };
 
+export type CdReadQuality = "high" | "low";
+
 export async function scanMusicFolder(root: string): Promise<ScannedTrack[]> {
   const resolvedRoot = path.resolve(root);
   const files = await collectAudioFiles(resolvedRoot);
@@ -59,14 +61,14 @@ export async function listCdDrives(): Promise<CdDrive[]> {
   }
 }
 
-export async function scanCdDrives(): Promise<{ drives: CdDrive[]; tracks: ScannedTrack[] }> {
+export async function scanCdDrives(qualityMode: CdReadQuality = "high"): Promise<{ drives: CdDrive[]; tracks: ScannedTrack[] }> {
   const drives = await listCdDrives();
-  const nested = await Promise.all(drives.map((drive) => scanCdDrive(drive)));
+  const nested = await Promise.all(drives.map((drive) => scanCdDrive(drive, qualityMode)));
   const tracks = nested.flat().sort(compareTracksForAlbum);
   return { drives, tracks };
 }
 
-async function scanCdDrive(drive: CdDrive): Promise<ScannedTrack[]> {
+async function scanCdDrive(drive: CdDrive, qualityMode: CdReadQuality): Promise<ScannedTrack[]> {
   try {
     const entries = await readdir(drive.drive, { withFileTypes: true });
     const cdaFiles = entries
@@ -76,6 +78,7 @@ async function scanCdDrive(drive: CdDrive): Promise<ScannedTrack[]> {
     return cdaFiles.map((entry, index) => {
       const absolute = path.join(drive.drive, entry.name);
       const trackNumber = parseTrackNumber(entry.name) ?? index + 1;
+      const highQuality = qualityMode === "high";
       return {
         id: createHash("sha1").update(`cd:${drive.drive}:${entry.name}`).digest("hex"),
         path: absolute,
@@ -84,11 +87,11 @@ async function scanCdDrive(drive: CdDrive): Promise<ScannedTrack[]> {
         album: drive.label || "Audio CD",
         albumArtist: "Audio CD",
         duration: null,
-        quality: "Lossless",
-        format: "CDDA",
+        quality: highQuality ? "Lossless" : "320K",
+        format: highQuality ? "CDDA" : "CDDA Low",
         size: 0,
-        bitrate: 1_411_200,
-        sampleRate: 44_100,
+        bitrate: highQuality ? 1_411_200 : 705_600,
+        sampleRate: highQuality ? 44_100 : 22_050,
         bpm: null,
         hasCover: false,
         trackNumber,
@@ -99,6 +102,7 @@ async function scanCdDrive(drive: CdDrive): Promise<ScannedTrack[]> {
         nativeDevice: drive.drive,
         nativeStart: `#${trackNumber}`,
         nativeEnd: trackNumber < cdaFiles.length ? `#${trackNumber + 1}` : null,
+        cdReadQuality: qualityMode,
         requiresNativePlayback: true,
       };
     });

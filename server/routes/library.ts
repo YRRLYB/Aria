@@ -38,8 +38,13 @@ export function createLibraryRouter() {
 
   router.post("/scan-cd", async (req, res, next) => {
     try {
-      const body = z.object({ persist: z.boolean().optional().default(true) }).parse(req.body ?? {});
-      const { drives, tracks } = await scanCdDrives();
+      const body = z
+        .object({
+          persist: z.boolean().optional().default(true),
+          qualityMode: z.enum(["high", "low"]).optional().default("high"),
+        })
+        .parse(req.body ?? {});
+      const { drives, tracks } = await scanCdDrives(body.qualityMode);
       let library = null;
       if (body.persist) {
         const groups = groupTracksByRoot(tracks);

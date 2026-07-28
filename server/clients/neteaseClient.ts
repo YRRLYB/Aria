@@ -1,10 +1,16 @@
 import neteaseApi from "NeteaseCloudMusicApi";
-import type { ProviderArtist, ProviderDailyBundle, ProviderPlaylist, ProviderTrack } from "../providers/musicProvider";
+import type {
+  ProviderArtist,
+  ProviderDailyBundle,
+  ProviderPlaylist,
+  ProviderRoamOptions,
+  ProviderTrack,
+} from "../providers/musicProvider";
 import { getNeteaseAccountSummary } from "../services/neteaseService";
 import { readStore } from "../store";
 import { HttpError } from "../utils/httpError";
 import { clearCache, remember } from "../utils/memoryCache";
-import { clearPersistent, rememberPersistent } from "../utils/persistentCache";
+import { clearPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
 
 type NeteaseSong = {
   id: number | string;
@@ -122,29 +128,53 @@ export class NeteaseClient {
     return { ...bundle, tracks: await this.attachCachedMetadata(bundle.tracks) };
   }
 
-  async getPrivateRoaming(limit = 18): Promise<ProviderDailyBundle> {
+  async getPrivateRoaming(limit = 18, options: ProviderRoamOptions = {}): Promise<ProviderDailyBundle> {
     const { cookie, userId } = await this.requireSession();
     const safeLimit = Math.max(3, Math.min(30, Math.floor(limit)));
-    const bundle = await rememberPersistent(`netease:roam:${userId}:${safeLimit}`, 90_000, async () => {
-      const songs: NeteaseSong[] = [];
-      const seen = new Set<string>();
-      for (let attempt = 0; attempt < Math.ceil(safeLimit / 3) + 2 && songs.length < safeLimit; attempt += 1) {
+    const cacheKey = `netease:roam:${userId}:${safeLimit}`;
+    const excluded = new Set((options.excludeIds ?? []).map((id) => String(id)));
+    const loadRoamBundle = async () => {
+      const tracks: ProviderTrack[] = [];
+      const seen = new Set<string>(excluded);
+      const pushSong = (song: NeteaseSong) => {
+        const id = String(song.id);
+        if (seen.has(id)) return;
+        seen.add(id);
+        tracks.push(normalizeSong(song));
+      };
+
+      const maxAttempts = Math.max(8, Math.ceil(safeLimit / 3) + 6);
+      for (let attempt = 0; attempt < maxAttempts && tracks.length < safeLimit; attempt += 1) {
         const response = await neteaseApi.personal_fm({ cookie, timestamp: Date.now() + attempt } as never);
         const batch = (response.body?.data as NeteaseSong[] | undefined) ?? [];
         for (const song of batch) {
-          const id = String(song.id);
-          if (seen.has(id)) continue;
-          seen.add(id);
-          songs.push(song);
-          if (songs.length >= safeLimit) break;
+          pushSong(song);
+          if (tracks.length >= safeLimit) break;
         }
       }
+
+      if (tracks.length < safeLimit) {
+        const response = await neteaseApi.recommend_songs({ cookie, timestamp: Date.now() } as never);
+        const data = response.body?.data as { dailySongs?: NeteaseSong[] } | undefined;
+        for (const song of shuffleSongs(data?.dailySongs ?? [])) {
+          pushSong(song);
+          if (tracks.length >= safeLimit) break;
+        }
+      }
+
       return {
         date: formatLocalDate(new Date()),
-        tracks: songs.map(normalizeSong),
+        tracks,
         reason: "netease-private-roaming",
       };
-    });
+    };
+
+    const bundle = options.refresh
+      ? await loadRoamBundle().then(async (freshBundle) => {
+          await setPersistent(cacheKey, 90_000, freshBundle);
+          return freshBundle;
+        })
+      : await rememberPersistent(cacheKey, 90_000, loadRoamBundle);
     return { ...bundle, tracks: await this.attachCachedMetadata(bundle.tracks) };
   }
 
@@ -447,6 +477,15 @@ function normalizeArtist(artist: NeteaseArtist): ProviderArtist {
     trackCount: artist.musicSize ?? null,
     albumCount: artist.albumSize ?? null,
   };
+}
+
+function shuffleSongs(songs: NeteaseSong[]) {
+  const copy = [...songs];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
 }
 
 function chunk<T>(items: T[], size: number) {

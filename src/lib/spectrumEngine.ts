@@ -59,10 +59,15 @@ export class RealtimeSpectrumEngine {
     const deltaMs = this.lastNow > 0 ? Math.min(80, Math.max(8, now - this.lastNow)) : 16.7;
     this.lastNow = now;
 
-    const analyser = options.analyser;
-    if (!options.playing || !analyser) {
-      this.decay(deltaMs, options.playing);
+    if (!options.playing) {
+      this.decay(deltaMs, false);
       return this.snapshot(0, 0, false);
+    }
+
+    const analyser = options.analyser;
+    if (!analyser) {
+      this.mixWarmupFallback(options.fallback, now, deltaMs);
+      return this.snapshot(0, 0, true);
     }
 
     this.ensureBuffers(analyser);
@@ -219,10 +224,11 @@ function readDynamics(timeData: Float32Array) {
 }
 
 function getFallbackFloor(fallback: number[], band: number, now: number) {
-  if (!fallback.length) return 0;
-  const source = fallback[band % fallback.length] ?? 24;
-  const phase = Math.sin(now / 640 + band * 0.37) * 0.5 + 0.5;
-  return clamp((source / 100) * 0.036 + phase * 0.012, 0, 0.048);
+  const source = fallback.length ? fallback[band % fallback.length] ?? 34 : 34 + ((band * 17) % 38);
+  const slowPhase = Math.sin(now / 620 + band * 0.37) * 0.5 + 0.5;
+  const fastPhase = Math.sin(now / 190 + band * 0.91) * 0.5 + 0.5;
+  const shaped = Math.pow(clamp(source / 100, 0.08, 0.95), 0.82);
+  return clamp(shaped * 0.11 + slowPhase * 0.04 + fastPhase * 0.018, 0.035, 0.18);
 }
 
 function frequencyWeight(frequency: number) {
