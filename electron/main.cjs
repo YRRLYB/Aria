@@ -20,6 +20,11 @@ let backgroundEnabled = true;
 let rendererRecoveries = 0;
 let nativeAudioEngine = null;
 let powerRecoveryAttached = false;
+let taskbarPlayback = {
+  title: "",
+  artist: "",
+  playing: false,
+};
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -182,6 +187,63 @@ function sendPlaybackCommand(command) {
   mainWindow.webContents.send("aria:playback-command", command);
 }
 
+function createTaskbarButtonIcon(pathData) {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
+      <path fill="#20242b" d="${pathData}"/>
+    </svg>
+  `;
+  return nativeImage
+    .createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`)
+    .resize({ width: 16, height: 16 });
+}
+
+const taskbarIcons = {
+  previous: createTaskbarButtonIcon("M4 4h2v5.2L14 4v12L6 10.8V16H4V4Zm4 6 4 3.25v-6.5L8 10Z"),
+  play: createTaskbarButtonIcon("M6 4.2 15 10l-9 5.8V4.2Z"),
+  pause: createTaskbarButtonIcon("M5 4h3v12H5V4Zm7 0h3v12h-3V4Z"),
+  next: createTaskbarButtonIcon("M14 4h2v12h-2v-5.2L6 16V4l8 5.2V4Zm-2 6L8 6.75v6.5L12 10Z"),
+};
+
+function taskbarDescription() {
+  const title = String(taskbarPlayback.title || "").trim();
+  const artist = String(taskbarPlayback.artist || "").trim();
+  if (!title) return "Aria";
+  return artist ? `${title} - ${artist}` : title;
+}
+
+function syncTaskbarPlayback() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const description = taskbarDescription();
+  mainWindow.setTitle(`Aria - ${description}`);
+  mainWindow.setThumbnailToolTip(description);
+  tray?.setToolTip(description);
+
+  if (process.platform !== "win32") return;
+  const hasTrack = Boolean(taskbarPlayback.title);
+  mainWindow.setThumbarButtons([
+    {
+      tooltip: "上一首",
+      icon: taskbarIcons.previous,
+      flags: hasTrack ? [] : ["disabled"],
+      click: () => sendPlaybackCommand("previous"),
+    },
+    {
+      tooltip: taskbarPlayback.playing ? "暂停" : "播放",
+      icon: taskbarPlayback.playing ? taskbarIcons.pause : taskbarIcons.play,
+      flags: hasTrack ? [] : ["disabled"],
+      click: () => sendPlaybackCommand("toggle"),
+    },
+    {
+      tooltip: "下一首",
+      icon: taskbarIcons.next,
+      flags: hasTrack ? [] : ["disabled"],
+      click: () => sendPlaybackCommand("next"),
+    },
+  ]);
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(trayIcon());
@@ -232,6 +294,7 @@ async function createWindow() {
   });
   mainWindow.removeMenu();
   mainWindow.setMenuBarVisibility(false);
+  syncTaskbarPlayback();
 
   mainWindow.once("ready-to-show", () => {
     showWindow();
@@ -314,6 +377,16 @@ ipcMain.handle("aria:quit", () => {
 ipcMain.handle("aria:set-background-enabled", (_event, enabled) => {
   backgroundEnabled = Boolean(enabled);
   return backgroundEnabled;
+});
+
+ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {
+  taskbarPlayback = {
+    title: typeof payload?.title === "string" ? payload.title.slice(0, 180) : "",
+    artist: typeof payload?.artist === "string" ? payload.artist.slice(0, 120) : "",
+    playing: Boolean(payload?.playing),
+  };
+  syncTaskbarPlayback();
+  return true;
 });
 
 ipcMain.handle("aria:copy-image", async (_event, payload) => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { AudioOutputMode, CoverPalette } from "@/lib/playerPresentation";
 import { colorWithAlpha } from "@/lib/playerPresentation";
-import { RealtimeSpectrumEngine } from "@/lib/spectrumEngine";
+import { getSpectrumEngine } from "@/lib/spectrumEngine";
 
 export function SpectrumCanvas({
   analyserRef,
@@ -21,7 +21,7 @@ export function SpectrumCanvas({
   outputVolume: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const engineRef = useRef(new RealtimeSpectrumEngine());
+  const engineRef = useRef<ReturnType<typeof getSpectrumEngine> | null>(null);
   const lastPaintAtRef = useRef(0);
 
   useEffect(() => {
@@ -42,7 +42,9 @@ export function SpectrumCanvas({
       }
       lastPaintAtRef.current = now;
 
-      const snapshot = engineRef.current.read({
+      const engine = getSpectrumEngine(analyserRef.current);
+      engineRef.current = engine;
+      const snapshot = engine.read({
         analyser: analyserRef.current,
         fallback,
         now,
@@ -66,7 +68,7 @@ export function SpectrumCanvas({
   return (
     <canvas
       ref={canvasRef}
-      className={`block h-32 w-full transition-opacity duration-300 sm:h-36 2xl:h-48 ${active ? "opacity-100" : "opacity-0"}`}
+      className={`block h-32 w-full sm:h-36 2xl:h-48 ${active ? "opacity-100" : "opacity-0"}`}
       aria-hidden="true"
     />
   );

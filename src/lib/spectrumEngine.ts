@@ -231,6 +231,23 @@ function getFallbackFloor(fallback: number[], band: number, now: number) {
   return clamp(shaped * 0.11 + slowPhase * 0.04 + fastPhase * 0.018, 0.035, 0.18);
 }
 
+// The player surface is mounted and unmounted while the audio graph keeps
+// running. Reusing the engine preserves its smoothed levels across navigation
+// and prevents a visible reset when the player page is opened again.
+const analyserEngines = new WeakMap<AnalyserNode, RealtimeSpectrumEngine>();
+const fallbackEngine = new RealtimeSpectrumEngine();
+
+export function getSpectrumEngine(analyser: AnalyserNode | null) {
+  if (!analyser) return fallbackEngine;
+
+  const existing = analyserEngines.get(analyser);
+  if (existing) return existing;
+
+  const engine = new RealtimeSpectrumEngine();
+  analyserEngines.set(analyser, engine);
+  return engine;
+}
+
 function frequencyWeight(frequency: number) {
   const bass = frequency < 140 ? 0.92 : 1;
   const presence = frequency > 1400 && frequency < 5200 ? 1.15 : 1;

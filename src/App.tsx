@@ -502,6 +502,17 @@ export default function App() {
     return window.ariaDesktop?.onPlaybackCommand?.(handlePlaybackCommand);
   }, [handlePlaybackCommand]);
 
+  useEffect(() => {
+    const updateTaskbarPlayback = window.ariaDesktop?.updateTaskbarPlayback;
+    if (!updateTaskbarPlayback) return;
+
+    updateTaskbarPlayback({
+      title: activeTrack.id === idleTrack.id ? "" : activeTrack.title,
+      artist: activeTrack.id === idleTrack.id ? "" : activeTrack.artist,
+      playing,
+    }).catch(() => undefined);
+  }, [activeTrack.artist, activeTrack.id, activeTrack.title, playing]);
+
   async function openImmersiveView() {
     setImmersiveOpen(true);
     if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
@@ -2000,10 +2011,10 @@ export default function App() {
           </nav>
 
           <div
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-white/70 bg-white/58 px-3 py-2 shadow-sm sm:max-w-lg"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-neutral-950/12 bg-white/82 px-3 py-2.5 shadow-[0_10px_26px_rgba(30,35,45,0.11)] ring-1 ring-white/75 transition focus-within:border-neutral-950/24 focus-within:bg-white focus-within:shadow-[0_14px_34px_rgba(30,35,45,0.15)] sm:max-w-lg"
             style={noDragRegionStyle}
           >
-            <Search className="size-4 shrink-0 text-neutral-500" />
+            <Search className="size-4 shrink-0 text-neutral-700" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -2012,7 +2023,7 @@ export default function App() {
               autoCapitalize="off"
               autoComplete="off"
               placeholder="搜索音乐、歌手、专辑"
-              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-neutral-400"
+              className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 outline-none placeholder:text-neutral-500"
             />
             <Button variant="ghost" size="icon" aria-label="设置" onClick={() => setSettingsOpen(true)}>
               <Settings2 />
@@ -2024,7 +2035,7 @@ export default function App() {
             <Button
               variant="glass"
               size="icon"
-              aria-label="账号与设置"
+              aria-label="网易云账号"
               onClick={() => setAccountOpen((value) => !value)}
             >
               {neteaseAccount?.avatarUrl ? (
@@ -2048,10 +2059,6 @@ export default function App() {
               {accountOpen && (
                 <AccountPanel
                   onClose={() => setAccountOpen(false)}
-                  onOpenSettings={() => {
-                    setAccountOpen(false);
-                    setSettingsOpen(true);
-                  }}
                   onAccountChange={(account) => {
                     setNeteaseAccount(account);
                     if (account.connected) refreshNeteaseData();

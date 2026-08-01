@@ -394,11 +394,9 @@ export function SettingsPanel({
 
 export function AccountPanel({
   onClose,
-  onOpenSettings,
   onAccountChange,
 }: {
   onClose: () => void;
-  onOpenSettings: () => void;
   onAccountChange?: (account: NeteaseAccountSummary) => void;
 }) {
   const [cookie, setCookie] = useState("");
@@ -546,10 +544,6 @@ export function AccountPanel({
               <Button size="sm" onClick={startQrLogin} disabled={qrLoading}>
                 <RefreshCw />
                 {qrLoading ? "生成中" : qrLogin ? "刷新二维码" : "生成二维码"}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={onOpenSettings}>
-                <Settings2 />
-                设置
               </Button>
             </div>
           </div>
