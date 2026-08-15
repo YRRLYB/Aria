@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Pause, Play } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Maximize2, Pause, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyableTrackText, CoverArt, EmptyState, StatTile } from "@/components/music/shared";
@@ -44,7 +44,29 @@ export function HomeSurface({
         .slice(0, 20),
     [homeTracks, playCounts],
   );
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const recentHistory = playHistory.slice(0, 12);
+  const renderHistoryEntry = (entry: PlayHistoryEntry) => (
+    <button
+      key={`${entry.track.id}-${entry.playedAt}`}
+      className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white"
+      onClick={() => {
+        onPickTrack(entry.track.id);
+        setHistoryExpanded(false);
+      }}
+    >
+      <CoverArt track={entry.track} className="size-12 rounded-xl" />
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold">
+          <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+        </p>
+        <p className="truncate text-xs text-neutral-500">
+          <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
+        </p>
+      </div>
+      <span className="text-xs text-neutral-500">{new Date(entry.playedAt).toLocaleDateString()} · {entry.count} 次</span>
+    </button>
+  );
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.86fr)_minmax(0,1.14fr)] gap-4 overflow-hidden">
@@ -133,31 +155,45 @@ export function HomeSurface({
         <div className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold">最近播放</h2>
-            <Badge>History</Badge>
+            <div className="flex items-center gap-2">
+              <Badge>History</Badge>
+              <Button variant="ghost" size="icon" aria-label="展开最近播放" onClick={() => setHistoryExpanded(true)}>
+                <Maximize2 />
+              </Button>
+            </div>
           </div>
           <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-2 overflow-y-auto pr-1">
-            {recentHistory.map((entry) => (
-              <button
-                key={`${entry.track.id}-${entry.playedAt}`}
-                className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white"
-                onClick={() => onPickTrack(entry.track.id)}
-              >
-                <CoverArt track={entry.track} className="size-12 rounded-xl" />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">
-                    <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
-                  </p>
-                  <p className="truncate text-xs text-neutral-500">
-                    <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
-                  </p>
-                </div>
-                <span className="text-xs text-neutral-500">{new Date(entry.playedAt).toLocaleDateString()} · {entry.count} 次</span>
-              </button>
-            ))}
+            {recentHistory.map(renderHistoryEntry)}
             {!recentHistory.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
           </div>
         </div>
       </section>
+
+      {historyExpanded && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/45 p-6 backdrop-blur-sm"
+          onClick={() => setHistoryExpanded(false)}
+        >
+          <div
+            className="glass flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <Badge>History</Badge>
+                <h2 className="mt-2 text-2xl font-semibold">最近播放</h2>
+              </div>
+              <Button variant="ghost" size="icon" aria-label="关闭" onClick={() => setHistoryExpanded(false)}>
+                <X />
+              </Button>
+            </div>
+            <div className="no-scrollbar mt-4 grid min-h-0 flex-1 gap-2 overflow-y-auto pr-1">
+              {playHistory.map(renderHistoryEntry)}
+              {!playHistory.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

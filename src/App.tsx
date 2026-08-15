@@ -215,6 +215,7 @@ export default function App() {
   const [providerPlaylists, setProviderPlaylists] = useState<ProviderPlaylist[]>([]);
   const [libraryMeta, setLibraryMeta] = useState({ roots: 0, updatedAt: null as string | null });
   const [navOpen, setNavOpen] = useState(false);
+  const [queueExpanded, setQueueExpanded] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [immersiveOpen, setImmersiveOpen] = useState(false);
@@ -2273,7 +2274,7 @@ export default function App() {
                 </p>
                 <h2 className="mt-1 text-xl font-semibold">下一首</h2>
               </div>
-              <Button variant="ghost" size="icon" aria-label="展开队列">
+              <Button variant="ghost" size="icon" aria-label="展开队列" onClick={() => setQueueExpanded(true)}>
                 <ListMusic />
               </Button>
             </div>
@@ -2331,6 +2332,36 @@ export default function App() {
             />
           )}
         </AnimatePresence>
+
+        {queueExpanded && (
+          <div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/45 p-6 backdrop-blur-sm"
+            onClick={() => setQueueExpanded(false)}
+          >
+            <div
+              className="glass flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-6"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Queue</p>
+                  <h2 className="mt-1 text-xl font-semibold">播放队列</h2>
+                </div>
+                <Button variant="ghost" size="icon" aria-label="关闭" onClick={() => setQueueExpanded(false)}>
+                  <X />
+                </Button>
+              </div>
+              <QueueList
+                tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
+                activeTrackId={activeTrackId}
+                onPickTrack={(id) => {
+                  chooseTrack(id);
+                  setQueueExpanded(false);
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         <FloatingNav
           activeView={activeView}
