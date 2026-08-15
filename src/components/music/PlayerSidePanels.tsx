@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
@@ -15,10 +15,12 @@ export function QueueList({
   tracks,
   activeTrackId,
   onPickTrack,
+  tone = "glass",
 }: {
   tracks: Track[];
   activeTrackId: string;
   onPickTrack: (id: string) => void;
+  tone?: "glass" | "card";
 }) {
   const displayTracks = useMemo(() => {
     const firstTracks = tracks.slice(0, 48);
@@ -34,8 +36,10 @@ export function QueueList({
         <button
           key={track.id}
           className={cn(
-            "flex w-full items-center gap-3 rounded-3xl p-2 text-left transition hover:bg-white/65",
-            activeTrackId === track.id && "bg-white shadow-sm",
+            "flex w-full items-center gap-3 rounded-3xl p-2 text-left transition",
+            tone === "glass" ? "hover:bg-white/65" : "hover:bg-neutral-950/[0.06]",
+            activeTrackId === track.id &&
+              (tone === "glass" ? "bg-white shadow-sm" : "bg-neutral-950/[0.08] shadow-sm"),
           )}
           onClick={() => onPickTrack(track.id)}
         >

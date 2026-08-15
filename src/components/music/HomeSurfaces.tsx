@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import { Maximize2, Pause, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import type { Track } from "@/data/music";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { sourceLabel } from "@/lib/trackLabels";
+import { cn } from "@/lib/utils";
 
 export function HomeSurface({
   activeTrack,
@@ -46,10 +48,13 @@ export function HomeSurface({
   );
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const recentHistory = playHistory.slice(0, 12);
-  const renderHistoryEntry = (entry: PlayHistoryEntry) => (
+  const renderHistoryEntry = (entry: PlayHistoryEntry, rowClassName = "") => (
     <button
       key={`${entry.track.id}-${entry.playedAt}`}
-      className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white"
+      className={cn(
+        "grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white",
+        rowClassName,
+      )}
       onClick={() => {
         onPickTrack(entry.track.id);
         setHistoryExpanded(false);
@@ -163,22 +168,28 @@ export function HomeSurface({
             </div>
           </div>
           <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-2 overflow-y-auto pr-1">
-            {recentHistory.map(renderHistoryEntry)}
+            {recentHistory.map((entry) => renderHistoryEntry(entry))}
             {!recentHistory.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
           </div>
         </div>
       </section>
 
       {historyExpanded && (
-        <div
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/45 p-6 backdrop-blur-sm"
+        <motion.div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/28 p-6 backdrop-blur-md"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.16 }}
           onClick={() => setHistoryExpanded(false)}
         >
-          <div
-            className="glass flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-6"
+          <motion.div
+            className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] border border-white/80 bg-white/95 p-5 shadow-[0_28px_90px_rgba(20,24,35,0.3)] backdrop-blur-2xl sm:p-6"
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between border-b border-neutral-950/8 pb-4">
               <div>
                 <Badge>History</Badge>
                 <h2 className="mt-2 text-2xl font-semibold">最近播放</h2>
@@ -187,12 +198,12 @@ export function HomeSurface({
                 <X />
               </Button>
             </div>
-            <div className="no-scrollbar mt-4 grid min-h-0 flex-1 gap-2 overflow-y-auto pr-1">
-              {playHistory.map(renderHistoryEntry)}
+            <div className="no-scrollbar mt-3 grid min-h-0 flex-1 gap-2 overflow-y-auto pr-1">
+              {playHistory.map((entry) => renderHistoryEntry(entry, "bg-neutral-950/[0.05] hover:bg-neutral-950/[0.09]"))}
               {!playHistory.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
             </div>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
     </div>
   );

@@ -2334,15 +2334,21 @@ export default function App() {
         </AnimatePresence>
 
         {queueExpanded && (
-          <div
-            className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/45 p-6 backdrop-blur-sm"
+          <motion.div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/28 p-6 backdrop-blur-md"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.16 }}
             onClick={() => setQueueExpanded(false)}
           >
-            <div
-              className="glass flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-6"
+            <motion.div
+              className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] border border-white/80 bg-white/95 p-5 shadow-[0_28px_90px_rgba(20,24,35,0.3)] backdrop-blur-2xl sm:p-6"
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between border-b border-neutral-950/8 pb-4">
                 <div>
                   <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Queue</p>
                   <h2 className="mt-1 text-xl font-semibold">播放队列</h2>
@@ -2354,13 +2360,14 @@ export default function App() {
               <QueueList
                 tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
                 activeTrackId={activeTrackId}
+                tone="card"
                 onPickTrack={(id) => {
                   chooseTrack(id);
                   setQueueExpanded(false);
                 }}
               />
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
         )}
 
         <FloatingNav
