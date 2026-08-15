@@ -514,6 +514,25 @@ export default function App() {
     }).catch(() => undefined);
   }, [activeTrack.artist, activeTrack.id, activeTrack.title, playing]);
 
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const session = navigator.mediaSession;
+    if (activeTrack.id === idleTrack.id) {
+      session.metadata = null;
+      return;
+    }
+    session.metadata = new MediaMetadata({
+      title: activeTrack.title,
+      artist: activeTrack.artist,
+      album: activeTrack.album,
+      artwork: activeTrack.coverUrl ? [{ src: activeTrack.coverUrl, sizes: "512x512" }] : [],
+    });
+    session.setActionHandler("play", () => setPlaying(true));
+    session.setActionHandler("pause", () => setPlaying(false));
+    session.setActionHandler("previoustrack", () => pickRelativeTrack(-1));
+    session.setActionHandler("nexttrack", () => pickRelativeTrack(1));
+  }, [activeTrack.album, activeTrack.artist, activeTrack.coverUrl, activeTrack.id, activeTrack.title]);
+
   async function openImmersiveView() {
     setImmersiveOpen(true);
     if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
