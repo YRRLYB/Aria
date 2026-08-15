@@ -5,8 +5,8 @@ import {
   FolderSearch,
   Heart,
   Home,
-  Music2,
   Radar,
+  Settings2,
 } from "lucide-react";
 
 export type Track = {
@@ -75,8 +75,8 @@ export const navItems = [
   { id: "local" as const, label: "本地音乐", icon: FolderSearch },
   { id: "liked" as const, label: "我喜欢", icon: Heart },
   { id: "playlists" as const, label: "歌单", icon: Cloud },
-  { id: "artists" as const, label: "歌手", icon: Music2 },
   { id: "daily" as const, label: "每日推荐", icon: Compass },
+  { id: "settings" as const, label: "设置", icon: Settings2 },
   { id: "radar" as const, label: "私人漫游", icon: Radar },
   { id: "cloud" as const, label: "音乐云盘", icon: Cloud },
   { id: "stats" as const, label: "听歌统计", icon: BarChart3 },

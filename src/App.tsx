@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ListMusic, Maximize2, Minus, Radio, Search, Settings2, Sparkles, UserRound, X } from "lucide-react";
+import { ListMusic, Maximize2, Minus, Radio, Search, Sparkles, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   CloudSurface,
@@ -2001,7 +2001,11 @@ export default function App() {
                   )}
                   onClick={() => {
                     setQuery("");
-                    setActiveView(item.id);
+                    if (item.id === "settings") {
+                      setSettingsOpen(true);
+                    } else {
+                      setActiveView(item.id);
+                    }
                   }}
                 >
                   <Icon className="size-4" />
@@ -2026,9 +2030,6 @@ export default function App() {
               placeholder="搜索音乐、歌手、专辑"
               className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 outline-none placeholder:text-neutral-500"
             />
-            <Button variant="ghost" size="icon" aria-label="设置" onClick={() => setSettingsOpen(true)}>
-              <Settings2 />
-            </Button>
           </div>
 
           <div className="flex items-center gap-2" style={noDragRegionStyle}>
@@ -2391,7 +2392,11 @@ export default function App() {
           }}
           onPick={(id) => {
             setQuery("");
-            setActiveView(id);
+            if (id === "settings") {
+              setSettingsOpen(true);
+            } else {
+              setActiveView(id);
+            }
             setNavOpen(false);
           }}
         />
