@@ -4,7 +4,6 @@ import {
   Compass,
   FolderSearch,
   Heart,
-  History,
   Home,
   Music2,
   Radar,
@@ -73,10 +72,8 @@ export type ViewId =
 
 export const navItems = [
   { id: "home" as const, label: "主页", icon: Home },
-  { id: "player" as const, label: "现在播放", icon: Music2 },
   { id: "local" as const, label: "本地音乐", icon: FolderSearch },
   { id: "liked" as const, label: "我喜欢", icon: Heart },
-  { id: "history" as const, label: "播放历史", icon: History },
   { id: "playlists" as const, label: "歌单", icon: Cloud },
   { id: "artists" as const, label: "歌手", icon: Music2 },
   { id: "daily" as const, label: "每日推荐", icon: Compass },

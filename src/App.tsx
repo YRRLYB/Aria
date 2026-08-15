@@ -1,4 +1,4 @@
-﻿import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ListMusic, Maximize2, Minus, Radio, Search, Settings2, Sparkles, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import {
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
 import { LibrarySurface as LibrarySurfacePanel } from "@/components/music/LibrarySurface";
-import { HomeSidePanel, HomeSurface, HistorySurface } from "@/components/music/HomeSurfaces";
+import { HomeSurface } from "@/components/music/HomeSurfaces";
 import { SearchSurface, ArtistsSurface } from "@/components/music/DiscoverySurfaces";
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
@@ -2202,12 +2202,6 @@ export default function App() {
                   onPickTrack={chooseTrack}
                 />
               )}
-              {activeView === "history" && (
-                <HistorySurface
-                  history={playHistory}
-                  onPickTrack={chooseTrack}
-                />
-              )}
               {activeView === "playlists" && (
                 <PlaylistSurface
                   playlists={providerPlaylists}
@@ -2269,12 +2263,6 @@ export default function App() {
               activeTrackId={activeTrackId}
               onPickTrack={chooseTrack}
               onSeek={seekTo}
-            />
-          ) : activeView === "home" ? (
-            <HomeSidePanel
-              history={playHistory}
-              onOpenHistory={() => setActiveView("history")}
-              onPickTrack={chooseTrack}
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
