@@ -298,6 +298,7 @@ async function createWindow() {
 
   mainWindow.once("ready-to-show", () => {
     showWindow();
+    syncTaskbarPlayback();
   });
 
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
@@ -326,8 +327,14 @@ async function createWindow() {
   });
   mainWindow.on("hide", () => sendWindowVisibility(false));
   mainWindow.on("minimize", () => sendWindowVisibility(false));
-  mainWindow.on("show", () => sendWindowVisibility(true));
-  mainWindow.on("restore", () => sendWindowVisibility(true));
+  mainWindow.on("show", () => {
+    sendWindowVisibility(true);
+    syncTaskbarPlayback();
+  });
+  mainWindow.on("restore", () => {
+    sendWindowVisibility(true);
+    syncTaskbarPlayback();
+  });
 
   if (!app.isPackaged) {
     const devUrl = process.env.ARIA_DEV_SERVER_URL || "http://127.0.0.1:5173";

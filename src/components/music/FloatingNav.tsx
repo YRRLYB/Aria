@@ -1,4 +1,3 @@
-﻿import { UserRound } from "lucide-react";
 import { navItems, type ViewId } from "@/data/music";
 import { cn } from "@/lib/utils";
 export function FloatingNav({
@@ -12,18 +11,16 @@ export function FloatingNav({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onRequestClose: () => void;
-  onPick: (id: ViewId) => void;
+  onPick: (id: ViewId | "settings") => void;
 }) {
-  const nodes = (["player", "history", "artists", "daily", "radar", "stats"] as ViewId[])
+  const nodes = (["settings", "daily", "radar", "stats"] as Array<ViewId | "settings">)
     .map((id) => navItems.find((item) => item.id === id))
     .filter((item): item is (typeof navItems)[number] => Boolean(item));
   const nodePositions = [
     { x: 120, y: 24 },
-    { x: 120, y: 78 },
-    { x: 120, y: 132 },
-    { x: 120, y: 186 },
-    { x: 120, y: 240 },
-    { x: 120, y: 294 },
+    { x: 120, y: 88 },
+    { x: 120, y: 152 },
+    { x: 120, y: 216 },
   ];
   const center = { x: 42, y: 358 };
 
@@ -106,13 +103,7 @@ export function FloatingNav({
                 onMouseLeave={onRequestClose}
                 onClick={() => onPick(item.id)}
               >
-                {item.id === "artists" ? (
-                  <span className="relative flex size-8 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7bd9c7] via-[#f5f7ff] to-[#f0a0c9] text-neutral-950">
-                    <UserRound className="size-4" />
-                  </span>
-                ) : (
-                  <Icon className="size-5" />
-                )}
+                <Icon className="size-5" />
                 <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100">
                   {item.label}
                 </span>

@@ -1,6 +1,6 @@
-﻿import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ListMusic, Maximize2, Minus, Radio, Search, Settings2, Sparkles, UserRound, X } from "lucide-react";
+import { ListMusic, Maximize2, Minus, Radio, Search, Sparkles, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   CloudSurface,
@@ -10,7 +10,7 @@ import {
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
 import { LibrarySurface as LibrarySurfacePanel } from "@/components/music/LibrarySurface";
-import { HomeSidePanel, HomeSurface, HistorySurface } from "@/components/music/HomeSurfaces";
+import { HomeSurface } from "@/components/music/HomeSurfaces";
 import { SearchSurface, ArtistsSurface } from "@/components/music/DiscoverySurfaces";
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
@@ -215,6 +215,7 @@ export default function App() {
   const [providerPlaylists, setProviderPlaylists] = useState<ProviderPlaylist[]>([]);
   const [libraryMeta, setLibraryMeta] = useState({ roots: 0, updatedAt: null as string | null });
   const [navOpen, setNavOpen] = useState(false);
+  const [queueExpanded, setQueueExpanded] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [immersiveOpen, setImmersiveOpen] = useState(false);
@@ -512,6 +513,25 @@ export default function App() {
       playing,
     }).catch(() => undefined);
   }, [activeTrack.artist, activeTrack.id, activeTrack.title, playing]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const session = navigator.mediaSession;
+    if (activeTrack.id === idleTrack.id) {
+      session.metadata = null;
+      return;
+    }
+    session.metadata = new MediaMetadata({
+      title: activeTrack.title,
+      artist: activeTrack.artist,
+      album: activeTrack.album,
+      artwork: activeTrack.coverUrl ? [{ src: activeTrack.coverUrl, sizes: "512x512" }] : [],
+    });
+    session.setActionHandler("play", () => setPlaying(true));
+    session.setActionHandler("pause", () => setPlaying(false));
+    session.setActionHandler("previoustrack", () => pickRelativeTrack(-1));
+    session.setActionHandler("nexttrack", () => pickRelativeTrack(1));
+  }, [activeTrack.album, activeTrack.artist, activeTrack.coverUrl, activeTrack.id, activeTrack.title]);
 
   async function openImmersiveView() {
     setImmersiveOpen(true);
@@ -2000,7 +2020,11 @@ export default function App() {
                   )}
                   onClick={() => {
                     setQuery("");
-                    setActiveView(item.id);
+                    if (item.id === "settings") {
+                      setSettingsOpen(true);
+                    } else {
+                      setActiveView(item.id);
+                    }
                   }}
                 >
                   <Icon className="size-4" />
@@ -2025,9 +2049,6 @@ export default function App() {
               placeholder="搜索音乐、歌手、专辑"
               className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 outline-none placeholder:text-neutral-500"
             />
-            <Button variant="ghost" size="icon" aria-label="设置" onClick={() => setSettingsOpen(true)}>
-              <Settings2 />
-            </Button>
           </div>
 
           <div className="flex items-center gap-2" style={noDragRegionStyle}>
@@ -2202,12 +2223,6 @@ export default function App() {
                   onPickTrack={chooseTrack}
                 />
               )}
-              {activeView === "history" && (
-                <HistorySurface
-                  history={playHistory}
-                  onPickTrack={chooseTrack}
-                />
-              )}
               {activeView === "playlists" && (
                 <PlaylistSurface
                   playlists={providerPlaylists}
@@ -2270,12 +2285,6 @@ export default function App() {
               onPickTrack={chooseTrack}
               onSeek={seekTo}
             />
-          ) : activeView === "home" ? (
-            <HomeSidePanel
-              history={playHistory}
-              onOpenHistory={() => setActiveView("history")}
-              onPickTrack={chooseTrack}
-            />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
             <div className="flex items-center justify-between gap-3">
@@ -2285,7 +2294,7 @@ export default function App() {
                 </p>
                 <h2 className="mt-1 text-xl font-semibold">下一首</h2>
               </div>
-              <Button variant="ghost" size="icon" aria-label="展开队列">
+              <Button variant="ghost" size="icon" aria-label="展开队列" onClick={() => setQueueExpanded(true)}>
                 <ListMusic />
               </Button>
             </div>
@@ -2344,6 +2353,43 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {queueExpanded && (
+          <motion.div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-neutral-950/28 p-6 backdrop-blur-md"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.16 }}
+            onClick={() => setQueueExpanded(false)}
+          >
+            <motion.div
+              className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-[1.5rem] border border-white/80 bg-white/95 p-5 shadow-[0_28px_90px_rgba(20,24,35,0.3)] backdrop-blur-2xl sm:p-6"
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-neutral-950/8 pb-4">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Queue</p>
+                  <h2 className="mt-1 text-xl font-semibold">播放队列</h2>
+                </div>
+                <Button variant="ghost" size="icon" aria-label="关闭" onClick={() => setQueueExpanded(false)}>
+                  <X />
+                </Button>
+              </div>
+              <QueueList
+                tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
+                activeTrackId={activeTrackId}
+                tone="card"
+                onPickTrack={(id) => {
+                  chooseTrack(id);
+                  setQueueExpanded(false);
+                }}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+
         <FloatingNav
           activeView={activeView}
           open={navOpen}
@@ -2365,7 +2411,11 @@ export default function App() {
           }}
           onPick={(id) => {
             setQuery("");
-            setActiveView(id);
+            if (id === "settings") {
+              setSettingsOpen(true);
+            } else {
+              setActiveView(id);
+            }
             setNavOpen(false);
           }}
         />

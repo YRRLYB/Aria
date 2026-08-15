@@ -46,7 +46,7 @@ export function readCachedPlayerState(): CachedPlayerState {
     const raw = window.localStorage.getItem(playerCacheKey);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as CachedPlayerState;
-    const navIds = new Set(navItems.map((item) => item.id));
+    const navIds = new Set<string>(navItems.map((item) => item.id));
     const qualityIds = new Set(qualityOptions.map((item) => item.value));
 
     return {

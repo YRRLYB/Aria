@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { motion } from "framer-motion";
 import {
   Copy,
@@ -226,7 +226,7 @@ export function PlayerSurface({
               <Badge>{activeTrack.duration}</Badge>
               {hifiEnabled && <Badge>HiFi</Badge>}
               {exclusiveMode && <Badge>直通</Badge>}
-              <Button variant="glass" size="sm" onClick={onOpenImmersive}>
+              <Button variant="glass" size="sm" className="ml-auto" onClick={onOpenImmersive}>
                 <Maximize2 />
                 沉浸
               </Button>
