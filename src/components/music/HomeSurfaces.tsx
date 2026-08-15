@@ -98,7 +98,9 @@ export function HomeSurface({
           <div className="absolute inset-0 bg-gradient-to-t from-black/82 via-black/24 to-transparent" />
           <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(255,255,255,0.14),transparent_34%,rgba(0,0,0,0.24))]" />
           <div className="absolute left-5 top-5 z-20">
-            <Badge className="border-white/30 bg-black/40 text-white shadow-none backdrop-blur-md">现在播放</Badge>
+            <span className="flex size-9 items-center justify-center rounded-full border border-white/30 bg-black/40 text-white backdrop-blur-md transition group-hover:bg-black/60">
+              <Maximize2 className="size-4" />
+            </span>
           </div>
           <div className="absolute right-5 top-5 z-20">
             <Button
@@ -114,7 +116,8 @@ export function HomeSurface({
             </Button>
           </div>
           <div className="absolute bottom-5 left-5 right-5 z-20">
-            <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.22em] text-white/75">现在播放</p>
+            <h2 className="mt-1.5 line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">
               <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
             </h2>
             <p className="mt-2 truncate text-base font-medium text-white/84">
