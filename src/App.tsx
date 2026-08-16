@@ -227,6 +227,13 @@ export default function App() {
       return false;
     }
   });
+  const [globalArrowKeysEnabled, setGlobalArrowKeysEnabled] = useState(() => {
+    try {
+      return window.localStorage.getItem("aria-global-arrow-keys") !== "false";
+    } catch {
+      return true;
+    }
+  });
   const [playerSideView, setPlayerSideView] = useState<PlayerSideView>(initialPlayerCache.playerSideView ?? "lyrics");
   const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
   const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
@@ -580,12 +587,12 @@ export default function App() {
         handlePlaybackCommand("toggle");
         return;
       }
-      if (event.key === "MediaTrackNext" || (event.altKey && event.key === "ArrowRight")) {
+      if (event.key === "MediaTrackNext" || (event.altKey && event.key === "ArrowRight") || (globalArrowKeysEnabled && event.key === "ArrowRight")) {
         event.preventDefault();
         handlePlaybackCommand("next");
         return;
       }
-      if (event.key === "MediaTrackPrevious" || (event.altKey && event.key === "ArrowLeft")) {
+      if (event.key === "MediaTrackPrevious" || (event.altKey && event.key === "ArrowLeft") || (globalArrowKeysEnabled && event.key === "ArrowLeft")) {
         event.preventDefault();
         handlePlaybackCommand("previous");
         return;
@@ -606,7 +613,7 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handlePlaybackCommand, immersiveOpen]);
+  }, [globalArrowKeysEnabled, handlePlaybackCommand, immersiveOpen]);
 
   async function refreshNeteaseData() {
     const [liked, daily, roam, playlists] = await Promise.all([
@@ -1028,6 +1035,11 @@ export default function App() {
     window.localStorage.setItem("aria-background-enabled", String(backgroundEnabled));
     window.ariaDesktop?.setBackgroundEnabled?.(backgroundEnabled);
   }, [backgroundEnabled]);
+
+  useEffect(() => {
+    window.localStorage.setItem("aria-global-arrow-keys", String(globalArrowKeysEnabled));
+    window.ariaDesktop?.setGlobalArrowKeys?.(globalArrowKeysEnabled);
+  }, [globalArrowKeysEnabled]);
 
   useEffect(() => {
     const updateVisibility = () => setPageVisible(document.visibilityState === "visible");
@@ -2309,6 +2321,8 @@ export default function App() {
             <SettingsPanel
               backgroundEnabled={backgroundEnabled}
               onBackgroundEnabledChange={setBackgroundEnabled}
+              globalArrowKeysEnabled={globalArrowKeysEnabled}
+              onGlobalArrowKeysChange={setGlobalArrowKeysEnabled}
               neteaseAccount={neteaseAccount}
               libraryMeta={libraryMeta}
               trackCount={allTracks.length}

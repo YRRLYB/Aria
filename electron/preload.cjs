@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   showApp: () => ipcRenderer.invoke("aria:show"),
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
+  setGlobalArrowKeys: (enabled) => ipcRenderer.invoke("aria:set-global-arrow-keys", Boolean(enabled)),
   updateTaskbarPlayback: (payload) => ipcRenderer.invoke("aria:update-taskbar-playback", payload || {}),
   copyImageToClipboard: (payload) => ipcRenderer.invoke("aria:copy-image", payload || {}),
   log: (payload) => ipcRenderer.invoke("aria:log", payload),

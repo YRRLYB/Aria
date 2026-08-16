@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { motion } from "framer-motion";
 import { Cookie, Radio, RefreshCw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
 export function SettingsPanel({
   backgroundEnabled,
   onBackgroundEnabledChange,
+  globalArrowKeysEnabled,
+  onGlobalArrowKeysChange,
   neteaseAccount,
   libraryMeta,
   trackCount,
@@ -32,6 +34,8 @@ export function SettingsPanel({
 }: {
   backgroundEnabled: boolean;
   onBackgroundEnabledChange: (value: boolean) => void;
+  globalArrowKeysEnabled: boolean;
+  onGlobalArrowKeysChange: (value: boolean) => void;
   neteaseAccount: NeteaseAccountSummary | null;
   libraryMeta: { roots: number; updatedAt: string | null };
   trackCount: number;
@@ -381,6 +385,33 @@ export function SettingsPanel({
                 />
               </button>
             </div>
+          </section>
+
+          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Shortcut</p>
+                <h3 className="mt-1 text-base font-semibold">左右键切歌</h3>
+              </div>
+              <button
+                className={cn(
+                  "flex h-8 w-14 items-center rounded-full p-1 transition",
+                  globalArrowKeysEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                )}
+                onClick={() => onGlobalArrowKeysChange(!globalArrowKeysEnabled)}
+                aria-label="切换左右键切歌"
+              >
+                <span
+                  className={cn(
+                    "size-6 rounded-full bg-white shadow-sm transition",
+                    globalArrowKeysEnabled && "translate-x-6",
+                  )}
+                />
+              </button>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-neutral-500">
+              开启后，在 Aria 内或切到其他软件时，按键盘 ← / → 方向键即可切换上一首/下一首；输入框内方向键仍用于移动光标，不受影响。
+            </p>
           </section>
         </div>
         <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400">

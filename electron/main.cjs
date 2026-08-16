@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -25,6 +25,8 @@ let taskbarPlayback = {
   artist: "",
   playing: false,
 };
+let globalArrowKeysEnabled = true;
+let globalArrowKeysRegistered = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -244,6 +246,31 @@ function syncTaskbarPlayback() {
   ]);
 }
 
+function registerGlobalArrowKeys() {
+  if (!globalArrowKeysEnabled || globalArrowKeysRegistered) return;
+  const leftOk = globalShortcut.register("Left", () => sendPlaybackCommand("previous"));
+  const rightOk = globalShortcut.register("Right", () => sendPlaybackCommand("next"));
+  globalArrowKeysRegistered = leftOk && rightOk;
+  if (!globalArrowKeysRegistered) {
+    writeLog("desktop.log", `global arrow keys registration failed: left=${leftOk} right=${rightOk}`);
+  }
+}
+
+function unregisterGlobalArrowKeys() {
+  if (!globalArrowKeysRegistered) return;
+  globalShortcut.unregister("Left");
+  globalShortcut.unregister("Right");
+  globalArrowKeysRegistered = false;
+}
+
+function syncGlobalArrowKeys() {
+  if (globalArrowKeysEnabled && (!mainWindow || !mainWindow.isFocused() || !mainWindow.isVisible())) {
+    registerGlobalArrowKeys();
+  } else {
+    unregisterGlobalArrowKeys();
+  }
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(trayIcon());
@@ -325,16 +352,26 @@ async function createWindow() {
       mainWindow.hide();
     }
   });
-  mainWindow.on("hide", () => sendWindowVisibility(false));
-  mainWindow.on("minimize", () => sendWindowVisibility(false));
+  mainWindow.on("hide", () => {
+    sendWindowVisibility(false);
+    syncGlobalArrowKeys();
+  });
+  mainWindow.on("minimize", () => {
+    sendWindowVisibility(false);
+    syncGlobalArrowKeys();
+  });
   mainWindow.on("show", () => {
     sendWindowVisibility(true);
     syncTaskbarPlayback();
+    syncGlobalArrowKeys();
   });
   mainWindow.on("restore", () => {
     sendWindowVisibility(true);
     syncTaskbarPlayback();
+    syncGlobalArrowKeys();
   });
+  mainWindow.on("focus", () => syncGlobalArrowKeys());
+  mainWindow.on("blur", () => syncGlobalArrowKeys());
 
   if (!app.isPackaged) {
     const devUrl = process.env.ARIA_DEV_SERVER_URL || "http://127.0.0.1:5173";
@@ -384,6 +421,12 @@ ipcMain.handle("aria:quit", () => {
 ipcMain.handle("aria:set-background-enabled", (_event, enabled) => {
   backgroundEnabled = Boolean(enabled);
   return backgroundEnabled;
+});
+
+ipcMain.handle("aria:set-global-arrow-keys", (_event, enabled) => {
+  globalArrowKeysEnabled = Boolean(enabled);
+  syncGlobalArrowKeys();
+  return globalArrowKeysEnabled;
 });
 
 ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {
@@ -492,4 +535,5 @@ app.on("will-quit", () => {
     backendProcess.kill();
   }
   nativeAudioEngine?.teardown?.();
+  globalShortcut.unregisterAll();
 });
