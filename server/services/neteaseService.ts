@@ -14,6 +14,11 @@ export async function saveNeteaseCookie(cookie: string) {
   return getNeteaseAccountSummary();
 }
 
+export async function clearNeteaseCookie() {
+  await updateStore((store) => ({ ...store, neteaseCookie: null }));
+  return getNeteaseAccountSummary();
+}
+
 export async function startNeteaseQrLogin() {
   const keyResponse = await neteaseApi.login_qr_key({ timestamp: Date.now() } as never);
   const key = String((keyResponse.body?.data as { unikey?: string } | undefined)?.unikey ?? "");

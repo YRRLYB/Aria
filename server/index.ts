@@ -13,6 +13,7 @@ import { getProvider, listProviders } from "./providers";
 import { createLibraryRouter } from "./routes/library";
 import {
   checkNeteaseQrLogin,
+  clearNeteaseCookie,
   getNeteaseAccountSummary,
   saveNeteaseCookie,
   startNeteaseQrLogin,
@@ -261,6 +262,15 @@ app.post("/api/settings/netease-cookie", async (req, res, next) => {
   try {
     const body = z.object({ cookie: z.string().min(1) }).parse(req.body);
     const account = await saveNeteaseCookie(body.cookie);
+    res.json({ ok: true, account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/settings/netease-cookie", async (_req, res, next) => {
+  try {
+    const account = await clearNeteaseCookie();
     res.json({ ok: true, account });
   } catch (error) {
     next(error);

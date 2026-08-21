@@ -1,19 +1,49 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { motion } from "framer-motion";
-import { Cookie, Radio, RefreshCw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
+import { Cookie, Download, LogOut, Radio, RefreshCw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
-import { api, type NeteaseAccountSummary, type NeteaseQrStart } from "@/lib/api";
+import { api, type DiagnosticsStats, type NeteaseAccountSummary, type NeteaseQrStart, type RuntimeInfo } from "@/lib/api";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import type { AudioOutputMode } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
+
+const processLabel: Record<string, string> = {
+  browser: "主进程",
+  renderer: "界面渲染",
+  tab: "界面渲染",
+  gpu: "GPU",
+  utility: "工具进程",
+  zygote: "辅助进程",
+  network: "网络服务",
+};
+
+function gpuVendorLabel(vendorId: number | null) {
+  if (vendorId === 0x10de) return "NVIDIA";
+  if (vendorId === 0x1002) return "AMD";
+  if (vendorId === 0x8086) return "Intel";
+  return vendorId ? `0x${vendorId.toString(16)}` : "未知";
+}
+
+function featureLabel(value: string) {
+  if (value === "enabled") return "硬件加速";
+  if (value === "disabled_software") return "软件渲染(CPU)";
+  if (value === "disabled_off") return "已禁用";
+  if (value === "unavailable") return "不可用";
+  return value;
+}
+
 export function SettingsPanel({
   backgroundEnabled,
   onBackgroundEnabledChange,
   globalArrowKeysEnabled,
   onGlobalArrowKeysChange,
+  perfMode,
+  onPerfModeChange,
   neteaseAccount,
+  onLogoutNetease,
+  runtimeInfo,
   libraryMeta,
   trackCount,
   likedCount,
@@ -36,7 +66,11 @@ export function SettingsPanel({
   onBackgroundEnabledChange: (value: boolean) => void;
   globalArrowKeysEnabled: boolean;
   onGlobalArrowKeysChange: (value: boolean) => void;
+  perfMode: boolean;
+  onPerfModeChange: (value: boolean) => void;
   neteaseAccount: NeteaseAccountSummary | null;
+  onLogoutNetease: () => void;
+  runtimeInfo: RuntimeInfo;
   libraryMeta: { roots: number; updatedAt: string | null };
   trackCount: number;
   likedCount: number;
@@ -85,6 +119,74 @@ export function SettingsPanel({
       mounted = false;
     };
   }, []);
+
+  const [diagStats, setDiagStats] = useState<DiagnosticsStats | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [fps, setFps] = useState(0);
+
+  useEffect(() => {
+    let frames = 0;
+    let rafId = 0;
+    let sampling = false;
+    let sampleTimer = 0;
+    let restTimer = 0;
+    const count = () => {
+      frames += 1;
+      rafId = window.requestAnimationFrame(count);
+    };
+    const start = () => {
+      frames = 0;
+      sampling = true;
+      rafId = window.requestAnimationFrame(count);
+      sampleTimer = window.setTimeout(() => {
+        const elapsed = 1; // 采样 1 秒
+        setFps(elapsed > 0 ? Math.round(frames / elapsed) : 0);
+        sampling = false;
+        if (rafId) window.cancelAnimationFrame(rafId);
+        rafId = 0;
+        restTimer = window.setTimeout(start, 2000);
+      }, 1000);
+    };
+    start();
+    return () => {
+      window.clearTimeout(sampleTimer);
+      window.clearTimeout(restTimer);
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, []);
+
+  function refreshDiagnostics() {
+    window.ariaDesktop?.diagnostics?.getStats?.()
+      .then((stats) => {
+        if (stats) setDiagStats(stats);
+      })
+      .catch(() => undefined);
+  }
+
+  useEffect(() => {
+    refreshDiagnostics();
+    const timer = window.setInterval(refreshDiagnostics, 2000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function exportLogs() {
+    setExporting(true);
+    setExportMessage(null);
+    try {
+      const result = await window.ariaDesktop?.diagnostics?.exportLogs?.({ ...runtimeInfo, fps });
+      if (result?.ok) {
+        setExportMessage(`已导出 ${result.copiedLogs ?? 0} 个日志文件 → ${result.path}`);
+      } else {
+        setExportMessage(result?.error ?? "导出失败");
+      }
+    } catch {
+      setExportMessage("导出失败，请确认桌面版运行环境");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
     <motion.div
@@ -205,6 +307,12 @@ export function SettingsPanel({
                 <p className="mt-1 truncate text-xs text-neutral-500">{neteaseAccount?.cookiePreview ?? "右上角头像里绑定"}</p>
               </div>
             </div>
+            {neteaseAccount?.connected && (
+              <Button variant="ghost" size="sm" className="mt-3 w-full" onClick={onLogoutNetease}>
+                <LogOut />
+                退出登录
+              </Button>
+            )}
           </section>
 
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
@@ -413,6 +521,113 @@ export function SettingsPanel({
               开启后，在 Aria 内或切到其他软件时，按键盘 ← / → 方向键即可切换上一首/下一首；输入框内方向键仍用于移动光标，不受影响。
             </p>
           </section>
+
+          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Diagnostics</p>
+                <h3 className="mt-1 text-base font-semibold">诊断与日志</h3>
+              </div>
+              <Badge>{diagStats ? `${diagStats.processes.length} 进程` : "..."}</Badge>
+            </div>
+
+            {diagStats?.processes?.length ? (
+              <div className="mt-3 space-y-1.5">
+                {diagStats.processes.map((process) => (
+                  <div
+                    key={`${process.type}-${process.pid}`}
+                    className="flex items-center justify-between gap-2 rounded-[0.9rem] bg-white/55 px-3 py-1.5 text-xs"
+                  >
+                    <span className="font-medium text-neutral-600">{processLabel[process.type] ?? process.type}</span>
+                    <span className="text-neutral-500">
+                      CPU {process.cpuPercent.toFixed(1)}% · 内存 {process.memoryMb} MB
+                    </span>
+                  </div>
+                ))}
+                {diagStats.backendPid != null && (
+                  <div className="flex items-center justify-between gap-2 rounded-[0.9rem] bg-white/55 px-3 py-1.5 text-xs">
+                    <span className="font-medium text-neutral-600">本地后端</span>
+                    <span className="text-neutral-500">内存 {diagStats.backendMemoryMb ?? "--"} MB</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-neutral-500">正在读取进程占用…</p>
+            )}
+
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-[0.9rem] bg-white/55 px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-neutral-600">性能模式</p>
+                <p className="mt-0.5 text-[0.7rem] leading-relaxed text-neutral-400">
+                  关闭毛玻璃等合成效果，可明显降低界面渲染 CPU（A 卡/低配机建议开启）
+                </p>
+              </div>
+              <button
+                className={cn(
+                  "flex h-7 w-12 shrink-0 items-center rounded-full p-0.5 transition",
+                  perfMode ? "bg-neutral-950" : "bg-neutral-200",
+                )}
+                onClick={() => onPerfModeChange(!perfMode)}
+                aria-label="切换性能模式"
+              >
+                <span className={cn("size-5 rounded-full bg-white shadow-sm transition", perfMode && "translate-x-5")} />
+              </button>
+            </div>
+
+            <div className="mt-2 flex items-center justify-between gap-3 rounded-[0.9rem] bg-white/55 px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-neutral-600">AMD GPU 渲染优化</p>
+                <p className="mt-0.5 text-[0.7rem] leading-relaxed text-neutral-400">
+                  A 卡启动时强制 GPU 渲染；关闭后重启可对比 CPU 占用（当前：{diagStats ? (diagStats.gpuOptimizeEnabled ? "开启" : "关闭") : "--"}）
+                </p>
+              </div>
+              <button
+                className={cn(
+                  "flex h-7 w-12 shrink-0 items-center rounded-full p-0.5 transition",
+                  diagStats?.gpuOptimizeEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                )}
+                onClick={() => {
+                  const next = !(diagStats?.gpuOptimizeEnabled ?? true);
+                  window.ariaDesktop?.diagnostics?.setGpuOptimize?.(next).catch(() => undefined);
+                  setDiagStats((current) => (current ? { ...current, gpuOptimizeEnabled: next } : current));
+                  setExportMessage("GPU 渲染优化已切换，重启 Aria 后生效");
+                }}
+                aria-label="切换 AMD GPU 渲染优化"
+              >
+                <span
+                  className={cn(
+                    "size-5 rounded-full bg-white shadow-sm transition",
+                    diagStats?.gpuOptimizeEnabled && "translate-x-5",
+                  )}
+                />
+              </button>
+            </div>
+
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" className="flex-1" onClick={() => void exportLogs()} disabled={exporting}>
+                <Download />
+                {exporting ? "导出中…" : "导出日志"}
+              </Button>
+              <Button size="sm" variant="subtle" className="flex-1" onClick={refreshDiagnostics}>
+                <RefreshCw />
+                刷新
+              </Button>
+            </div>
+            {exportMessage && <p className="mt-3 break-all text-xs text-neutral-500">{exportMessage}</p>}
+            <p className="mt-3 text-xs leading-relaxed text-neutral-500">
+              {diagStats
+                ? `v${diagStats.appVersion} · 已运行 ${Math.round(diagStats.uptimeSeconds / 60)} 分钟 · 主进程内存 ${diagStats.mainMemoryMb} MB · 当前视图 ${runtimeInfo.view} · 输出 ${runtimeInfo.outputMode}`
+                : "导出日志后会自动打开文件夹，把整个文件夹发给开发者即可排查 CPU 占用等问题。"}
+            </p>
+            {diagStats && (
+              <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+                渲染帧率 {fps} fps · CPU {diagStats.cpuModel ?? "未知"}（{diagStats.cpuCores} 核）· 显卡 {gpuVendorLabel(diagStats.gpuVendorId)}
+                {diagStats.gpuFeatures
+                  ? ` · 合成 ${featureLabel(diagStats.gpuFeatures.gpuCompositing)} · 光栅化 ${featureLabel(diagStats.gpuFeatures.rasterization)}`
+                  : ""}
+              </p>
+            )}
+          </section>
         </div>
         <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400">
           <span>Aria Desktop</span>
@@ -528,6 +743,22 @@ export function AccountPanel({
     }
   }
 
+  async function logout() {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.clearNeteaseCookie();
+      setAccount(result.account);
+      onAccountChange?.(result.account);
+      setCookie("");
+      setMessage("已退出登录");
+    } catch {
+      setMessage("退出失败，请稍后重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -8, scale: 0.98, filter: "blur(12px)" }}
@@ -580,6 +811,18 @@ export function AccountPanel({
           </div>
         </div>
       </div>
+
+      {account?.connected && (
+        <button
+          type="button"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-[1rem] bg-white/50 px-3 py-2 text-sm font-medium text-neutral-600 shadow-sm transition hover:bg-red-50 hover:text-red-600"
+          onClick={logout}
+          disabled={saving}
+        >
+          <LogOut className="size-4" />
+          退出登录
+        </button>
+      )}
 
       <button
         type="button"

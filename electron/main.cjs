@@ -1,5 +1,6 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut } = require("electron");
-const { spawn } = require("node:child_process");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut, shell } = require("electron");
+const os = require("node:os");
+const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createLogger, serializeError } = require("./logger.cjs");
@@ -27,14 +28,48 @@ let taskbarPlayback = {
 };
 let globalArrowKeysEnabled = true;
 let globalArrowKeysRegistered = false;
+let gpuVendorId = null;
+let gpuDetectPromise = null;
+let gpuOptimizeEnabled = true;
+try {
+  const rawGpuMode = fs.readFileSync(path.join(app.getPath("userData"), "gpu-mode.json"), "utf8");
+  const parsedGpuMode = JSON.parse(rawGpuMode);
+  if (typeof parsedGpuMode?.optimize === "boolean") gpuOptimizeEnabled = parsedGpuMode.optimize;
+} catch {
+  gpuOptimizeEnabled = true;
+}
+
+function detectGpuVendorAsync() {
+  if (gpuDetectPromise) return gpuDetectPromise;
+  gpuDetectPromise = new Promise((resolve) => {
+    try {
+      execFile(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          "(Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty PNPDeviceID)",
+        ],
+        { windowsHide: true, timeout: 5000 },
+        (error, stdout) => {
+          const match = String(stdout || "").match(/VEN_([0-9A-Fa-f]{4})/);
+          resolve(match ? Number.parseInt(match[1], 16) : null);
+        },
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+  return gpuDetectPromise;
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 }
 
-app.setName("Aria");
-app.setAppUserModelId("com.yrrlyb.aria");
+app.setName("Aria测试");
+app.setAppUserModelId("com.yrrlyb.aria.test");
 Menu.setApplicationMenu(null);
 
 function getNativeAudioEngine() {
@@ -429,6 +464,133 @@ ipcMain.handle("aria:set-global-arrow-keys", (_event, enabled) => {
   return globalArrowKeysEnabled;
 });
 
+ipcMain.handle("aria:set-gpu-optimize", (_event, enabled) => {
+  gpuOptimizeEnabled = Boolean(enabled);
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(
+      path.join(app.getPath("userData"), "gpu-mode.json"),
+      JSON.stringify({ optimize: gpuOptimizeEnabled }),
+      "utf8",
+    );
+  } catch {
+    // Persistence is best-effort.
+  }
+  return gpuOptimizeEnabled;
+});
+
+async function collectDiagnosticsSnapshot(payload) {
+  const metrics = app.getAppMetrics().map((metric) => ({
+    type: metric.type,
+    pid: metric.pid,
+    cpuPercent: Math.round((metric.cpu?.percentCPUUsage ?? 0) * 10) / 10,
+    memoryMb: Math.round((metric.memory?.workingSetSize ?? 0) / 1024 / 1024),
+  }));
+  let backendMemoryMb = null;
+  if (backendProcess?.pid) {
+    try {
+      const memory = await process.getProcessMemoryInfo(backendProcess.pid);
+      backendMemoryMb = Math.round(memory.workingSetSize / 1024 / 1024);
+    } catch {
+      backendMemoryMb = null;
+    }
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+    cpuModel: (() => {
+      try {
+        return os.cpus()[0]?.model ?? null;
+      } catch {
+        return null;
+      }
+    })(),
+    cpuCores: os.cpus().length,
+    pid: process.pid,
+    uptimeSeconds: Math.round(process.uptime()),
+    mainMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    backendPid: backendProcess?.pid ?? null,
+    backendMemoryMb,
+    gpuVendorId,
+    gpuOptimizeEnabled,
+    gpuFeatures: (() => {
+      try {
+        const status = app.getGPUFeatureStatus();
+        return {
+          gpuCompositing: status.gpu_compositing ?? "unknown",
+          rasterization: status.rasterization ?? "unknown",
+          webgl: status.webgl ?? "unknown",
+          canvas2d: status["2d_canvas"] ?? "unknown",
+          videoDecode: status.video_decode ?? "unknown",
+        };
+      } catch {
+        return null;
+      }
+    })(),
+    processes: metrics,
+    runtime: payload && typeof payload === "object" ? payload : null,
+  };
+}
+
+ipcMain.handle("aria:diagnostics:stats", async () => {
+  try {
+    return await collectDiagnosticsSnapshot(null);
+  } catch (error) {
+    writeLog("desktop.log", `diagnostics stats failed: ${error?.stack || error}`);
+    return null;
+  }
+});
+
+ipcMain.handle("aria:diagnostics:export-logs", async (_event, payload) => {
+  try {
+    const logsDir = logger.logDir();
+    const exportBase = path.join(app.getPath("userData"), "exports");
+    const folderName = `aria-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+    const folder = path.join(exportBase, folderName);
+    fs.mkdirSync(folder, { recursive: true });
+
+    let copiedLogs = 0;
+    if (fs.existsSync(logsDir)) {
+      for (const file of fs.readdirSync(logsDir)) {
+        const source = path.join(logsDir, file);
+        try {
+          const stat = fs.statSync(source);
+          if (stat.isFile() && stat.size <= 5 * 1024 * 1024) {
+            fs.copyFileSync(source, path.join(folder, file));
+            copiedLogs += 1;
+          }
+        } catch {
+          // Skip unreadable log files.
+        }
+      }
+    }
+
+    const snapshot = await collectDiagnosticsSnapshot(payload);
+    fs.writeFileSync(path.join(folder, "diagnostics.json"), JSON.stringify(snapshot, null, 2), "utf8");
+    fs.writeFileSync(
+      path.join(folder, "说明.txt"),
+      [
+        "Aria 诊断导出",
+        `生成时间: ${snapshot.generatedAt}`,
+        `包含: 日志文件 ${copiedLogs} 个 + diagnostics.json（各进程 CPU/内存占用与运行状态快照）`,
+        "请将此文件夹整体发送给开发者排查问题。",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    shell.openPath(folder);
+    return { ok: true, path: folder, copiedLogs };
+  } catch (error) {
+    writeLog("desktop.log", `export logs failed: ${error?.stack || error}`);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
 ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {
   taskbarPlayback = {
     title: typeof payload?.title === "string" ? payload.title.slice(0, 180) : "",
@@ -514,6 +676,18 @@ ipcMain.handle("aria:native-audio:stop", async () => {
 app.on("second-instance", showWindow);
 
 app.whenReady().then(async () => {
+  gpuVendorId = await detectGpuVendorAsync();
+  if (gpuVendorId === 0x1002 && gpuOptimizeEnabled) {
+    // AMD GPUs are often blocklisted by Chromium for GPU compositing, which
+    // falls back to CPU software rendering and drives CPU usage up. Push the
+    // rendering work back to the GPU for AMD machines.
+    app.commandLine.appendSwitch("ignore-gpu-blocklist");
+    app.commandLine.appendSwitch("enable-gpu-rasterization");
+    app.commandLine.appendSwitch("enable-zero-copy");
+    writeLog("desktop.log", "AMD GPU detected; GPU rendering flags applied");
+  } else {
+    writeLog("desktop.log", `GPU vendor id: 0x${(gpuVendorId ?? 0).toString(16)} (optimize=${gpuOptimizeEnabled})`);
+  }
   attachPowerRecoveryHandlers();
   await createWindow();
 });

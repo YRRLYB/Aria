@@ -104,6 +104,26 @@ textarea::selection,
   backdrop-filter: blur(28px) saturate(1.2);
 }
 
+/* 性能模式：关闭毛玻璃等合成开销较大的效果（A 卡/低配机可明显降低界面渲染 CPU） */
+.perf-lite .glass {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: none;
+}
+.perf-lite * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.perf-lite .blur-3xl {
+  filter: none !important;
+}
+.perf-lite .backdrop-blur-2xl,
+.perf-lite .backdrop-blur-xl,
+.perf-lite .backdrop-blur-md,
+.perf-lite .backdrop-blur-sm {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 .noise {
   position: fixed;
   inset: 0;

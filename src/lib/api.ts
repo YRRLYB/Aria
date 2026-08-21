@@ -71,6 +71,11 @@ declare global {
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       setGlobalArrowKeys?: (enabled: boolean) => void;
+      diagnostics?: {
+        getStats?: () => Promise<DiagnosticsStats | null>;
+        exportLogs?: (payload?: unknown) => Promise<{ ok: boolean; path?: string; copiedLogs?: number; error?: string }>;
+        setGpuOptimize?: (enabled: boolean) => Promise<boolean>;
+      };
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
       copyImageToClipboard?: (payload: { url?: string; dataUrl?: string }) => Promise<boolean>;
       log?: (payload: {
@@ -149,6 +154,51 @@ export type NeteaseQrCheck = {
   status: "waiting" | "scanned" | "expired" | "success";
   message: string;
   account: NeteaseAccountSummary | null;
+};
+
+export type DiagnosticsProcess = {
+  type: string;
+  pid: number;
+  cpuPercent: number;
+  memoryMb: number;
+};
+
+export type DiagnosticsStats = {
+  generatedAt: string;
+  appVersion: string;
+  electronVersion: string;
+  nodeVersion: string;
+  platform: string;
+  arch: string;
+  cpuModel: string | null;
+  cpuCores: number;
+  pid: number;
+  uptimeSeconds: number;
+  mainMemoryMb: number;
+  backendPid: number | null;
+  backendMemoryMb: number | null;
+  gpuVendorId: number | null;
+  gpuOptimizeEnabled: boolean;
+  gpuFeatures: {
+    gpuCompositing: string;
+    rasterization: string;
+    webgl: string;
+    canvas2d: string;
+    videoDecode: string;
+  } | null;
+  processes: DiagnosticsProcess[];
+  runtime: Record<string, unknown> | null;
+};
+
+export type RuntimeInfo = {
+  view: string;
+  outputMode: string;
+  nativePlayback: boolean;
+  playing: boolean;
+  queueLength: number;
+  trackCount: number;
+  perfMode?: boolean;
+  audioContextState?: string;
 };
 
 export type ProviderTrack = {
@@ -300,6 +350,11 @@ export const api = {
     return request<{ ok: boolean; account: NeteaseAccountSummary }>("/api/settings/netease-cookie", {
       method: "POST",
       body: JSON.stringify({ cookie }),
+    });
+  },
+  clearNeteaseCookie() {
+    return request<{ ok: boolean; account: NeteaseAccountSummary }>("/api/settings/netease-cookie", {
+      method: "DELETE",
     });
   },
   startNeteaseQrLogin() {

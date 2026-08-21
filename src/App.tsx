@@ -234,6 +234,13 @@ export default function App() {
       return true;
     }
   });
+  const [perfMode, setPerfMode] = useState(() => {
+    try {
+      return window.localStorage.getItem("aria-perf-mode") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [playerSideView, setPlayerSideView] = useState<PlayerSideView>(initialPlayerCache.playerSideView ?? "lyrics");
   const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
   const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
@@ -329,9 +336,7 @@ export default function App() {
     nativeAudioSupported && (audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
   );
   const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
-  const visualizerPlaying = nativePlaybackEnabled
-    ? Boolean(playing || (nativeAudioState?.active && !nativeAudioState.paused))
-    : playing;
+  const visualizerPlaying = Boolean(playing);
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
     const levels = activeTrack.availableLevels ?? [];
@@ -1042,6 +1047,11 @@ export default function App() {
   }, [globalArrowKeysEnabled]);
 
   useEffect(() => {
+    window.localStorage.setItem("aria-perf-mode", String(perfMode));
+    document.documentElement.classList.toggle("perf-lite", perfMode);
+  }, [perfMode]);
+
+  useEffect(() => {
     const updateVisibility = () => setPageVisible(document.visibilityState === "visible");
     const disposeDesktopVisibility = window.ariaDesktop?.onWindowVisibilityChange?.((visible) => {
       setPageVisible(visible);
@@ -1306,7 +1316,7 @@ export default function App() {
       setDurationSeconds(0);
     }
 
-    if (playing) {
+    if (playing && (pageVisible || !nativePlaybackEnabled)) {
       audio.play().catch(() => {
         if (!nativePlaybackEnabled) setPlaying(false);
       });
@@ -1322,6 +1332,7 @@ export default function App() {
     nativeAnalyserWakeToken,
     nativePlaybackEnabled,
     nativePlaybackVolume,
+    pageVisible,
     playing,
   ]);
 
@@ -1933,6 +1944,22 @@ export default function App() {
     setPlaylistTracks((current) => current.map(updateTrack));
   }
 
+  async function handleLogoutNetease() {
+    try {
+      await api.clearNeteaseCookie();
+    } catch {
+      // Local logout still proceeds even if the backend rejects.
+    }
+    setNeteaseAccount(null);
+    setNeteaseTracks([]);
+    setNeteaseLikedTracks([]);
+    setDailyTracks([]);
+    setRoamTracks([]);
+    setPlaylistTracks([]);
+    setProviderPlaylists([]);
+    setNeteaseLikedIds({});
+  }
+
   async function syncLyricsForTrack(track: Track) {
     if (track.source === "netease" && track.providerId) {
       const result = await api.getNeteaseLyrics(track.providerId);
@@ -2323,7 +2350,20 @@ export default function App() {
               onBackgroundEnabledChange={setBackgroundEnabled}
               globalArrowKeysEnabled={globalArrowKeysEnabled}
               onGlobalArrowKeysChange={setGlobalArrowKeysEnabled}
+              perfMode={perfMode}
+              onPerfModeChange={setPerfMode}
               neteaseAccount={neteaseAccount}
+              onLogoutNetease={() => void handleLogoutNetease()}
+              runtimeInfo={{
+                view: activeView,
+                outputMode: audioOutputMode,
+                nativePlayback: nativePlaybackEnabled,
+                playing,
+                queueLength: playQueueTracks.length,
+                trackCount: allTracks.length,
+                perfMode,
+                audioContextState: audioContextRef.current?.state ?? "none",
+              }}
               libraryMeta={libraryMeta}
               trackCount={allTracks.length}
               likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length}
