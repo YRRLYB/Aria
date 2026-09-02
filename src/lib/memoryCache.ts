@@ -4,6 +4,7 @@ export const memoryLimits = {
   artistAvatarLookup: 220,
   artistAvatarCache: 128,
   localCoverWarmup: 260,
+  artworkSyncing: 600,
 } as const;
 
 export const warmupBatchLimits = {
@@ -11,7 +12,8 @@ export const warmupBatchLimits = {
   neteaseMetadataPlaying: 8,
   neteaseMetadataIdle: 16,
   localCovers: 36,
-  preloadedImages: 24,
+  // Keep eager image work small; visible rows already use native lazy loading.
+  preloadedImages: 8,
 } as const;
 
 export function trimStringSet(ref: { current: Set<string> }, maxItems = 600) {

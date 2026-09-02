@@ -35,15 +35,32 @@ function createLogger(app) {
     return path.join(baseDir, "logs");
   }
 
-  function writeLog(fileName, message, details) {
-    try {
-      const dir = logDir();
-      fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(path.join(dir, fileName), `[${new Date().toISOString()}] ${message}${stringifyDetails(details)}\n`, "utf8");
-    } catch {
-      // Logging should never become a reason for the app to exit.
-    }
+const maxLogBytes = 1024 * 1024;
+
+function rotateLogIfOversized(logPath) {
+  try {
+    const stat = fs.statSync(logPath);
+    if (stat.size <= maxLogBytes) return;
+    // Keep one previous generation so a crash right after rotation is still
+    // diagnosable; older generations are dropped.
+    fs.rmSync(`${logPath}.1`, { force: true });
+    fs.renameSync(logPath, `${logPath}.1`);
+  } catch {
+    // Rotation is best-effort; the log write below still tries appendFileSync.
   }
+}
+
+function writeLog(fileName, message, details) {
+  try {
+    const dir = logDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const logPath = path.join(dir, fileName);
+    rotateLogIfOversized(logPath);
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}${stringifyDetails(details)}\n`, "utf8");
+  } catch {
+    // Logging should never become a reason for the app to exit.
+  }
+}
 
   function writeRuntimeSnapshot(fileName, reason, details) {
     const memory = process.memoryUsage();

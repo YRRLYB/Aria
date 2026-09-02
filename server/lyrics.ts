@@ -55,7 +55,8 @@ export async function resolveLyricLines(candidateId: string) {
   const songId = candidateId.slice("netease:".length);
   const response = await neteaseApi.lyric({ id: songId });
   const lyric = (response.body?.lrc as { lyric?: string } | undefined)?.lyric ?? "";
-  return parseLrc(lyric);
+  const translation = (response.body?.tlyric as { lyric?: string } | undefined)?.lyric ?? "";
+  return parseLrc(lyric, translation);
 }
 
 async function readLyricPreview(songId: string | number) {
@@ -72,7 +73,15 @@ async function readLyricPreview(songId: string | number) {
   }
 }
 
-function parseLrc(lyric: string) {
+function parseLrc(lyric: string, translation = "") {
+  const translatedByTime = new Map(parseLrcEntries(translation).map((line) => [line.time, line.text]));
+  return parseLrcEntries(lyric).map((line) => ({
+    ...line,
+    translation: translatedByTime.get(line.time) || undefined,
+  }));
+}
+
+function parseLrcEntries(lyric: string) {
   return lyric
     .split("\n")
     .map((line) => {

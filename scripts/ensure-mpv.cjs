@@ -10,6 +10,10 @@ const MPV_URL = `https://github.com/mpv-player/mpv/releases/download/${MPV_VERSI
 const rootDir = path.resolve(__dirname, "..");
 const vendorDir = path.join(rootDir, "vendor", "mpv");
 const mpvExePath = path.join(vendorDir, "mpv.exe");
+// OOPZ's application loopback capture selects an executable by basename. Use
+// the product name for the native child process so its WASAPI stream belongs
+// to the Aria app selected for sharing.
+const brandedMpvExePath = path.join(vendorDir, "Aria.exe");
 const cacheDir = path.join(rootDir, ".cache");
 const zipPath = path.join(cacheDir, MPV_ASSET);
 const unpackDir = path.join(cacheDir, "mpv-unpacked");
@@ -52,8 +56,14 @@ async function main() {
     return;
   }
 
+  if (fs.existsSync(brandedMpvExePath)) {
+    console.log(`native mpv already available at ${brandedMpvExePath}`);
+    return;
+  }
+
   if (fs.existsSync(mpvExePath)) {
-    console.log(`mpv already available at ${mpvExePath}`);
+    brandMpvExecutable();
+    console.log(`native mpv already available at ${brandedMpvExePath}`);
     return;
   }
 
@@ -84,6 +94,7 @@ async function main() {
         fs.rmSync(vendorDir, { recursive: true, force: true });
         fs.mkdirSync(vendorDir, { recursive: true });
         fs.cpSync(tempFallbackDir, vendorDir, { recursive: true, force: true });
+        brandMpvExecutable();
         console.log(`mpv restored from ${tempFallbackDir}`);
         return;
       }
@@ -114,7 +125,22 @@ async function main() {
     throw new Error("mpv.exe was not found after extraction.");
   }
 
-  console.log(`mpv prepared at ${mpvExePath}`);
+  brandMpvExecutable();
+  console.log(`mpv prepared at ${brandedMpvExePath}`);
+}
+
+function brandMpvExecutable() {
+  if (fs.existsSync(brandedMpvExePath)) return;
+  if (!fs.existsSync(mpvExePath)) {
+    throw new Error("mpv.exe was not found while preparing the native executable.");
+  }
+
+  try {
+    // Renaming avoids shipping a second 50+ MB copy of the decoder.
+    fs.renameSync(mpvExePath, brandedMpvExePath);
+  } catch (error) {
+    throw new Error(`Unable to brand mpv as Aria.exe: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 main().catch((error) => {

@@ -4,6 +4,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { parseFile } from "music-metadata";
+import { quantizeBitrate } from "./utils/bitrate";
 import type { ScannedTrack } from "./types";
 
 const execFileAsync = promisify(execFile);
@@ -156,7 +157,7 @@ async function readTrackMetadata(filePath: string, libraryRoot: string): Promise
       }),
       format: format.container || path.extname(filePath).slice(1).toUpperCase(),
       size: fileStat.size,
-      bitrate: typeof format.bitrate === "number" ? Math.round(format.bitrate) : null,
+      bitrate: typeof format.bitrate === "number" ? quantizeBitrate(format.bitrate) : null,
       sampleRate: typeof format.sampleRate === "number" ? format.sampleRate : null,
       bpm: null,
       hasCover: Boolean(common.picture?.length),

@@ -1,12 +1,21 @@
 ﻿import { useEffect, useState, type CSSProperties } from "react";
 import { motion } from "framer-motion";
-import { Cookie, Radio, RefreshCw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, Cookie, Keyboard, Radio, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
 import { api, type NeteaseAccountSummary, type NeteaseQrStart } from "@/lib/api";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import type { AudioOutputMode } from "@/lib/playerPresentation";
+import {
+  defaultKeyboardShortcuts,
+  formatShortcut,
+  shortcutDefinitions,
+  shortcutFromKeyboardEvent,
+  shortcutsConflict,
+  type KeyboardShortcuts,
+  type ShortcutCommand,
+} from "@/lib/keyboardShortcuts";
 import { cn } from "@/lib/utils";
 export function SettingsPanel({
   backgroundEnabled,
@@ -28,6 +37,8 @@ export function SettingsPanel({
   audioOutputMode,
   onAudioOutputModeChange,
   exclusiveMode,
+  keyboardShortcuts,
+  onKeyboardShortcutsChange,
   onClose,
 }: {
   backgroundEnabled: boolean;
@@ -49,6 +60,8 @@ export function SettingsPanel({
   audioOutputMode: AudioOutputMode;
   onAudioOutputModeChange: (value: AudioOutputMode) => void;
   exclusiveMode: boolean;
+  keyboardShortcuts: KeyboardShortcuts;
+  onKeyboardShortcutsChange: (shortcuts: KeyboardShortcuts) => void;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
@@ -83,34 +96,20 @@ export function SettingsPanel({
   }, []);
 
   return (
-    <motion.div
-      className="absolute inset-0 z-[70] flex justify-end bg-white/28 backdrop-blur-[2px]"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <motion.aside
-        initial={{ x: 34, opacity: 0, filter: "blur(12px)" }}
-        animate={{ x: 0, opacity: 1, filter: "blur(0px)" }}
-        exit={{ x: 28, opacity: 0, filter: "blur(12px)" }}
-        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-        className="m-3 flex w-[min(26rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-[1.7rem] border border-white/75 bg-white/78 shadow-[0_24px_80px_rgba(47,55,76,0.18)] backdrop-blur-2xl"
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-neutral-950/6 px-5 py-4">
+    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] border border-white/75 shadow-[0_24px_80px_rgba(47,55,76,0.14)]">
+        <div className="flex items-center justify-between gap-3 border-b border-neutral-950/6 px-5 py-4 sm:px-7">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-neutral-400">Settings</p>
-            <h2 className="mt-1 text-2xl font-semibold">Aria 设置</h2>
+            <h1 className="mt-1 text-2xl font-semibold sm:text-3xl">Aria 设置</h1>
           </div>
-          <Button variant="ghost" size="icon" aria-label="关闭设置" onClick={onClose}>
-            <X />
+          <Button variant="glass" size="sm" aria-label="返回上一页" onClick={onClose}>
+            <ArrowLeft />
+            返回
           </Button>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+        <div className="no-scrollbar grid min-h-0 flex-1 grid-cols-1 content-start gap-4 overflow-y-auto p-5 sm:p-7 lg:grid-cols-2">
+          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Runtime</p>
@@ -160,6 +159,11 @@ export function SettingsPanel({
             </div>
           </section>
 
+          <KeyboardShortcutSettings
+            shortcuts={keyboardShortcuts}
+            onChange={onKeyboardShortcutsChange}
+          />
+
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -203,7 +207,7 @@ export function SettingsPanel({
             </div>
           </section>
 
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Audio</p>
@@ -223,7 +227,7 @@ export function SettingsPanel({
                 style={
                   {
                     "--range-color": "#171717",
-                    "--range-value": `${volume}%`,
+                    "--range-value": Math.min(1, Math.max(0, volume / 100)),
                   } as CSSProperties
                 }
               />
@@ -248,8 +252,8 @@ export function SettingsPanel({
                   {
                     mode: "shared" as const,
                     label: "WASAPI 共享",
-                    badge: "HiFi",
-                    desc: "后端 mpv 播放，不独占设备。",
+                    badge: "兼容",
+                    desc: "mpv 原生共享，保留无损流并支持应用音频捕获。",
                     Icon: Radio,
                   },
                   {
@@ -303,6 +307,11 @@ export function SettingsPanel({
                   );
                 })}
               </div>
+              {audioOutputMode === "shared" && nativeAudioSupported && (
+                <p className="mt-3 rounded-[0.9rem] bg-neutral-950/[0.035] px-3 py-2 text-xs leading-5 text-neutral-500">
+                  共享模式保持原生无损输出；在 OOPZ 中选择 Aria 的程序音频即可共享。Windows 需 10.0.19044 以上，独占模式不会进入系统混音。
+                </p>
+              )}
               <div className="mt-5 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Device</p>
@@ -383,12 +392,109 @@ export function SettingsPanel({
             </div>
           </section>
         </div>
-        <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400">
+        <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400 sm:px-7">
           <span>Aria Desktop</span>
           <span>v{__APP_VERSION__}</span>
         </div>
-      </motion.aside>
-    </motion.div>
+    </div>
+  );
+}
+
+function KeyboardShortcutSettings({
+  shortcuts,
+  onChange,
+}: {
+  shortcuts: KeyboardShortcuts;
+  onChange: (shortcuts: KeyboardShortcuts) => void;
+}) {
+  const [recording, setRecording] = useState<ShortcutCommand | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!recording) return;
+
+    const captureShortcut = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setRecording(null);
+        setMessage(null);
+        return;
+      }
+
+      const candidate = shortcutFromKeyboardEvent(event);
+      if (!candidate) {
+        setMessage("请按住 Ctrl、Alt、Shift 或 Win，再按一个功能键。");
+        return;
+      }
+      if (shortcutsConflict(shortcuts, recording, candidate)) {
+        setMessage("该组合已分配给其他操作。");
+        return;
+      }
+
+      onChange({ ...shortcuts, [recording]: candidate });
+      setRecording(null);
+      setMessage(null);
+    };
+
+    window.addEventListener("keydown", captureShortcut, true);
+    return () => window.removeEventListener("keydown", captureShortcut, true);
+  }, [onChange, recording, shortcuts]);
+
+  return (
+    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Shortcuts</p>
+          <h3 className="mt-1 text-base font-semibold">全局快捷键</h3>
+        </div>
+        <Keyboard className="size-5 text-neutral-400" />
+      </div>
+      <p className="mt-2 text-xs leading-5 text-neutral-500">后台托管或切到其他软件时仍可使用。点击组合键后直接按新的按键。</p>
+      <div className="mt-3 space-y-2">
+        {shortcutDefinitions.map((definition) => {
+          const isRecording = recording === definition.command;
+          return (
+            <div key={definition.command} className="flex items-center gap-3 rounded-[1rem] bg-white/56 px-3 py-2.5 shadow-sm">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">{definition.label}</p>
+                <p className="mt-0.5 truncate text-xs text-neutral-500">{definition.description}</p>
+              </div>
+              <button
+                type="button"
+                className={cn(
+                  "min-w-28 rounded-xl border px-3 py-2 text-xs font-semibold transition",
+                  isRecording
+                    ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_10px_22px_rgba(23,23,23,0.16)]"
+                    : "border-neutral-950/10 bg-white text-neutral-700 hover:border-neutral-950/30",
+                )}
+                onClick={() => {
+                  setRecording(definition.command);
+                  setMessage(null);
+                }}
+              >
+                {isRecording ? "按下组合键" : formatShortcut(shortcuts[definition.command])}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <p className="min-h-4 text-xs text-rose-500">{message}</p>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            onChange({ ...defaultKeyboardShortcuts });
+            setRecording(null);
+            setMessage(null);
+          }}
+        >
+          <RotateCcw />
+          恢复默认
+        </Button>
+      </div>
+    </section>
   );
 }
 

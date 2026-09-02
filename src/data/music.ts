@@ -10,6 +10,12 @@ import {
   Radar,
 } from "lucide-react";
 
+export type LyricLine = {
+  time: string;
+  text: string;
+  translation?: string;
+};
+
 export type Track = {
   id: string;
   providerId?: string;
@@ -40,10 +46,7 @@ export type Track = {
   cover: string;
   accent: string;
   waveform: number[];
-  lyrics: Array<{
-    time: string;
-    text: string;
-  }>;
+  lyrics: LyricLine[];
   lyricStatus: "linked" | "searchable" | "missing";
 };
 
@@ -69,7 +72,8 @@ export type ViewId =
   | "daily"
   | "radar"
   | "cloud"
-  | "stats";
+  | "stats"
+  | "settings";
 
 export const navItems = [
   { id: "home" as const, label: "主页", icon: Home },

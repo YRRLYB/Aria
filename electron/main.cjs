@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -25,6 +25,12 @@ let taskbarPlayback = {
   artist: "",
   playing: false,
 };
+let globalShortcutConfig = {
+  toggle: "Control+Alt+Space",
+  previous: "Control+Alt+Left",
+  next: "Control+Alt+Right",
+  show: "Control+Alt+A",
+};
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -34,6 +40,12 @@ if (!gotLock) {
 app.setName("Aria");
 app.setAppUserModelId("com.yrrlyb.aria");
 Menu.setApplicationMenu(null);
+
+// Chromium spends GPU process memory on the many frosted-glass layers; keep
+// the app on the integrated GPU when a discrete one is present and cap every
+// V8 heap so long sessions collect garbage instead of growing without bound.
+app.commandLine.appendSwitch("force-low-power-gpu");
+app.commandLine.appendSwitch("js-flags", "--max-old-space-size=384");
 
 function getNativeAudioEngine() {
   if (!nativeAudioEngine) {
@@ -140,7 +152,9 @@ async function startBackend() {
 
   const serverEntry = resolveServerEntry();
   writeLog("desktop.log", `starting backend: ${serverEntry}`);
-  backendProcess = spawn(process.execPath, [serverEntry], {
+  // Cap the backend V8 heap so long sessions GC eagerly instead of letting V8
+  // grow its old space with machine RAM on large-memory hosts.
+  backendProcess = spawn(process.execPath, ["--max-old-space-size=512", serverEntry], {
     cwd: app.getPath("userData"),
     env: {
       ...process.env,
@@ -187,6 +201,42 @@ function sendPlaybackCommand(command) {
   mainWindow.webContents.send("aria:playback-command", command);
 }
 
+function executeGlobalShortcut(command) {
+  if (command === "show") {
+    showWindow();
+    return;
+  }
+  sendPlaybackCommand(command);
+}
+
+function sanitizeGlobalShortcut(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 80 || !/(Control|Alt|Shift|Super)/i.test(candidate)) return fallback;
+  return candidate;
+}
+
+function syncGlobalShortcuts(payload = {}) {
+  globalShortcutConfig = {
+    toggle: sanitizeGlobalShortcut(payload.toggle, globalShortcutConfig.toggle),
+    previous: sanitizeGlobalShortcut(payload.previous, globalShortcutConfig.previous),
+    next: sanitizeGlobalShortcut(payload.next, globalShortcutConfig.next),
+    show: sanitizeGlobalShortcut(payload.show, globalShortcutConfig.show),
+  };
+
+  globalShortcut.unregisterAll();
+  const registered = {};
+  const usedAccelerators = new Set();
+  for (const [command, accelerator] of Object.entries(globalShortcutConfig)) {
+    const duplicate = usedAccelerators.has(accelerator.toLowerCase());
+    const success = !duplicate && globalShortcut.register(accelerator, () => executeGlobalShortcut(command));
+    registered[command] = success;
+    if (success) usedAccelerators.add(accelerator.toLowerCase());
+    else writeLog("desktop.log", `global shortcut unavailable: ${command}=${accelerator}`);
+  }
+  return { shortcuts: globalShortcutConfig, registered };
+}
+
 function createTaskbarButtonIcon(pathData) {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
@@ -216,7 +266,9 @@ function syncTaskbarPlayback() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   const description = taskbarDescription();
-  mainWindow.setTitle(`Aria - ${description}`);
+  // Keep the app identity stable for window/app sharing integrations. The
+  // current track remains available through the taskbar and tray tooltip.
+  mainWindow.setTitle("Aria");
   mainWindow.setThumbnailToolTip(description);
   tray?.setToolTip(description);
 
@@ -294,6 +346,21 @@ async function createWindow() {
   });
   mainWindow.removeMenu();
   mainWindow.setMenuBarVisibility(false);
+  if (process.platform === "win32" && typeof mainWindow.setAppDetails === "function") {
+    // Keep the native window identity stable so Windows application-loopback
+    // capture tools can associate the mpv child session with Aria.
+    try {
+      mainWindow.setAppDetails({
+        appId: "com.yrrlyb.aria",
+        appIconPath: resolveIcon(),
+        appIconIndex: 0,
+        relaunchDisplayName: "Aria",
+        relaunchCommand: process.execPath,
+      });
+    } catch (error) {
+      writeLog("desktop.log", `unable to set Windows app details: ${error?.stack || error}`);
+    }
+  }
   syncTaskbarPlayback();
 
   mainWindow.once("ready-to-show", () => {
@@ -389,6 +456,10 @@ ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {
   return true;
 });
 
+ipcMain.handle("aria:configure-global-shortcuts", (_event, payload) => {
+  return syncGlobalShortcuts(payload || {});
+});
+
 ipcMain.handle("aria:copy-image", async (_event, payload) => {
   try {
     const dataUrl = typeof payload?.dataUrl === "string" && payload.dataUrl.startsWith("data:")
@@ -466,6 +537,7 @@ app.on("second-instance", showWindow);
 app.whenReady().then(async () => {
   attachPowerRecoveryHandlers();
   await createWindow();
+  syncGlobalShortcuts(globalShortcutConfig);
 });
 
 app.on("activate", () => {
@@ -481,6 +553,7 @@ app.on("before-quit", () => {
 });
 
 app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
   if (backendProcess && !backendProcess.killed) {
     backendProcess.kill();
   }

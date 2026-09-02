@@ -35,6 +35,11 @@ export class RealtimeSpectrumEngine {
   private readonly peaks = new Float32Array(spectrumBandCount);
   private readonly noiseFloor = new Float32Array(spectrumBandCount);
   private readonly targetBands = new Float32Array(spectrumBandCount);
+  // Per-band shaping depends only on the band index; precomputing it removes
+  // three transcendental evaluations per band from every animation frame.
+  private readonly bandVoiceLift = new Float32Array(spectrumBandCount);
+  private readonly bandHighLift = new Float32Array(spectrumBandCount);
+  private readonly bandLowTrim = new Float32Array(spectrumBandCount);
   private frequencyData = new Float32Array(0);
   private timeData = new Float32Array(0);
   private autoGain = 1.35;
@@ -43,6 +48,12 @@ export class RealtimeSpectrumEngine {
 
   constructor() {
     this.noiseFloor.fill(0.012);
+    for (let index = 0; index < spectrumBandCount; index += 1) {
+      const position = index / Math.max(1, spectrumBandCount - 1);
+      this.bandVoiceLift[index] = 1 + Math.exp(-Math.pow((position - 0.42) / 0.22, 2)) * 0.2;
+      this.bandHighLift[index] = 1 + Math.max(0, position - 0.68) * 0.52;
+      this.bandLowTrim[index] = position < 0.1 ? 0.84 + position * 1.6 : 1;
+    }
   }
 
   reset() {
@@ -100,10 +111,9 @@ export class RealtimeSpectrumEngine {
     const peakRelease = 0.18 * (deltaMs / 16.7);
 
     for (let index = 0; index < spectrumBandCount; index += 1) {
-      const position = index / Math.max(1, spectrumBandCount - 1);
-      const voiceLift = 1 + Math.exp(-Math.pow((position - 0.42) / 0.22, 2)) * 0.2;
-      const highLift = 1 + Math.max(0, position - 0.68) * 0.52;
-      const lowTrim = position < 0.1 ? 0.84 + position * 1.6 : 1;
+      const voiceLift = this.bandVoiceLift[index];
+      const highLift = this.bandHighLift[index];
+      const lowTrim = this.bandLowTrim[index];
       const target = clamp(
         Math.pow(frequencyEnergy.bands[index] * this.autoGain * outputScale * modeCompensation * voiceLift * highLift * lowTrim, 0.78),
         0,

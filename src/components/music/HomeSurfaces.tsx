@@ -1,55 +1,100 @@
 ﻿import { useMemo } from "react";
-import { ListMusic, Pause, Play } from "lucide-react";
+import { BarChart3, CalendarDays, Headphones, History, Pause, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyableTrackText, CoverArt, EmptyState, StatTile } from "@/components/music/shared";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { sourceLabel } from "@/lib/trackLabels";
+import type { Track } from "@/data/music";
+import { useVirtualRows } from "@/lib/virtualRows";
 
 export function HomeSidePanel({
-  history,
+  tracks,
+  playCounts,
+  playHistory,
   onOpenHistory,
+  onOpenStats,
   onPickTrack,
 }: {
-  history: PlayHistoryEntry[];
+  tracks: Track[];
+  playCounts: Record<string, number>;
+  playHistory: PlayHistoryEntry[];
   onOpenHistory: () => void;
+  onOpenStats: () => void;
   onPickTrack: (id: string) => void;
 }) {
-  const recent = history.slice(0, 8);
+  const todayStart = useMemo(() => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    return date.getTime();
+  }, []);
+  const weekStart = useMemo(() => todayStart - 6 * 24 * 60 * 60 * 1000, [todayStart]);
+  const todayPlays = playHistory
+    .filter((entry) => entry.playedAt >= todayStart)
+    .reduce((sum, entry) => sum + entry.count, 0);
+  const weekPlays = playHistory
+    .filter((entry) => entry.playedAt >= weekStart)
+    .reduce((sum, entry) => sum + entry.count, 0);
+  const rankedTracks = useMemo(
+    () =>
+      tracks
+        .filter((track) => (playCounts[track.id] ?? 0) > 0)
+        .sort((left, right) => (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0))
+        .slice(0, 4),
+    [playCounts, tracks],
+  );
 
   return (
     <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">History</p>
-          <h2 className="mt-1 text-xl font-semibold">最近播放</h2>
+          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Listening</p>
+          <h2 className="mt-1 text-xl font-semibold">听歌洞察</h2>
         </div>
-        <Button variant="ghost" size="icon" aria-label="打开播放历史" onClick={onOpenHistory}>
-          <ListMusic />
+        <Button variant="ghost" size="icon" aria-label="查看听歌统计" onClick={onOpenStats}>
+          <BarChart3 />
         </Button>
       </div>
 
-      <div className="no-scrollbar mt-5 grid min-h-0 gap-2 overflow-y-auto pr-1">
-        {recent.map((entry) => (
+      <div className="mt-5 grid grid-cols-2 gap-3">
+        <div className="rounded-[1.2rem] bg-white/64 p-3.5 shadow-sm">
+          <CalendarDays className="size-4 text-neutral-400" />
+          <p className="mt-5 text-2xl font-semibold">{todayPlays}</p>
+          <p className="mt-1 text-xs text-neutral-500">今日播放</p>
+        </div>
+        <div className="rounded-[1.2rem] bg-white/64 p-3.5 shadow-sm">
+          <Headphones className="size-4 text-neutral-400" />
+          <p className="mt-5 text-2xl font-semibold">{weekPlays}</p>
+          <p className="mt-1 text-xs text-neutral-500">近七天播放</p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">Most Played</p>
+        <Button variant="ghost" size="sm" onClick={onOpenHistory}>
+          <History />
+          历史
+        </Button>
+      </div>
+      <div className="no-scrollbar mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+        {rankedTracks.map((track, index) => (
           <button
-            key={`${entry.track.id}-${entry.playedAt}`}
-            className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.15rem] bg-white/54 p-2.5 text-left shadow-sm transition hover:bg-white"
-            onClick={() => onPickTrack(entry.track.id)}
+            key={track.id}
+            className="grid w-full grid-cols-[1.5rem_2.5rem_minmax(0,1fr)] items-center gap-2 rounded-[1rem] px-2 py-2 text-left transition hover:bg-white/72"
+            onClick={() => onPickTrack(track.id)}
           >
-            <CoverArt track={entry.track} className="size-12 rounded-2xl" />
+            <span className="text-center text-xs font-semibold text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
+            <CoverArt track={track} className="size-10 rounded-xl" />
             <span className="min-w-0">
               <span className="block truncate text-sm font-semibold">
-                <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
               </span>
-              <span className="block truncate text-xs text-neutral-500">
-                <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
-              </span>
+              <span className="block truncate text-xs text-neutral-500"><CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText> · {playCounts[track.id]} 次</span>
             </span>
-            <Badge>{entry.count} 次</Badge>
           </button>
         ))}
-        {!recent.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
+        {!rankedTracks.length && <EmptyState text="开始播放后，这里会显示常听曲目。" />}
       </div>
     </aside>
   );
@@ -114,7 +159,7 @@ export function HomeSurface({
           className="group relative m-4 min-h-72 overflow-hidden rounded-[1.65rem] border border-neutral-950/10 bg-neutral-950 p-0 text-left shadow-[0_24px_70px_rgba(20,24,35,0.18)]"
           onClick={onOpenPlayer}
         >
-          <CoverArt track={activeTrack} className="absolute inset-0 size-full rounded-[1.65rem]" />
+          <CoverArt track={activeTrack} className="absolute inset-0 size-full rounded-[1.65rem]" large />
           <div className="absolute inset-0 bg-gradient-to-t from-black/82 via-black/24 to-transparent" />
           <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(255,255,255,0.14),transparent_34%,rgba(0,0,0,0.24))]" />
           <div className="absolute right-5 top-5 z-20">
@@ -195,7 +240,11 @@ export function HomeSurface({
                     <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
                   </p>
                 </div>
-                <span className="text-sm text-neutral-500">{new Date(entry.playedAt).toLocaleDateString()}</span>
+                <span className="text-right text-xs font-medium leading-5 text-neutral-500">
+                  {new Date(entry.playedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}
+                  <br />
+                  {entry.count} 次
+                </span>
               </button>
             ))}
             {!recentHistory.length && <EmptyState text="播放过歌曲后，这里会显示最近记录。" />}
@@ -233,32 +282,49 @@ export function HistorySurface({
         </div>
       </div>
 
-      <div className="no-scrollbar mt-8 grid max-h-[calc(100%-10rem)] gap-3 overflow-y-auto pr-1">
-        {history.map((entry, index) => (
-          <button
-            key={`${entry.track.id}-${entry.playedAt}`}
-            className="grid grid-cols-[2.5rem_3.75rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.35rem] bg-white/48 p-3 text-left shadow-sm transition hover:bg-white/78"
-            onClick={() => onPickTrack(entry.track.id)}
-          >
-            <span className="text-center text-sm font-semibold text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
-            <CoverArt track={entry.track} className="size-14 rounded-2xl" />
-            <span className="min-w-0">
-              <span className="block truncate font-semibold">
-                <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+      <VirtualHistoryList history={history} onPickTrack={onPickTrack} />
+    </div>
+  );
+}
+
+function VirtualHistoryList({ history, onPickTrack }: { history: PlayHistoryEntry[]; onPickTrack: (id: string) => void }) {
+  const virtual = useVirtualRows({ count: history.length, rowHeight: 92, overscan: 8 });
+
+  if (!history.length) {
+    return <div className="mt-8"><EmptyState text="还没有播放历史，播放一首歌后这里会开始记录。" /></div>;
+  }
+
+  return (
+    <div ref={virtual.containerRef} className="no-scrollbar mt-8 max-h-[calc(100%-10rem)] overflow-y-auto pr-1">
+      <div className="relative" style={{ height: virtual.totalHeight }}>
+        {virtual.rows.map(({ index, offsetTop }) => {
+          const entry = history[index];
+          return (
+            <button
+              key={`${entry.track.id}-${entry.playedAt}`}
+              className="absolute left-0 right-0 grid h-[84px] grid-cols-[2.5rem_3.75rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.35rem] bg-white/48 p-3 text-left shadow-sm transition hover:bg-white/78"
+              style={{ top: offsetTop }}
+              onClick={() => onPickTrack(entry.track.id)}
+            >
+              <span className="text-center text-sm font-semibold text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
+              <CoverArt track={entry.track} className="size-14 rounded-2xl" />
+              <span className="min-w-0">
+                <span className="block truncate font-semibold">
+                  <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+                </span>
+                <span className="mt-1 block truncate text-sm text-neutral-500">
+                  <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText> · {entry.track.album}
+                </span>
               </span>
-              <span className="mt-1 block truncate text-sm text-neutral-500">
-                <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText> · {entry.track.album}
+              <span className="hidden flex-col items-end gap-2 sm:flex">
+                <Badge>{sourceLabel[entry.track.source]}</Badge>
+                <span className="text-xs text-neutral-500">
+                  {new Date(entry.playedAt).toLocaleString()} · {entry.count} 次
+                </span>
               </span>
-            </span>
-            <span className="hidden flex-col items-end gap-2 sm:flex">
-              <Badge>{sourceLabel[entry.track.source]}</Badge>
-              <span className="text-xs text-neutral-500">
-                {new Date(entry.playedAt).toLocaleString()} · {entry.count} 次
-              </span>
-            </span>
-          </button>
-        ))}
-        {!history.length && <EmptyState text="还没有播放历史，播放一首歌后这里会开始记录。" />}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

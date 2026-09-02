@@ -4,6 +4,44 @@ const net = require("node:net");
 const path = require("node:path");
 const { CdAudioRipper } = require("./cdAudioRipper.cjs");
 
+// OOPZ's Windows application-loopback API selects a process by executable
+// name (for example, `Aria.exe`).  The branded filename lets the native
+// decoder stay in WASAPI while remaining part of the app selected for share.
+const NATIVE_AUDIO_CLIENT_NAME = "Aria";
+const NATIVE_AUDIO_PROCESS_NAME = `${NATIVE_AUDIO_CLIENT_NAME}.exe`;
+
+function buildMpvArguments(pipePath) {
+  return [
+    "--idle=yes",
+    "--ao=wasapi",
+    "--no-video",
+    "--force-window=no",
+    "--keep-open=no",
+    "--no-terminal",
+    // Keep the Windows audio session stable for application-loopback tools.
+    `--audio-client-name=${NATIVE_AUDIO_CLIENT_NAME}`,
+    "--audio-set-media-role=yes",
+    `--title=${NATIVE_AUDIO_CLIENT_NAME}`,
+    `--force-media-title=${NATIVE_AUDIO_CLIENT_NAME}`,
+    "--audio-exclusive=no",
+    "--msg-level=all=warn",
+    "--no-config",
+    "--cache=yes",
+    "--cache-pause=no",
+    "--cache-pause-initial=no",
+    "--cache-pause-wait=0.15",
+    // Audio-only streams never need the video-sized default demuxer buffers;
+    // trimming them keeps mpv's resident set small during long sessions.
+    "--demuxer-readahead-secs=4",
+    "--demuxer-max-bytes=12MiB",
+    "--demuxer-max-back-bytes=2MiB",
+    "--stream-buffer-size=256KiB",
+    "--audio-buffer=0.18",
+    "--gapless-audio=no",
+    `--input-ipc-server=${pipePath}`,
+  ];
+}
+
 class MpvAudioEngine {
   constructor({ app, writeLog, sendEvent }) {
     this.app = app;
@@ -42,10 +80,13 @@ class MpvAudioEngine {
   }
 
   resolveExecutable() {
-    if (this.app.isPackaged) {
-      return path.join(process.resourcesPath, "app.asar.unpacked", "vendor", "mpv", "mpv.exe");
-    }
-    return path.join(__dirname, "..", "vendor", "mpv", "mpv.exe");
+    const mpvDirectory = this.app.isPackaged
+      ? path.join(process.resourcesPath, "app.asar.unpacked", "vendor", "mpv")
+      : path.join(__dirname, "..", "vendor", "mpv");
+    const brandedExecutable = path.join(mpvDirectory, NATIVE_AUDIO_PROCESS_NAME);
+    if (fs.existsSync(brandedExecutable)) return brandedExecutable;
+
+    return path.join(mpvDirectory, "mpv.exe");
   }
 
   snapshot(extra = {}) {
@@ -106,28 +147,7 @@ class MpvAudioEngine {
 
       this.process = spawn(
         this.resolveExecutable(),
-        [
-          "--idle=yes",
-          "--ao=wasapi",
-          "--no-video",
-          "--force-window=no",
-          "--keep-open=no",
-          "--no-terminal",
-          "--audio-client-name=Aria",
-          "--msg-level=all=warn",
-          "--no-config",
-          "--cache=yes",
-          "--cache-pause=no",
-          "--cache-pause-initial=no",
-          "--cache-pause-wait=0.15",
-          "--demuxer-readahead-secs=4",
-          "--demuxer-max-bytes=32MiB",
-          "--demuxer-max-back-bytes=4MiB",
-          "--stream-buffer-size=512KiB",
-          "--audio-buffer=0.18",
-          "--gapless-audio=no",
-          `--input-ipc-server=${this.pipePath}`,
-        ],
+        buildMpvArguments(this.pipePath),
         {
           windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -584,4 +604,9 @@ class MpvAudioEngine {
   }
 }
 
-module.exports = { MpvAudioEngine };
+module.exports = {
+  MpvAudioEngine,
+  buildMpvArguments,
+  NATIVE_AUDIO_CLIENT_NAME,
+  NATIVE_AUDIO_PROCESS_NAME,
+};

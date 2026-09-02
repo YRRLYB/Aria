@@ -9,6 +9,7 @@ import type {
 import { getNeteaseAccountSummary } from "../services/neteaseService";
 import { readStore } from "../store";
 import { HttpError } from "../utils/httpError";
+import { quantizeBitrate } from "../utils/bitrate";
 import { clearCache, remember } from "../utils/memoryCache";
 import { clearPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
 
@@ -64,6 +65,8 @@ const shortTtl = 5 * 60_000;
 const dayTtl = 24 * 60 * 60_000;
 const weekTtl = 7 * dayTtl;
 const qualityOrder = ["standard", "higher", "exhigh", "lossless", "hires", "jymaster"] as const;
+const maxLikedTracks = 2000;
+const maxPlaylistTracks = 5000;
 
 type QualityLevel = (typeof qualityOrder)[number];
 
@@ -86,7 +89,7 @@ export class NeteaseClient {
     const { cookie, userId } = await this.requireSession();
     const tracks = await rememberPersistent(`netease:liked:${userId}`, shortTtl, async () => {
       const liked = await neteaseApi.likelist({ uid: userId, cookie });
-      const ids = (liked.body?.ids as Array<number | string> | undefined) ?? [];
+      const ids = ((liked.body?.ids as Array<number | string> | undefined) ?? []).slice(0, maxLikedTracks);
       if (!ids.length) return [];
       const likedAtById = await this.getLikedTimeMap(userId, cookie);
 
@@ -131,7 +134,10 @@ export class NeteaseClient {
   async getPrivateRoaming(limit = 18, options: ProviderRoamOptions = {}): Promise<ProviderDailyBundle> {
     const { cookie, userId } = await this.requireSession();
     const safeLimit = Math.max(3, Math.min(30, Math.floor(limit)));
-    const cacheKey = `netease:roam:${userId}:${safeLimit}`;
+    // v2 stores stream metadata with the roaming bundle. Older cache entries
+    // only contained the song summary and made every unselected row fall back
+    // to the generic 320K label until it was played.
+    const cacheKey = `netease:roam:v2:${userId}:${safeLimit}`;
     const excluded = new Set((options.excludeIds ?? []).map((id) => String(id)));
     const loadRoamBundle = async () => {
       const tracks: ProviderTrack[] = [];
@@ -162,9 +168,10 @@ export class NeteaseClient {
         }
       }
 
+      const enrichedTracks = await this.attachRoamStreamMetadata(tracks, cookie);
       return {
         date: formatLocalDate(new Date()),
-        tracks,
+        tracks: enrichedTracks,
         reason: "netease-private-roaming",
       };
     };
@@ -183,7 +190,7 @@ export class NeteaseClient {
     const tracks = await rememberPersistent(`netease:playlist-tracks:${playlistId}`, shortTtl, async () => {
       const songs: NeteaseSong[] = [];
       const pageSize = 1000;
-      for (let offset = 0; offset < 20_000; offset += pageSize) {
+      for (let offset = 0; offset < maxPlaylistTracks; offset += pageSize) {
         const response = await neteaseApi.playlist_track_all({
           id: playlistId,
           limit: pageSize,
@@ -191,8 +198,8 @@ export class NeteaseClient {
           cookie,
         });
         const batch = (response.body?.songs as NeteaseSong[] | undefined) ?? [];
-        songs.push(...batch);
-        if (batch.length < pageSize) break;
+        songs.push(...batch.slice(0, maxPlaylistTracks - songs.length));
+        if (batch.length < pageSize || songs.length >= maxPlaylistTracks) break;
       }
       return songs.map(normalizeSong);
     });
@@ -303,7 +310,10 @@ export class NeteaseClient {
       if (!likedPlaylist?.id) return {} as Record<string, number>;
 
       const detail = await neteaseApi.playlist_detail({ id: likedPlaylist.id, cookie });
-      const trackIds = ((detail.body?.playlist as { trackIds?: NeteaseTrackId[] } | undefined)?.trackIds ?? []);
+      const trackIds = ((detail.body?.playlist as { trackIds?: NeteaseTrackId[] } | undefined)?.trackIds ?? []).slice(
+        0,
+        maxLikedTracks,
+      );
       return trackIds.reduce<Record<string, number>>((result, item) => {
         if (!item.id) return result;
         const likedAt = item.time ?? item.at ?? item.t;
@@ -317,11 +327,37 @@ export class NeteaseClient {
     return tracks.map((track) => ({ ...track, bpm: null }));
   }
 
+  /** Resolve actual stream bitrates for private-roaming rows before rendering. */
+  private async attachRoamStreamMetadata(tracks: ProviderTrack[], cookie: string) {
+    const enriched = tracks.slice();
+    await promisePool(enriched, 3, async (track, index) => {
+      // Personal-FM payloads expose a quality bucket whose bitrate can differ
+      // from the URL ultimately returned by song_url_v1. Resolve every row so
+      // the roaming list never presents the generic 320K bucket as fact.
+      const preferredLevel = track.currentLevel ?? track.availableLevels?.at(-1) ?? "lossless";
+      try {
+        const meta = await this.getSongUrlCached(track.id, preferredLevel, cookie);
+        enriched[index] = {
+          ...track,
+          quality: meta.currentLevel ? meta.quality : track.quality,
+          bitrate: meta.bitrate ?? track.bitrate,
+          sampleRate: meta.sampleRate ?? track.sampleRate,
+          currentLevel: meta.currentLevel ?? track.currentLevel,
+          availableLevels: meta.availableLevels.length ? meta.availableLevels : track.availableLevels,
+        };
+      } catch {
+        // Restricted tracks may reject metadata requests; retain their summary.
+      }
+    });
+    return enriched;
+  }
+
   private async getLyricsCached(songId: string | number) {
-    return rememberPersistent(`netease:lyrics:${songId}`, weekTtl, async () => {
+    return rememberPersistent(`netease:lyrics:v2:${songId}`, weekTtl, async () => {
       const response = await neteaseApi.lyric({ id: songId });
       const lyric = (response.body?.lrc as { lyric?: string } | undefined)?.lyric ?? "";
-      return parseLrc(lyric);
+      const translation = (response.body?.tlyric as { lyric?: string } | undefined)?.lyric ?? "";
+      return parseLrc(lyric, translation);
     });
   }
 
@@ -449,7 +485,8 @@ function qualityFromLevel(level: QualityLevel | null | undefined): ProviderTrack
 
 function normalizeBitrate(value?: number) {
   if (!value || !Number.isFinite(value)) return null;
-  return value > 10_000 ? Math.round(value) : Math.round(value * 1000);
+  const bps = value > 10_000 ? Math.round(value) : Math.round(value * 1000);
+  return quantizeBitrate(bps);
 }
 
 function normalizeSampleRate(value?: number) {
@@ -496,13 +533,14 @@ function chunk<T>(items: T[], size: number) {
   return chunks;
 }
 
-async function promisePool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+async function promisePool<T>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<void>) {
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (cursor < items.length) {
-      const item = items[cursor];
+      const index = cursor;
+      const item = items[index];
       cursor += 1;
-      await worker(item);
+      await worker(item, index);
     }
   });
   await Promise.all(workers);
@@ -515,7 +553,15 @@ function formatLocalDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function parseLrc(lyric: string) {
+function parseLrc(lyric: string, translation = "") {
+  const translatedByTime = new Map(parseLrcEntries(translation).map((line) => [line.time, line.text]));
+  return parseLrcEntries(lyric).map((line) => ({
+    ...line,
+    translation: translatedByTime.get(line.time) || undefined,
+  }));
+}
+
+function parseLrcEntries(lyric: string) {
   return lyric
     .split("\n")
     .map((line) => {

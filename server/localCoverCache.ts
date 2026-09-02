@@ -5,17 +5,25 @@ import { parseFile } from "music-metadata";
 import type { ScannedTrack } from "./types";
 import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
+import { pruneDiskCache } from "./utils/diskCache";
 
 export type CachedLocalCover = {
   body: Buffer;
   contentType: string;
 };
 
+const localCoverCacheDir = path.join(cacheDir, "local-covers");
+const pruneLocalCoverCache = () =>
+  pruneDiskCache(localCoverCacheDir, { maxBytes: 128 * 1024 * 1024, maxFiles: 400 });
+
+void pruneLocalCoverCache();
+const localCoverPruneTimer = setInterval(pruneLocalCoverCache, 15 * 60_000);
+localCoverPruneTimer.unref?.();
+
 export async function readOrExtractLocalCover(track: ScannedTrack): Promise<CachedLocalCover> {
   if (track.mediaKind === "audio-cd") throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
 
   const fileStat = await stat(track.path);
-  const localCoverCacheDir = path.join(cacheDir, "local-covers");
   const cacheKey = createHash("sha1").update(`${track.path}:${fileStat.mtimeMs}:${fileStat.size}`).digest("hex");
   const cachedPath = path.join(localCoverCacheDir, `${cacheKey}.img`);
   const cachedMetaPath = path.join(localCoverCacheDir, `${cacheKey}.json`);
@@ -39,6 +47,7 @@ export async function readOrExtractLocalCover(track: ScannedTrack): Promise<Cach
     writeFile(cachedPath, body),
     writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
   ]);
+  void pruneLocalCoverCache();
 
   return { body, contentType };
 }

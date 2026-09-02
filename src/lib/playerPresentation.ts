@@ -1,4 +1,5 @@
-import { navItems, type Track, type ViewId } from "@/data/music";
+import { navItems, type LyricLine, type Track, type ViewId } from "@/data/music";
+import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 
 export type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
 export type CoverPalette = { primary: string; secondary: string };
@@ -46,7 +47,7 @@ export function readCachedPlayerState(): CachedPlayerState {
     const raw = window.localStorage.getItem(playerCacheKey);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as CachedPlayerState;
-    const navIds = new Set(navItems.map((item) => item.id));
+    const navIds = new Set<string>([...navItems.map((item) => item.id), "settings"]);
     const qualityIds = new Set(qualityOptions.map((item) => item.value));
 
     return {
@@ -106,7 +107,7 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
         : "320K",
     source: track.source === "netease" || track.source === "cloud" || track.source === "local" ? track.source : "local",
     streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
-    coverUrl: typeof track.coverUrl === "string" ? track.coverUrl : undefined,
+    coverUrl: readCachedArtworkOverride(track.id) ?? (typeof track.coverUrl === "string" ? track.coverUrl : undefined),
     trackNumber: typeof track.trackNumber === "number" ? track.trackNumber : null,
     discNumber: typeof track.discNumber === "number" ? track.discNumber : null,
     bitrate: typeof track.bitrate === "number" ? track.bitrate : null,
@@ -144,25 +145,33 @@ export function writeCachedPlayerState(state: CachedPlayerState & { updatedAt?: 
   }
 }
 
-export function readCachedLyrics(trackId?: string) {
-  if (!trackId) return [];
+// The lyric cache is read once per track while building the library; keeping a
+// module-level copy avoids re-parsing the whole localStorage blob per track.
+let lyricsCacheState: Record<string, LyricLine[]> | null = null;
+
+function readLyricsCache(): Record<string, LyricLine[]> {
+  if (lyricsCacheState) return lyricsCacheState;
   try {
     const raw = window.localStorage.getItem(lyricCacheKey);
-    if (!raw) return [];
-    const cache = JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>;
-    return Array.isArray(cache[trackId]) ? cache[trackId] : [];
+    lyricsCacheState = raw ? (JSON.parse(raw) as Record<string, LyricLine[]>) : {};
   } catch {
-    return [];
+    lyricsCacheState = {};
   }
+  return lyricsCacheState;
 }
 
-export function writeCachedLyrics(trackId: string, lyrics: Array<{ time: string; text: string }>) {
+export function readCachedLyrics(trackId?: string) {
+  if (!trackId) return [];
+  const cached = readLyricsCache()[trackId];
+  return Array.isArray(cached) ? cached : [];
+}
+
+export function writeCachedLyrics(trackId: string, lyrics: LyricLine[]) {
   if (!lyrics.length) return;
   try {
-    const raw = window.localStorage.getItem(lyricCacheKey);
-    const cache = raw ? (JSON.parse(raw) as Record<string, Array<{ time: string; text: string }>>) : {};
-    const entries = Object.entries({ ...cache, [trackId]: lyrics }).slice(-80);
-    window.localStorage.setItem(lyricCacheKey, JSON.stringify(Object.fromEntries(entries)));
+    const cache = Object.fromEntries(Object.entries({ ...readLyricsCache(), [trackId]: lyrics }).slice(-80));
+    lyricsCacheState = cache;
+    window.localStorage.setItem(lyricCacheKey, JSON.stringify(cache));
   } catch {
     // Lyric caching is best-effort.
   }

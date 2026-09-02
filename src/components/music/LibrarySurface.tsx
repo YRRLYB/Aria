@@ -696,7 +696,7 @@ function createAlbumGroups(tracks: Track[]): LocalAlbumGroup[] {
         coverTrack,
         tracks: orderedTracks,
         totalDuration: formatAlbumDuration(orderedTracks),
-        mediaKind: orderedTracks.some((track) => track.mediaKind === "audio-cd") ? "audio-cd" : "file",
+        mediaKind: (orderedTracks.some((track) => track.mediaKind === "audio-cd") ? "audio-cd" : "file") as Track["mediaKind"],
       };
     })
     .sort((a, b) => `${a.artist} ${a.title}`.localeCompare(`${b.artist} ${b.title}`, "zh-CN"));

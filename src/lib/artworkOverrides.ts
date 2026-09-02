@@ -9,14 +9,13 @@ type ArtworkOverrideEntry = {
 
 type ArtworkOverrideCache = Record<string, ArtworkOverrideEntry>;
 
+// Parsed once per session; localTrackToUiTrack reads this per library track and
+// re-parsing the (dataURL-heavy) localStorage blob each time is far too costly.
+let artworkOverrideState: ArtworkOverrideCache | null = null;
+
 export function readCachedArtworkOverride(trackId?: string) {
   if (!trackId) return undefined;
-  try {
-    const cache = readArtworkOverrideCache();
-    return cache[trackId]?.dataUrl;
-  } catch {
-    return undefined;
-  }
+  return readArtworkOverrideCache()[trackId]?.dataUrl;
 }
 
 export function writeCachedArtworkOverride(trackId: string, dataUrl: string) {
@@ -28,6 +27,7 @@ export function writeCachedArtworkOverride(trackId: string, dataUrl: string) {
       .sort(([, left], [, right]) => left.updatedAt - right.updatedAt)
       .slice(-maxStoredArtwork),
   );
+  artworkOverrideState = trimmed;
 
   try {
     window.localStorage.setItem(artworkOverrideKey, JSON.stringify(trimmed));
@@ -81,22 +81,27 @@ export async function createArtworkOverrideDataUrl(file: File) {
 }
 
 function readArtworkOverrideCache(): ArtworkOverrideCache {
-  const raw = window.localStorage.getItem(artworkOverrideKey);
-  if (!raw) return {};
-  const parsed = JSON.parse(raw) as Record<string, ArtworkOverrideEntry | string>;
-  return Object.fromEntries(
-    Object.entries(parsed)
-      .map(([trackId, value]) => {
-        if (typeof value === "string") {
-          return [trackId, { dataUrl: value, updatedAt: 0 }] as const;
-        }
-        if (value && typeof value.dataUrl === "string") {
-          return [trackId, { dataUrl: value.dataUrl, updatedAt: Number(value.updatedAt) || 0 }] as const;
-        }
-        return null;
-      })
-      .filter((entry): entry is readonly [string, ArtworkOverrideEntry] => Boolean(entry)),
-  );
+  if (artworkOverrideState) return artworkOverrideState;
+  try {
+    const raw = window.localStorage.getItem(artworkOverrideKey);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, ArtworkOverrideEntry | string>) : {};
+    artworkOverrideState = Object.fromEntries(
+      Object.entries(parsed)
+        .map(([trackId, value]) => {
+          if (typeof value === "string") {
+            return [trackId, { dataUrl: value, updatedAt: 0 }] as const;
+          }
+          if (value && typeof value.dataUrl === "string") {
+            return [trackId, { dataUrl: value.dataUrl, updatedAt: Number(value.updatedAt) || 0 }] as const;
+          }
+          return null;
+        })
+        .filter((entry): entry is readonly [string, ArtworkOverrideEntry] => Boolean(entry)),
+    );
+  } catch {
+    artworkOverrideState = {};
+  }
+  return artworkOverrideState;
 }
 
 async function decodeImage(file: File): Promise<ImageBitmap | HTMLImageElement> {

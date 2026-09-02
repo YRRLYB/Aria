@@ -1,8 +1,8 @@
 ﻿import { useEffect, useMemo, useRef } from "react";
-import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
 import type { Track } from "@/data/music";
+import { usePlaybackTime } from "@/lib/playbackClock";
 import {
   colorWithAlpha,
   formatAudioDetail,
@@ -67,7 +67,7 @@ export function PlayerSidePanel({
   onModeChange,
   track,
   palette,
-  currentTime,
+  lyricDisplayMode,
   tracks,
   activeTrackId,
   onPickTrack,
@@ -77,7 +77,7 @@ export function PlayerSidePanel({
   onModeChange: (mode: "lyrics" | "queue") => void;
   track: Track;
   palette: CoverPalette;
-  currentTime: number;
+  lyricDisplayMode: "original" | "bilingual";
   tracks: Track[];
   activeTrackId: string;
   onPickTrack: (id: string) => void;
@@ -115,7 +115,12 @@ export function PlayerSidePanel({
       </div>
 
       {mode === "lyrics" ? (
-        <SidebarLyrics track={track} palette={palette} currentTime={currentTime} onSeek={onSeek} />
+        <SidebarLyrics
+          track={track}
+          palette={palette}
+          lyricDisplayMode={lyricDisplayMode}
+          onSeek={onSeek}
+        />
       ) : (
         <QueueList tracks={tracks} activeTrackId={activeTrackId} onPickTrack={onPickTrack} />
       )}
@@ -126,14 +131,15 @@ export function PlayerSidePanel({
 function SidebarLyrics({
   track,
   palette,
-  currentTime,
+  lyricDisplayMode,
   onSeek,
 }: {
   track: Track;
   palette: CoverPalette;
-  currentTime: number;
+  lyricDisplayMode: "original" | "bilingual";
   onSeek: (time: number) => void;
 }) {
+  const currentTime = usePlaybackTime();
   const activeLyricIndex = getActiveLyricIndex(track.lyrics, currentTime);
   const lines = track.lyrics;
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -168,12 +174,11 @@ function SidebarLyrics({
         {track.lyrics.map((line, index) => {
           const active = index === activeLyricIndex;
           return (
-            <motion.button
+            <button
               key={`${track.id}-${line.time}-${line.text}-${index}`}
               ref={(node) => {
                 lineRefs.current[index] = node;
               }}
-              layout
               className={cn(
                 "grid grid-cols-[3.25rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left text-neutral-500 transition hover:bg-neutral-950/[0.04]",
                 active && "text-neutral-950 shadow-sm",
@@ -187,8 +192,13 @@ function SidebarLyrics({
               <span className="text-sm font-medium text-neutral-400">{line.time}</span>
               <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7", active ? "text-2xl font-semibold" : "text-base")}>
                 {line.text}
+                {lyricDisplayMode === "bilingual" && line.translation && (
+                  <span className={cn("mt-1 block text-sm font-medium leading-6", active ? "text-neutral-600" : "text-neutral-400")}>
+                    {line.translation}
+                  </span>
+                )}
               </span>
-            </motion.button>
+            </button>
           );
         })}
         {!lines.length && <p className="text-center text-sm text-neutral-500">歌词同步中</p>}
@@ -196,5 +206,4 @@ function SidebarLyrics({
     </div>
   );
 }
-
 

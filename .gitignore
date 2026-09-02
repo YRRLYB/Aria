@@ -8,3 +8,4 @@ release-fixed/
 .tmp-mpv/
 vendor/mpv/
 /main.cjs
+.zcode/

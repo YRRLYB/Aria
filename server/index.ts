@@ -20,9 +20,40 @@ import {
 import { readStore, updateStore } from "./store";
 import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
+import { pruneDiskCache } from "./utils/diskCache";
 
 const app = express();
 const port = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
+const remoteCoverCacheDir = path.join(cacheDir, "covers");
+const maxRemoteCoverBytes = 8 * 1024 * 1024;
+
+class CoverFetchLimiter {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  async run<T>(work: () => Promise<T>) {
+    if (this.active >= 4) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    this.active += 1;
+    try {
+      return await work();
+    } finally {
+      this.active -= 1;
+      this.waiting.shift()?.();
+    }
+  }
+}
+
+const remoteCoverFetchLimiter = new CoverFetchLimiter();
+const remoteCoverRequests = new Map<string, Promise<{ body: Buffer; contentType: string; status: number }>>();
+
+// Cover responses are binary assets and can be several megabytes each. Keep
+// the on-disk cache bounded so repeated browsing cannot grow memory/disk use
+// without limit. Existing oversized caches are trimmed on startup as well.
+const pruneRemoteCoverCache = () =>
+  pruneDiskCache(remoteCoverCacheDir, { maxBytes: 256 * 1024 * 1024, maxFiles: 800 });
+void pruneRemoteCoverCache();
+const remoteCoverPruneTimer = setInterval(pruneRemoteCoverCache, 15 * 60_000);
+remoteCoverPruneTimer.unref?.();
 
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "1mb" }));
@@ -208,41 +239,68 @@ app.post("/api/providers/netease/cache/warmup", async (req, res, next) => {
 
 app.get("/api/providers/netease/cover", async (req, res, next) => {
   try {
-    const query = z.object({ url: z.string().url() }).parse(req.query);
+    const query = z
+      .object({ url: z.string().url(), size: z.string().regex(/^\d{2,4}[xy]\d{2,4}$/).optional() })
+      .parse(req.query);
     const target = new URL(query.url);
     if (!target.hostname.endsWith("music.126.net")) {
       throw new HttpError(400, "Unsupported cover host", "NETEASE_COVER_HOST_UNSUPPORTED");
     }
 
-    const coverCacheDir = path.join(cacheDir, "covers");
-    const cacheKey = createHash("sha1").update(query.url).digest("hex");
-    const cachedPath = path.join(coverCacheDir, `${cacheKey}.img`);
-    const cachedMetaPath = path.join(coverCacheDir, `${cacheKey}.json`);
+    // Always request a bounded CDN variant. Without a size, NetEase returns
+    // the original multi-megapixel artwork, which is costly to decode in the
+    // renderer and quickly bloats Chromium's image cache.
+    const requestedSize = normalizeCoverSize(query.size);
+    const upstreamTarget = new URL(query.url);
+    upstreamTarget.searchParams.set("param", requestedSize);
+    const upstreamUrl = upstreamTarget.href;
+
+    const cacheKey = createHash("sha1").update(upstreamUrl).digest("hex");
+    const cachedPath = path.join(remoteCoverCacheDir, `${cacheKey}.img`);
+    const cachedMetaPath = path.join(remoteCoverCacheDir, `${cacheKey}.json`);
     try {
-      const [buffer, rawMeta] = await Promise.all([readFile(cachedPath), readFile(cachedMetaPath, "utf8")]);
+      const rawMeta = await readFile(cachedMetaPath, "utf8");
       const meta = JSON.parse(rawMeta) as { contentType?: string };
       res.setHeader("Content-Type", meta.contentType || "image/jpeg");
       res.setHeader("Cache-Control", "public, max-age=604800, immutable");
-      res.send(buffer);
+      res.sendFile(cachedPath, { cacheControl: false }, (error) => {
+        if (error && !res.headersSent) next(error);
+      });
       return;
     } catch {
       // Cache miss; continue with upstream fetch.
     }
 
-    const upstream = await fetch(query.url);
-    if (!upstream.ok) {
-      throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
+    let coverRequest = remoteCoverRequests.get(upstreamUrl);
+    if (!coverRequest) {
+      coverRequest = remoteCoverFetchLimiter.run(async () => {
+        const upstream = await fetch(upstreamUrl);
+        if (!upstream.ok) {
+          throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
+        }
+        const advertisedLength = Number(upstream.headers.get("content-length") || 0);
+        if (advertisedLength > maxRemoteCoverBytes) {
+          throw new HttpError(502, "Cover response is too large", "NETEASE_COVER_TOO_LARGE");
+        }
+        const contentType = upstream.headers.get("content-type") || "image/jpeg";
+        const body = await readBoundedBody(upstream, maxRemoteCoverBytes);
+        await mkdir(remoteCoverCacheDir, { recursive: true });
+        await Promise.all([
+          writeFile(cachedPath, body),
+          writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
+        ]);
+        void pruneRemoteCoverCache();
+        return { body, contentType, status: upstream.status };
+      });
+      remoteCoverRequests.set(upstreamUrl, coverRequest);
+      void coverRequest.then(
+        () => remoteCoverRequests.delete(upstreamUrl),
+        () => remoteCoverRequests.delete(upstreamUrl),
+      );
     }
+    const { contentType, body, status } = await coverRequest;
 
-    const contentType = upstream.headers.get("content-type") || "image/jpeg";
-    const body = Buffer.from(await upstream.arrayBuffer());
-    await mkdir(coverCacheDir, { recursive: true });
-    await Promise.all([
-      writeFile(cachedPath, body),
-      writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
-    ]);
-
-    res.status(upstream.status);
+    res.status(status);
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Length", String(body.byteLength));
     res.setHeader("Cache-Control", "public, max-age=604800, immutable");
@@ -251,7 +309,9 @@ app.get("/api/providers/netease/cover", async (req, res, next) => {
       res.end();
       return;
     }
-    res.send(body);
+    res.sendFile(cachedPath, { cacheControl: false }, (error) => {
+      if (error && !res.headersSent) next(error);
+    });
   } catch (error) {
     next(error);
   }
@@ -400,3 +460,34 @@ function resolveProvider(providerId: string) {
 app.listen(port, "127.0.0.1", () => {
   console.log(`aria-api listening on http://127.0.0.1:${port}`);
 });
+
+function normalizeCoverSize(value?: string) {
+  const match = value?.match(/^(\d{2,4})[xy](\d{2,4})$/);
+  if (!match) return "800y800";
+  const width = Math.min(1024, Math.max(64, Number(match[1])));
+  const height = Math.min(1024, Math.max(64, Number(match[2])));
+  return `${width}y${height}`;
+}
+
+async function readBoundedBody(response: Response, maxBytes: number) {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new HttpError(502, "Cover response is too large", "NETEASE_COVER_TOO_LARGE");
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}

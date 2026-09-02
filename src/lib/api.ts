@@ -1,4 +1,4 @@
-import type { LyricCandidate } from "@/data/music";
+import type { LyricCandidate, LyricLine } from "@/data/music";
 
 declare global {
   interface Window {
@@ -71,6 +71,7 @@ declare global {
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
+      configureGlobalShortcuts?: (payload: Record<"toggle" | "previous" | "next" | "show", string>) => Promise<unknown>;
       copyImageToClipboard?: (payload: { url?: string; dataUrl?: string }) => Promise<boolean>;
       log?: (payload: {
         level?: "debug" | "info" | "warn" | "error";
@@ -282,7 +283,7 @@ export const api = {
     return request<{
       ok: boolean;
       lyricBindings: Record<string, string>;
-      lyrics: Array<{ time: string; text: string }>;
+      lyrics: LyricLine[];
     }>("/api/lyrics/bind", {
       method: "POST",
       body: JSON.stringify({ trackId, candidateId }),
@@ -365,7 +366,7 @@ export const api = {
     return request<{ tracks: ProviderTrack[] }>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}/tracks`);
   },
   getNeteaseLyrics(trackId: string) {
-    return request<{ lyrics: Array<{ time: string; text: string }> }>(
+    return request<{ lyrics: LyricLine[] }>(
       `/api/providers/netease/tracks/${encodeURIComponent(trackId)}/lyrics`,
     );
   },

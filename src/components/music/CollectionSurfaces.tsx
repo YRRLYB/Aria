@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import { capabilities } from "@/data/music";
-import type { ProviderPlaylist } from "@/lib/api";
+import { api, type ProviderPlaylist } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
@@ -260,7 +260,15 @@ export function PlaylistSurface({
             onClick={() => onOpenPlaylist(playlist)}
           >
             {playlist.coverUrl ? (
-              <img src={playlist.coverUrl} alt="" draggable={false} className="size-16 rounded-2xl object-cover shadow-sm" />
+              <img
+                src={`${api.getNeteaseCoverUrl(playlist.coverUrl)}&size=160y160`}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                fetchPriority="low"
+                draggable={false}
+                className="size-16 rounded-2xl object-cover shadow-sm"
+              />
             ) : (
               <Cloud className="size-6 text-neutral-500" />
             )}
