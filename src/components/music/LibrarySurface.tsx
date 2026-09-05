@@ -13,11 +13,12 @@ import { CoverArt, CopyableTrackText, EmptyState } from "./shared";
 type LibrarySurfaceProps = {
   folderName: string;
   onChooseFolder: () => void;
+  scanProgress?: { phase: string; processed: number; total: number; status: string; error?: string | null } | null;
   tracks: Track[];
   libraryMeta: { roots: number; updatedAt: string | null };
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
-  onScanPath: (folderPath: string) => Promise<void>;
+  onScanPath: (folderPath: string) => Promise<unknown>;
   onScanCd: (qualityMode: "high" | "low") => Promise<void>;
   onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
   onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
@@ -36,6 +37,7 @@ type LocalAlbumGroup = {
 export function LibrarySurface({
   folderName,
   onChooseFolder,
+  scanProgress,
   tracks: libraryTracks,
   libraryMeta,
   activeTrackId,
@@ -113,6 +115,17 @@ export function LibrarySurface({
       </div>
 
       <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
+        {scanProgress?.status === "running" && (
+          <div className="mb-4 rounded-[1rem] border border-sky-200/70 bg-sky-50/70 p-3">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="font-medium">{scanProgress.phase === "metadata" ? "正在读取歌曲信息" : scanProgress.phase === "saving" ? "正在写入音乐库" : "正在查找音频文件"}</span>
+              <span className="text-sky-700">{scanProgress.total > 0 ? String(scanProgress.processed) + "/" + String(scanProgress.total) : "准备中"}</span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-sky-100">
+              <div className="h-full rounded-full bg-sky-500 transition-[width] duration-200" style={{ width: (scanProgress.total ? Math.min(100, (scanProgress.processed / scanProgress.total) * 100) : 8) + "%" }} />
+            </div>
+          </div>
+        )}
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">Backend Scan</p>
@@ -587,9 +600,9 @@ function LyricLookupPanel({
 
   return (
     <motion.section
-      initial={{ opacity: 0, y: -10, filter: "blur(12px)" }}
-      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-      exit={{ opacity: 0, y: -8, filter: "blur(10px)" }}
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.26 }}
       className="mt-5 rounded-[1.35rem] border border-white/70 bg-white/50 p-4 shadow-sm"
     >

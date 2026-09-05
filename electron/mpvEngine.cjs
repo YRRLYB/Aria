@@ -33,11 +33,13 @@ function buildMpvArguments(pipePath) {
     // Audio-only streams never need the video-sized default demuxer buffers;
     // trimming them keeps mpv's resident set small during long sessions.
     "--demuxer-readahead-secs=4",
-    "--demuxer-max-bytes=12MiB",
+    "--demuxer-max-bytes=8MiB",
     "--demuxer-max-back-bytes=2MiB",
     "--stream-buffer-size=256KiB",
-    "--audio-buffer=0.18",
-    "--gapless-audio=no",
+    // Keep the decoder/AO chain warm across playlist entries so appended
+    // tracks start without reopening the WASAPI device.
+    "--gapless-audio=yes",
+    "--audio-buffer=0.12",
     `--input-ipc-server=${pipePath}`,
   ];
 }
@@ -58,6 +60,10 @@ class MpvAudioEngine {
     this.pendingSeek = 0;
     this.pendingPause = true;
     this.lastRecoveryAt = 0;
+    // When the renderer preloads the next track, mpv advances its internal
+    // playlist on EOF. The pending entry's identity and a generation counter
+    // (so the renderer can re-arm after each seamless advance) live here.
+    this.pendingAutoAdvance = null;
     this.cdRipper = new CdAudioRipper({ app, writeLog });
     this.state = {
       supported: this.isSupported(),
@@ -72,6 +78,7 @@ class MpvAudioEngine {
       exclusive: false,
       deviceId: "auto",
       bitrate: null,
+      gaplessGeneration: 0,
     };
   }
 
@@ -258,8 +265,23 @@ class MpvAudioEngine {
     }
 
     if (message.event === "file-loaded") {
+      const advanced = this.pendingAutoAdvance;
+      this.pendingAutoAdvance = null;
       this.state.active = true;
       this.state.ready = true;
+      if (advanced) {
+        // Seamless playlist advance: mpv started the preloaded entry on its
+        // own, so keep the current pause state and just adopt its identity.
+        this.state.trackId = advanced.trackId;
+        this.state.url = advanced.url;
+        this.state.position = 0;
+        this.state.duration = 0;
+        this.state.bitrate = null;
+        this.state.gaplessGeneration += 1;
+        this.writeLog("native-audio.log", `gapless advance: ${advanced.trackId}`);
+        this.emit({ kind: "loaded", gaplessGeneration: this.state.gaplessGeneration });
+        return;
+      }
       const pendingSeek = this.pendingSeek;
       const pendingPause = this.pendingPause;
       this.pendingSeek = 0;
@@ -281,9 +303,25 @@ class MpvAudioEngine {
     }
 
     if (message.event === "end-file") {
+      const advanced = this.pendingAutoAdvance;
+      if (message.reason === "eof" && advanced) {
+        // mpv moves to the appended entry itself; suppress the renderer's
+        // own advance so the track does not skip.
+        this.state.position = 0;
+        this.state.duration = 0;
+        this.emit({ kind: "progress" });
+        return;
+      }
+      this.pendingAutoAdvance = null;
       this.state.active = false;
       this.state.position = this.state.duration || this.state.position;
       this.state.paused = true;
+      if (message.reason !== "eof" && advanced) {
+        // The preloaded entry failed to load; fall back to the renderer's
+        // normal advance path instead of stalling.
+        this.emit({ kind: "ended" });
+        return;
+      }
       this.emit({ kind: message.reason === "eof" ? "ended" : "stopped" });
     }
   }
@@ -369,6 +407,26 @@ class MpvAudioEngine {
     return this.performLoad(options, token);
   }
 
+  // Append the next track to mpv's internal playlist so the advance happens
+  // inside mpv (gapless) instead of round-tripping through the renderer.
+  async loadNext(options = {}) {
+    if (!this.process || !this.socket || this.socket.destroyed) {
+      return this.snapshot({ kind: "preload-skipped" });
+    }
+    if (!this.state.active || this.isCdLoad(options)) {
+      return this.snapshot({ kind: "preload-skipped" });
+    }
+    const url = String(options.url ?? "");
+    const trackId = typeof options.trackId === "string" ? options.trackId : null;
+    if (!url || !trackId) return this.snapshot({ kind: "preload-skipped" });
+    if (this.pendingAutoAdvance?.trackId === trackId) return this.snapshot();
+
+    await this.command("loadfile", url, "append");
+    this.pendingAutoAdvance = { trackId, url };
+    this.writeLog("native-audio.log", `gapless preload: ${trackId}`);
+    return this.snapshot();
+  }
+
   isCurrentLoad(token) {
     return token === this.loadToken;
   }
@@ -427,6 +485,7 @@ class MpvAudioEngine {
   ) {
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
+    this.pendingAutoAdvance = null;
     const cdPath = this.resolveCdTrackPath({ url, nativeDevice, startChapter });
     const trackNumber = this.parseCdTrackNumber(startChapter) ?? this.parseCdTrackNumber(path.basename(cdPath)) ?? 1;
     const cdDevice = nativeDevice || path.parse(cdPath).root;
@@ -485,6 +544,7 @@ class MpvAudioEngine {
   ) {
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
+    this.pendingAutoAdvance = null;
     this.pendingSeek = Math.max(0, Number(position) || 0);
     this.pendingPause = Boolean(paused);
     this.state.trackId = trackId;
@@ -576,6 +636,7 @@ class MpvAudioEngine {
 
   async stop() {
     this.loadToken += 1;
+    this.pendingAutoAdvance = null;
     if (!this.process) return this.snapshot();
     await this.command("stop").catch(() => undefined);
     this.state.active = false;
@@ -591,6 +652,7 @@ class MpvAudioEngine {
 
   async teardown() {
     this.loadToken += 1;
+    this.pendingAutoAdvance = null;
     this.rejectPending(new Error("Native audio engine is being restarted."));
     if (this.socket && !this.socket.destroyed) {
       this.socket.destroy();

@@ -29,12 +29,28 @@ export type CdDrive = {
 
 export type CdReadQuality = "high" | "low";
 
-export async function scanMusicFolder(root: string): Promise<ScannedTrack[]> {
-  const resolvedRoot = path.resolve(root);
-  const files = await collectAudioFiles(resolvedRoot);
-  const tracks = await mapWithConcurrency(files, 6, (file) => readTrackMetadata(file, resolvedRoot));
+export type ScanProgress = {
+  phase: "discovering" | "metadata" | "complete";
+  processed: number;
+  total: number;
+};
 
-  return tracks.filter((track): track is ScannedTrack => Boolean(track)).sort(compareTracksForAlbum);
+export async function scanMusicFolder(root: string, onProgress?: (progress: ScanProgress) => void): Promise<ScannedTrack[]> {
+  const resolvedRoot = path.resolve(root);
+  onProgress?.({ phase: "discovering", processed: 0, total: 0 });
+  const files = await collectAudioFiles(resolvedRoot);
+  onProgress?.({ phase: "metadata", processed: 0, total: files.length });
+  let processed = 0;
+  const tracks = await mapWithConcurrency(files, 6, async (file) => {
+    const track = await readTrackMetadata(file, resolvedRoot);
+    processed += 1;
+    onProgress?.({ phase: "metadata", processed, total: files.length });
+    return track;
+  });
+
+  const result = tracks.filter((track): track is ScannedTrack => Boolean(track)).sort(compareTracksForAlbum);
+  onProgress?.({ phase: "complete", processed: files.length, total: files.length });
+  return result;
 }
 
 export async function listCdDrives(): Promise<CdDrive[]> {

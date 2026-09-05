@@ -20,6 +20,7 @@ declare global {
           exclusive: boolean;
           deviceId: string;
           bitrate: number | null;
+          gaplessGeneration?: number;
           kind?: string;
         }>;
         load?: (payload: {
@@ -35,6 +36,7 @@ declare global {
           endChapter?: string | null;
           cdReadQuality?: "high" | "low";
         }) => Promise<unknown>;
+        loadNext?: (payload: { trackId: string; url: string }) => Promise<unknown>;
         setPaused?: (paused: boolean) => Promise<unknown>;
         seek?: (position: number) => Promise<unknown>;
         setVolume?: (volume: number) => Promise<unknown>;
@@ -57,6 +59,7 @@ declare global {
           exclusive: boolean;
           deviceId: string;
           bitrate: number | null;
+          gaplessGeneration?: number;
           kind?: string;
         }) => void) => () => void;
       };
@@ -70,7 +73,13 @@ declare global {
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
+      chooseMusicFolder?: () => Promise<string | null>;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
+      setTaskbarPreviewRect?: (rect: { x: number; y: number; width: number; height: number } | null) => Promise<boolean>;
+      setTaskbarIconicThumb?: (pixels: Uint8ClampedArray, width: number, height: number) => Promise<boolean>;
+      setTaskbarIconicLive?: (pixels: Uint8ClampedArray, width: number, height: number) => Promise<boolean>;
+      clearTaskbarIconicThumb?: () => Promise<boolean>;
+      getTaskbarIconicStats?: () => Promise<Record<string, number | boolean> | null>;
       configureGlobalShortcuts?: (payload: Record<"toggle" | "previous" | "next" | "show", string>) => Promise<unknown>;
       copyImageToClipboard?: (payload: { url?: string; dataUrl?: string }) => Promise<boolean>;
       log?: (payload: {
@@ -235,6 +244,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ folderPath, persist }),
     });
+  },
+  startLibraryScan(folderPath: string, persist = true) {
+    return request<{ jobId: string }>("/api/library/scan/start", {
+      method: "POST",
+      body: JSON.stringify({ folderPath, persist }),
+    });
+  },
+  getLibraryScanProgress(jobId: string) {
+    return request<{
+      status: "running" | "complete" | "error";
+      phase: "discovering" | "metadata" | "saving" | "complete";
+      processed: number;
+      total: number;
+      folderPath: string;
+      error: string | null;
+      tracks?: ApiScannedTrack[];
+      library?: ApiLibraryIndex | null;
+    }>(`/api/library/scan/progress/${encodeURIComponent(jobId)}`);
   },
   scanCdDrives(persist = true, qualityMode: "high" | "low" = "high") {
     return request<{

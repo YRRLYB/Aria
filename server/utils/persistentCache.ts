@@ -14,7 +14,7 @@ type CacheFile = {
 const cachePath = path.join(cacheDir, "persistent-cache.json");
 // Hard entry ceiling so a long-lived backend cannot grow the cache (and its
 // in-memory copy) without bound; soonest-expiring entries are evicted first.
-const maxPersistentEntries = 2000;
+const maxPersistentEntries = 800;
 const writeDelayMs = 750;
 
 let cacheState: CacheFile | null = null;

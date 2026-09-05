@@ -10,19 +10,17 @@ type CoverLoadState = "loading" | "ready" | "error";
 // React, and without this index every surface briefly paints its generated
 // poster before discovering that the same cover was already loaded elsewhere.
 const coverLoadStates = new Map<string, CoverLoadState>();
-const pendingCoverLoads = new Map<string, Promise<boolean>>();
-const maxCoverLoadStates = 240;
-const maxCoverPreloadsPerSession = 96;
-let coverPreloadCount = 0;
+const maxCoverLoadStates = 96;
 
 // Player-size artwork decodes through an offscreen bitmap so oversized covers
 // (embedded FLAC artwork can exceed 3000px) shrink before they reach
 // Chromium's decoded image cache. Only a few object URLs are retained; the
 // rest are revoked after a grace period so exiting panels keep painting.
-const maxBoundedCoverPixels = 1024;
-const maxBoundedCoverEntries = 6;
+const maxBoundedCoverPixels = 768;
+const maxBoundedCoverEntries = 4;
 const boundedCoverUrlGraceMs = 60_000;
 const boundedCoverUrls = new Map<string, string>();
+const pendingBoundedCoverUrls = new Map<string, Promise<string | null>>();
 
 export function getBoundedCoverUrl(url?: string | null): Promise<string | null> {
   if (!url) return Promise.resolve(null);
@@ -33,7 +31,10 @@ export function getBoundedCoverUrl(url?: string | null): Promise<string | null> 
     return Promise.resolve(cached);
   }
 
-  return (async () => {
+  const pending = pendingBoundedCoverUrls.get(url);
+  if (pending) return pending;
+
+  const request = (async () => {
     try {
       const response = await fetch(url, { mode: "cors" });
       if (!response.ok) return url;
@@ -66,47 +67,11 @@ export function getBoundedCoverUrl(url?: string | null): Promise<string | null> 
       return url;
     }
   })();
-}
 
-export function preloadCoverImage(url?: string | null) {
-  if (!url || url.startsWith("data:")) return Promise.resolve(true);
-  if (typeof Image === "undefined") return Promise.resolve(false);
-  const state = coverLoadStates.get(url);
-  if (state === "ready") return Promise.resolve(true);
-  const pending = pendingCoverLoads.get(url);
-  if (pending) return pending;
-  if (coverPreloadCount >= maxCoverPreloadsPerSession) return Promise.resolve(false);
-  coverPreloadCount += 1;
-
-  coverLoadStates.delete(url);
-  coverLoadStates.set(url, "loading");
-  trimCoverLoadStates();
-  const request = new Promise<boolean>((resolve) => {
-    const image = new Image();
-    image.decoding = "async";
-    const imageWithPriority = image as HTMLImageElement & { fetchPriority?: string };
-    imageWithPriority.fetchPriority = "high";
-    let settled = false;
-    let timeout = 0;
-    const finish = (ready: boolean) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      image.onload = null;
-      image.onerror = null;
-      image.removeAttribute("src");
-      coverLoadStates.delete(url);
-      coverLoadStates.set(url, ready ? "ready" : "error");
-      trimCoverLoadStates();
-      pendingCoverLoads.delete(url);
-      resolve(ready);
-    };
-    timeout = window.setTimeout(() => finish(false), 12_000);
-    image.onload = () => finish(true);
-    image.onerror = () => finish(false);
-    image.src = url;
+  pendingBoundedCoverUrls.set(url, request);
+  void request.finally(() => {
+    if (pendingBoundedCoverUrls.get(url) === request) pendingBoundedCoverUrls.delete(url);
   });
-  pendingCoverLoads.set(url, request);
   return request;
 }
 
@@ -205,25 +170,29 @@ export function Metric({ value, label }: { value: string; label: string }) {
 // handed to the player <img>; while that resolves, the caller keeps painting
 // its generated poster instead of decoding the full-resolution image.
 function useLargeCoverSrc(url: string | undefined, large: boolean) {
+  const normalizedUrl =
+    large && url && url.includes("/api/providers/netease/cover")
+      ? `${url}${url.includes("?") ? "&" : "?"}size=512y512`
+      : url;
   const needsBoundedCover = Boolean(
-    large && url && !url.startsWith("data:") && !url.includes("/api/providers/netease/cover"),
+    large && normalizedUrl && !normalizedUrl.startsWith("data:"),
   );
-  const [src, setSrc] = useState<string | undefined>(needsBoundedCover ? undefined : url);
+  const [src, setSrc] = useState<string | undefined>(needsBoundedCover ? undefined : normalizedUrl);
 
   useEffect(() => {
     if (!needsBoundedCover) {
-      setSrc(url);
+      setSrc(normalizedUrl);
       return;
     }
     let mounted = true;
     setSrc(undefined);
-    void getBoundedCoverUrl(url).then((resolved) => {
+    void getBoundedCoverUrl(normalizedUrl).then((resolved) => {
       if (mounted && resolved) setSrc(resolved);
     });
     return () => {
       mounted = false;
     };
-  }, [needsBoundedCover, url]);
+  }, [needsBoundedCover, normalizedUrl]);
 
   return src;
 }
@@ -250,10 +219,7 @@ export function CoverArt({
       ? `${track.coverUrl}${track.coverUrl.includes("?") ? "&" : "?"}size=300y300`
       : track.coverUrl;
   const imageSrc = large ? largeCoverSrc : thumbnailSrc;
-  const previewSrc =
-    track.coverUrl && large && track.coverUrl.includes("/api/providers/netease/cover")
-      ? `${track.coverUrl}${track.coverUrl.includes("?") ? "&" : "?"}size=300y300`
-      : null;
+  const previewSrc = null;
   const hasImage = Boolean(imageSrc) && failedImageSrc !== imageSrc;
   const [imageReady, setImageReady] = useState(() => imageSrc ? coverLoadStates.get(imageSrc) === "ready" : false);
 
@@ -267,18 +233,8 @@ export function CoverArt({
       setImageReady(true);
       return;
     }
-    if (!large) {
-      // The visible list image is already the request we need; avoid creating
-      // a second decoder just to warm a thumbnail.
-      return;
-    }
-    let mounted = true;
-    void preloadCoverImage(imageSrc).then((ready) => {
-      if (mounted) setImageReady(ready);
-    });
-    return () => {
-      mounted = false;
-    };
+    // Let the visible <img> own the only decoder for this cover. A separate
+    // preload Image followed by the visible element doubled decoded memory.
   }, [imageSrc, large]);
 
   const copyArtwork = (event: MouseEvent<HTMLElement>) => {
@@ -351,7 +307,7 @@ export function CoverArt({
           <div className="absolute inset-0 opacity-95" style={{ background: track.cover }} />
           <div className="absolute inset-0 bg-gradient-to-br from-white/22 via-transparent to-black/32" />
           <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(255,255,255,0.12),transparent_42%,rgba(0,0,0,0.18))]" />
-          {large && (
+          {large && track.id !== "idle" && (
             <div className="absolute inset-x-7 bottom-7 z-10 text-white">
               <p className="line-clamp-3 text-3xl font-semibold leading-tight drop-shadow">{track.title}</p>
               <p className="mt-2 truncate text-sm font-medium text-white/74">{track.artist}</p>

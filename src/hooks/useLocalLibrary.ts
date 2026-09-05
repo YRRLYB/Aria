@@ -17,6 +17,7 @@ export function useLocalLibrary(options: {
   onLibraryOpened: () => void;
   onTrackScanned: (trackId: string) => void;
   resetPendingSeek: () => void;
+  onScanProgress?: (progress: { phase: string; processed: number; total: number; status: string; error?: string | null }) => void;
 }) {
   const [localTracks, setLocalTracks] = useState<Track[]>([]);
   const [libraryMeta, setLibraryMeta] = useState({ roots: 0, updatedAt: null as string | null });
@@ -40,7 +41,7 @@ export function useLocalLibrary(options: {
         return true;
       })
       .slice(0, limit);
-    trimStringSet(preloadedCoverUrlsRef, 48);
+    trimStringSet(preloadedCoverUrlsRef, 16);
 
     urls.forEach((url) => {
       const image = new Image();
@@ -83,12 +84,22 @@ export function useLocalLibrary(options: {
   }
 
   async function scanBackendPath(scanPath: string) {
-    const result = await api.scanLibrary(scanPath);
-    const nextTracks = result.library?.tracks ?? result.tracks;
+    options.onScanProgress?.({ phase: "discovering", processed: 0, total: 0, status: "running" });
+    const { jobId } = await api.startLibraryScan(scanPath);
+    let result: Awaited<ReturnType<typeof api.getLibraryScanProgress>>;
+    while (true) {
+      result = await api.getLibraryScanProgress(jobId);
+      options.onScanProgress?.(result);
+      if (result.status === "complete" || result.status === "error") break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (result.status === "error") throw new Error(result.error || "Library scan failed");
+    const nextTracks = result.library?.tracks ?? result.tracks ?? [];
     const nextUiTracks = nextTracks.map(localTrackToUiTrack);
     options.resetPendingSeek();
     setLocalTracks(nextUiTracks);
     warmLocalCoverCache(nextUiTracks);
+    setFolderName(scanPath);
     options.setPlayQueueIds(() => materializeQueueIds(nextUiTracks, nextUiTracks[0]?.id ?? options.activeTrackId, options.shuffleEnabled));
     setLibraryMeta({
       roots: result.library?.roots.length ?? 1,
@@ -96,6 +107,8 @@ export function useLocalLibrary(options: {
     });
     if (nextTracks[0]) options.onTrackScanned(nextTracks[0].id);
     options.onLibraryOpened();
+    options.onScanProgress?.({ phase: "complete", processed: nextUiTracks.length, total: nextUiTracks.length, status: "complete" });
+    return { folderPath: scanPath, trackCount: nextUiTracks.length };
   }
 
   async function scanCdLibrary(qualityMode: "high" | "low") {

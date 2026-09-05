@@ -144,7 +144,7 @@ export function useDiscovery(options: {
             const remoteTracks = result.tracks.map((track, index) => providerTrackToUiTrack(track, index));
             artistRemoteTracksCacheRef.current.delete(artistId);
             artistRemoteTracksCacheRef.current.set(artistId, remoteTracks);
-            while (artistRemoteTracksCacheRef.current.size > 24) {
+            while (artistRemoteTracksCacheRef.current.size > 8) {
               const oldest = artistRemoteTracksCacheRef.current.keys().next().value;
               if (oldest === undefined) break;
               artistRemoteTracksCacheRef.current.delete(oldest);

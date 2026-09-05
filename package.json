@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.3.4-beta",
+  "version": "0.3.12-beta.5",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -10,9 +10,10 @@
     "dev:web": "vite --host 127.0.0.1",
     "dev:server": "tsx watch server/index.ts",
     "dev:electron": "electron .",
+    "build:native": "node scripts/build-native.cjs",
     "build:web": "vite build",
     "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
-    "build:desktop": "npm run ensure:mpv && npm run build:web && npm run build:server",
+    "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:web && npm run build:server",
     "dist:beta": "npm run build:desktop && electron-builder --win nsis --x64",
     "test": "vitest run",
     "start:server": "node dist-server/index.cjs",
@@ -46,6 +47,7 @@
     "electron": "^43.0.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.1",
+    "node-gyp": "^13.0.2",
     "tsx": "^4.22.5",
     "typescript": "~5.8.3",
     "vite": "^7.0.2",
@@ -62,13 +64,15 @@
       "dist/**/*",
       "dist-server/**/*",
       "electron/**/*",
+      "!electron/native/aria-thumbnail/build/**/*",
       "vendor/**/*",
       "build/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "dist-server/node_modules/**/*",
-      "vendor/mpv/**/*"
+      "vendor/mpv/**/*",
+      "electron/native/**/*.node"
     ],
     "win": {
       "icon": "build/icon.ico",

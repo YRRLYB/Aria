@@ -1,19 +1,19 @@
 export const memoryLimits = {
-  neteaseWarmup: 220,
-  artistRequest: 160,
-  artistAvatarLookup: 220,
-  artistAvatarCache: 128,
-  localCoverWarmup: 260,
-  artworkSyncing: 600,
+  neteaseWarmup: 120,
+  artistRequest: 80,
+  artistAvatarLookup: 96,
+  artistAvatarCache: 64,
+  localCoverWarmup: 120,
+  artworkSyncing: 240,
 } as const;
 
 export const warmupBatchLimits = {
-  neteaseTracks: 72,
-  neteaseMetadataPlaying: 8,
-  neteaseMetadataIdle: 16,
-  localCovers: 36,
+  neteaseTracks: 24,
+  neteaseMetadataPlaying: 4,
+  neteaseMetadataIdle: 8,
+  localCovers: 12,
   // Keep eager image work small; visible rows already use native lazy loading.
-  preloadedImages: 8,
+  preloadedImages: 4,
 } as const;
 
 export function trimStringSet(ref: { current: Set<string> }, maxItems = 600) {

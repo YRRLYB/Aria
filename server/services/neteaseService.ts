@@ -41,8 +41,8 @@ export async function checkNeteaseQrLogin(key: string) {
     timestamp: Date.now(),
     noCookie: true,
   } as never);
-  const body = response.body as { code?: number; message?: string; cookie?: string } | undefined;
-  const code = Number(body?.code ?? 0);
+  const body = response.body as { code?: number; message?: string; cookie?: string; data?: { code?: number } } | undefined;
+  const code = Number(body?.code ?? body?.data?.code ?? 0);
   const cookie = typeof body?.cookie === "string" ? body.cookie : Array.isArray(response.cookie) ? response.cookie.join(";") : "";
 
   if (code === 803) {
@@ -81,27 +81,26 @@ export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary>
     };
   }
 
-  try {
-    const response = await neteaseApi.user_account({ cookie: store.neteaseCookie });
-    const profile = response.body?.profile as
-      | {
-          userId?: number | string;
-          nickname?: string;
-          avatarUrl?: string;
-        }
-      | undefined;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await neteaseApi.user_account({ cookie: store.neteaseCookie });
+      const profile =
+        findNeteaseProfile(response.body) ??
+        findNeteaseProfile((await neteaseApi.login_status({ cookie: store.neteaseCookie })).body);
 
-    if (response.body?.code === 200 && profile?.userId) {
-      return {
-        connected: true,
-        nickname: profile.nickname ?? "Netease Account",
-        userId: String(profile.userId),
-        avatarUrl: profile.avatarUrl ?? null,
-        cookiePreview: maskCookie(store.neteaseCookie),
-      };
+      if (profile?.userId) {
+        return {
+          connected: true,
+          nickname: profile.nickname ?? "Netease Account",
+          userId: String(profile.userId),
+          avatarUrl: profile.avatarUrl ?? null,
+          cookiePreview: maskCookie(store.neteaseCookie),
+        };
+      }
+    } catch {
+      // A saved cookie may need one short retry while the provider session settles.
     }
-  } catch {
-    // A saved cookie exists, but the remote profile could not be read right now.
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
   return {
@@ -111,6 +110,29 @@ export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary>
     avatarUrl: null,
     cookiePreview: maskCookie(store.neteaseCookie),
   };
+}
+
+function findNeteaseProfile(value: unknown): { userId?: number | string; nickname?: string; avatarUrl?: string } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const candidates = [
+    record.profile,
+    record.account && typeof record.account === "object" ? (record.account as Record<string, unknown>).profile : undefined,
+    record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>).profile : undefined,
+    record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>).account : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const profile = candidate as Record<string, unknown>;
+    if (profile.userId) {
+      return {
+        userId: profile.userId as string | number,
+        nickname: typeof profile.nickname === "string" ? profile.nickname : undefined,
+        avatarUrl: typeof profile.avatarUrl === "string" ? profile.avatarUrl : undefined,
+      };
+    }
+  }
+  return undefined;
 }
 
 function maskCookie(cookie: string) {

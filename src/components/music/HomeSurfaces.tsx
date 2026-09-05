@@ -159,7 +159,9 @@ export function HomeSurface({
           className="group relative m-4 min-h-72 overflow-hidden rounded-[1.65rem] border border-neutral-950/10 bg-neutral-950 p-0 text-left shadow-[0_24px_70px_rgba(20,24,35,0.18)]"
           onClick={onOpenPlayer}
         >
-          <CoverArt track={activeTrack} className="absolute inset-0 size-full rounded-[1.65rem]" large />
+          <div className="absolute inset-0" data-taskbar-anchor="home-cover">
+            <CoverArt track={activeTrack} className="size-full rounded-[1.65rem]" large />
+          </div>
           <div className="absolute inset-0 bg-gradient-to-t from-black/82 via-black/24 to-transparent" />
           <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(255,255,255,0.14),transparent_34%,rgba(0,0,0,0.24))]" />
           <div className="absolute right-5 top-5 z-20">
@@ -175,17 +177,24 @@ export function HomeSurface({
               {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
             </Button>
           </div>
-          <div className="absolute bottom-5 left-5 right-5 z-20">
-            <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">
-              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-            </h2>
-            <p className="mt-2 truncate text-base font-medium text-white/84">
-              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
-            </p>
-            <p className="mt-1 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
-              {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}
-            </p>
-          </div>
+          {activeTrack.id === "idle" ? (
+            <div className="absolute inset-x-5 bottom-5 z-20 rounded-[1rem] border border-white/20 bg-neutral-950/35 px-4 py-3 text-white backdrop-blur-sm">
+              <p className="text-lg font-semibold">暂无播放</p>
+              <p className="mt-1 text-xs text-white/70">从本地音乐或网易云选择一首歌开始。</p>
+            </div>
+          ) : (
+            <div className="absolute bottom-5 left-5 right-5 z-20">
+              <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">
+                <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+              </h2>
+              <p className="mt-2 truncate text-base font-medium text-white/84">
+                <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+              </p>
+              <p className="mt-1 truncate text-xs font-medium uppercase tracking-[0.16em] text-white/58">
+                {activeTrack.album} · {sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}
+              </p>
+            </div>
+          )}
         </button>
       </section>
 

@@ -47,7 +47,7 @@ export function readPlayHistory(): PlayHistoryEntry[] {
         playedAt: entry.playedAt,
         count: typeof entry.count === "number" && entry.count > 0 ? Math.round(entry.count) : 1,
       }))
-      .slice(0, 200);
+      .slice(0, 80);
   } catch {
     return [];
   }
@@ -55,7 +55,7 @@ export function readPlayHistory(): PlayHistoryEntry[] {
 
 export function writePlayHistory(history: PlayHistoryEntry[]) {
   try {
-    const compactHistory = history.slice(0, 200).map((entry) => ({
+    const compactHistory = history.slice(0, 80).map((entry) => ({
       ...entry,
       track: createPlayerCacheSnapshot(entry.track),
     }));

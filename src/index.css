@@ -119,7 +119,7 @@ textarea::selection,
   border: 1px solid rgba(255, 255, 255, 0.72);
   background: rgba(255, 255, 255, 0.48);
   box-shadow: 0 22px 70px rgba(47, 55, 76, 0.12);
-  backdrop-filter: blur(16px) saturate(1.12);
+  backdrop-filter: blur(10px) saturate(1.08);
 }
 
 .noise {
@@ -251,7 +251,7 @@ textarea::selection,
   height: 28%;
   border-radius: 999px;
   background: color-mix(in srgb, var(--track-accent) 42%, white);
-  filter: blur(42px);
+  filter: blur(24px);
   opacity: 0.38;
 }
 

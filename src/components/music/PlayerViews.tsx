@@ -202,14 +202,23 @@ export function PlayerSurface({
             background: `linear-gradient(145deg, ${palette.primary}30, ${palette.secondary}18, rgba(255,255,255,0.48))`,
           }}
         >
-          <div className="absolute inset-0">
-            <CoverArt
-              track={activeTrack}
-              className="size-full"
-              fit="cover"
-              large
-              onArtworkContextMenu={openArtworkMenu}
-            />
+          <div className="absolute inset-0" data-taskbar-anchor="player-cover">
+            {activeTrack.id === "idle" ? (
+              <div className="flex size-full items-center justify-center bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.8),transparent_42%),linear-gradient(145deg,#e9edf2,#9ba6b5)] p-8 text-center">
+                <div>
+                  <p className="text-2xl font-semibold text-neutral-900">暂无播放</p>
+                  <p className="mt-2 text-sm text-neutral-600">从本地音乐或网易云选择一首歌开始。</p>
+                </div>
+              </div>
+            ) : (
+              <CoverArt
+                track={activeTrack}
+                className="size-full"
+                fit="cover"
+                large
+                onArtworkContextMenu={openArtworkMenu}
+              />
+            )}
           </div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />
         </div>
@@ -284,13 +293,22 @@ export function PlayerSurface({
                 </Button>
               </div>
             </div>
-            <h1 className="mt-6 line-clamp-3 max-w-[min(100%,42rem)] overflow-hidden break-words text-[clamp(2rem,4vw,4.3rem)] font-semibold leading-[1.03] text-neutral-950 [overflow-wrap:anywhere]">
-              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-            </h1>
-            <p className="mt-3 truncate text-xl text-neutral-500">
-              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
-            </p>
-            <p className="mt-1 text-sm text-neutral-400">{activeTrack.album}</p>
+            {activeTrack.id === "idle" ? (
+              <div className="mt-6 rounded-[1.25rem] border border-white/70 bg-white/55 p-5 shadow-sm">
+                <h1 className="text-3xl font-semibold text-neutral-950">暂无播放</h1>
+                <p className="mt-2 text-sm text-neutral-500">从本地音乐或网易云选择一首歌开始。</p>
+              </div>
+            ) : (
+              <>
+                <h1 className="mt-6 line-clamp-3 max-w-[min(100%,42rem)] overflow-hidden break-words text-[clamp(2rem,4vw,4.3rem)] font-semibold leading-[1.03] text-neutral-950 [overflow-wrap:anywhere]">
+                  <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+                </h1>
+                <p className="mt-3 truncate text-xl text-neutral-500">
+                  <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+                </p>
+                <p className="mt-1 text-sm text-neutral-400">{activeTrack.album}</p>
+              </>
+            )}
           </div>
 
           <div className="mt-4">
@@ -486,7 +504,10 @@ export function ImmersivePlayerView({
         </div>
 
         <div className="grid min-h-0 items-center gap-8 lg:grid-cols-[minmax(360px,0.86fr)_minmax(0,1.14fr)]">
-          <div className="mx-auto aspect-square w-[min(68vh,560px)] overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]">
+          <div
+            className="mx-auto aspect-square w-[min(68vh,560px)] overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]"
+            data-taskbar-anchor="immersive"
+          >
             <CoverArt track={activeTrack} className="size-full" fit="cover" large />
           </div>
 

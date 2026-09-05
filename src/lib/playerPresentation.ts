@@ -12,6 +12,7 @@ export type CachedPlayerState = {
   activeView?: ViewId;
   playerSideView?: PlayerSideView;
   playQueueIds?: string[];
+  playQueueSnapshots?: Track[];
   currentTime?: number;
   volume?: number;
   qualityLevel?: QualityLevel;
@@ -23,6 +24,7 @@ export type CachedPlayerState = {
 const playerCacheKey = "aria-player-state";
 const lyricCacheKey = "aria-lyrics-cache";
 const audioSettingsKey = "aria-audio-settings";
+export const maxCachedQueueTracks = 1200;
 
 export const qualityOptions: Array<{ value: QualityLevel; label: string }> = [
   { value: "standard", label: "标准" },
@@ -50,14 +52,23 @@ export function readCachedPlayerState(): CachedPlayerState {
     const navIds = new Set<string>([...navItems.map((item) => item.id), "settings"]);
     const qualityIds = new Set(qualityOptions.map((item) => item.value));
 
+    const playQueueSnapshots = Array.isArray(parsed.playQueueSnapshots)
+      ? parsed.playQueueSnapshots
+          .map((track) => normalizeTrackSnapshot(track))
+          .filter((track): track is Track => Boolean(track))
+          .slice(0, maxCachedQueueTracks)
+      : [];
+    const cachedQueueIds = Array.isArray(parsed.playQueueIds)
+      ? parsed.playQueueIds.filter((id): id is string => typeof id === "string")
+      : [];
+
     return {
       activeTrackId: typeof parsed.activeTrackId === "string" ? parsed.activeTrackId : undefined,
       activeTrackSnapshot: hydrateTrackLyrics(normalizeTrackSnapshot(parsed.activeTrackSnapshot)),
       activeView: parsed.activeView && navIds.has(parsed.activeView) ? parsed.activeView : undefined,
       playerSideView: parsed.playerSideView === "queue" ? "queue" : parsed.playerSideView === "lyrics" ? "lyrics" : undefined,
-      playQueueIds: Array.isArray(parsed.playQueueIds)
-        ? parsed.playQueueIds.filter((id): id is string => typeof id === "string")
-        : undefined,
+      playQueueIds: mergeTrackIds(cachedQueueIds, playQueueSnapshots.map((track) => track.id)),
+      playQueueSnapshots,
       currentTime: undefined,
       volume:
         typeof parsed.volume === "number" && Number.isFinite(parsed.volume)
@@ -71,6 +82,62 @@ export function readCachedPlayerState(): CachedPlayerState {
   } catch {
     return {};
   }
+}
+
+function mergeTrackIds(...sets: string[][]) {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const values of sets) {
+    for (const id of values) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+// Queue persistence needs enough information to resume a remote queue before
+// its source view has loaded, but retaining lyrics and waveform payloads for
+// hundreds of tracks needlessly consumes localStorage.
+export function createCachedQueueSnapshots(
+  tracks: Track[],
+  maxItems = maxCachedQueueTracks,
+) {
+  const uniqueTracks = tracks.filter((track, index) => tracks.findIndex((item) => item.id === track.id) === index);
+  return uniqueTracks.slice(0, Math.max(0, maxItems)).map((track) => ({
+    id: track.id,
+    providerId: track.providerId,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    albumArtist: track.albumArtist ?? null,
+    duration: track.duration,
+    quality: track.quality,
+    source: track.source,
+    streamUrl: track.streamUrl,
+    coverUrl: track.coverUrl?.startsWith("data:") ? undefined : track.coverUrl,
+    trackNumber: track.trackNumber ?? null,
+    discNumber: track.discNumber ?? null,
+    bitrate: track.bitrate ?? null,
+    sampleRate: track.sampleRate ?? null,
+    bpm: null,
+    libraryRoot: track.libraryRoot,
+    mediaKind: track.mediaKind,
+    nativeDevice: track.nativeDevice ?? null,
+    nativeStart: track.nativeStart ?? null,
+    nativeEnd: track.nativeEnd ?? null,
+    cdReadQuality: track.cdReadQuality ?? "high",
+    requiresNativePlayback: track.requiresNativePlayback === true,
+    likedAt: track.likedAt ?? null,
+    currentLevel: track.currentLevel ?? null,
+    availableLevels: track.availableLevels ?? [],
+    cover: track.cover,
+    accent: track.accent,
+    waveform: [],
+    lyrics: [],
+    lyricStatus: track.lyricStatus,
+  } satisfies Track));
 }
 
 function hydrateTrackLyrics(track?: Track): Track | undefined {
@@ -184,6 +251,7 @@ export function readCachedAudioSettings() {
     const parsed = JSON.parse(raw) as {
       sinkId?: string;
       hifiEnabled?: boolean;
+      gaplessEnabled?: boolean;
       exclusiveMode?: boolean;
       outputMode?: AudioOutputMode;
     };
@@ -196,6 +264,7 @@ export function readCachedAudioSettings() {
     return {
       sinkId: typeof parsed.sinkId === "string" ? parsed.sinkId : "default",
       hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
+      gaplessEnabled: typeof parsed.gaplessEnabled === "boolean" ? parsed.gaplessEnabled : false,
       exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
       outputMode,
     };
@@ -207,6 +276,7 @@ export function readCachedAudioSettings() {
 export function writeCachedAudioSettings(settings: {
   sinkId: string;
   hifiEnabled: boolean;
+  gaplessEnabled: boolean;
   exclusiveMode: boolean;
   outputMode: AudioOutputMode;
 }) {
@@ -362,7 +432,7 @@ export function mergeTracks(tracksToMerge: Track[]) {
   });
 }
 
-export function trimTrackCache(tracksToMerge: Track[], maxItems = 1400) {
+export function trimTrackCache(tracksToMerge: Track[], maxItems = 800) {
   const merged = mergeTracks(tracksToMerge);
   return merged.length > maxItems ? merged.slice(merged.length - maxItems) : merged;
 }

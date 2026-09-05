@@ -8,6 +8,27 @@ import { listCdDrives, scanCdDrives, scanMusicFolder } from "../musicScanner";
 import type { ScannedTrack } from "../types";
 import { HttpError } from "../utils/httpError";
 
+type ScanJob = {
+  status: "running" | "complete" | "error";
+  phase: "discovering" | "metadata" | "saving" | "complete";
+  processed: number;
+  total: number;
+  folderPath: string;
+  tracks?: ScannedTrack[];
+  library?: Awaited<ReturnType<typeof readLibrary>> | null;
+  error?: string;
+  updatedAt: number;
+};
+
+const scanJobs = new Map<string, ScanJob>();
+
+function pruneScanJobs() {
+  const cutoff = Date.now() - 10 * 60_000;
+  for (const [id, job] of scanJobs) {
+    if (job.updatedAt < cutoff) scanJobs.delete(id);
+  }
+}
+
 export function createLibraryRouter() {
   const router = express.Router();
 
@@ -26,6 +47,70 @@ export function createLibraryRouter() {
     } catch (error) {
       next(error);
     }
+  });
+
+  router.post("/scan/start", async (req, res, next) => {
+    try {
+      const body = z.object({ folderPath: z.string().min(1), persist: z.boolean().optional().default(true) }).parse(req.body);
+      pruneScanJobs();
+      const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const job: ScanJob = {
+        status: "running",
+        phase: "discovering",
+        processed: 0,
+        total: 0,
+        folderPath: body.folderPath,
+        updatedAt: Date.now(),
+      };
+      scanJobs.set(jobId, job);
+      void (async () => {
+        try {
+          const tracks = await scanMusicFolder(body.folderPath, (progress) => {
+            job.phase = progress.phase;
+            job.processed = progress.processed;
+            job.total = progress.total;
+            job.updatedAt = Date.now();
+          });
+          job.phase = "saving";
+          job.updatedAt = Date.now();
+          const library = body.persist ? await replaceLibraryRoot(body.folderPath, tracks) : null;
+          void warmLocalCovers(tracks).catch(() => undefined);
+          job.tracks = tracks;
+          job.library = library;
+          job.phase = "complete";
+          job.status = "complete";
+          job.processed = tracks.length;
+          job.total = Math.max(job.total, tracks.length);
+          job.updatedAt = Date.now();
+        } catch (error) {
+          job.status = "error";
+          job.phase = "complete";
+          job.error = error instanceof Error ? error.message : String(error);
+          job.updatedAt = Date.now();
+        }
+      })();
+      res.status(202).json({ jobId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/scan/progress/:jobId", (req, res) => {
+    const job = scanJobs.get(req.params.jobId);
+    if (!job) {
+      res.status(404).json({ error: "Scan job not found" });
+      return;
+    }
+    res.json({
+      status: job.status,
+      phase: job.phase,
+      processed: job.processed,
+      total: job.total,
+      folderPath: job.folderPath,
+      error: job.error ?? null,
+      tracks: job.status === "complete" ? job.tracks ?? [] : undefined,
+      library: job.status === "complete" ? job.library ?? null : undefined,
+    });
   });
 
   router.get("/cd-drives", async (_req, res, next) => {

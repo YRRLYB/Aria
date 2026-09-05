@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState, type CSSProperties } from "react";
+import { useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Cookie, Keyboard, Radio, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, FolderSearch, Keyboard, Radio, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
@@ -32,6 +33,8 @@ export function SettingsPanel({
   onSelectedSinkIdChange,
   hifiEnabled,
   onHifiEnabledChange,
+  gaplessEnabled,
+  onGaplessEnabledChange,
   nativeAudioSupported,
   nativeAudioState,
   audioOutputMode,
@@ -55,6 +58,8 @@ export function SettingsPanel({
   onSelectedSinkIdChange: (value: string) => void;
   hifiEnabled: boolean;
   onHifiEnabledChange: (value: boolean) => void;
+  gaplessEnabled: boolean;
+  onGaplessEnabledChange: (value: boolean) => void;
   nativeAudioSupported: boolean;
   nativeAudioState: NativeAudioState | null;
   audioOutputMode: AudioOutputMode;
@@ -246,14 +251,14 @@ export function SettingsPanel({
                     mode: "system" as const,
                     label: "系统音频",
                     badge: "兼容",
-                    desc: "HTMLAudio 输出，频谱直接跟随播放器。",
+                    desc: "WASAPI 共享输出，频谱直接跟随播放器。",
                     Icon: Volume2,
                   },
                   {
                     mode: "shared" as const,
                     label: "WASAPI 共享",
                     badge: "兼容",
-                    desc: "mpv 原生共享，保留无损流并支持应用音频捕获。",
+                    desc: "独立 Aria 音频会话，适合 OOPZ 等应用共享。",
                     Icon: Radio,
                   },
                   {
@@ -307,11 +312,6 @@ export function SettingsPanel({
                   );
                 })}
               </div>
-              {audioOutputMode === "shared" && nativeAudioSupported && (
-                <p className="mt-3 rounded-[0.9rem] bg-neutral-950/[0.035] px-3 py-2 text-xs leading-5 text-neutral-500">
-                  共享模式保持原生无损输出；在 OOPZ 中选择 Aria 的程序音频即可共享。Windows 需 10.0.19044 以上，独占模式不会进入系统混音。
-                </p>
-              )}
               <div className="mt-5 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Device</p>
@@ -386,6 +386,28 @@ export function SettingsPanel({
                   className={cn(
                     "size-6 rounded-full bg-white shadow-sm transition",
                     hifiEnabled && "translate-x-6",
+                  )}
+                />
+              </button>
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
+              <div>
+                <p className="text-sm font-semibold">无缝衔接</p>
+                <p className="mt-1 text-xs text-neutral-500">提前加载下一首，减少歌曲切换时的空隙。</p>
+              </div>
+              <button
+                className={cn(
+                  "flex h-8 w-14 items-center rounded-full p-1 transition",
+                  gaplessEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                )}
+                onClick={() => onGaplessEnabledChange(!gaplessEnabled)}
+                aria-label="切换无缝衔接"
+                aria-pressed={gaplessEnabled}
+              >
+                <span
+                  className={cn(
+                    "size-6 rounded-full bg-white shadow-sm transition",
+                    gaplessEnabled && "translate-x-6",
                   )}
                 />
               </button>
@@ -501,18 +523,25 @@ function KeyboardShortcutSettings({
 export function AccountPanel({
   onClose,
   onAccountChange,
+  initialAccount = null,
+  embedded = false,
 }: {
   onClose: () => void;
   onAccountChange?: (account: NeteaseAccountSummary) => void;
+  initialAccount?: NeteaseAccountSummary | null;
+  embedded?: boolean;
 }) {
   const [cookie, setCookie] = useState("");
-  const [account, setAccount] = useState<NeteaseAccountSummary | null>(null);
+  const [account, setAccount] = useState<NeteaseAccountSummary | null>(initialAccount);
   const [qrLogin, setQrLogin] = useState<NeteaseQrStart | null>(null);
   const [qrStatus, setQrStatus] = useState("点击生成二维码后，用网易云音乐扫码登录。");
   const [showCookie, setShowCookie] = useState(false);
   const [saving, setSaving] = useState(false);
   const [qrLoading, setQrLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const qrSyncingRef = useRef(false);
+  const accountChangeRef = useRef(onAccountChange);
+  accountChangeRef.current = onAccountChange;
 
   useEffect(() => {
     let mounted = true;
@@ -520,7 +549,7 @@ export function AccountPanel({
       .getSettings()
       .then((settings) => {
         if (mounted) {
-          setAccount(settings.neteaseAccount);
+          setAccount((current) => (current?.connected ? current : settings.neteaseAccount));
         }
       })
       .catch(() => {
@@ -532,7 +561,11 @@ export function AccountPanel({
   }, []);
 
   useEffect(() => {
-    if (!qrLogin || account?.connected) return;
+    if (initialAccount?.connected) setAccount(initialAccount);
+  }, [initialAccount]);
+
+  useEffect(() => {
+    if (!qrLogin) return;
 
     let cancelled = false;
     const check = async () => {
@@ -542,10 +575,31 @@ export function AccountPanel({
 
         if (result.status === "success" && result.account) {
           setAccount(result.account);
-          onAccountChange?.(result.account);
-          setQrLogin(null);
-          setQrStatus("登录成功，账号信息已同步。");
+          accountChangeRef.current?.(result.account);
+          if (qrSyncingRef.current) return;
+          qrSyncingRef.current = true;
+          setQrStatus("登录已确认，正在同步账号信息...");
           setMessage("网易云账号已登录");
+          let attempts = 0;
+          const refreshAccount = () => {
+            attempts += 1;
+            void api.getSettings().then((settings) => {
+              if (settings.neteaseAccount.connected) {
+                setAccount(settings.neteaseAccount);
+                accountChangeRef.current?.(settings.neteaseAccount);
+                setQrLogin(null);
+                setQrStatus("登录成功，账号信息已同步。");
+                qrSyncingRef.current = false;
+                return;
+              }
+              if (attempts < 12 && !cancelled) window.setTimeout(refreshAccount, 500);
+              else qrSyncingRef.current = false;
+            }).catch(() => {
+              if (attempts < 12 && !cancelled) window.setTimeout(refreshAccount, 500);
+              else qrSyncingRef.current = false;
+            });
+          };
+          refreshAccount();
           return;
         }
 
@@ -566,11 +620,12 @@ export function AccountPanel({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [account?.connected, onAccountChange, qrLogin]);
+  }, [qrLogin]);
 
   async function startQrLogin() {
     setQrLoading(true);
     setMessage(null);
+    qrSyncingRef.current = false;
     try {
       const result = await api.startNeteaseQrLogin();
       setQrLogin(result);
@@ -605,11 +660,14 @@ export function AccountPanel({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: -8, scale: 0.98, filter: "blur(12px)" }}
-      animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-      exit={{ opacity: 0, y: -8, scale: 0.98, filter: "blur(12px)" }}
+      initial={{ opacity: 0, y: -8, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -8, scale: 0.98 }}
       transition={{ duration: 0.22 }}
-      className="glass absolute right-0 top-14 z-50 w-[min(25rem,calc(100vw-2rem))] rounded-[1.4rem] p-4"
+      className={cn(
+        "glass z-50 w-[min(25rem,calc(100vw-2rem))] rounded-[1.4rem] p-4",
+        embedded ? "relative right-auto top-auto w-full shadow-none" : "absolute right-0 top-14",
+      )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -696,6 +754,177 @@ export function AccountPanel({
         <Metric value={account?.userId ?? "--"} label="用户" />
         <Metric value={account?.connected ? "Ready" : "--"} label="同步" />
       </div>
+    </motion.div>
+  );
+}
+
+export function OnboardingDialog({
+  neteaseAccount,
+  hifiEnabled,
+  onHifiEnabledChange,
+  backgroundEnabled,
+  onBackgroundEnabledChange,
+  gaplessEnabled,
+  onGaplessEnabledChange,
+  onAddLocalMusic,
+  localMusicInfo,
+  scanProgress,
+  onAccountChange,
+  onComplete,
+}: {
+  neteaseAccount: NeteaseAccountSummary | null;
+  hifiEnabled: boolean;
+  onHifiEnabledChange: (value: boolean) => void;
+  backgroundEnabled: boolean;
+  onBackgroundEnabledChange: (value: boolean) => void;
+  gaplessEnabled: boolean;
+  onGaplessEnabledChange: (value: boolean) => void;
+  onAddLocalMusic: () => void;
+  localMusicInfo: { path: string; count: number } | null;
+  scanProgress: { phase: string; processed: number; total: number; status: string; error?: string | null } | null;
+  onAccountChange: (account: NeteaseAccountSummary) => void;
+  onComplete: () => void;
+}) {
+  const [step, setStep] = useState(0);
+
+  function finish() {
+    try {
+      window.localStorage.setItem("aria-onboarding-complete", "1");
+    } catch {
+      // The wizard should never block normal playback when storage is unavailable.
+    }
+    onComplete();
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-neutral-950/25 p-4 backdrop-blur-sm"
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 16, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        className="max-h-[min(90vh,52rem)] w-full max-w-2xl overflow-y-auto rounded-[1.5rem] border border-white/80 bg-[#f7f8fa]/95 p-5 shadow-[0_30px_100px_rgba(20,24,35,0.24)] sm:p-7"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-neutral-400">Aria</p>
+            <h1 className="mt-1 text-2xl font-semibold">开始使用 Aria</h1>
+          </div>
+          <div className="flex items-center gap-1.5" aria-label={`第 ${step + 1} 步，共 4 步`}>
+            {[0, 1, 2, 3].map((item) => (
+              <span key={item} className={cn("size-2 rounded-full", item === step ? "bg-neutral-950" : "bg-neutral-300")} />
+            ))}
+          </div>
+        </div>
+
+        {step === 0 && (
+          <div className="mt-8 grid gap-5 sm:grid-cols-[1.1fr_0.9fr] sm:items-center">
+            <div>
+              <h2 className="text-3xl font-semibold leading-tight">你的音乐，<br />从这里开始。</h2>
+              <p className="mt-4 text-sm leading-6 text-neutral-500">Aria 把本地音乐、网易云歌单和高音质播放集中在一个安静的工作台里。</p>
+            </div>
+            <div className="rounded-[1.25rem] bg-neutral-950 p-5 text-white shadow-lg">
+              <p className="text-xs uppercase tracking-[0.2em] text-white/55">Ready when you are</p>
+              <div className="mt-5 space-y-3 text-sm text-white/80">
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />网易云流媒体</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />本地无损音乐</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />任务栏快捷控制</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 1 && (
+          <div className="mt-8">
+            <h2 className="text-xl font-semibold">添加你的本地音乐</h2>
+            <p className="mt-2 text-sm leading-6 text-neutral-500">选择一个音乐文件夹，Aria 会扫描歌曲、封面、码率和采样率。文件不会被复制或移动，扫描完成后可以在左侧“本地音乐”查看。</p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-[1.1rem] bg-white/70 p-4 shadow-sm"><p className="font-medium">选择文件夹</p><p className="mt-1 text-xs leading-5 text-neutral-500">支持 FLAC、ALAC、WAV、MP3 等常见格式。</p></div>
+              <div className="rounded-[1.1rem] bg-white/70 p-4 shadow-sm"><p className="font-medium">自动识别</p><p className="mt-1 text-xs leading-5 text-neutral-500">读取内嵌封面、艺术家、专辑和真实音频参数。</p></div>
+              <div className="rounded-[1.1rem] bg-white/70 p-4 shadow-sm"><p className="font-medium">随时管理</p><p className="mt-1 text-xs leading-5 text-neutral-500">设置中的本地音乐入口可以重新扫描或清除索引。</p></div>
+            </div>
+            {localMusicInfo && (
+              <div className="mt-5 grid gap-3 rounded-[1.1rem] border border-emerald-200/70 bg-emerald-50/70 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-700/70">已选择本地音乐</p>
+                  <p className="mt-1 truncate text-sm font-semibold text-emerald-950" title={localMusicInfo.path}>{localMusicInfo.path}</p>
+                </div>
+                <p className="text-lg font-semibold text-emerald-900">{localMusicInfo.count} 首</p>
+              </div>
+            )}
+            {scanProgress?.status === "running" && (
+              <div className="mt-4 rounded-[1rem] border border-sky-200/70 bg-sky-50/70 p-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">正在扫描本地音乐</span>
+                  <span className="text-sky-700">{scanProgress.total ? String(scanProgress.processed) + "/" + String(scanProgress.total) : "准备中"}</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-sky-100">
+                  <div className="h-full rounded-full bg-sky-500 transition-[width] duration-200" style={{ width: (scanProgress.total ? Math.min(100, scanProgress.processed / scanProgress.total * 100) : 8) + "%" }} />
+                </div>
+              </div>
+            )}
+            <Button className="mt-5" onClick={onAddLocalMusic}><FolderSearch />{localMusicInfo ? "重新选择文件夹" : "选择本地音乐文件夹"}</Button>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="mt-5">
+            <h2 className="text-xl font-semibold">连接网易云音乐</h2>
+            <p className="mt-2 text-sm text-neutral-500">登录后可以同步每日推荐、私人漫游、歌单和真实音质信息。也可以稍后在右上角完成。</p>
+            {neteaseAccount?.connected && (
+              <p className="mt-3 flex items-center gap-2 text-sm font-medium text-emerald-700"><CheckCircle2 className="size-4" />已登录：{neteaseAccount.nickname ?? "网易云账号"}</p>
+            )}
+            <div className="mt-4 overflow-hidden rounded-[1.25rem] bg-white/55">
+              <AccountPanel
+                embedded
+                initialAccount={neteaseAccount}
+                onClose={() => undefined}
+                onAccountChange={onAccountChange}
+              />
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="mt-8">
+            <h2 className="text-xl font-semibold">设置你的播放偏好</h2>
+            <p className="mt-2 text-sm text-neutral-500">这些选项之后都可以在设置中修改。</p>
+            <div className="mt-5 space-y-3">
+              {[
+                ["后台托管", "关闭主窗口后继续播放，并保留任务栏与媒体快捷控制。", backgroundEnabled, onBackgroundEnabledChange],
+                ["HiFi 优先", "自动请求当前歌曲可用的最高音质。", hifiEnabled, onHifiEnabledChange],
+                ["无缝衔接", "提前加载下一首，减少歌曲切换时的空隙。", gaplessEnabled, onGaplessEnabledChange],
+              ].map(([label, description, enabled, onChange]) => (
+                <div key={String(label)} className="flex items-center justify-between gap-4 rounded-[1.1rem] bg-white/70 p-4 shadow-sm">
+                  <div><p className="font-medium">{String(label)}</p><p className="mt-1 text-xs leading-5 text-neutral-500">{String(description)}</p></div>
+                  <button
+                    className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", enabled ? "bg-neutral-950" : "bg-neutral-200")}
+                    onClick={() => (onChange as (value: boolean) => void)(!enabled)}
+                    aria-label={`切换 ${String(label)}`}
+                    aria-pressed={Boolean(enabled)}
+                  >
+                    <span className={cn("size-6 rounded-full bg-white shadow-sm transition", enabled && "translate-x-6")} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            {neteaseAccount?.connected && (
+              <p className="mt-4 flex items-center gap-2 text-sm text-neutral-600"><CheckCircle2 className="size-4 text-emerald-600" />已连接 {neteaseAccount.nickname ?? "网易云账号"}</p>
+            )}
+          </div>
+        )}
+
+        <div className="mt-8 flex items-center justify-between gap-3">
+          <button className="text-sm text-neutral-500 transition hover:text-neutral-950" onClick={finish}>稍后设置</button>
+          <Button onClick={() => (step < 3 ? setStep((value) => value + 1) : finish())}>
+            {step < 3 ? "继续" : "完成"}
+            {step < 3 ? <ArrowRight /> : <CheckCircle2 />}
+          </Button>
+        </div>
+      </motion.div>
     </motion.div>
   );
 }

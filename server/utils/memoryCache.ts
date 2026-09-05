@@ -5,7 +5,7 @@ type CacheEntry<T> = {
 
 const cache = new Map<string, CacheEntry<unknown>>();
 const pending = new Map<string, Promise<unknown>>();
-const maxCacheEntries = 800;
+const maxCacheEntries = 300;
 
 export async function remember<T>(
   key: string,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createCachedQueueSnapshots,
   formatAudioDetail,
   formatBitrate,
   formatDuration,
@@ -48,5 +49,31 @@ describe("playerPresentation", () => {
 
     expect(mergeTracks([first, duplicate, second]).map((track) => track.id)).toEqual(["a", "b"]);
     expect(trimTrackCache([first, second, third], 2).map((track) => track.id)).toEqual(["b", "c"]);
+  });
+
+  it("creates compact queue snapshots without losing playback metadata", () => {
+    const track = {
+      id: "netease:42",
+      providerId: "42",
+      title: "Remote song",
+      artist: "Artist",
+      album: "Album",
+      duration: "03:20",
+      quality: "Lossless",
+      source: "netease",
+      streamUrl: "/api/providers/netease/stream/42",
+      coverUrl: "data:image/jpeg;base64,large",
+      cover: "linear-gradient(#fff,#000)",
+      accent: "#222",
+      waveform: [1, 2, 3],
+      lyrics: [{ time: "00:01", text: "long lyric" }],
+      lyricStatus: "linked",
+    } as Parameters<typeof createCachedQueueSnapshots>[0][number];
+
+    const [snapshot] = createCachedQueueSnapshots([track]);
+    expect(snapshot).toMatchObject({ id: track.id, streamUrl: track.streamUrl, source: "netease" });
+    expect(snapshot.coverUrl).toBeUndefined();
+    expect(snapshot.waveform).toEqual([]);
+    expect(snapshot.lyrics).toEqual([]);
   });
 });

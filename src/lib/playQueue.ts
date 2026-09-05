@@ -4,6 +4,25 @@ export function playableTracks(tracks: Track[]) {
   return tracks.filter((track) => Boolean(track.streamUrl));
 }
 
+// Startup can restore a remote queue before its source collection has finished
+// loading. Prefer the freshest live track whenever it arrives, while keeping
+// the persisted snapshot playable during that gap.
+export function mergeQueueTrackSources(queueIds: string[], liveTracks: Track[], cachedTracks: Track[]) {
+  const liveById = new Map(liveTracks.map((track) => [track.id, track]));
+  const cachedById = new Map(cachedTracks.map((track) => [track.id, track]));
+  const seen = new Set<string>();
+  const merged: Track[] = [];
+
+  for (const id of queueIds) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const live = liveById.get(id);
+    const track = live?.streamUrl ? live : cachedById.get(id) ?? live;
+    if (track?.streamUrl) merged.push(track);
+  }
+  return merged;
+}
+
 export function orderedQueueIds(tracks: Track[]) {
   const seen = new Set<string>();
   const ids: string[] = [];

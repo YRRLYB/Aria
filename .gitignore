@@ -7,5 +7,7 @@ release-fixed/
 .cache/
 .tmp-mpv/
 vendor/mpv/
+electron/native/**/build/
+electron/native/**/*.node
 /main.cjs
 .zcode/

@@ -17,6 +17,7 @@ export function useAudioEngine(options: {
   playing: boolean;
   volume: number;
   hifiEnabled: boolean;
+  gaplessEnabled: boolean;
   audioOutputMode: AudioOutputMode;
   pageVisible: boolean;
   analyserEnabled: boolean;
@@ -24,9 +25,17 @@ export function useAudioEngine(options: {
   setPlaying: (updater: (playing: boolean) => boolean) => void;
   setDurationSeconds: (seconds: number) => void;
   exclusiveMode: boolean;
+  durationSeconds: number;
   handleTrackEnded: () => void;
+  // Called when mpv advances to an entry that was appended for gapless
+  // playback. The native engine owns the transition, but React still needs
+  // to adopt the new track id so the analyser and progress UI follow it.
+  handleNativeTrackAdvanced: (trackId: string) => void;
   pickRelativeTrack: (direction: 1 | -1) => void;
   hasMultipleQueueTracks: boolean;
+  // Resolves the next queue entry (already URL-resolved) for gapless mpv
+  // preloading; null when the next track cannot be preloaded.
+  getNextPreload: () => { trackId: string; url: string } | null;
 }) {
   const activeTrack = options.activeTrack;
   const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
@@ -36,11 +45,12 @@ export function useAudioEngine(options: {
   const [nativePlaybackFailed, setNativePlaybackFailed] = useState(false);
   const [nativeAnalyserWakeToken, setNativeAnalyserWakeToken] = useState(0);
 
-  // Keep both WASAPI modes on the native mpv path.  Chromium's media element
-  // is retained only as a muted analyser source, so selecting shared output
-  // never silently downgrades a lossless stream to browser playback.
+  // Keep the audible stream in Aria's WASAPI session on Windows. This covers
+  // normal system output and the explicit Shared/Exclusive modes while also
+  // giving process-loopback tools (OOPZ, Discord, etc.) one stable application
+  // session to capture. Chromium keeps only a small analyser copy.
   const nativePlaybackRequested = Boolean(
-    nativeAudioSupported && (options.audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
+    nativeAudioSupported && (activeTrack.streamUrl || activeTrack.requiresNativePlayback),
   );
   const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
 
@@ -80,6 +90,8 @@ export function useAudioEngine(options: {
   const nativeLoadSequenceRef = useRef(0);
   const lastNativeRenderRef = useRef({ at: 0, position: 0 });
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
+  const preloadKeyRef = useRef<string | null>(null);
+  const handledGaplessGenerationRef = useRef(0);
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
     const now = performance.now();
@@ -116,6 +128,29 @@ export function useAudioEngine(options: {
     }
     if (state.kind === "ended" && currentTrackMatches && nativePlaybackEnabled) {
       options.handleTrackEnded();
+    }
+
+    // With an appended mpv playlist entry, the native engine emits a
+    // `file-loaded` event for the next track without an intervening renderer
+    // load call. Its track id therefore differs from React's current id. Do
+    // not wait for an `ended` event (which is intentionally suppressed by the
+    // native engine); hand the identity to App immediately.
+    const gaplessGeneration = Number(state.gaplessGeneration ?? 0);
+    // A native engine restart resets its generation counter. Drop the old
+    // renderer-side watermark so the first seamless transition after resume
+    // is still adopted.
+    if (gaplessGeneration < handledGaplessGenerationRef.current) {
+      handledGaplessGenerationRef.current = 0;
+    }
+    if (
+      nativePlaybackEnabled &&
+      state.kind === "loaded" &&
+      state.trackId &&
+      state.trackId !== options.activeTrackId &&
+      gaplessGeneration > handledGaplessGenerationRef.current
+    ) {
+      handledGaplessGenerationRef.current = gaplessGeneration;
+      options.handleNativeTrackAdvanced(state.trackId);
     }
   });
 
@@ -205,10 +240,11 @@ export function useAudioEngine(options: {
     writeCachedAudioSettings({
       sinkId: selectedSinkId,
       hifiEnabled: options.hifiEnabled,
+      gaplessEnabled: options.gaplessEnabled,
       exclusiveMode: options.exclusiveMode,
       outputMode: options.audioOutputMode,
     });
-  }, [options.audioOutputMode, options.exclusiveMode, options.hifiEnabled, selectedSinkId]);
+  }, [options.audioOutputMode, options.exclusiveMode, options.gaplessEnabled, options.hifiEnabled, selectedSinkId]);
 
   useEffect(() => {
     setNativePlaybackFailed(false);
@@ -245,7 +281,9 @@ export function useAudioEngine(options: {
       );
     audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
     audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : Math.max(0, Math.min(1, options.volume / 100));
-    audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "auto" : "none") : options.hifiEnabled ? "auto" : "metadata";
+    // The mpv path owns audible lossless playback. Chromium only needs a
+    // lightweight analyser source, so avoid pre-buffering the whole stream.
+    audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : "metadata";
 
     if (!audioElementStreamUrl || !nativeAnalyserReady || (nativePlaybackEnabled && !options.analyserEnabled)) {
       audio.pause();
@@ -306,6 +344,60 @@ export function useAudioEngine(options: {
     nativeAudio.stop?.().catch(() => undefined);
   }, [nativePlaybackEnabled]);
 
+  // Gapless preload runs on a 1-second clock tick reading the committed
+  // playback clock, decoupled from state-update timing so the append always
+  // lands inside the final seconds of the current track.
+  const preloadInputsRef = useRef({
+    enabled: false,
+    playing: false,
+    durationSeconds: 0,
+    activeTrackId: "",
+    generation: 0,
+    getNextPreload: () => null as { trackId: string; url: string } | null,
+  });
+  preloadInputsRef.current = {
+    enabled: nativePlaybackEnabled && options.gaplessEnabled,
+    playing: options.playing,
+    durationSeconds: options.durationSeconds,
+    activeTrackId: options.activeTrack.id,
+    generation: nativeAudioState?.gaplessGeneration ?? 0,
+    getNextPreload: options.getNextPreload,
+  };
+
+  useEffect(() => {
+    if (!nativePlaybackEnabled) return;
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    const loadNext = nativeAudio?.loadNext;
+    if (!loadNext) return;
+
+    const timer = window.setInterval(() => {
+      const inputs = preloadInputsRef.current;
+      if (!inputs.enabled || !inputs.playing) return;
+      const remaining = inputs.durationSeconds - getPlaybackTime();
+      if (!Number.isFinite(remaining) || remaining > 6 || remaining <= 0.2) return;
+
+      const next = inputs.getNextPreload();
+      if (!next) return;
+      const key = `${inputs.activeTrackId}\u0000${next.trackId}\u0000${next.url}\u0000${inputs.generation}`;
+      if (preloadKeyRef.current === key) return;
+      preloadKeyRef.current = key;
+      loadNext(next).catch(() => {
+        preloadKeyRef.current = null;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [nativePlaybackEnabled, options.gaplessEnabled]);
+
+  useEffect(() => {
+    if (options.gaplessEnabled) return;
+    preloadKeyRef.current = null;
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
+    // A disabled toggle must also drop an already appended mpv entry. Reload
+    // the current URL through the normal effect on the next render.
+    nativeLoadedUrlRef.current = null;
+  }, [nativePlaybackEnabled, options.gaplessEnabled]);
+
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
@@ -331,6 +423,18 @@ export function useAudioEngine(options: {
       options.activeTrack.nativeEnd ?? "",
       options.activeTrack.cdReadQuality ?? "high",
     ].join("\u0000");
+    // A gapless advance is already loaded by mpv before React adopts the new
+    // track id. Replacing that URL here would restart the song at zero and
+    // can briefly disconnect the analyser from the active decoder.
+    const nativeStateOwnsTrack = Boolean(
+      nativeAudioState?.active &&
+        nativeAudioState.trackId === options.activeTrack.id &&
+        nativeAudioState.url === nextUrl,
+    );
+    if (nativeStateOwnsTrack) {
+      nativeLoadedUrlRef.current = nextLoadKey;
+      return;
+    }
     if (nativeLoadedUrlRef.current === nextLoadKey) return;
 
     let cancelled = false;
@@ -371,6 +475,7 @@ export function useAudioEngine(options: {
     options.activeTrack.nativeDevice,
     options.activeTrack.nativeStart,
     nativePlaybackEnabled,
+    options.gaplessEnabled,
     nativeAudioState?.trackId,
     options.exclusiveMode,
     options.volume,
