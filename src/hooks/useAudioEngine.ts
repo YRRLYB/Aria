@@ -45,14 +45,16 @@ export function useAudioEngine(options: {
   const [nativePlaybackFailed, setNativePlaybackFailed] = useState(false);
   const [nativeAnalyserWakeToken, setNativeAnalyserWakeToken] = useState(0);
 
-  // Keep the audible stream in Aria's WASAPI session on Windows. This covers
-  // normal system output and the explicit Shared/Exclusive modes while also
-  // giving process-loopback tools (OOPZ, Discord, etc.) one stable application
-  // session to capture. Chromium keeps only a small analyser copy.
+  // Browser/System output must remain a Chromium media session. The two
+  // WASAPI choices use mpv: Shared exposes Aria as an application-audio
+  // source for OOPZ, while Exclusive opens the endpoint outside the system
+  // mixer. Audio CD playback always requires the native engine.
   const nativePlaybackRequested = Boolean(
-    nativeAudioSupported && (activeTrack.streamUrl || activeTrack.requiresNativePlayback),
+    nativeAudioSupported && (options.audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
   );
-  const nativePlaybackEnabled = Boolean(nativePlaybackRequested && !nativePlaybackFailed);
+  // Do not silently send a failed WASAPI request back through Chromium. That
+  // made the UI say "Exclusive" while Windows was still mixing the audio.
+  const nativePlaybackEnabled = nativePlaybackRequested;
 
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
@@ -146,7 +148,6 @@ export function useAudioEngine(options: {
       nativePlaybackEnabled &&
       state.kind === "loaded" &&
       state.trackId &&
-      state.trackId !== options.activeTrackId &&
       gaplessGeneration > handledGaplessGenerationRef.current
     ) {
       handledGaplessGenerationRef.current = gaplessGeneration;
@@ -177,8 +178,7 @@ export function useAudioEngine(options: {
   }, [syncNativeAudioState]);
 
   useEffect(() => {
-    const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!nativePlaybackEnabled) return;
+    if (nativePlaybackEnabled) return;
     const audio = audioRef.current as (HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }) | null;
     if (!audio?.setSinkId) return;
     audio.setSinkId(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => {
@@ -415,6 +415,14 @@ export function useAudioEngine(options: {
       return;
     }
 
+    // A paused player restored after an app restart should not create an mpv
+    // session. It avoids a phantom analyser and preserves the exact paused
+    // state until the user explicitly presses play.
+    if (!options.playing && !nativeAudioState?.active) {
+      nativeLoadedUrlRef.current = null;
+      return;
+    }
+
     const nextUrl = activeStreamUrl;
     const nextLoadKey = [
       nextUrl,
@@ -463,6 +471,7 @@ export function useAudioEngine(options: {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
         nativeLoadedUrlRef.current = null;
         setNativePlaybackFailed(true);
+        options.setPlaying(() => false);
       });
     return () => {
       cancelled = true;
@@ -476,6 +485,7 @@ export function useAudioEngine(options: {
     options.activeTrack.nativeStart,
     nativePlaybackEnabled,
     options.gaplessEnabled,
+    nativeAudioState?.active,
     nativeAudioState?.trackId,
     options.exclusiveMode,
     options.volume,
@@ -486,14 +496,59 @@ export function useAudioEngine(options: {
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported || (!options.playing && !nativeAudioState?.active)) return;
     nativeAudio.setPaused?.(!options.playing).catch(() => undefined);
-  }, [nativePlaybackEnabled, options.playing]);
+  }, [nativeAudioState?.active, nativePlaybackEnabled, options.playing]);
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported || !nativeAudioState?.active) return;
     nativeAudio.setVolume?.(options.volume).catch(() => undefined);
-  }, [nativePlaybackEnabled, options.volume]);
+  }, [nativeAudioState?.active, nativePlaybackEnabled, options.volume]);
+
+  // mpv unloads its file at EOF. A seek to zero after that point operates on
+  // the idle player and cannot start a single-track repeat, so reload the
+  // source through the native engine instead.
+  const restartNativeTrack = useEffectEvent(async () => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativePlaybackEnabled || !nativeAudio?.supported || !activeStreamUrl || options.activeTrack.id === options.idleTrackId) {
+      return false;
+    }
+
+    const nextLoadKey = [
+      activeStreamUrl,
+      options.activeTrack.nativeDevice ?? "",
+      options.activeTrack.nativeStart ?? "",
+      options.activeTrack.nativeEnd ?? "",
+      options.activeTrack.cdReadQuality ?? "high",
+    ].join("\u0000");
+    nativeLoadSequenceRef.current += 1;
+    nativeLoadedUrlRef.current = nextLoadKey;
+    preloadKeyRef.current = null;
+    options.pendingSeekRef.current = 0;
+    commitPlaybackTime(0, true);
+
+    try {
+      const state = await nativeAudio.load?.({
+        trackId: options.activeTrack.id,
+        url: activeStreamUrl,
+        position: 0,
+        paused: false,
+        volume: options.volume,
+        exclusive: options.audioOutputMode === "exclusive",
+        deviceId: selectedSinkId,
+        nativeDevice: options.activeTrack.nativeDevice ?? null,
+        startChapter: options.activeTrack.nativeStart ?? null,
+        endChapter: options.activeTrack.nativeEnd ?? null,
+        cdReadQuality: options.activeTrack.cdReadQuality ?? "high",
+      });
+      if (state) syncNativeAudioState(state as NativeAudioState);
+      return true;
+    } catch {
+      nativeLoadedUrlRef.current = null;
+      setNativePlaybackFailed(true);
+      return false;
+    }
+  });
 
   useEffect(() => {
     if (
@@ -626,6 +681,7 @@ export function useAudioEngine(options: {
     nativePlaybackFailed,
     nativePlaybackRequested,
     nativePlaybackEnabled,
+    restartNativeTrack,
     activeStreamUrl,
     audioElementStreamUrl,
     handleAudioError,

@@ -62,6 +62,37 @@ const panelVariants = {
   exit: { opacity: 0, y: -16 },
 };
 
+async function createMediaSessionArtwork(url: string, signal: AbortSignal): Promise<string | null> {
+  try {
+    const boundedUrl = await getBoundedCoverUrl(url);
+    if (!boundedUrl) return null;
+    const response = await fetch(boundedUrl, { signal });
+    if (!response.ok) return boundedUrl;
+    const bitmap = await createImageBitmap(await response.blob());
+    try {
+      const side = 256;
+      const canvas = new OffscreenCanvas(side, side);
+      const context = canvas.getContext("2d");
+      if (!context) return boundedUrl;
+      const scale = Math.max(side / bitmap.width, side / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      context.drawImage(bitmap, (side - width) / 2, (side - height) / 2, width, height);
+      const encoded = await canvas.convertToBlob({ type: "image/png" });
+      return await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(encoded);
+      });
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [initialPlayerCache] = useState(readCachedPlayerState);
   const [cachedActiveTrackSnapshot] = useState(() => initialPlayerCache.activeTrackSnapshot);
@@ -81,6 +112,7 @@ export default function App() {
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
   const [qualityLevel, setQualityLevel] = useState<QualityLevel>(initialPlayerCache.qualityLevel ?? "lossless");
   const [playQueueIds, setPlayQueueIds] = useState<string[]>(initialPlayerCache.playQueueIds ?? []);
+  const [mediaSessionArtwork, setMediaSessionArtwork] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(() => {
@@ -441,6 +473,7 @@ export default function App() {
     activeStreamUrl,
     handleAudioError,
     resetAudioError,
+    restartNativeTrack,
   } = useAudioEngine({
     activeTrack,
     activeTrackId,
@@ -465,12 +498,12 @@ export default function App() {
     getNextPreload,
   });
 
-  const visualizerPlaying = nativePlaybackEnabled
-    ? Boolean(playing || (nativeAudioState?.active && !nativeAudioState.paused))
-    : playing;
+  // React playback state is authoritative. mpv can keep an active decoder
+  // while restoring a paused session, but that must not animate the spectrum.
+  const visualizerPlaying = playing;
 
   function handleNativeTrackAdvanced(trackId: string) {
-    if (!nativePlaybackEnabled || !trackId || trackId === activeTrack.id) return;
+    if (!nativePlaybackEnabled || !trackId) return;
 
     // The next entry was selected by the native gapless playlist. Resolve it
     // from the same queue used by preloading so a stale/local track with a
@@ -488,7 +521,7 @@ export default function App() {
     pendingSeekRef.current = 0;
     resetPlaybackTime();
     setDurationSeconds(0);
-    setActiveTrackId(nextTrack.id);
+    if (nextTrack.id !== activeTrack.id) setActiveTrackId(nextTrack.id);
     setPlaying(true);
   }
 
@@ -510,7 +543,9 @@ export default function App() {
     const nextTrack = queue[nextIndex];
     if (nextTrack.id === activeTrack.id) {
       if (nativePlaybackEnabled) {
-        seekTo(0);
+        void restartNativeTrack().then((restarted) => {
+          if (!restarted) setPlaying(() => false);
+        });
       } else if (audioRef.current) {
         audioRef.current.currentTime = 0;
         audioRef.current.play().catch(() => setPlaying(false));
@@ -527,8 +562,9 @@ export default function App() {
     resetPlaybackTime();
     setPlaying(true);
     if (nativePlaybackEnabled) {
-      window.ariaDesktop?.nativeAudio?.seek?.(0).catch(() => undefined);
-      window.ariaDesktop?.nativeAudio?.setPaused?.(false).catch(() => undefined);
+      void restartNativeTrack().then((restarted) => {
+        if (!restarted) setPlaying(() => false);
+      });
       return;
     }
     const audio = audioRef.current;
@@ -762,6 +798,18 @@ export default function App() {
     }).catch(() => undefined);
   }, [activeTrack.artist, activeTrack.id, activeTrack.title, playing]);
 
+  useEffect(() => {
+    const coverUrl = hasActiveTrack ? activeTrack.coverUrl : undefined;
+    const controller = new AbortController();
+    setMediaSessionArtwork(null);
+    if (!coverUrl) return () => controller.abort();
+
+    void createMediaSessionArtwork(coverUrl, controller.signal).then((artwork) => {
+      if (!controller.signal.aborted) setMediaSessionArtwork(artwork);
+    });
+    return () => controller.abort();
+  }, [activeTrack.coverUrl, activeTrack.id, hasActiveTrack]);
+
   const seekToFromMediaKey = useEffectEvent((time: number) => seekTo(time));
 
   // Publish playback to the OS media overlay / lock screen (Windows SMTC).
@@ -778,10 +826,12 @@ export default function App() {
       title: activeTrack.title,
       artist: activeTrack.artist,
       album: activeTrack.album,
-      artwork: activeTrack.coverUrl ? [{ src: activeTrack.coverUrl, sizes: "512x512" }] : [],
+      artwork: mediaSessionArtwork
+        ? [{ src: mediaSessionArtwork, sizes: "256x256", type: "image/png" }]
+        : [],
     });
     mediaSession.playbackState = playing ? "playing" : "paused";
-  }, [activeTrack.album, activeTrack.artist, activeTrack.coverUrl, activeTrack.id, activeTrack.title, hasActiveTrack, playing]);
+  }, [activeTrack.album, activeTrack.artist, activeTrack.id, activeTrack.title, hasActiveTrack, mediaSessionArtwork, playing]);
 
   useEffect(() => {
     const mediaSession = navigator.mediaSession;

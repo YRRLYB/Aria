@@ -20,6 +20,23 @@ describe("native mpv output", () => {
     expect(NATIVE_AUDIO_PROCESS_NAME).toBe(`${NATIVE_AUDIO_CLIENT_NAME}.exe`);
   });
 
+  it("starts a fresh exclusive WASAPI session when requested", () => {
+    const args = buildMpvArguments("\\\\.\\pipe\\aria-exclusive-test", true);
+
+    expect(args).toContain("--audio-exclusive=yes");
+    expect(args).not.toContain("--audio-exclusive=no");
+  });
+
+  it("keeps shared and exclusive output flags mutually exclusive", () => {
+    const shared = buildMpvArguments("\\\\.\\pipe\\aria-shared-test", false);
+    const exclusive = buildMpvArguments("\\\\.\\pipe\\aria-exclusive-test-2", true);
+
+    expect(shared).toContain("--audio-exclusive=no");
+    expect(exclusive).toContain("--audio-exclusive=yes");
+    expect(shared).not.toContain("--audio-exclusive=yes");
+    expect(exclusive).not.toContain("--audio-exclusive=no");
+  });
+
   it("uses the same executable basename OOPZ selects for app loopback", () => {
     expect(NATIVE_AUDIO_PROCESS_NAME.toLowerCase()).toBe("aria.exe");
   });

@@ -10,7 +10,7 @@ const { CdAudioRipper } = require("./cdAudioRipper.cjs");
 const NATIVE_AUDIO_CLIENT_NAME = "Aria";
 const NATIVE_AUDIO_PROCESS_NAME = `${NATIVE_AUDIO_CLIENT_NAME}.exe`;
 
-function buildMpvArguments(pipePath) {
+function buildMpvArguments(pipePath, exclusive = false) {
   return [
     "--idle=yes",
     "--ao=wasapi",
@@ -23,7 +23,7 @@ function buildMpvArguments(pipePath) {
     "--audio-set-media-role=yes",
     `--title=${NATIVE_AUDIO_CLIENT_NAME}`,
     `--force-media-title=${NATIVE_AUDIO_CLIENT_NAME}`,
-    "--audio-exclusive=no",
+    `--audio-exclusive=${exclusive ? "yes" : "no"}`,
     "--msg-level=all=warn",
     "--no-config",
     "--cache=yes",
@@ -56,6 +56,7 @@ class MpvAudioEngine {
     this.requestId = 0;
     this.pendingRequests = new Map();
     this.ensurePromise = null;
+    this.launchExclusive = null;
     this.loadToken = 0;
     this.pendingSeek = 0;
     this.pendingPause = true;
@@ -136,14 +137,15 @@ class MpvAudioEngine {
     return devices;
   }
 
-  async ensureProcess() {
+  async ensureProcess(exclusive = this.launchExclusive ?? false) {
     if (!this.isSupported()) {
       throw new Error("Native audio engine is not available.");
     }
-    if (this.process && this.socket && !this.socket.destroyed) return;
+    const requestedExclusive = Boolean(exclusive);
+    if (this.process && this.socket && !this.socket.destroyed && this.launchExclusive === requestedExclusive) return;
     if (this.ensurePromise) {
       await this.ensurePromise;
-      return;
+      if (this.process && this.socket && !this.socket.destroyed && this.launchExclusive === requestedExclusive) return;
     }
 
     this.ensurePromise = (async () => {
@@ -151,10 +153,11 @@ class MpvAudioEngine {
 
       this.pipePath = `\\\\.\\pipe\\aria-mpv-${process.pid}-${Date.now()}`;
       this.buffer = "";
+      this.launchExclusive = requestedExclusive;
 
       this.process = spawn(
         this.resolveExecutable(),
-        buildMpvArguments(this.pipePath),
+        buildMpvArguments(this.pipePath, requestedExclusive),
         {
           windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -167,6 +170,7 @@ class MpvAudioEngine {
         this.writeLog("native-audio.log", `mpv exited: code=${code} signal=${signal}`);
         this.process = null;
         this.socket = null;
+        this.launchExclusive = null;
         this.state.ready = false;
         this.state.active = false;
         this.rejectPending(new Error("mpv process exited"));
@@ -375,7 +379,8 @@ class MpvAudioEngine {
   }
 
   async applyOutputSettings({ exclusive, deviceId, volume }) {
-    await this.ensureProcess();
+    const requestedExclusive = typeof exclusive === "boolean" ? exclusive : this.launchExclusive ?? false;
+    await this.ensureProcess(requestedExclusive);
     if (typeof volume === "number") {
       this.state.volume = volume;
       await this.command("set_property", "volume", volume);
@@ -383,7 +388,19 @@ class MpvAudioEngine {
     if (typeof exclusive === "boolean") {
       await this.command("set_property", "audio-exclusive", exclusive);
       this.state.exclusive = Boolean(await this.command("get_property", "audio-exclusive"));
+      if (exclusive && !this.state.exclusive) {
+        // Do not leave the shared session alive after an exclusive request is
+        // rejected. A surviving mpv process would keep producing audio and
+        // make the UI appear to be in exclusive mode while Windows still
+        // owns a shared endpoint.
+        await this.teardown();
+        this.state.active = false;
+        this.state.trackId = null;
+        this.state.url = null;
+        throw new Error("WASAPI exclusive mode was rejected by the selected output device.");
+      }
     }
+    this.writeLog("native-audio.log", `WASAPI output: ${this.state.exclusive ? "exclusive" : "shared"} device=${this.state.deviceId}`);
     if (typeof deviceId === "string") {
       this.state.deviceId = this.normalizeDeviceId(deviceId);
       await this.command("set_property", "audio-device", this.state.deviceId);
@@ -402,7 +419,7 @@ class MpvAudioEngine {
       return this.performCdLoad(options, token);
     }
 
-    await this.ensureProcess();
+    await this.ensureProcess(Boolean(options?.exclusive));
     const token = ++this.loadToken;
     return this.performLoad(options, token);
   }
@@ -578,7 +595,7 @@ class MpvAudioEngine {
   }
 
   async setPaused(paused) {
-    await this.ensureProcess();
+    await this.ensureProcess(this.launchExclusive ?? false);
     this.state.paused = Boolean(paused);
     await this.command("set_property", "pause", this.state.paused);
     this.emit({ kind: "pause" });
@@ -586,7 +603,7 @@ class MpvAudioEngine {
   }
 
   async seek(position) {
-    await this.ensureProcess();
+    await this.ensureProcess(this.launchExclusive ?? false);
     const nextPosition = Math.max(0, Number(position) || 0);
     this.state.position = nextPosition;
     await this.command("seek", nextPosition, "absolute+exact");
@@ -595,7 +612,7 @@ class MpvAudioEngine {
   }
 
   async setVolume(volume) {
-    await this.ensureProcess();
+    await this.ensureProcess(this.launchExclusive ?? false);
     this.state.volume = Math.max(0, Math.min(100, Number(volume) || 0));
     await this.command("set_property", "volume", this.state.volume);
     this.emit({ kind: "volume" });
@@ -662,6 +679,7 @@ class MpvAudioEngine {
       this.process.kill();
     }
     this.process = null;
+    this.launchExclusive = null;
     this.state.ready = false;
   }
 }
