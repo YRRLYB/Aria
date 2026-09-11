@@ -52,15 +52,17 @@ function copyPackage(packageName, fromDir = rootDir) {
     filter: (source) => !source.includes(`${path.sep}.cache${path.sep}`),
   });
 
-  const dependencies = {
-    ...manifest.dependencies,
-    ...manifest.optionalDependencies,
-  };
-
-  for (const dependencyName of Object.keys(dependencies)) {
+  for (const dependencyName of Object.keys(manifest.dependencies || {})) {
+    if (manifest.optionalDependencies?.[dependencyName]) continue;
+    copyPackage(dependencyName, packageDir);
+  }
+  for (const dependencyName of Object.keys(manifest.optionalDependencies || {})) {
+    // sharp ships mutually exclusive platform binaries; copy only installed ones.
+    try { resolvePackageDir(dependencyName, packageDir); } catch { continue; }
     copyPackage(dependencyName, packageDir);
   }
 }
 
 copyPackage("NeteaseCloudMusicApi");
-console.log(`Copied ${copiedPackages.size} NetEase runtime packages.`);
+copyPackage("sharp");
+console.log(`Copied ${copiedPackages.size} backend runtime packages.`);

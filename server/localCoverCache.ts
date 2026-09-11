@@ -6,6 +6,7 @@ import type { ScannedTrack } from "./types";
 import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
 import { pruneDiskCache } from "./utils/diskCache";
+import { createCoverThumbnail } from "./coverThumbnail";
 
 export type CachedLocalCover = {
   body: Buffer;
@@ -20,11 +21,25 @@ void pruneLocalCoverCache();
 const localCoverPruneTimer = setInterval(pruneLocalCoverCache, 15 * 60_000);
 localCoverPruneTimer.unref?.();
 
-export async function readOrExtractLocalCover(track: ScannedTrack): Promise<CachedLocalCover> {
+const pendingCovers = new Map<string, Promise<CachedLocalCover>>();
+
+export async function readOrExtractLocalCover(track: ScannedTrack, size?: 320 | 768): Promise<CachedLocalCover> {
   if (track.mediaKind === "audio-cd") throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
 
   const fileStat = await stat(track.path);
-  const cacheKey = createHash("sha1").update(`${track.path}:${fileStat.mtimeMs}:${fileStat.size}`).digest("hex");
+  const cacheKey = createHash("sha1").update(`${track.path}:${fileStat.mtimeMs}:${fileStat.size}`).digest("hex") + (size ? `-${size}` : "");
+  const pending = pendingCovers.get(cacheKey);
+  if (pending) return pending;
+  const request = loadCover(track, cacheKey, size);
+  pendingCovers.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    pendingCovers.delete(cacheKey);
+  }
+}
+
+async function loadCover(track: ScannedTrack, cacheKey: string, size?: 320 | 768): Promise<CachedLocalCover> {
   const cachedPath = path.join(localCoverCacheDir, `${cacheKey}.img`);
   const cachedMetaPath = path.join(localCoverCacheDir, `${cacheKey}.json`);
 
@@ -36,12 +51,24 @@ export async function readOrExtractLocalCover(track: ScannedTrack): Promise<Cach
     // Cache miss; extract once below.
   }
 
-  const metadata = await parseFile(track.path);
-  const picture = metadata.common.picture?.[0];
-  if (!picture) throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
-
-  const body = Buffer.from(picture.data);
-  const contentType = picture.format || "image/jpeg";
+  let body: Buffer;
+  let contentType: string;
+  if (size) {
+    const original = await readOrExtractLocalCover(track);
+    try {
+      body = await createCoverThumbnail(original.body, size);
+      contentType = "image/webp";
+    } catch {
+      // Preserve support for artwork that Chromium can decode but libvips cannot.
+      return original;
+    }
+  } else {
+    const metadata = await parseFile(track.path, { duration: false });
+    const picture = metadata.common.picture?.[0];
+    if (!picture) throw new HttpError(404, "Cover art not found", "COVER_NOT_FOUND");
+    body = Buffer.from(picture.data.buffer, picture.data.byteOffset, picture.data.byteLength);
+    contentType = picture.format || "image/jpeg";
+  }
   await mkdir(localCoverCacheDir, { recursive: true });
   await Promise.all([
     writeFile(cachedPath, body),

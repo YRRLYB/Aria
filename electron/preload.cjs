@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
   chooseMusicFolder: () => ipcRenderer.invoke("aria:choose-music-folder"),
   updateTaskbarPlayback: (payload) => ipcRenderer.invoke("aria:update-taskbar-playback", payload || {}),
+  updateMediaSession: (payload) => ipcRenderer.invoke("aria:update-media-session", payload || {}),
   setTaskbarPreviewRect: (rect) => ipcRenderer.invoke("aria:set-thumbnail-clip", rect || null),
   setTaskbarIconicThumb: nativeIconicThumbnailEnabled
     ? (pixels, width, height) => ipcRenderer.invoke("aria:set-iconic-thumbnail", pixels, width, height)

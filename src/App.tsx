@@ -112,7 +112,7 @@ export default function App() {
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
   const [qualityLevel, setQualityLevel] = useState<QualityLevel>(initialPlayerCache.qualityLevel ?? "lossless");
   const [playQueueIds, setPlayQueueIds] = useState<string[]>(initialPlayerCache.playQueueIds ?? []);
-  const [mediaSessionArtwork, setMediaSessionArtwork] = useState<string | null>(null);
+  const [mediaArtwork, setMediaArtwork] = useState<{ trackId: string; coverUrl: string; data: string | null } | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(() => {
@@ -323,12 +323,18 @@ export default function App() {
       .map(({ albums, sources, ...artist }) => ({ ...artist, albumCount: albums.size }))
       .sort((left, right) => left.name.localeCompare(right.name, "zh-CN", { numeric: true }));
   }, [allTracks]);
-  const requestedActiveTrack = allTracks.find((track) => track.id === activeTrackId);
+  const playQueueTracks = useMemo(() => {
+    return mergeQueueTrackSources(playQueueIds, allTracks, cachedQueueSnapshots);
+  }, [allTracks, cachedQueueSnapshots, playQueueIds]);
+  const requestedActiveTrack = playQueueTracks.find((track) => track.id === activeTrackId) ??
+    allTracks.find((track) => track.id === activeTrackId);
   const activeTrack =
     requestedActiveTrack ??
     (cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null) ??
     (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
   activeTrackRef.current = activeTrack;
+  const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
+    ? mediaArtwork.data : null;
   const effectiveQualityLevel = useMemo(() => {
     if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
     const levels = activeTrack.availableLevels ?? [];
@@ -369,9 +375,6 @@ export default function App() {
     () => mergeTracks([...localLikedTracks, ...neteaseLikedDisplayTracks]),
     [localLikedTracks, neteaseLikedDisplayTracks],
   );
-  const playQueueTracks = useMemo(() => {
-    return mergeQueueTrackSources(playQueueIds, allTracks, cachedQueueSnapshots);
-  }, [allTracks, cachedQueueSnapshots, playQueueIds]);
   const linkedLyricCount = useMemo(
     () => allTracks.filter((track) => track.lyricStatus === "linked").length,
     [allTracks],
@@ -637,6 +640,7 @@ export default function App() {
       preferredTarget ??
       queue.find((track) => track.id === trackId) ??
       allTracks.find((track) => track.id === trackId) ??
+      playQueueTracks.find((track) => track.id === trackId) ??
       (cachedActiveTrackSnapshot?.id === trackId ? cachedActiveTrackSnapshot : null);
     if (!targetTrack?.streamUrl) return;
 
@@ -698,7 +702,16 @@ export default function App() {
     }
   };
 
-  const handlePlaybackCommand = useEffectEvent((command: "toggle" | "previous" | "next") => {
+  const handlePlaybackCommand = useEffectEvent((command: "toggle" | "play" | "pause" | "previous" | "next") => {
+    if (command === "pause") {
+      setPlaying(false);
+      return;
+    }
+    if (command === "play") {
+      if (activeStreamUrl && activeTrack.id !== idleTrack.id) setPlaying(true);
+      else togglePlayback();
+      return;
+    }
     if (command === "toggle") {
       togglePlayback();
       return;
@@ -801,11 +814,11 @@ export default function App() {
   useEffect(() => {
     const coverUrl = hasActiveTrack ? activeTrack.coverUrl : undefined;
     const controller = new AbortController();
-    setMediaSessionArtwork(null);
+    setMediaArtwork(null);
     if (!coverUrl) return () => controller.abort();
 
     void createMediaSessionArtwork(coverUrl, controller.signal).then((artwork) => {
-      if (!controller.signal.aborted) setMediaSessionArtwork(artwork);
+      if (!controller.signal.aborted) setMediaArtwork({ trackId: activeTrack.id, coverUrl, data: artwork });
     });
     return () => controller.abort();
   }, [activeTrack.coverUrl, activeTrack.id, hasActiveTrack]);
@@ -813,6 +826,19 @@ export default function App() {
   const seekToFromMediaKey = useEffectEvent((time: number) => seekTo(time));
 
   // Publish playback to the OS media overlay / lock screen (Windows SMTC).
+  useEffect(() => {
+    void window.ariaDesktop?.updateMediaSession?.({
+      active: hasActiveTrack,
+      title: hasActiveTrack ? activeTrack.title : "",
+      artist: hasActiveTrack ? activeTrack.artist : "",
+      album: hasActiveTrack ? activeTrack.album : "",
+      artwork: mediaSessionArtwork,
+      playing,
+      canPrevious: hasActiveTrack,
+      canNext: hasActiveTrack,
+    }).catch(() => undefined);
+  }, [activeTrack.album, activeTrack.artist, activeTrack.id, activeTrack.title, hasActiveTrack, mediaSessionArtwork, playing]);
+
   useEffect(() => {
     const mediaSession = navigator.mediaSession;
     if (!mediaSession) return;
@@ -838,8 +864,8 @@ export default function App() {
     if (!mediaSession) return;
 
     const handlers: Array<[MediaSessionAction, ((details: MediaSessionActionDetails) => void) | null]> = [
-      ["play", () => handlePlaybackCommand("toggle")],
-      ["pause", () => handlePlaybackCommand("toggle")],
+      ["play", () => handlePlaybackCommand("play")],
+      ["pause", () => handlePlaybackCommand("pause")],
       ["previoustrack", () => handlePlaybackCommand("previous")],
       ["nexttrack", () => handlePlaybackCommand("next")],
       [

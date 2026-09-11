@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import type { NativeAudioState } from "@/lib/audioTypes";
+import { nativePlaybackStateChanged } from "@/lib/nativePlaybackState";
 import { api } from "@/lib/api";
 import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
@@ -90,20 +91,16 @@ export function useAudioEngine(options: {
   const nativeLoadedUrlRef = useRef<string | null>(null);
   const nativeAnalyserDelayUntilRef = useRef(0);
   const nativeLoadSequenceRef = useRef(0);
-  const lastNativeRenderRef = useRef({ at: 0, position: 0 });
+  const lastNativeRenderRef = useRef<NativeAudioState | null>(null);
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const preloadKeyRef = useRef<string | null>(null);
   const handledGaplessGenerationRef = useRef(0);
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
-    const now = performance.now();
-    const previousNativeRender = lastNativeRenderRef.current;
-    const shouldRenderNativeState =
-      state.kind !== "progress" ||
-      now - previousNativeRender.at > 500 ||
-      Math.abs((state.position ?? 0) - previousNativeRender.position) > 0.8;
-    if (shouldRenderNativeState) {
-      lastNativeRenderRef.current = { at: now, position: state.position ?? previousNativeRender.position };
+    // Position and VBR bitrate ticks do not change the App's presentation.
+    // Keep the playhead in its external store and sync the analyser directly.
+    if (nativePlaybackStateChanged(lastNativeRenderRef.current, state)) {
+      lastNativeRenderRef.current = state;
       setNativeAudioState(state);
     }
     const currentTrackMatches = Boolean(state.trackId && state.trackId === options.activeTrackId);
@@ -118,22 +115,26 @@ export function useAudioEngine(options: {
         state.kind === "ended");
 
     if (shouldSyncPlayback) {
+      const audio = audioRef.current;
+      if (nativePlaybackEnabled && audio?.getAttribute("src") && Number.isFinite(state.position) &&
+          Math.abs(audio.currentTime - state.position) >= 0.45) {
+        audio.currentTime = Math.max(0, state.position);
+      }
       if (typeof state.duration === "number" && state.duration > 0) {
         options.setDurationSeconds(state.duration);
       }
       if (typeof state.position === "number") {
-        commitPlaybackTime(state.position, state.kind === "loaded" || state.kind === "seek" || state.kind === "ended");
+        commitPlaybackTime(state.position, state.kind === "loaded" || state.kind === "advanced" || state.kind === "seek" || state.kind === "ended");
       }
-      if (state.kind === "pause" && typeof state.paused === "boolean") {
-        options.setPlaying(() => !state.paused);
-      }
+      // Aria owns playback intent (including SMTC commands). An acknowledgement
+      // of an older pause must not undo a newer play click during native loading.
     }
     if (state.kind === "ended" && currentTrackMatches && nativePlaybackEnabled) {
       options.handleTrackEnded();
     }
 
     // With an appended mpv playlist entry, the native engine emits a
-    // `file-loaded` event for the next track without an intervening renderer
+    // `advanced` event for the next track without an intervening renderer
     // load call. Its track id therefore differs from React's current id. Do
     // not wait for an `ended` event (which is intentionally suppressed by the
     // native engine); hand the identity to App immediately.
@@ -146,7 +147,7 @@ export function useAudioEngine(options: {
     }
     if (
       nativePlaybackEnabled &&
-      state.kind === "loaded" &&
+      state.kind === "advanced" &&
       state.trackId &&
       gaplessGeneration > handledGaplessGenerationRef.current
     ) {
@@ -327,16 +328,6 @@ export function useAudioEngine(options: {
   ]);
 
   useEffect(() => {
-    if (!nativePlaybackEnabled) return;
-    const audio = audioRef.current;
-    if (!audio) return;
-    const desiredTime = nativeAudioState?.position;
-    if (!Number.isFinite(desiredTime)) return;
-    if (Math.abs((audio.currentTime || 0) - (desiredTime ?? 0)) < 0.45) return;
-    audio.currentTime = Math.max(0, desiredTime ?? 0);
-  }, [nativeAudioState?.position, nativePlaybackEnabled]);
-
-  useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativeAudio?.supported) return;
     if (nativePlaybackEnabled) return;
@@ -437,7 +428,9 @@ export function useAudioEngine(options: {
     const nativeStateOwnsTrack = Boolean(
       nativeAudioState?.active &&
         nativeAudioState.trackId === options.activeTrack.id &&
-        nativeAudioState.url === nextUrl,
+        nativeAudioState.url === nextUrl &&
+        nativeAudioState.exclusive === options.exclusiveMode &&
+        nativeAudioState.deviceId === (selectedSinkId === "default" ? "auto" : selectedSinkId),
     );
     if (nativeStateOwnsTrack) {
       nativeLoadedUrlRef.current = nextLoadKey;

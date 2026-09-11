@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cstring>
 
+void RegisterMediaSession(napi_env env, napi_value exports);
+
 namespace {
 
 constexpr UINT kMsgDwmSendIconicThumbnail = 0x0323;
@@ -423,6 +425,7 @@ napi_value GetStats(napi_env env, napi_callback_info) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
+  RegisterMediaSession(env, exports);
   napi_property_descriptor props[] = {
       {"attach", nullptr, Attach, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"setBitmap", nullptr, SetBitmap, nullptr, nullptr, nullptr, napi_default, nullptr},

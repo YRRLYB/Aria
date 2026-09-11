@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.3.12-beta.6",
+  "version": "0.3.13-beta.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -12,7 +12,7 @@
     "dev:electron": "electron .",
     "build:native": "node scripts/build-native.cjs",
     "build:web": "vite build",
-    "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
+    "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --external:sharp --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
     "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:web && npm run build:server",
     "dist:beta": "npm run build:desktop && electron-builder --win nsis --x64",
     "test": "vitest run",
@@ -32,6 +32,7 @@
     "NeteaseCloudMusicApi": "^4.32.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "sharp": "^0.34.5",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^4.1.11",
     "zod": "^4.4.3"

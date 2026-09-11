@@ -177,7 +177,8 @@ export function createLibraryRouter() {
       const track = await findTrack(req.params.trackId);
       if (!track) throw new HttpError(404, "Track not found", "TRACK_NOT_FOUND");
 
-      const { body, contentType } = await readOrExtractLocalCover(track);
+      const size = req.query.size === "320" ? 320 : req.query.size === "768" ? 768 : undefined;
+      const { body, contentType } = await readOrExtractLocalCover(track, size);
       res.setHeader("Content-Type", contentType);
       res.setHeader("Content-Length", String(body.byteLength));
       res.setHeader("Cache-Control", "public, max-age=604800, immutable");

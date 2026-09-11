@@ -36,6 +36,7 @@ let isQuitting = false;
 let backgroundEnabled = true;
 let rendererRecoveries = 0;
 let nativeAudioEngine = null;
+let mediaSessionReady = false;
 let powerRecoveryAttached = false;
 let taskbarPlayback = {
   title: "",
@@ -138,6 +139,10 @@ ensureWindowsTaskbarPreviewPolicy();
 // overlay / lock screen (SMTC) on Windows.
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=256 --expose-gc");
 app.commandLine.appendSwitch("enable-features", "MediaSessionService");
+// The app owns SMTC for both Chromium and mpv. Avoid a second Chromium card.
+if (iconicThumbAddon?.mediaSessionAvailable) {
+  app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling");
+}
 
 function getNativeAudioEngine() {
   if (!nativeAudioEngine) {
@@ -551,6 +556,14 @@ async function createWindow() {
   });
   mainWindow.removeMenu();
   mainWindow.setMenuBarVisibility(false);
+  if (iconicThumbAddon?.mediaSessionAvailable) {
+    try {
+      mediaSessionReady = Boolean(iconicThumbAddon.attachMediaSession(mainWindow.getNativeWindowHandle(), sendPlaybackCommand));
+      writeLog("desktop.log", `Windows media session attached: ${mediaSessionReady}`);
+    } catch (error) {
+      writeLog("desktop.log", `Windows media session failed: ${error?.stack || error}`);
+    }
+  }
   if (process.platform === "win32" && typeof mainWindow.setAppDetails === "function") {
     // Keep the native window identity stable so Windows application-loopback
     // capture tools can associate the mpv child session with Aria.
@@ -621,6 +634,8 @@ async function createWindow() {
     scheduleTaskbarSync("restore");
   });
   mainWindow.on("closed", () => {
+    iconicThumbAddon?.detachMediaSession?.();
+    mediaSessionReady = false;
     for (const timer of taskbarRetryTimers) clearTimeout(timer);
     taskbarRetryTimers.clear();
   });
@@ -683,6 +698,22 @@ ipcMain.handle("aria:choose-music-folder", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle("aria:update-media-session", (_event, payload) => {
+  if (!mediaSessionReady) return false;
+  const artwork = typeof payload?.artwork === "string" && payload.artwork.length < 1_400_000 &&
+    payload.artwork.startsWith("data:image/png;base64,")
+    ? Buffer.from(payload.artwork.slice("data:image/png;base64,".length), "base64") : Buffer.alloc(0);
+  return iconicThumbAddon.updateMediaSession({
+    title: typeof payload?.title === "string" ? payload.title.slice(0, 512) : "",
+    artist: typeof payload?.artist === "string" ? payload.artist.slice(0, 512) : "",
+    album: typeof payload?.album === "string" ? payload.album.slice(0, 512) : "",
+    active: Boolean(payload?.active),
+    playing: Boolean(payload?.playing),
+    canPrevious: Boolean(payload?.canPrevious),
+    canNext: Boolean(payload?.canNext),
+  }, artwork);
 });
 
 ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {
@@ -861,5 +892,6 @@ app.on("will-quit", () => {
     backendProcess.kill();
   }
   nativeAudioEngine?.teardown?.();
+  iconicThumbAddon?.detachMediaSession?.();
   iconicThumbAddon?.detach?.();
 });

@@ -3,6 +3,7 @@ import { UserRound } from "lucide-react";
 import type { Track } from "@/data/music";
 import { copyArtworkToClipboard, copyTrackTextToClipboard, type TrackCopyField } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
+import { sizedCoverUrl } from "@/lib/coverUrl";
 
 type CoverLoadState = "loading" | "ready" | "error";
 
@@ -24,6 +25,7 @@ const pendingBoundedCoverUrls = new Map<string, Promise<string | null>>();
 
 export function getBoundedCoverUrl(url?: string | null): Promise<string | null> {
   if (!url) return Promise.resolve(null);
+  url = sizedCoverUrl(url, 768)!;
   const cached = boundedCoverUrls.get(url);
   if (cached) {
     boundedCoverUrls.delete(url);
@@ -218,7 +220,7 @@ export function CoverArt({
     track.coverUrl && track.coverUrl.includes("/api/providers/netease/cover")
       ? `${track.coverUrl}${track.coverUrl.includes("?") ? "&" : "?"}size=300y300`
       : track.coverUrl;
-  const imageSrc = large ? largeCoverSrc : thumbnailSrc;
+  const imageSrc = large ? largeCoverSrc : sizedCoverUrl(thumbnailSrc, 320);
   const previewSrc = null;
   const hasImage = Boolean(imageSrc) && failedImageSrc !== imageSrc;
   const [imageReady, setImageReady] = useState(() => imageSrc ? coverLoadStates.get(imageSrc) === "ready" : false);

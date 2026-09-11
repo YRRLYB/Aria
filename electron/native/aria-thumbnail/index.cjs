@@ -26,6 +26,10 @@ for (const candidate of candidates) {
 
 module.exports = {
   available: Boolean(binding),
+  mediaSessionAvailable: typeof binding?.attachMediaSession === "function",
+  attachMediaSession: (hwnd, callback) => binding?.attachMediaSession?.(hwnd, callback),
+  updateMediaSession: (state, artwork) => binding?.updateMediaSession?.(state, artwork),
+  detachMediaSession: () => binding?.detachMediaSession?.(),
   attach: (hwndBuffer) => binding && binding.attach(hwndBuffer),
   setBitmap: (buffer, width, height) => binding && binding.setBitmap(buffer, width, height),
   setLiveBitmap: (buffer, width, height) => binding && binding.setLiveBitmap(buffer, width, height),

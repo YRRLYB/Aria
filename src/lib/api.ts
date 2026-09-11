@@ -69,12 +69,13 @@ declare global {
       toggleMaximizeWindow?: () => void;
       closeWindow?: () => void;
       onWindowVisibilityChange?: (callback: (visible: boolean) => void) => () => void;
-      onPlaybackCommand?: (callback: (command: "toggle" | "previous" | "next") => void) => () => void;
+      onPlaybackCommand?: (callback: (command: "toggle" | "play" | "pause" | "previous" | "next") => void) => () => void;
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       chooseMusicFolder?: () => Promise<string | null>;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
+      updateMediaSession?: (payload: { active: boolean; title: string; artist: string; album: string; artwork: string | null; playing: boolean; canPrevious: boolean; canNext: boolean }) => Promise<boolean>;
       setTaskbarPreviewRect?: (rect: { x: number; y: number; width: number; height: number } | null) => Promise<boolean>;
       setTaskbarIconicThumb?: (pixels: Uint8ClampedArray, width: number, height: number) => Promise<boolean>;
       setTaskbarIconicLive?: (pixels: Uint8ClampedArray, width: number, height: number) => Promise<boolean>;

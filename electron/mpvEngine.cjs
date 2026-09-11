@@ -18,6 +18,10 @@ function buildMpvArguments(pipePath, exclusive = false) {
     "--force-window=no",
     "--keep-open=no",
     "--no-terminal",
+    // Aria publishes metadata and queue controls through its own Windows
+    // session. mpv's built-in session knows only its private preload playlist.
+    "--media-controls=no",
+    "--input-media-keys=no",
     // Keep the Windows audio session stable for application-loopback tools.
     `--audio-client-name=${NATIVE_AUDIO_CLIENT_NAME}`,
     "--audio-set-media-role=yes",
@@ -60,6 +64,7 @@ class MpvAudioEngine {
     this.loadToken = 0;
     this.pendingSeek = 0;
     this.pendingPause = true;
+    this.pauseToken = 0;
     this.lastRecoveryAt = 0;
     // When the renderer preloads the next track, mpv advances its internal
     // playlist on EOF. The pending entry's identity and a generation counter
@@ -166,8 +171,11 @@ class MpvAudioEngine {
 
       this.process.stdout?.on("data", (chunk) => this.writeLog("native-audio.log", String(chunk).trimEnd()));
       this.process.stderr?.on("data", (chunk) => this.writeLog("native-audio.log", `ERR ${String(chunk).trimEnd()}`));
-      this.process.once("exit", (code, signal) => {
+      const child = this.process;
+      child.once("exit", (code, signal) => {
         this.writeLog("native-audio.log", `mpv exited: code=${code} signal=${signal}`);
+        // A mode/device switch may already have spawned the replacement.
+        if (this.process !== child) return;
         this.process = null;
         this.socket = null;
         this.launchExclusive = null;
@@ -201,6 +209,7 @@ class MpvAudioEngine {
               this.writeLog("native-audio.log", `socket error: ${error.stack || error}`);
             });
             socket.on("close", () => {
+              if (this.socket !== socket) return;
               this.socket = null;
               this.state.ready = false;
               this.rejectPending(new Error("Native audio socket closed."));
@@ -283,18 +292,18 @@ class MpvAudioEngine {
         this.state.bitrate = null;
         this.state.gaplessGeneration += 1;
         this.writeLog("native-audio.log", `gapless advance: ${advanced.trackId}`);
-        this.emit({ kind: "loaded", gaplessGeneration: this.state.gaplessGeneration });
+        this.emit({ kind: "advanced", gaplessGeneration: this.state.gaplessGeneration });
         return;
       }
       const pendingSeek = this.pendingSeek;
-      const pendingPause = this.pendingPause;
+      const loadToken = this.loadToken;
       this.pendingSeek = 0;
       Promise.resolve()
         .then(async () => {
           if (pendingSeek > 0) {
             await this.command("seek", pendingSeek, "absolute+exact");
           }
-          await this.setPaused(pendingPause);
+          if (this.isCurrentLoad(loadToken)) await this.setPaused(this.pendingPause);
         })
         .catch((error) => {
           const message = error instanceof Error ? error.stack || error.message : String(error);
@@ -595,9 +604,15 @@ class MpvAudioEngine {
   }
 
   async setPaused(paused) {
+    const token = ++this.pauseToken;
+    const desiredPaused = Boolean(paused);
+    this.pendingPause = desiredPaused;
     await this.ensureProcess(this.launchExclusive ?? false);
-    this.state.paused = Boolean(paused);
-    await this.command("set_property", "pause", this.state.paused);
+    if (token !== this.pauseToken) return this.snapshot({ kind: "superseded" });
+    const child = this.process;
+    await this.command("set_property", "pause", desiredPaused);
+    if (token !== this.pauseToken || this.process !== child) return this.snapshot({ kind: "superseded" });
+    this.state.paused = desiredPaused;
     this.emit({ kind: "pause" });
     return this.snapshot();
   }
@@ -652,10 +667,12 @@ class MpvAudioEngine {
   }
 
   async stop() {
-    this.loadToken += 1;
+    this.pauseToken += 1;
+    const token = ++this.loadToken;
     this.pendingAutoAdvance = null;
     if (!this.process) return this.snapshot();
     await this.command("stop").catch(() => undefined);
+    if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
     this.state.active = false;
     this.state.trackId = null;
     this.state.url = null;
@@ -663,6 +680,9 @@ class MpvAudioEngine {
     this.state.duration = 0;
     this.state.paused = true;
     this.state.bitrate = null;
+    // Browser playback and an empty queue do not need an idle decoder or an
+    // open WASAPI endpoint. Recreate it on the next explicit native load.
+    await this.teardown();
     this.emit({ kind: "stop" });
     return this.snapshot();
   }
