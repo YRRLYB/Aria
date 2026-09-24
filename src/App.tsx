@@ -1467,7 +1467,15 @@ export default function App() {
   }, [localTracks]);
 
   return (
-    <main className="relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950">
+    <main
+      className="aria-stage relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950"
+      style={
+        {
+          "--aria-accent": activePalette.primary,
+          "--aria-accent-secondary": activePalette.secondary,
+        } as CSSProperties
+      }
+    >
       <audio
         ref={audioRef}
         crossOrigin="anonymous"
@@ -1493,7 +1501,8 @@ export default function App() {
         }}
         onError={handleAudioError}
       />
-      <div className="noise" />
+      <div className="aria-fruit-wash" aria-hidden="true" />
+      <div className="noise" aria-hidden="true" />
       <input
         ref={fileInputRef}
         type="file"
@@ -1517,7 +1526,7 @@ export default function App() {
         }}
       />
 
-      <div className="app-shell relative z-10 flex h-full w-full flex-col overflow-hidden bg-white/78">
+      <div className={cn("app-shell relative z-10 flex h-full w-full flex-col overflow-hidden", activeView === "home" ? "app-shell-home" : "app-shell-standard")}>
         <header
           className="flex h-20 shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 sm:px-6"
           style={dragRegionStyle}

@@ -74,6 +74,8 @@ declare global {
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       chooseMusicFolder?: () => Promise<string | null>;
+      getRemoteAccess?: () => Promise<{ enabled: boolean; token: string; port: number; addresses: string[] }>;
+      setRemoteAccess?: (enabled: boolean) => Promise<{ enabled: boolean; token: string }>;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
       updateMediaSession?: (payload: { active: boolean; title: string; artist: string; album: string; artwork: string | null; playing: boolean; canPrevious: boolean; canNext: boolean }) => Promise<boolean>;
       setTaskbarPreviewRect?: (rect: { x: number; y: number; width: number; height: number } | null) => Promise<boolean>;
@@ -184,6 +186,8 @@ export type ProviderPlaylist = {
   name: string;
   trackCount: number;
   subscribed: boolean;
+  ownerId?: string | null;
+  owned?: boolean;
   coverColor: string;
   coverUrl?: string | null;
 };
@@ -203,11 +207,80 @@ export type ProviderDailyBundle = {
   reason: string;
 };
 
-const API_BASE = window.ariaDesktop?.apiBase ?? "";
+// Connection layer: where the Aria backend lives and how to authenticate.
+// - Desktop (Electron): preload injects apiBase for the embedded loopback
+//   server, which never asks for a token (loopback is exempt).
+// - Web / Aria mobile: the backend is a remote Aria desktop over the LAN,
+//   configured at runtime and persisted in localStorage. Every URL gains
+//   ?token= because <audio>/<img> requests cannot send headers.
+export type ApiConnection = {
+  serverUrl: string;
+  token: string;
+};
+
+const CONNECTION_STORAGE_KEY = "aria-connection";
+
+function normalizeServerUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed || /^data:/i.test(trimmed)) return "";
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+function readStoredConnection(): ApiConnection {
+  if (typeof window === "undefined") return { serverUrl: "", token: "" };
+  if (window.ariaDesktop?.apiBase) {
+    return { serverUrl: window.ariaDesktop.apiBase, token: "" };
+  }
+  try {
+    const raw = localStorage.getItem(CONNECTION_STORAGE_KEY);
+    if (!raw) return { serverUrl: "", token: "" };
+    const parsed = JSON.parse(raw) as Partial<ApiConnection>;
+    return {
+      serverUrl: typeof parsed.serverUrl === "string" ? normalizeServerUrl(parsed.serverUrl) : "",
+      token: typeof parsed.token === "string" ? parsed.token.trim() : "",
+    };
+  } catch {
+    return { serverUrl: "", token: "" };
+  }
+}
+
+let apiConnection: ApiConnection = readStoredConnection();
+
+export function getApiConnection(): ApiConnection {
+  return { ...apiConnection };
+}
+
+export function hasRemoteConnection(): boolean {
+  return Boolean(apiConnection.serverUrl);
+}
+
+export function setApiConnection(connection: Partial<ApiConnection> | null): ApiConnection {
+  apiConnection = {
+    serverUrl: normalizeServerUrl(connection?.serverUrl ?? ""),
+    token: (connection?.token ?? "").trim(),
+  };
+  try {
+    if (apiConnection.serverUrl || apiConnection.token) {
+      localStorage.setItem(CONNECTION_STORAGE_KEY, JSON.stringify(apiConnection));
+    } else {
+      localStorage.removeItem(CONNECTION_STORAGE_KEY);
+    }
+  } catch {
+    // Storage unavailable (e.g. private mode); keep the in-memory value.
+  }
+  return { ...apiConnection };
+}
+
+function appendToken(url: string): string {
+  const token = apiConnection.token;
+  if (!token || !/^https?:/i.test(url) || /[?&]token=/.test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+}
 
 export function apiUrl(url: string) {
-  if (!API_BASE || /^[a-z][a-z\d+.-]*:/i.test(url)) return url;
-  return `${API_BASE}${url}`;
+  if (/^[a-z][a-z\d+.-]*:/i.test(url)) return appendToken(url);
+  const resolved = apiConnection.serverUrl ? `${apiConnection.serverUrl}${url}` : url;
+  return appendToken(resolved);
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {

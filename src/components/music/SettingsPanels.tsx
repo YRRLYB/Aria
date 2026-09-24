@@ -1,7 +1,8 @@
-﻿import { useEffect, useState, type CSSProperties } from "react";
+﻿import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, FolderSearch, Keyboard, Radio, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, FolderSearch, Keyboard, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, UserRound, Volume2, X } from "lucide-react";
+import QRCode from "qrcode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
@@ -163,6 +164,8 @@ export function SettingsPanel({
               </Button>
             </div>
           </section>
+
+          <RemoteAccessSettings />
 
           <KeyboardShortcutSettings
             shortcuts={keyboardShortcuts}
@@ -926,6 +929,182 @@ export function OnboardingDialog({
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+type RemoteAccessInfo = {
+  enabled: boolean;
+  token: string;
+  port: number;
+  addresses: string[];
+};
+
+function RemoteAccessSettings() {
+  const desktopReady = Boolean(window.ariaDesktop?.getRemoteAccess);
+  const [info, setInfo] = useState<RemoteAccessInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"token" | "address" | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    window.ariaDesktop
+      ?.getRemoteAccess?.()
+      .then((value) => {
+        if (mounted) setInfo(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const pairingPayload = useMemo(() => {
+    if (!info?.enabled || !info.addresses.length) return null;
+    return JSON.stringify({
+      app: "aria",
+      version: 1,
+      urls: info.addresses.map((address) => `http://${address}:${info.port}`),
+      token: info.token,
+    });
+  }, [info?.enabled, info?.addresses, info?.port, info?.token]);
+
+  useEffect(() => {
+    if (!pairingPayload) {
+      setQrDataUrl(null);
+      return;
+    }
+    let mounted = true;
+    QRCode.toDataURL(pairingPayload, { margin: 1, width: 320, errorCorrectionLevel: "M" })
+      .then((url) => {
+        if (mounted) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (mounted) setQrDataUrl(null);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [pairingPayload]);
+
+  if (!desktopReady) return null;
+
+  async function toggleRemoteAccess() {
+    if (!info || busy) return;
+    setBusy(true);
+    setRestarting(true);
+    try {
+      const updated = await window.ariaDesktop?.setRemoteAccess?.(!info.enabled);
+      if (updated) {
+        setInfo((current) => ({
+          enabled: updated.enabled,
+          token: updated.token,
+          port: current?.port ?? 3636,
+          addresses: current?.addresses ?? [],
+        }));
+      }
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setRestarting(false), 2600);
+    }
+  }
+
+  async function copyText(text: string, kind: "token" | "address") {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(kind);
+      window.setTimeout(() => setCopied(null), 1600);
+    } catch {
+      // Clipboard may be unavailable; the text remains selectable.
+    }
+  }
+
+  const enabled = Boolean(info?.enabled);
+  const firstAddress = info?.addresses[0] ? `http://${info.addresses[0]}:${info.port}` : null;
+
+  return (
+    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Remote</p>
+          <h3 className="mt-1 text-base font-semibold">手机远程访问</h3>
+        </div>
+        <button
+          className={cn(
+            "flex h-8 w-14 items-center rounded-full p-1 transition disabled:opacity-50",
+            enabled ? "bg-neutral-950" : "bg-neutral-200",
+          )}
+          disabled={busy || !info}
+          onClick={toggleRemoteAccess}
+          aria-label="切换手机远程访问"
+          aria-pressed={enabled}
+        >
+          <span className={cn("size-6 rounded-full bg-white shadow-sm transition", enabled && "translate-x-6")} />
+        </button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-neutral-500">
+        开启后,同一局域网内的 Aria 手机版可以连接这台电脑,同步网易云歌单并串流本地曲库。连接令牌只走明文 HTTP,请仅在可信的家用网络开启。
+      </p>
+
+      {!info && <p className="mt-4 text-sm text-neutral-400">读取远程访问状态…</p>}
+
+      {info && restarting && (
+        <p className="mt-3 flex items-center gap-2 text-xs text-sky-700">
+          <RefreshCw className="size-3.5 animate-spin" />
+          后端正在以新配置重启,约 2 秒后生效…
+        </p>
+      )}
+
+      {info && enabled && (
+        <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="min-w-0 space-y-2">
+            {info.addresses.length === 0 && (
+              <p className="rounded-[1rem] bg-amber-50 p-3 text-xs text-amber-700">没有检测到局域网地址,请确认电脑已连接网络。</p>
+            )}
+            {info.addresses.map((address) => (
+              <button
+                key={address}
+                type="button"
+                onClick={() => copyText(`http://${address}:${info.port}`, "address")}
+                className="flex w-full items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3 text-left transition hover:bg-neutral-950/[0.06]"
+              >
+                <span className="min-w-0">
+                  <span className="block text-xs text-neutral-400">服务器地址(点击复制)</span>
+                  <span className="mt-0.5 block truncate font-mono text-sm font-medium">http://{address}:{info.port}</span>
+                </span>
+                {copied === "address" ? <CheckCircle2 className="size-4 shrink-0 text-emerald-600" /> : <Copy className="size-4 shrink-0 text-neutral-400" />}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => copyText(info.token, "token")}
+              className="flex w-full items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3 text-left transition hover:bg-neutral-950/[0.06]"
+            >
+              <span className="min-w-0">
+                <span className="block text-xs text-neutral-400">连接令牌(点击复制)</span>
+                <span className="mt-0.5 block truncate font-mono text-sm font-medium">{info.token}</span>
+              </span>
+              {copied === "token" ? <CheckCircle2 className="size-4 shrink-0 text-emerald-600" /> : <Copy className="size-4 shrink-0 text-neutral-400" />}
+            </button>
+            <p className="text-xs leading-5 text-neutral-500">
+              在手机 Aria 的「连接到电脑」里输入上面的地址和令牌,或用手机相机扫码后把内容填入。
+            </p>
+          </div>
+          <div className="flex items-start justify-center">
+            {qrDataUrl ? (
+              <img src={qrDataUrl} alt="Aria 手机连接二维码" className="size-40 rounded-[1rem] bg-white p-2 shadow-sm" draggable={false} />
+            ) : (
+              <div className="flex size-40 items-center justify-center rounded-[1rem] bg-white/70 text-xs text-neutral-400">二维码生成中…</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {info && !enabled && firstAddress && (
+        <p className="mt-3 font-mono text-xs text-neutral-400">{firstAddress} · 当前仅本机可访问</p>
+      )}
+    </section>
   );
 }
 

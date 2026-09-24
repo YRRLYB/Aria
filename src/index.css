@@ -12,6 +12,8 @@
   --page: #f7f8fb;
   --ink: #171717;
   --muted: #6f7480;
+  --aria-accent: #5976b4;
+  --aria-accent-secondary: #b66e5f;
 }
 
 * {
@@ -122,15 +124,86 @@ textarea::selection,
   backdrop-filter: blur(10px) saturate(1.08);
 }
 
+.aria-stage {
+  background:
+    linear-gradient(122deg, color-mix(in srgb, var(--aria-accent) 7%, #f5f6f8), #f5f6f8 54%, color-mix(in srgb, var(--aria-accent-secondary) 7%, #f5f6f8));
+}
+
+.aria-fruit-wash {
+  position: fixed;
+  z-index: 0;
+  inset: -18%;
+  pointer-events: none;
+  contain: strict;
+  background:
+    linear-gradient(
+      118deg,
+      color-mix(in srgb, var(--aria-accent) 26%, transparent) 0%,
+      transparent 29%,
+      color-mix(in srgb, #f4a261 19%, transparent) 48%,
+      transparent 70%,
+      color-mix(in srgb, var(--aria-accent-secondary) 25%, transparent) 100%
+    );
+  filter: blur(44px) saturate(1.16);
+  opacity: 0.88;
+  transform: translate3d(0, 0, 0) scale(1.03);
+  will-change: transform;
+  animation: fruit-wash-drift 24s ease-in-out infinite alternate;
+}
+
+.aria-fruit-wash::before {
+  position: absolute;
+  inset: 12% 8%;
+  background:
+    linear-gradient(
+      32deg,
+      color-mix(in srgb, #9bd7c3 17%, transparent),
+      transparent 35%,
+      color-mix(in srgb, #f4b4c8 16%, transparent) 64%,
+      transparent
+    );
+  content: "";
+  opacity: 0.8;
+  transform: rotate(-5deg) scale(1.08);
+}
+
+.app-shell-home {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.app-shell-standard {
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.home-hero {
+  background:
+    linear-gradient(
+      112deg,
+      color-mix(in srgb, var(--aria-accent) 13%, rgba(255, 255, 255, 0.7)),
+      rgba(255, 255, 255, 0.58) 48%,
+      color-mix(in srgb, var(--aria-accent-secondary) 15%, rgba(255, 255, 255, 0.66))
+    );
+  box-shadow: 0 26px 84px color-mix(in srgb, var(--aria-accent) 13%, rgba(47, 55, 76, 0.12));
+}
+
 .noise {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  opacity: 0.2;
+  opacity: 0.11;
   background-image:
     radial-gradient(circle at 20% 12%, rgba(89, 118, 180, 0.18), transparent 27rem),
     radial-gradient(circle at 83% 20%, rgba(76, 159, 143, 0.15), transparent 24rem),
     radial-gradient(circle at 68% 88%, rgba(182, 110, 95, 0.14), transparent 27rem);
+}
+
+@keyframes fruit-wash-drift {
+  from {
+    transform: translate3d(-1.5%, -1%, 0) scale(1.03);
+  }
+  to {
+    transform: translate3d(1.5%, 1%, 0) scale(1.06);
+  }
 }
 
 .scrollbar-thin {
@@ -470,6 +543,10 @@ textarea::selection,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .aria-fruit-wash {
+    animation: none;
+  }
+
   [data-cover-ready="false"]::before {
     animation: none;
   }

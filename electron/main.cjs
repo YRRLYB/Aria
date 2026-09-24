@@ -1,6 +1,8 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut, dialog } = require("electron");
 const { spawn, execFileSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { createLogger, serializeError } = require("./logger.cjs");
@@ -230,6 +232,60 @@ async function apiOnline(timeoutMs = 8000) {
   return false;
 }
 
+// Remote access (phone companion over the LAN). The server reads
+// <userData>/data/remote.json at boot: `enabled` decides whether it binds
+// 0.0.0.0, and every non-loopback /api request must present `token`. The
+// desktop mints the token once so enabling the toggle is instant.
+function remoteAccessFilePath() {
+  return path.join(app.getPath("userData"), "data", "remote.json");
+}
+
+function readRemoteAccessFile() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(remoteAccessFilePath(), "utf8"));
+    return {
+      enabled: Boolean(parsed?.enabled),
+      token: typeof parsed?.token === "string" ? parsed.token : "",
+    };
+  } catch {
+    return { enabled: false, token: "" };
+  }
+}
+
+function writeRemoteAccessFile(config) {
+  const file = remoteAccessFilePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(config, null, 2), "utf8");
+}
+
+function lanAddresses() {
+  const addresses = [];
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === "IPv4" && !entry.internal) addresses.push(entry.address);
+    }
+  }
+  return addresses;
+}
+
+function ensureRemoteAccessToken() {
+  const config = readRemoteAccessFile();
+  if (config.token) return config;
+  config.token = crypto.randomBytes(16).toString("base64url");
+  writeRemoteAccessFile(config);
+  return config;
+}
+
+function restartBackendForRemoteAccess() {
+  if (backendProcess && !backendProcess.killed) {
+    // The exit handler schedules startBackend() 1.5s later, after the port
+    // is released; apiOnline() inside startBackend prevents a double spawn.
+    backendProcess.kill();
+    return;
+  }
+  void startBackend();
+}
+
 async function urlOnline(url, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -247,6 +303,7 @@ async function urlOnline(url, timeoutMs = 10000) {
 async function startBackend() {
   if (await apiOnline(500)) return;
 
+  ensureRemoteAccessToken();
   const serverEntry = resolveServerEntry();
   writeLog("desktop.log", `starting backend: ${serverEntry}`);
   // Cap the backend V8 heap so long sessions GC eagerly instead of letting V8
@@ -698,6 +755,25 @@ ipcMain.handle("aria:choose-music-folder", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle("aria:get-remote-access", () => {
+  const config = ensureRemoteAccessToken();
+  return {
+    enabled: config.enabled,
+    token: config.token,
+    port: apiPort,
+    addresses: lanAddresses(),
+  };
+});
+
+ipcMain.handle("aria:set-remote-access", (_event, payload) => {
+  const config = ensureRemoteAccessToken();
+  config.enabled = Boolean(payload?.enabled);
+  writeRemoteAccessFile(config);
+  writeLog("desktop.log", `remote access ${config.enabled ? "enabled" : "disabled"}, restarting backend`);
+  restartBackendForRemoteAccess();
+  return config;
 });
 
 ipcMain.handle("aria:update-media-session", (_event, payload) => {

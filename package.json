@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.3.13-beta.0",
+  "version": "0.4.0-beta.1",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -30,6 +30,7 @@
     "lucide-react": "^0.468.0",
     "music-metadata": "^11.13.0",
     "NeteaseCloudMusicApi": "^4.32.0",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "sharp": "^0.34.5",
@@ -41,6 +42,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^24.0.10",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",

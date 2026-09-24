@@ -28,6 +28,8 @@ export type ProviderPlaylist = {
   name: string;
   trackCount: number;
   subscribed: boolean;
+  ownerId?: string | null;
+  owned?: boolean;
   coverColor: string;
   coverUrl?: string | null;
 };

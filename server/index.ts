@@ -21,9 +21,17 @@ import { readStore, updateStore } from "./store";
 import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
 import { pruneDiskCache } from "./utils/diskCache";
+import {
+  extractRequestToken,
+  lanAddresses,
+  loadRemoteAccessConfig,
+  loopbackAddress,
+  matchesRemoteToken,
+} from "./remoteAccess";
 
 const app = express();
 const port = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
+const remoteAccess = loadRemoteAccessConfig();
 const remoteCoverCacheDir = path.join(cacheDir, "covers");
 const maxRemoteCoverBytes = 8 * 1024 * 1024;
 
@@ -60,6 +68,35 @@ app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, name: "aria-api" });
+});
+
+// When remote access is on, LAN clients must present the pairing token via
+// the Authorization header or ?token= (media URLs inside <audio>/<img> cannot
+// send headers). Loopback traffic — the desktop renderer itself — is exempt.
+app.use("/api", (req, res, next) => {
+  if (!remoteAccess.enabled) {
+    next();
+    return;
+  }
+  if (loopbackAddress(req.ip)) {
+    next();
+    return;
+  }
+  const provided = extractRequestToken(req.headers, req.query.token);
+  if (matchesRemoteToken(remoteAccess.token, provided)) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: "Unauthorized", code: "REMOTE_TOKEN_REQUIRED" });
+});
+
+app.get("/api/remote-access", (_req, res) => {
+  res.json({
+    enabled: remoteAccess.enabled,
+    token: remoteAccess.token,
+    port,
+    addresses: lanAddresses(),
+  });
 });
 
 app.use("/api/library", createLibraryRouter());
@@ -457,8 +494,9 @@ function resolveProvider(providerId: string) {
   return provider;
 }
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`aria-api listening on http://127.0.0.1:${port}`);
+const listenHost = remoteAccess.enabled ? "0.0.0.0" : "127.0.0.1";
+app.listen(port, listenHost, () => {
+  console.log(`aria-api listening on http://${listenHost}:${port} (remote access ${remoteAccess.enabled ? "enabled" : "disabled"})`);
 });
 
 function normalizeCoverSize(value?: string) {

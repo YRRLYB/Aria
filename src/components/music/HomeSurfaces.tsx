@@ -140,8 +140,8 @@ export function HomeSurface({
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.86fr)_minmax(0,1.14fr)] gap-4 overflow-hidden">
-      <section className="glass grid min-h-0 overflow-hidden rounded-[1.5rem] lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
-        <div className="p-5 sm:p-7">
+      <section className="glass home-hero grid min-h-0 overflow-hidden rounded-[1.5rem] lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+        <div className="relative z-10 p-5 sm:p-7">
           <Badge>Home</Badge>
           <h1 className="mt-5 max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
             音乐从这里开始
@@ -156,7 +156,7 @@ export function HomeSurface({
           </div>
         </div>
         <button
-          className="group relative m-4 min-h-72 overflow-hidden rounded-[1.65rem] border border-neutral-950/10 bg-neutral-950 p-0 text-left shadow-[0_24px_70px_rgba(20,24,35,0.18)]"
+          className="group relative z-10 m-4 min-h-72 overflow-hidden rounded-[1.65rem] border border-neutral-950/10 bg-neutral-950 p-0 text-left shadow-[0_24px_70px_rgba(20,24,35,0.18)]"
           onClick={onOpenPlayer}
         >
           <div className="absolute inset-0" data-taskbar-anchor="home-cover">

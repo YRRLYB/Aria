@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
   chooseMusicFolder: () => ipcRenderer.invoke("aria:choose-music-folder"),
+  getRemoteAccess: () => ipcRenderer.invoke("aria:get-remote-access"),
+  setRemoteAccess: (enabled) => ipcRenderer.invoke("aria:set-remote-access", { enabled: Boolean(enabled) }),
   updateTaskbarPlayback: (payload) => ipcRenderer.invoke("aria:update-taskbar-playback", payload || {}),
   updateMediaSession: (payload) => ipcRenderer.invoke("aria:update-media-session", payload || {}),
   setTaskbarPreviewRect: (rect) => ipcRenderer.invoke("aria:set-thumbnail-clip", rect || null),

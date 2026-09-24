@@ -11,3 +11,4 @@ electron/native/**/build/
 electron/native/**/*.node
 /main.cjs
 .zcode/
+.tools/

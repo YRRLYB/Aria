@@ -164,6 +164,7 @@ export function PlaylistSurface({
   const [sortMode, setSortMode] = useState<"added-desc" | "added-asc" | "title-asc" | "title-desc" | "plays-desc">(
     "added-desc",
   );
+  const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
   const sortedTracks = useMemo(() => {
     const indexed = tracks.map((track, index) => ({ track, index }));
     switch (sortMode) {
@@ -189,6 +190,11 @@ export function PlaylistSurface({
         return indexed.map((item) => item.track);
     }
   }, [playCounts, sortMode, tracks]);
+  const visiblePlaylists = useMemo(() => {
+    if (playlistFilter === "owned") return playlists.filter((playlist) => playlist.owned ?? !playlist.subscribed);
+    if (playlistFilter === "saved") return playlists.filter((playlist) => playlist.subscribed || playlist.owned === false);
+    return playlists;
+  }, [playlistFilter, playlists]);
 
   if (selectedPlaylist) {
     return (
@@ -252,8 +258,27 @@ export function PlaylistSurface({
           新建
         </Button>
       </div>
-      <div className="mt-8 grid gap-4 md:grid-cols-3">
-        {playlists.map((playlist) => (
+      <div className="mt-6 flex flex-wrap gap-2">
+        {[
+          ["all", "全部歌单"],
+          ["owned", "我创建"],
+          ["saved", "我收藏"],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={cn(
+              "rounded-full border px-3 py-1.5 text-sm transition",
+              playlistFilter === value ? "border-neutral-950 bg-neutral-950 text-white" : "border-white/70 bg-white/65 text-neutral-500 hover:bg-white",
+            )}
+            onClick={() => setPlaylistFilter(value as typeof playlistFilter)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {visiblePlaylists.map((playlist) => (
           <button
             key={playlist.id}
             className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"

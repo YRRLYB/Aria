@@ -28,6 +28,12 @@ type NeteaseSong = {
   sq?: NeteaseQualityInfo | null;
   h?: NeteaseQualityInfo | null;
   jymaster?: NeteaseQualityInfo | null;
+  privilege?: {
+    maxbr?: number;
+    playMaxbr?: number;
+    maxBrLevel?: string;
+    playMaxBrLevel?: string;
+  };
 };
 
 type NeteaseQualityInfo = {
@@ -43,6 +49,8 @@ type NeteasePlaylist = {
   trackCount?: number;
   subscribed?: boolean;
   coverImgUrl?: string;
+  userId?: number | string;
+  creator?: { userId?: number | string } | null;
 };
 
 type NeteaseArtist = {
@@ -111,9 +119,16 @@ export class NeteaseClient {
 
   async getPlaylists() {
     const { cookie, userId } = await this.requireSession();
-    return remember(`netease:playlists:${userId}`, 60_000, async () => {
-      const response = await neteaseApi.user_playlist({ uid: userId, cookie, limit: 50 });
-      return ((response.body?.playlist as NeteasePlaylist[] | undefined) ?? []).map(normalizePlaylist);
+    return remember(`netease:playlists:v2:${userId}`, 60_000, async () => {
+      const pageSize = 100;
+      const playlists: NeteasePlaylist[] = [];
+      for (let offset = 0; offset < 500; offset += pageSize) {
+        const response = await neteaseApi.user_playlist({ uid: userId, cookie, limit: pageSize, offset });
+        const batch = (response.body?.playlist as NeteasePlaylist[] | undefined) ?? [];
+        playlists.push(...batch);
+        if (batch.length < pageSize) break;
+      }
+      return playlists.map((playlist) => normalizePlaylist(playlist, userId));
     });
   }
 
@@ -379,7 +394,7 @@ export class NeteaseClient {
           }>
         | undefined;
       const stream = data?.[0];
-      const actualLevel = normalizeLevel(stream?.level);
+      const actualLevel = normalizeLevel(stream?.level) ?? (stream?.url ? level : null);
       return {
         url: stream?.url ?? null,
         bitrate: normalizeBitrate(stream?.br),
@@ -387,7 +402,7 @@ export class NeteaseClient {
         size: typeof stream?.size === "number" ? Math.round(stream.size) : null,
         quality: qualityFromLevel(actualLevel),
         currentLevel: actualLevel,
-        availableLevels: availableLevelsFromSong(song),
+        availableLevels: uniqueLevels([...availableLevelsFromSong(song), ...(actualLevel ? [actualLevel] : [])]),
       } satisfies NeteaseStreamMeta;
     });
   }
@@ -426,7 +441,7 @@ function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> = {}): P
 }
 
 function availableLevelsFromSong(song: NeteaseSong): QualityLevel[] {
-  return qualityOrder.filter((level) => {
+  const levels = qualityOrder.filter((level) => {
     switch (level) {
       case "standard":
         return Boolean(song.l);
@@ -444,6 +459,11 @@ function availableLevelsFromSong(song: NeteaseSong): QualityLevel[] {
         return false;
     }
   });
+  const maxBitrate = Math.max(Number(song.privilege?.maxbr ?? 0), Number(song.privilege?.playMaxbr ?? 0));
+  if ((maxBitrate >= 999_000 || song.privilege?.maxBrLevel === "jymaster" || song.privilege?.playMaxBrLevel === "jymaster") && !levels.includes("jymaster")) {
+    levels.push("jymaster");
+  }
+  return levels;
 }
 
 function qualityInfoForLevel(song: NeteaseSong, level: QualityLevel | null | undefined) {
@@ -494,15 +514,23 @@ function normalizeSampleRate(value?: number) {
   return Math.round(value);
 }
 
-function normalizePlaylist(playlist: NeteasePlaylist): ProviderPlaylist {
+function normalizePlaylist(playlist: NeteasePlaylist, currentUserId?: string) {
+  const ownerId = playlist.creator?.userId ?? playlist.userId ?? null;
+  const owned = currentUserId ? String(ownerId ?? currentUserId) === String(currentUserId) : !playlist.subscribed;
   return {
     id: String(playlist.id),
     name: playlist.name,
     trackCount: playlist.trackCount ?? 0,
     subscribed: Boolean(playlist.subscribed),
+    ownerId: ownerId == null ? null : String(ownerId),
+    owned,
     coverColor: "#d85f6a",
     coverUrl: playlist.coverImgUrl ?? null,
   };
+}
+
+function uniqueLevels(levels: QualityLevel[]) {
+  return qualityOrder.filter((level) => levels.includes(level));
 }
 
 function normalizeArtist(artist: NeteaseArtist): ProviderArtist {
