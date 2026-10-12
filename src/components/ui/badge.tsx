@@ -8,7 +8,7 @@ export function Badge({
   return (
     <div
       className={cn(
-        "inline-flex h-7 items-center rounded-full border border-white/70 bg-white/55 px-3 text-xs font-medium text-neutral-700 shadow-sm backdrop-blur-xl",
+        "inline-flex h-7 items-center rounded-full border border-[var(--line)] bg-[var(--surface-muted)] px-3 text-xs font-medium text-[var(--text-secondary)]",
         className,
       )}
       {...props}

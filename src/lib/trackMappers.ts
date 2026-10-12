@@ -74,6 +74,9 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
   return {
     id: `netease:${track.id}`,
     providerId: track.id,
+    albumId: track.albumId ?? null,
+    artistIds: track.artistIds ?? [],
+    matchedLyric: track.matchedLyric ?? null,
     title: track.title,
     artist: track.artist,
     album: track.album,

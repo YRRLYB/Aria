@@ -65,6 +65,7 @@ class MpvAudioEngine {
     this.pendingSeek = 0;
     this.pendingPause = true;
     this.pauseToken = 0;
+    this.seekToken = 0;
     this.lastRecoveryAt = 0;
     // When the renderer preloads the next track, mpv advances its internal
     // playlist on EOF. The pending entry's identity and a generation counter
@@ -267,7 +268,12 @@ class MpvAudioEngine {
     }
 
     if (message.event === "property-change") {
-      if (message.name === "time-pos") this.state.position = Number(message.data) || 0;
+      // mpv temporarily reports an unavailable time-pos while it flushes a
+      // seek. Keep the last playhead until a real timestamp arrives.
+      if (message.name === "time-pos") {
+        if (typeof message.data !== "number" || !Number.isFinite(message.data)) return;
+        this.state.position = Math.max(0, message.data);
+      }
       if (message.name === "duration") this.state.duration = Number(message.data) || 0;
       if (message.name === "pause") this.state.paused = Boolean(message.data);
       if (message.name === "audio-bitrate") this.state.bitrate = Number(message.data) || null;
@@ -618,12 +624,22 @@ class MpvAudioEngine {
   }
 
   async seek(position) {
+    const token = ++this.seekToken;
     await this.ensureProcess(this.launchExclusive ?? false);
+    if (token !== this.seekToken) return this.snapshot({ kind: "superseded" });
+    const child = this.process;
+    const loadToken = this.loadToken;
     const nextPosition = Math.max(0, Number(position) || 0);
     this.state.position = nextPosition;
     await this.command("seek", nextPosition, "absolute+exact");
+    if (token !== this.seekToken || this.process !== child || !this.isCurrentLoad(loadToken)) {
+      return this.snapshot({ kind: "superseded" });
+    }
+    // Old property ticks can arrive while the seek command is in flight.
+    // Publish the requested position, then let later time-pos ticks advance it.
+    this.state.position = nextPosition;
     this.emit({ kind: "seek" });
-    return this.snapshot();
+    return this.snapshot({ kind: "seek" });
   }
 
   async setVolume(volume) {
@@ -668,6 +684,7 @@ class MpvAudioEngine {
 
   async stop() {
     this.pauseToken += 1;
+    this.seekToken += 1;
     const token = ++this.loadToken;
     this.pendingAutoAdvance = null;
     if (!this.process) return this.snapshot();

@@ -11,7 +11,7 @@ export type ProviderTrack = {
   artist: string;
   album: string;
   duration: number;
-  quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: string;
   streamUrl?: string | null;
   coverUrl?: string | null;
@@ -21,6 +21,9 @@ export type ProviderTrack = {
   sampleRate?: number | null;
   currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
   availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
+  albumId?: string | null;
+  artistIds?: string[];
+  matchedLyric?: string | null;
 };
 
 export type ProviderPlaylist = {
@@ -30,8 +33,12 @@ export type ProviderPlaylist = {
   subscribed: boolean;
   ownerId?: string | null;
   owned?: boolean;
+  canEdit?: boolean;
   coverColor: string;
   coverUrl?: string | null;
+  description?: string;
+  creatorName?: string;
+  tags?: string[];
 };
 
 export type ProviderArtist = {
@@ -41,6 +48,40 @@ export type ProviderArtist = {
   avatarUrl?: string | null;
   trackCount?: number | null;
   albumCount?: number | null;
+};
+
+export type ProviderUser = {
+  id: string;
+  nickname: string;
+  avatarUrl: string | null;
+  signature: string;
+  playlistCount: number | null;
+  followCount: number | null;
+  followerCount: number | null;
+};
+
+export type ProviderAlbum = {
+  id: string;
+  name: string;
+  artist: string;
+  artistId: string | null;
+  coverUrl: string | null;
+  publishTime: number | null;
+  trackCount: number | null;
+  description?: string;
+};
+
+export type NeteaseSearchMode = "tracks" | "artists" | "playlists" | "users" | "albums" | "lyrics";
+
+export type NeteaseSearchResults = {
+  query: string;
+  mode: NeteaseSearchMode;
+  tracks: ProviderTrack[];
+  artists: ProviderArtist[];
+  playlists: ProviderPlaylist[];
+  users: ProviderUser[];
+  albums: ProviderAlbum[];
+  total: number;
 };
 
 export type ProviderDailyBundle = {

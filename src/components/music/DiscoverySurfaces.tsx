@@ -1,12 +1,32 @@
 ﻿import { useMemo, useState } from "react";
-import { Globe2, HardDrive, Play, Search, UserRound } from "lucide-react";
+import {
+  Cloud,
+  Disc3,
+  FileText,
+  Globe2,
+  HardDrive,
+  ListMusic,
+  Play,
+  Search,
+  UserRound,
+  UsersRound,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { CopyableTrackText, CoverArt, EmptyState, Metric, ArtistAvatar } from "@/components/music/shared";
+import { EmptyState, ArtistAvatar } from "@/components/music/shared";
 import { artistSourceLabel, type ArtistSummary } from "@/lib/artists";
-import { formatAudioDetail, mergeTracks } from "@/lib/playerPresentation";
-import { sourceLabel } from "@/lib/trackLabels";
+import type { ProviderAlbum, ProviderPlaylist, ProviderUser } from "@/lib/api";
+import { mergeTracks } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
 import type { Track } from "@/data/music";
+import type { DiscoverySearchMode } from "@/hooks/useDiscovery";
+import {
+  AlbumDiscoveryCard,
+  DiscoveryError,
+  DiscoveryLoadMore,
+  DiscoveryTrackRow,
+  PlaylistDiscoveryCard,
+  type DiscoveryArtistDetail,
+} from "./DiscoveryDetails";
 
 export function SearchSurface({
   query,
@@ -14,89 +34,249 @@ export function SearchSurface({
   localTracks,
   neteaseTracks,
   artists,
+  playlists,
+  users = [],
+  albums = [],
   artistAvatarCache,
+  mode = "tracks",
+  onModeChange,
+  error = null,
+  total = 0,
+  more = false,
+  onRetry = () => {},
+  onLoadMore = () => {},
   onPickTrack,
   onPickArtist,
+  onPickPlaylist,
+  onPickUser,
+  onPickAlbum,
 }: {
   query: string;
   loading: boolean;
   localTracks: Track[];
   neteaseTracks: Track[];
   artists: ArtistSummary[];
+  playlists: ProviderPlaylist[];
+  users?: ProviderUser[];
+  albums?: ProviderAlbum[];
   artistAvatarCache: Record<string, string | null>;
+  mode?: DiscoverySearchMode;
+  onModeChange?: (mode: DiscoverySearchMode) => void;
+  error?: string | null;
+  total?: number;
+  more?: boolean;
+  onRetry?: () => void;
+  onLoadMore?: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
   onPickArtist: (artist: ArtistSummary) => void;
+  onPickPlaylist: (playlist: ProviderPlaylist) => void;
+  onPickUser?: (user: ProviderUser) => void;
+  onPickAlbum?: (album: ProviderAlbum) => void;
 }) {
-  const tracks = useMemo(() => mergeTracks([...localTracks, ...neteaseTracks]).slice(0, 36), [localTracks, neteaseTracks]);
-  const localQueue = useMemo(() => tracks.filter((track) => track.source === "local"), [tracks]);
-  const neteaseQueue = useMemo(() => tracks.filter((track) => track.source === "netease"), [tracks]);
+  const tracks = useMemo(
+    () => mergeTracks([...localTracks, ...neteaseTracks]),
+    [localTracks, neteaseTracks],
+  );
+  const localQueue = useMemo(
+    () => tracks.filter((track) => track.source === "local"),
+    [tracks],
+  );
+  const neteaseQueue = useMemo(
+    () => tracks.filter((track) => track.source === "netease"),
+    [tracks],
+  );
+  const descriptions = {
+    tracks: "搜索歌曲与本地音乐，可直接播放或加入歌单。",
+    artists: "浏览歌手作品、专辑与简介。",
+    playlists: "浏览公开歌单并播放完整曲目。",
+    users: "搜索网易云用户，查看他们的公开歌单。",
+    albums: "按专辑名称搜索，浏览完整曲目。",
+    lyrics: "输入歌词片段，找回那首歌。",
+  };
+  const count =
+    mode === "tracks" || mode === "lyrics"
+      ? tracks.length
+      : mode === "artists"
+        ? artists.length
+        : mode === "playlists"
+          ? playlists.length
+          : mode === "users"
+            ? users.length
+            : albums.length;
 
   return (
-    <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]">
-      <section className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <Badge>{loading ? "搜索中" : "Search"}</Badge>
-            <h1 className="mt-3 truncate text-3xl font-semibold">搜索：{query}</h1>
-            <p className="mt-2 text-sm text-neutral-500">本地音乐和网易云结果会合并显示，点击歌曲直接播放。</p>
-          </div>
-          <Search className="size-6 shrink-0 text-neutral-400" />
+    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-5">
+      <header className="flex shrink-0 items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-xs tracking-widest text-neutral-400">SEARCH</p>
+          <h1 className="mt-2 truncate text-3xl font-semibold" title={query}>
+            {query}
+          </h1>
+          <p className="mt-2 text-sm text-neutral-500">{descriptions[mode]}</p>
         </div>
-        <div className="no-scrollbar mt-5 grid max-h-[calc(100%-6.5rem)] gap-2 overflow-y-auto pr-1">
-          {tracks.map((track) => (
+        <Search className="size-6 shrink-0 text-neutral-300" />
+      </header>
+      <div className="mt-5 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-neutral-200/65 pb-3">
+        <div
+          role="tablist"
+          aria-label="搜索类型"
+          className="flex flex-wrap items-center gap-1"
+        >
+          {(
+            [
+              ["tracks", "歌曲", ListMusic],
+              ["artists", "歌手", UserRound],
+              ["playlists", "歌单", Cloud],
+              ["users", "用户", UsersRound],
+              ["albums", "专辑", Disc3],
+              ["lyrics", "歌词", FileText],
+            ] as const
+          ).map(([value, label, Icon]) => (
             <button
-              key={track.id}
-              className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.2rem] bg-white/50 p-3 text-left shadow-sm transition hover:bg-white"
-              onClick={() =>
-                onPickTrack(
-                  track.id,
-                  track.source === "netease" ? neteaseQueue : track.source === "local" ? localQueue : [track],
-                )
-              }
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={mode === value}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium transition",
+                mode === value
+                  ? "bg-neutral-950 text-white"
+                  : "text-neutral-500 hover:bg-white hover:text-neutral-950",
+              )}
+              onClick={() => onModeChange?.(value)}
             >
-              <CoverArt track={track} className="size-14 rounded-2xl" />
-              <div className="min-w-0">
-                <p className="truncate font-semibold">
-                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-                </p>
-                <p className="truncate text-sm text-neutral-500">
-                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-                </p>
-                <p className="mt-1 truncate text-xs text-neutral-400">{track.album}</p>
-              </div>
-              <div className="flex flex-col items-end gap-2">
-                <Badge>{sourceLabel[track.source]}</Badge>
-                <span className="text-xs text-neutral-500">{formatAudioDetail(track)}</span>
-              </div>
+              <Icon className="size-3.5" />
+              {label}
             </button>
           ))}
-          {!tracks.length && <EmptyState text={loading ? "正在搜索曲库和网易云。" : "没有找到相关歌曲。"} />}
         </div>
-      </section>
-
-      <section className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Artists</p>
-            <h2 className="mt-1 text-2xl font-semibold">歌手</h2>
+        <span className="text-xs text-neutral-400">
+          {loading
+            ? "搜索中…"
+            : total
+              ? `已显示 ${count} 项 · 共 ${total} 项`
+              : `${count} 项结果`}
+        </span>
+      </div>
+      <div
+        role="tabpanel"
+        className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1"
+      >
+        <DiscoveryError error={error} onRetry={onRetry} />
+        {(mode === "tracks" || mode === "lyrics") && (
+          <div className="grid gap-2">
+            {tracks.map((track) => (
+              <DiscoveryTrackRow
+                key={track.id}
+                track={track}
+                queue={track.source === "local" ? localQueue : neteaseQueue}
+                onPickTrack={onPickTrack}
+                showMatchedLyric={mode === "lyrics"}
+              />
+            ))}
           </div>
-          <Badge>{artists.length}</Badge>
-        </div>
-        <div className="no-scrollbar mt-5 grid max-h-[calc(100%-5rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-          {artists.map((artist) => (
-            <ArtistCard
-              key={artist.id}
-              artist={artist}
-              avatarUrl={artist.avatarUrl ?? artistAvatarCache[artist.name.toLowerCase()] ?? null}
-              onPick={onPickArtist}
-            />
-          ))}
-          {!artists.length && <EmptyState text={loading ? "正在查找歌手头像和资料。" : "没有找到相关歌手。"} />}
-        </div>
-      </section>
-    </div>
+        )}
+        {mode === "artists" && (
+          <div className="grid gap-3 xl:grid-cols-3 2xl:grid-cols-4">
+            {artists.map((artist) => (
+              <ArtistCard
+                key={artist.id}
+                artist={artist}
+                avatarUrl={
+                  artist.avatarUrl ??
+                  artistAvatarCache[artist.name.toLowerCase()] ??
+                  null
+                }
+                onPick={onPickArtist}
+              />
+            ))}
+          </div>
+        )}
+        {mode === "playlists" && (
+          <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+            {playlists.map((playlist) => (
+              <PlaylistDiscoveryCard
+                key={playlist.id}
+                playlist={playlist}
+                onPick={onPickPlaylist}
+              />
+            ))}
+          </div>
+        )}
+        {mode === "albums" && (
+          <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+            {albums.map((album) => (
+              <AlbumDiscoveryCard
+                key={album.id}
+                album={album}
+                onPick={(selected) => onPickAlbum?.(selected)}
+              />
+            ))}
+          </div>
+        )}
+        {mode === "users" && (
+          <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+            {users.map((user) => (
+              <button
+                key={user.id}
+                type="button"
+                onClick={() => onPickUser?.(user)}
+                className="flex min-w-0 items-center gap-3 rounded-2xl bg-white/55 p-4 text-left transition hover:bg-white"
+              >
+                <ArtistAvatar
+                  name={user.nickname}
+                  avatarUrl={user.avatarUrl}
+                  className="size-16 rounded-full"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">
+                    {user.nickname}
+                  </span>
+                  <span className="mt-1 block truncate text-xs text-neutral-500">
+                    {user.signature || "暂无签名"}
+                  </span>
+                  <span className="mt-1.5 block text-xs text-neutral-400">
+                    查看公开歌单
+                    {user.playlistCount != null &&
+                      ` · ${user.playlistCount} 个`}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        {!count && !error && (
+          <EmptyState
+            text={
+              loading
+                ? "正在查找相关结果。"
+                : "没有找到相关结果，换个关键词试试。"
+            }
+          />
+        )}
+        <DiscoveryLoadMore
+          loading={loading && Boolean(count)}
+          more={more}
+          onLoadMore={onLoadMore}
+        />
+      </div>
+    </section>
   );
 }
+
+type ArtistDetailProps = {
+  artistDetail?: DiscoveryArtistDetail | null;
+  artistAlbums?: ProviderAlbum[];
+  detailLoading?: boolean;
+  detailError?: string | null;
+  albumsMore?: boolean;
+  onRetryDetail?: () => void;
+  onLoadMoreAlbums?: () => void;
+  onPickAlbum?: (album: ProviderAlbum) => void;
+  tracksLoading?: boolean;
+  tracksError?: string | null;
+  onRetryTracks?: () => void;
+};
 
 export function ArtistsSurface({
   artists,
@@ -106,6 +286,7 @@ export function ArtistsSurface({
   onPickArtist,
   onBack,
   onPickTrack,
+  ...detailProps
 }: {
   artists: ArtistSummary[];
   selectedArtist: ArtistSummary | null;
@@ -114,43 +295,52 @@ export function ArtistsSurface({
   onPickArtist: (artist: ArtistSummary) => void;
   onBack: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
-}) {
-  const featuredArtists = artists.slice(0, 80);
-
-  if (selectedArtist) {
-    const avatarUrl = selectedArtist.avatarUrl ?? artistAvatarCache[selectedArtist.name.toLowerCase()] ?? null;
+} & ArtistDetailProps) {
+  if (selectedArtist)
     return (
       <ArtistDetailView
         key={selectedArtist.id}
         artist={selectedArtist}
-        avatarUrl={avatarUrl}
+        avatarUrl={
+          selectedArtist.avatarUrl ??
+          artistAvatarCache[selectedArtist.name.toLowerCase()] ??
+          null
+        }
         tracks={tracks}
         onBack={onBack}
         onPickTrack={onPickTrack}
+        {...detailProps}
       />
     );
-  }
-
+  const featuredArtists = artists.slice(0, 80);
   return (
-    <section className="glass h-full min-h-0 overflow-hidden rounded-[1.5rem] p-5">
-      <div className="flex items-center justify-between gap-3">
+    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-5">
+      <header className="flex shrink-0 items-center justify-between">
         <div>
           <Badge>Artists</Badge>
           <h1 className="mt-3 text-3xl font-semibold">歌手</h1>
-          <p className="mt-2 text-sm text-neutral-500">本地与网易云曲库合并统计，头像会从线上轻量补全。</p>
+          <p className="mt-2 text-sm text-neutral-500">
+            浏览本地与网易云歌手，探索曲目、专辑和创作者资料。
+          </p>
         </div>
         <UserRound className="size-7 text-neutral-400" />
-      </div>
-      <div className="no-scrollbar mt-5 grid max-h-[calc(100%-6.5rem)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      </header>
+      <div className="no-scrollbar mt-5 grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto pr-1 xl:grid-cols-3 2xl:grid-cols-4">
         {featuredArtists.map((artist) => (
           <ArtistCard
             key={artist.id}
             artist={artist}
-            avatarUrl={artist.avatarUrl ?? artistAvatarCache[artist.name.toLowerCase()] ?? null}
+            avatarUrl={
+              artist.avatarUrl ??
+              artistAvatarCache[artist.name.toLowerCase()] ??
+              null
+            }
             onPick={onPickArtist}
           />
         ))}
-        {!featuredArtists.length && <EmptyState text="导入音乐或同步网易云后会生成歌手页。" />}
+        {!featuredArtists.length && (
+          <EmptyState text="导入音乐或同步网易云后会生成歌手页。" />
+        )}
       </div>
     </section>
   );
@@ -162,165 +352,268 @@ function ArtistDetailView({
   tracks,
   onBack,
   onPickTrack,
+  artistDetail = null,
+  artistAlbums = [],
+  detailLoading = false,
+  detailError = null,
+  albumsMore = false,
+  onRetryDetail = () => {},
+  onLoadMoreAlbums = () => {},
+  onPickAlbum,
+  tracksLoading = false,
+  tracksError = null,
+  onRetryTracks = () => {},
 }: {
   artist: ArtistSummary;
   avatarUrl: string | null;
   tracks: Track[];
   onBack: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
-}) {
-  const [sourceFilter, setSourceFilter] = useState<"all" | "netease" | "local">("all");
-  const localTracks = useMemo(() => tracks.filter((track) => track.source === "local"), [tracks]);
-  const neteaseTracks = useMemo(() => tracks.filter((track) => track.source === "netease"), [tracks]);
-  const groups = {
-    all: [
-      { key: "netease", title: "网易云流媒体", description: "点击这里始终使用网络音源", icon: <Globe2 className="size-4" />, tracks: neteaseTracks },
-      { key: "local", title: "本地文件", description: "仅播放已扫描的本地文件", icon: <HardDrive className="size-4" />, tracks: localTracks },
-    ],
-    netease: [
-      { key: "netease", title: "网易云流媒体", description: "点击这里始终使用网络音源", icon: <Globe2 className="size-4" />, tracks: neteaseTracks },
-    ],
-    local: [
-      { key: "local", title: "本地文件", description: "仅播放已扫描的本地文件", icon: <HardDrive className="size-4" />, tracks: localTracks },
-    ],
-  } as const;
-  const visibleGroups = groups[sourceFilter];
-  const playAllQueue = sourceFilter === "local" ? localTracks : sourceFilter === "netease" ? neteaseTracks : tracks;
-  const playAllTrack = playAllQueue[0];
-
+} & ArtistDetailProps) {
+  const [tab, setTab] = useState<"tracks" | "albums" | "about">("tracks");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "netease" | "local">(
+    "all",
+  );
+  const localTracks = useMemo(
+    () => tracks.filter((track) => track.source === "local"),
+    [tracks],
+  );
+  const neteaseTracks = useMemo(
+    () => tracks.filter((track) => track.source === "netease"),
+    [tracks],
+  );
+  const playAllQueue =
+    sourceFilter === "local"
+      ? localTracks
+      : sourceFilter === "netease"
+        ? neteaseTracks
+        : tracks;
+  const sections = artistDetail?.sections ?? [];
+  const description = artistDetail?.description ?? "";
   return (
-    <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(420px,0.82fr)_minmax(0,1.18fr)]">
-      <section className="glass relative min-h-0 overflow-hidden rounded-[1.5rem] p-6">
-        <div className="absolute inset-0 bg-gradient-to-br from-white/80 via-white/30 to-neutral-200/45" />
-        <div className="relative z-10 flex h-full min-h-0 flex-col">
-          <button
-            className="w-fit rounded-full bg-white/70 px-4 py-2 text-sm font-medium shadow-sm transition hover:bg-white"
-            onClick={onBack}
+    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-6">
+      <button
+        type="button"
+        onClick={onBack}
+        className="w-fit shrink-0 rounded-full bg-white/70 px-4 py-2 text-xs font-medium text-neutral-600"
+      >
+        返回歌手列表
+      </button>
+      <header className="my-5 flex shrink-0 items-center gap-5">
+        <ArtistAvatar
+          name={artist.name}
+          avatarUrl={avatarUrl || artistDetail?.artist.avatarUrl || null}
+          className="size-24 rounded-2xl"
+        />
+        <div className="min-w-0">
+          <Badge>{artistSourceLabel(artist.source)}</Badge>
+          <h1
+            className="mt-2 truncate text-3xl font-semibold"
+            title={artist.name}
           >
-            返回歌手墙
-          </button>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-8 text-center">
-            <ArtistAvatar
-              name={artist.name}
-              avatarUrl={avatarUrl}
-              className="size-64 rounded-[2.4rem] 2xl:size-80"
-            />
-            <Badge className="mt-7">{artistSourceLabel(artist.source)}</Badge>
-            <h1 className="mt-4 max-w-[26rem] break-words text-4xl font-semibold leading-tight 2xl:text-5xl">{artist.name}</h1>
-            <div className="mt-6 grid w-full max-w-sm grid-cols-2 gap-3">
-              <Metric value={String(tracks.length || artist.trackCount || 0)} label="曲目" />
-              <Metric value={String(artist.albumCount ?? 0)} label="专辑" />
-            </div>
-          </div>
+            {artist.name}
+          </h1>
+          <p className="mt-2 text-xs text-neutral-500">
+            {artistDetail?.artist.trackCount ||
+              tracks.length ||
+              artist.trackCount ||
+              0}{" "}
+            首曲目 · {artistDetail?.artist.albumCount ?? artist.albumCount ?? 0}{" "}
+            张专辑
+          </p>
         </div>
-      </section>
-      <section className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Tracks</p>
-            <h2 className="mt-1 text-2xl font-semibold">按来源播放</h2>
-          </div>
-          <div className="flex items-center gap-2">
-            {playAllTrack && (
+      </header>
+      <div
+        role="tablist"
+        aria-label="歌手内容"
+        className="flex shrink-0 gap-2 border-b border-neutral-200/60 pb-3"
+      >
+        {(
+          [
+            ["tracks", "曲目"],
+            ["albums", "专辑"],
+            ["about", "简介"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            type="button"
+            key={value}
+            role="tab"
+            aria-selected={tab === value}
+            onClick={() => setTab(value)}
+            className={cn(
+              "rounded-full px-4 py-2 text-xs font-medium",
+              tab === value
+                ? "bg-neutral-950 text-white"
+                : "text-neutral-500 hover:bg-white",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1"
+      >
+        {tab === "tracks" && (
+          <>
+            <DiscoveryError error={tracksError} onRetry={onRetryTracks} />
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="flex gap-1 rounded-full bg-white/60 p-1">
+                {(
+                  [
+                    ["all", "全部", tracks.length],
+                    ["netease", "网易云", neteaseTracks.length],
+                    ["local", "本地", localTracks.length],
+                  ] as const
+                ).map(([value, label, count]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    onClick={() => setSourceFilter(value)}
+                    className={cn(
+                      "rounded-full px-3 py-1.5 text-xs",
+                      sourceFilter === value
+                        ? "bg-neutral-900 text-white"
+                        : "text-neutral-500",
+                    )}
+                  >
+                    {label} {count}
+                  </button>
+                ))}
+              </div>
               <button
-                className="flex items-center gap-1.5 rounded-full bg-neutral-950 px-3.5 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-neutral-800"
-                onClick={() => onPickTrack(playAllTrack.id, playAllQueue)}
+                type="button"
+                disabled={!playAllQueue.length}
+                className="flex items-center gap-2 rounded-full bg-neutral-950 px-4 py-2 text-xs text-white disabled:opacity-40"
+                onClick={() =>
+                  playAllQueue[0] &&
+                  onPickTrack(playAllQueue[0].id, playAllQueue)
+                }
               >
                 <Play className="size-3.5 fill-current" />
                 播放全部
               </button>
+            </div>
+            {sourceFilter !== "local" && (
+              <ArtistTrackGroup
+                title="网易云流媒体"
+                icon={<Globe2 className="size-4" />}
+                tracks={neteaseTracks}
+                onPickTrack={onPickTrack}
+                loading={tracksLoading}
+              />
             )}
-            <Badge>{tracks.length}</Badge>
-          </div>
-        </div>
-        <div className="mt-4 flex w-fit items-center gap-1 rounded-full bg-white/60 p-1 shadow-sm">
-          {(
-            [
-              { key: "all", label: "全部", count: tracks.length },
-              { key: "netease", label: "网易云", count: neteaseTracks.length },
-              { key: "local", label: "本地", count: localTracks.length },
-            ] as const
-          ).map((option) => (
-            <button
-              key={option.key}
-              className={cn(
-                "rounded-full px-3 py-1.5 text-xs font-medium transition",
-                sourceFilter === option.key
-                  ? "bg-neutral-950 text-white shadow-sm"
-                  : "text-neutral-500 hover:text-neutral-950",
-              )}
-              onClick={() => setSourceFilter(option.key)}
-            >
-              {option.label} {option.count}
-            </button>
-          ))}
-        </div>
-        <div className="no-scrollbar mt-4 grid max-h-[calc(100%-9rem)] gap-5 overflow-y-auto pr-1">
-          {visibleGroups.map((group) => (
-            <ArtistTrackGroup
-              key={group.key}
-              title={group.title}
-              description={group.description}
-              icon={group.icon}
-              tracks={group.tracks}
-              onPickTrack={onPickTrack}
+            {sourceFilter !== "netease" && (
+              <ArtistTrackGroup
+                title="本地文件"
+                icon={<HardDrive className="size-4" />}
+                tracks={localTracks}
+                onPickTrack={onPickTrack}
+                loading={false}
+              />
+            )}
+          </>
+        )}
+        {tab === "albums" && (
+          <>
+            <DiscoveryError error={detailError} onRetry={onRetryDetail} />
+            <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+              {artistAlbums.map((album) => (
+                <AlbumDiscoveryCard
+                  key={album.id}
+                  album={album}
+                  onPick={(selected) => onPickAlbum?.(selected)}
+                />
+              ))}
+            </div>
+            {!artistAlbums.length && !detailError && (
+              <EmptyState
+                text={
+                  detailLoading
+                    ? "正在加载歌手专辑。"
+                    : artist.providerId
+                      ? "暂未找到该歌手的专辑。"
+                      : "未匹配到线上歌手，暂时无法查看专辑。"
+                }
+              />
+            )}
+            <DiscoveryLoadMore
+              loading={detailLoading}
+              more={albumsMore}
+              onLoadMore={onLoadMoreAlbums}
             />
-          ))}
-          {!tracks.length && <EmptyState text="正在整理这个歌手的歌曲。" />}
-        </div>
-      </section>
-    </div>
+          </>
+        )}
+        {tab === "about" && (
+          <>
+            <DiscoveryError error={detailError} onRetry={onRetryDetail} />
+            {description && (
+              <p className="max-w-4xl whitespace-pre-line text-sm leading-8 text-neutral-600">
+                {description}
+              </p>
+            )}
+            {sections.map((section, index) => (
+              <section
+                key={`${section.title}-${index}`}
+                className="mt-6 max-w-4xl"
+              >
+                <h2 className="text-lg font-semibold">{section.title}</h2>
+                <p className="mt-3 whitespace-pre-line text-sm leading-8 text-neutral-600">
+                  {section.text}
+                </p>
+              </section>
+            ))}
+            {!description && !sections.length && !detailError && (
+              <EmptyState
+                text={detailLoading ? "正在加载歌手资料。" : "暂无歌手简介。"}
+              />
+            )}
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
-
 function ArtistTrackGroup({
   title,
-  description,
   icon,
   tracks,
   onPickTrack,
+  loading,
 }: {
   title: string;
-  description: string;
   icon: React.ReactNode;
   tracks: Track[];
   onPickTrack: (id: string, queue?: Track[]) => void;
+  loading: boolean;
 }) {
   return (
-    <section className="min-w-0 rounded-[1.15rem] border border-white/70 bg-white/42 p-3">
-      <div className="flex items-center justify-between gap-3 px-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-white/75 text-neutral-500">{icon}</span>
-          <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold">{title}</h3>
-            <p className="truncate text-xs text-neutral-400">{description}</p>
-          </div>
-        </div>
-        <Badge>{tracks.length}</Badge>
+    <section className="mb-5">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-neutral-600">
+        {icon}
+        {title}
+        <span className="text-xs font-normal text-neutral-400">
+          {tracks.length} 首
+        </span>
       </div>
-      <div className="mt-3 grid gap-2">
+      <div className="grid gap-2">
         {tracks.map((track) => (
-          <button
+          <DiscoveryTrackRow
             key={track.id}
-            className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] bg-white/58 p-2.5 text-left transition hover:bg-white"
-            onClick={() => onPickTrack(track.id, tracks)}
-          >
-            <CoverArt track={track} className="size-14 rounded-2xl" />
-            <div className="min-w-0">
-              <p className="truncate font-semibold">
-                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-              </p>
-              <p className="truncate text-sm text-neutral-500">{track.album}</p>
-            </div>
-            <div className="flex min-w-0 flex-col items-end gap-1">
-              <Badge>{track.source === "netease" ? "网易云" : "本地"}</Badge>
-              <span className="whitespace-nowrap text-xs text-neutral-500">{formatAudioDetail(track)}</span>
-            </div>
-          </button>
+            track={track}
+            queue={tracks}
+            onPickTrack={onPickTrack}
+          />
         ))}
-        {!tracks.length && <p className="px-2 py-3 text-xs text-neutral-400">暂无此来源的歌曲</p>}
       </div>
+      {!tracks.length && (
+        <p className="rounded-xl bg-white/40 px-4 py-5 text-xs text-neutral-400">
+          {loading ? "正在加载歌曲…" : "暂无此来源的歌曲"}
+        </p>
+      )}
     </section>
   );
 }
@@ -336,19 +629,28 @@ function ArtistCard({
 }) {
   return (
     <button
-      className="group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 text-left shadow-sm transition hover:bg-white"
-      onClick={() => onPick({ ...artist, avatarUrl: artist.avatarUrl ?? avatarUrl })}
+      type="button"
+      className="group flex min-w-0 items-center gap-3 rounded-2xl bg-white/55 p-3 text-left transition hover:bg-white"
+      onClick={() =>
+        onPick({ ...artist, avatarUrl: artist.avatarUrl ?? avatarUrl })
+      }
     >
-      <ArtistAvatar name={artist.name} avatarUrl={avatarUrl} className="size-16 rounded-2xl" />
-      <div className="min-w-0">
-        <p className="truncate font-semibold group-hover:text-neutral-700">{artist.name}</p>
-        <p className="mt-1 truncate text-xs text-neutral-500">
+      <ArtistAvatar
+        name={artist.name}
+        avatarUrl={avatarUrl}
+        className="size-16 rounded-xl"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold group-hover:text-violet-700">
+          {artist.name}
+        </span>
+        <span className="mt-1 block truncate text-xs text-neutral-500">
           {artistSourceLabel(artist.source)} · {artist.trackCount || 0} 首
-        </p>
-        <p className="mt-1 truncate text-xs text-neutral-400">{artist.albumCount ?? 0} 张专辑</p>
-      </div>
+        </span>
+        <span className="mt-1 block truncate text-xs text-neutral-400">
+          {artist.albumCount ?? 0} 张专辑
+        </span>
+      </span>
     </button>
   );
 }
-
-

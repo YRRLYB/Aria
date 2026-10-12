@@ -44,6 +44,42 @@ const qualityLevelLabels: Record<QualityLevel, string> = {
   jymaster: "臻品",
 };
 
+export type PlaybackQualitySettings = {
+  qualityLevel: QualityLevel;
+  hifiEnabled: boolean;
+  masterQualityEnabled: boolean;
+};
+
+// Original recordings stop at Hi-Res. Master quality is a separate opt-in
+// processing mode and must not become the default just because it is listed
+// after Hi-Res by the provider.
+export function selectPlaybackQuality(
+  track: Pick<Track, "source" | "availableLevels"> | undefined,
+  settings: PlaybackQualitySettings,
+): QualityLevel {
+  const originalPreference = settings.qualityLevel === "jymaster" ? "hires" : settings.qualityLevel;
+  if (track && track.source !== "netease") return originalPreference;
+  const available = track?.availableLevels ?? [];
+  if (settings.masterQualityEnabled && (!available.length || available.includes("jymaster"))) return "jymaster";
+  if (!settings.hifiEnabled) return originalPreference;
+  const originalLevels = qualityOptions.map((option) => option.value).filter((level) => level !== "jymaster");
+  return originalLevels.filter((level) => available.includes(level)).at(-1) ?? "hires";
+}
+
+export function hasSyncedLyrics(track: Pick<Track, "lyrics" | "lyricStatus">) {
+  return track.lyricStatus === "linked" && track.lyrics.some((line) => line.text.trim().length > 0);
+}
+
+export function restoreTrackLyrics(track: Track, fallbackLyrics: LyricLine[] = []): Track {
+  if (hasSyncedLyrics(track)) return track;
+  if (fallbackLyrics.some((line) => line.text.trim().length > 0)) {
+    return { ...track, lyrics: fallbackLyrics, lyricStatus: "linked" };
+  }
+  // Compact snapshots from older versions could retain "linked" after
+  // stripping the lyrics. Keep them eligible for another acquisition.
+  return track.lyricStatus === "linked" ? { ...track, lyricStatus: "searchable" } : track;
+}
+
 export function readCachedPlayerState(): CachedPlayerState {
   try {
     const raw = window.localStorage.getItem(playerCacheKey);
@@ -54,7 +90,7 @@ export function readCachedPlayerState(): CachedPlayerState {
 
     const playQueueSnapshots = Array.isArray(parsed.playQueueSnapshots)
       ? parsed.playQueueSnapshots
-          .map((track) => normalizeTrackSnapshot(track))
+          .map((track) => hydrateTrackLyrics(normalizeTrackSnapshot(track)))
           .filter((track): track is Track => Boolean(track))
           .slice(0, maxCachedQueueTracks)
       : [];
@@ -136,21 +172,13 @@ export function createCachedQueueSnapshots(
     accent: track.accent,
     waveform: [],
     lyrics: [],
-    lyricStatus: track.lyricStatus,
+    lyricStatus: track.lyricStatus === "linked" ? "searchable" : track.lyricStatus,
   } satisfies Track));
 }
 
 function hydrateTrackLyrics(track?: Track): Track | undefined {
   if (!track) return undefined;
-  const cachedLyrics = readCachedLyrics(track.id);
-  if (!cachedLyrics.length) return track;
-  const hasLyrics = track.lyrics.some((line) => line.text.trim().length > 0);
-  if (hasLyrics) return track;
-  return {
-    ...track,
-    lyrics: cachedLyrics,
-    lyricStatus: "linked",
-  };
+  return restoreTrackLyrics(track, readCachedLyrics(track.id));
 }
 
 function normalizeTrackSnapshot(value: unknown): Track | undefined {
@@ -169,7 +197,7 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     albumArtist: typeof track.albumArtist === "string" ? track.albumArtist : null,
     duration: typeof track.duration === "string" ? track.duration : "--:--",
     quality:
-      track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K"
+      track.quality === "臻品" || track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K"
         ? track.quality
         : "320K",
     source: track.source === "netease" || track.source === "cloud" || track.source === "local" ? track.source : "local",
@@ -251,6 +279,7 @@ export function readCachedAudioSettings() {
     const parsed = JSON.parse(raw) as {
       sinkId?: string;
       hifiEnabled?: boolean;
+      masterQualityEnabled?: boolean;
       gaplessEnabled?: boolean;
       exclusiveMode?: boolean;
       outputMode?: AudioOutputMode;
@@ -264,6 +293,7 @@ export function readCachedAudioSettings() {
     return {
       sinkId: typeof parsed.sinkId === "string" ? parsed.sinkId : "default",
       hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
+      masterQualityEnabled: typeof parsed.masterQualityEnabled === "boolean" ? parsed.masterQualityEnabled : false,
       gaplessEnabled: typeof parsed.gaplessEnabled === "boolean" ? parsed.gaplessEnabled : false,
       exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
       outputMode,
@@ -276,6 +306,7 @@ export function readCachedAudioSettings() {
 export function writeCachedAudioSettings(settings: {
   sinkId: string;
   hifiEnabled: boolean;
+  masterQualityEnabled: boolean;
   gaplessEnabled: boolean;
   exclusiveMode: boolean;
   outputMode: AudioOutputMode;
@@ -390,7 +421,7 @@ export function colorWithAlpha(hex: string, alpha: number) {
 }
 
 export function normalizeQuality(quality: string): Track["quality"] {
-  if (quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K") {
+  if (quality === "臻品" || quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K") {
     return quality;
   }
   return "320K";

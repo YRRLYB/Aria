@@ -169,7 +169,7 @@ export type ProviderTrack = {
   artist: string;
   album: string;
   duration: number;
-  quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: string;
   streamUrl?: string | null;
   coverUrl?: string | null;
@@ -179,6 +179,9 @@ export type ProviderTrack = {
   sampleRate?: number | null;
   currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
   availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
+  albumId?: string | null;
+  artistIds?: string[];
+  matchedLyric?: string | null;
 };
 
 export type ProviderPlaylist = {
@@ -188,8 +191,12 @@ export type ProviderPlaylist = {
   subscribed: boolean;
   ownerId?: string | null;
   owned?: boolean;
+  canEdit?: boolean;
   coverColor: string;
   coverUrl?: string | null;
+  description?: string;
+  creatorName?: string;
+  tags?: string[];
 };
 
 export type ProviderArtist = {
@@ -199,6 +206,40 @@ export type ProviderArtist = {
   avatarUrl?: string | null;
   trackCount?: number | null;
   albumCount?: number | null;
+};
+
+export type ProviderUser = {
+  id: string;
+  nickname: string;
+  avatarUrl: string | null;
+  signature: string;
+  playlistCount: number | null;
+  followCount: number | null;
+  followerCount: number | null;
+};
+
+export type ProviderAlbum = {
+  id: string;
+  name: string;
+  artist: string;
+  artistId: string | null;
+  coverUrl: string | null;
+  publishTime: number | null;
+  trackCount: number | null;
+  description?: string;
+};
+
+export type NeteaseSearchMode = "tracks" | "artists" | "playlists" | "users" | "albums" | "lyrics";
+
+export type NeteaseSearchResults = {
+  query: string;
+  mode: NeteaseSearchMode;
+  tracks: ProviderTrack[];
+  artists: ProviderArtist[];
+  playlists: ProviderPlaylist[];
+  users: ProviderUser[];
+  albums: ProviderAlbum[];
+  total: number;
 };
 
 export type ProviderDailyBundle = {
@@ -438,8 +479,42 @@ export const api = {
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
   },
+  createNeteasePlaylist(name: string, isPrivate = false) {
+    return request<{ playlist: ProviderPlaylist }>("/api/providers/netease/playlists", {
+      method: "POST",
+      body: JSON.stringify({ name, isPrivate }),
+    });
+  },
   getNeteasePlaylistTracks(playlistId: string) {
     return request<{ tracks: ProviderTrack[] }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/tracks`);
+  },
+  getNeteasePlaylistDetail(playlistId: string) {
+    return request<{ playlist: ProviderPlaylist; tracks: ProviderTrack[] }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}`);
+  },
+  updateNeteasePlaylist(playlistId: string, changes: { name?: string; description?: string; tags?: string[] }) {
+    return request<{ playlist: ProviderPlaylist }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}`, {
+      method: "PATCH", body: JSON.stringify(changes),
+    });
+  },
+  editNeteasePlaylistTracks(playlistId: string, trackIds: string[], operation: "add" | "del") {
+    return request<{ ok: true }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/tracks`, {
+      method: "POST", body: JSON.stringify({ trackIds, operation }),
+    });
+  },
+  reorderNeteasePlaylistTracks(playlistId: string, trackIds: string[]) {
+    return request<{ ok: true }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/tracks/order`, {
+      method: "PUT", body: JSON.stringify({ trackIds }),
+    });
+  },
+  uploadNeteasePlaylistCover(playlistId: string, file: File) {
+    return request<{ playlist: ProviderPlaylist }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/cover`, {
+      method: "PUT", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file,
+    });
+  },
+  subscribeNeteasePlaylist(playlistId: string, subscribed: boolean) {
+    return request<{ ok: true; subscribed: boolean }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/subscription`, {
+      method: "POST", body: JSON.stringify({ subscribed }),
+    });
   },
   getProviderDaily(providerId = "netease") {
     return request<ProviderDailyBundle>(`/api/providers/${providerId}/daily`);
@@ -450,14 +525,41 @@ export const api = {
     if (options.excludeIds?.length) params.set("exclude", options.excludeIds.join(","));
     return request<ProviderDailyBundle>(`/api/providers/${providerId}/roam?${params}`);
   },
-  searchLibraryAndStream(query: string, limit = 24) {
+  searchLibraryAndStream(query: string, limit = 24, mode?: NeteaseSearchMode | "local") {
     const params = new URLSearchParams({ q: query, limit: String(limit) });
+    if (mode) params.set("mode", mode);
     return request<{
       query: string;
       localTracks: ApiScannedTrack[];
       neteaseTracks: ProviderTrack[];
       artists: ProviderArtist[];
+      playlists: ProviderPlaylist[];
     }>(`/api/search?${params}`);
+  },
+  searchNetease(query: string, mode: NeteaseSearchMode, limit = 24, offset = 0) {
+    const params = new URLSearchParams({ q: query, mode, limit: String(limit), offset: String(offset) });
+    return request<NeteaseSearchResults>(`/api/providers/netease/search?${params}`);
+  },
+  getNeteaseSearchSuggestions(query: string) {
+    const params = new URLSearchParams({ q: query });
+    return request<{ suggestions: string[] }>(`/api/providers/netease/search/suggestions?${params}`);
+  },
+  getNeteaseUserDetail(userId: string) {
+    return request<{ user: ProviderUser }>(`/api/providers/netease/users/${encodeURIComponent(userId)}`);
+  },
+  getNeteaseUserPlaylists(userId: string, limit = 100, offset = 0) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return request<{ playlists: ProviderPlaylist[]; more: boolean }>(`/api/providers/netease/users/${encodeURIComponent(userId)}/playlists?${params}`);
+  },
+  getNeteaseAlbum(albumId: string) {
+    return request<{ album: ProviderAlbum; tracks: ProviderTrack[] }>(`/api/providers/netease/albums/${encodeURIComponent(albumId)}`);
+  },
+  getNeteaseArtistDetail(artistId: string) {
+    return request<{ artist: ProviderArtist; description: string; sections: Array<{ title: string; text: string }> }>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}`);
+  },
+  getNeteaseArtistAlbums(artistId: string, limit = 30, offset = 0) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return request<{ albums: ProviderAlbum[]; more: boolean }>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}/albums?${params}`);
   },
   lookupArtist(name: string) {
     const params = new URLSearchParams({ name });

@@ -11,6 +11,7 @@ import {
   type CoverPalette,
 } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
+import { AddToPlaylistButton } from "./PlaylistActions";
 export function QueueList({
   tracks,
   activeTrackId,
@@ -31,14 +32,14 @@ export function QueueList({
   return (
     <div className="no-scrollbar relative mt-4 flex-1 space-y-2 overflow-y-auto">
       {displayTracks.map((track) => (
-        <button
+        <div
           key={track.id}
           className={cn(
             "flex w-full items-center gap-3 rounded-3xl p-2 text-left transition hover:bg-white/65",
             activeTrackId === track.id && "bg-white shadow-sm",
           )}
-          onClick={() => onPickTrack(track.id)}
         >
+          <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onPickTrack(track.id)}>
           <CoverArt track={track} className="size-14 rounded-2xl" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">
@@ -49,7 +50,9 @@ export function QueueList({
             </p>
           </div>
           <Badge className="shrink-0">{formatAudioDetail(track)}</Badge>
-        </button>
+          </button>
+          <AddToPlaylistButton track={track} />
+        </div>
       ))}
       {hiddenCount > 0 && (
         <div className="rounded-2xl bg-white/45 px-3 py-2 text-center text-xs text-neutral-500">
@@ -84,7 +87,7 @@ export function PlayerSidePanel({
   onSeek: (time: number) => void;
 }) {
   return (
-    <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
+    <aside className="glass hidden min-h-0 min-w-0 flex-col rounded-[1.5rem] p-4 lg:flex">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">

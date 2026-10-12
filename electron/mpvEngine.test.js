@@ -103,4 +103,45 @@ describe("native mpv output", () => {
     engine.handleMessage({ event: "file-loaded" });
     expect(events.at(-1)).toMatchObject({ kind: "loaded", trackId: "one", gaplessGeneration: 1 });
   });
+
+  it("publishes the latest seek when command acknowledgements arrive out of order", async () => {
+    const events = [];
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: (event) => events.push(event) });
+    engine.ensureProcess = vi.fn().mockResolvedValue(undefined);
+    engine.state.active = true;
+    engine.state.trackId = "one";
+    const acknowledgements = [];
+    engine.command = () => new Promise((resolve) => acknowledgements.push(resolve));
+    const first = engine.seek(25);
+    await Promise.resolve();
+    const latest = engine.seek(90);
+    await Promise.resolve();
+    engine.handleMessage({ event: "property-change", name: "time-pos", data: 4 });
+    acknowledgements[1]();
+    expect(await latest).toMatchObject({ kind: "seek", position: 90 });
+    acknowledgements[0]();
+    expect((await first).kind).toBe("superseded");
+    expect(events.filter((event) => event.kind === "seek").map((event) => event.position)).toEqual([90]);
+    engine.handleMessage({ event: "property-change", name: "time-pos", data: null });
+    expect(engine.state.position).toBe(90);
+    engine.handleMessage({ event: "property-change", name: "time-pos", data: 90.5 });
+    expect(events.at(-1)).toMatchObject({ kind: "progress", position: 90.5 });
+  });
+
+  it("does not apply a seek acknowledgement to a replacement track", async () => {
+    const events = [];
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: (event) => events.push(event) });
+    engine.ensureProcess = vi.fn().mockResolvedValue(undefined);
+    let finish;
+    engine.command = () => new Promise((resolve) => { finish = resolve; });
+    const seeking = engine.seek(40);
+    await Promise.resolve();
+    engine.loadToken += 1;
+    engine.state.trackId = "replacement";
+    engine.state.position = 0;
+    finish();
+    expect((await seeking).kind).toBe("superseded");
+    expect(engine.state.position).toBe(0);
+    expect(events.filter((event) => event.kind === "seek")).toHaveLength(0);
+  });
 });

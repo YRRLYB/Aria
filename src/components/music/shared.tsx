@@ -1,9 +1,10 @@
 import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { UserRound } from "lucide-react";
+import { ArtworkImage } from "./ArtworkImage";
 import type { Track } from "@/data/music";
 import { copyArtworkToClipboard, copyTrackTextToClipboard, type TrackCopyField } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
-import { sizedCoverUrl } from "@/lib/coverUrl";
+import { cachedArtworkUrl, sizedCoverUrl } from "@/lib/coverUrl";
 
 type CoverLoadState = "loading" | "ready" | "error";
 
@@ -25,7 +26,7 @@ const pendingBoundedCoverUrls = new Map<string, Promise<string | null>>();
 
 export function getBoundedCoverUrl(url?: string | null): Promise<string | null> {
   if (!url) return Promise.resolve(null);
-  url = sizedCoverUrl(url, 768)!;
+  url = sizedCoverUrl(cachedArtworkUrl(url, 512), 768)!;
   const cached = boundedCoverUrls.get(url);
   if (cached) {
     boundedCoverUrls.delete(url);
@@ -94,16 +95,16 @@ function trimCoverLoadStates() {
 
 export function StatTile({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
   return (
-    <div className="rounded-[1.15rem] bg-white/58 p-4 shadow-sm">
-      <p className="text-sm text-neutral-500">{label}</p>
-      <p className={cn("mt-2 truncate font-semibold", compact ? "text-xl" : "text-3xl")}>{value}</p>
+    <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-[0_2px_6px_rgba(37,42,37,0.025)]">
+      <p className="text-xs font-medium text-[var(--text-secondary)]">{label}</p>
+      <p className={cn("mt-2 truncate font-semibold tracking-tight text-[var(--text-primary)]", compact ? "text-xl" : "text-3xl")}>{value}</p>
     </div>
   );
 }
 
 export function EmptyState({ text }: { text: string }) {
   return (
-    <div className="rounded-[1.15rem] border border-dashed border-neutral-300/70 bg-white/45 p-5 text-sm text-neutral-500">
+    <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--surface-muted)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
       {text}
     </div>
   );
@@ -119,10 +120,7 @@ export function ArtistAvatar({
   className?: string;
 }) {
   const [failed, setFailed] = useState(false);
-  const imageSrc =
-    avatarUrl && avatarUrl.includes("/api/providers/netease/cover")
-      ? `${avatarUrl}${avatarUrl.includes("?") ? "&" : "?"}size=320y320`
-      : avatarUrl;
+  const imageSrc = cachedArtworkUrl(avatarUrl);
 
   useEffect(() => {
     setFailed(false);
@@ -136,8 +134,9 @@ export function ArtistAvatar({
       )}
     >
       {imageSrc && !failed ? (
-        <img
+        <ArtworkImage
           src={imageSrc}
+          fallbackSrc={avatarUrl}
           alt=""
           loading="lazy"
           decoding="async"
@@ -161,21 +160,18 @@ export function ArtistAvatar({
 
 export function Metric({ value, label }: { value: string; label: string }) {
   return (
-    <div className="rounded-2xl bg-white/62 px-2 py-3">
-      <p className="text-base font-semibold text-neutral-950">{value}</p>
-      <p className="mt-1">{label}</p>
+    <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] px-3 py-3">
+      <p className="text-base font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
+      <p className="mt-1 text-xs text-[var(--text-secondary)]">{label}</p>
     </div>
   );
 }
 
 // Oversized embedded artwork is decoded into a bounded bitmap before it is
-// handed to the player <img>; while that resolves, the caller keeps painting
+// handed to the player <ArtworkImage>; while that resolves, the caller keeps painting
 // its generated poster instead of decoding the full-resolution image.
 function useLargeCoverSrc(url: string | undefined, large: boolean) {
-  const normalizedUrl =
-    large && url && url.includes("/api/providers/netease/cover")
-      ? `${url}${url.includes("?") ? "&" : "?"}size=512y512`
-      : url;
+  const normalizedUrl = cachedArtworkUrl(url, 512);
   const needsBoundedCover = Boolean(
     large && normalizedUrl && !normalizedUrl.startsWith("data:"),
   );
@@ -216,10 +212,7 @@ export function CoverArt({
   // List rows render at ~56px; ask the NetEase proxy for a 300px thumbnail so
   // full-resolution artwork is only decoded for the player surfaces.
   const largeCoverSrc = useLargeCoverSrc(track.coverUrl, large);
-  const thumbnailSrc =
-    track.coverUrl && track.coverUrl.includes("/api/providers/netease/cover")
-      ? `${track.coverUrl}${track.coverUrl.includes("?") ? "&" : "?"}size=300y300`
-      : track.coverUrl;
+  const thumbnailSrc = cachedArtworkUrl(track.coverUrl, 300);
   const imageSrc = large ? largeCoverSrc : sizedCoverUrl(thumbnailSrc, 320);
   const previewSrc = null;
   const hasImage = Boolean(imageSrc) && failedImageSrc !== imageSrc;
@@ -235,7 +228,7 @@ export function CoverArt({
       setImageReady(true);
       return;
     }
-    // Let the visible <img> own the only decoder for this cover. A separate
+    // Let the visible <ArtworkImage> own the only decoder for this cover. A separate
     // preload Image followed by the visible element doubled decoded memory.
   }, [imageSrc, large]);
 
@@ -261,7 +254,7 @@ export function CoverArt({
       {hasImage ? (
         <>
           {previewSrc && (
-            <img
+            <ArtworkImage
               src={previewSrc}
               alt=""
               loading="eager"
@@ -273,8 +266,10 @@ export function CoverArt({
             />
           )}
           {fit === "contain" && (
-            <img
+            <ArtworkImage
               src={imageSrc}
+              fallbackSrc={track.coverUrl}
+              cacheSize={large ? 512 : 300}
               alt=""
               loading={large ? "eager" : "lazy"}
               decoding={large ? "sync" : "async"}
@@ -284,8 +279,10 @@ export function CoverArt({
               onDragStart={(event) => event.preventDefault()}
             />
           )}
-          <img
+          <ArtworkImage
             src={imageSrc}
+              fallbackSrc={track.coverUrl}
+              cacheSize={large ? 512 : 300}
             alt=""
             loading={large ? "eager" : "lazy"}
             decoding={large ? "sync" : "async"}

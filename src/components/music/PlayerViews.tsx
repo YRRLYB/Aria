@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AddToPlaylistButton } from "./PlaylistActions";
 import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { Track } from "@/data/music";
@@ -59,6 +60,8 @@ export function PlayerSurface({
   qualityLevel,
   onQualityLevelChange,
   hifiEnabled,
+  masterQualityEnabled,
+  onMasterQualityEnabledChange,
   exclusiveMode,
   durationSeconds,
   analyserRef,
@@ -88,6 +91,8 @@ export function PlayerSurface({
   qualityLevel: QualityLevel;
   onQualityLevelChange: (level: QualityLevel) => void;
   hifiEnabled: boolean;
+  masterQualityEnabled: boolean;
+  onMasterQualityEnabledChange: (enabled: boolean) => void;
   exclusiveMode: boolean;
   durationSeconds: number;
   analyserRef: { current: AnalyserNode | null };
@@ -100,6 +105,8 @@ export function PlayerSurface({
   const themeSecondary = colorWithAlpha(palette.secondary, 0.24);
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
   const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
+  const availableLevels = activeTrack.availableLevels ?? [];
+  const hasKnownQualityLevels = activeTrack.source === "netease" && availableLevels.length > 0;
   const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [songOptionsOpen, setSongOptionsOpen] = useState(false);
   const artworkFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -142,7 +149,7 @@ export function PlayerSurface({
 
   return (
     <div
-      className="relative h-full min-h-[620px] overflow-hidden rounded-[1.5rem] border border-white/55 shadow-[0_22px_70px_rgba(47,55,76,0.12)] 2xl:min-h-[calc(100vh-7.5rem)]"
+      className="player-surface relative grid overflow-hidden rounded-[1.5rem] border border-white/55 shadow-[0_22px_70px_rgba(47,55,76,0.12)]"
       style={{
         ["--track-accent" as string]: palette.primary,
         background: `linear-gradient(135deg, ${themePrimary}, rgba(255,255,255,0.26) 42%, ${themeSecondary})`,
@@ -195,7 +202,7 @@ export function PlayerSurface({
           background: `radial-gradient(circle at 28% 32%, ${palette.primary}38, transparent 24rem), radial-gradient(circle at 82% 78%, ${palette.secondary}28, transparent 18rem)`,
         }}
       />
-      <div className="relative grid h-full min-h-[620px] lg:grid-cols-[minmax(360px,0.9fr)_minmax(460px,1.1fr)] 2xl:grid-cols-[minmax(520px,0.95fr)_minmax(680px,1.05fr)]">
+      <div className="relative grid min-h-[620px] lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
         <div
           className="relative min-h-[420px] overflow-hidden bg-neutral-950"
           style={{
@@ -224,19 +231,17 @@ export function PlayerSurface({
         </div>
 
         <div
-          className="flex min-h-0 flex-col justify-between p-5 sm:p-8 2xl:p-10"
+          className="player-detail-panel flex min-h-0 min-w-0 flex-col justify-between p-5 sm:p-8 2xl:p-10"
           style={{ background: `linear-gradient(160deg, rgba(255,255,255,0.36), ${themeSoft} 48%, ${themeSecondary})` }}
         >
-          <div className="min-h-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge>{sourceLabel[activeTrack.source]}</Badge>
-                <Badge>{formatAudioDetail(activeTrack, resolvedQualityLevel)}</Badge>
-                <Badge>{activeTrack.duration}</Badge>
-                {hifiEnabled && <Badge>HiFi</Badge>}
-                {exclusiveMode && <Badge>直通</Badge>}
+          <div className="min-w-0 shrink-0">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 py-1">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {exclusiveMode ? "直通播放" : "正在播放"}</p>
+                <p className="mt-1 text-xs font-medium leading-5 text-neutral-600">{formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
               </div>
               <div className="ml-auto flex items-center gap-2">
+                <AddToPlaylistButton track={activeTrack} />
                 <div className="relative">
                   <Button
                     variant="glass"
@@ -300,18 +305,18 @@ export function PlayerSurface({
               </div>
             ) : (
               <>
-                <h1 className="mt-6 line-clamp-3 max-w-[min(100%,42rem)] overflow-hidden break-words text-[clamp(2rem,4vw,4.3rem)] font-semibold leading-[1.03] text-neutral-950 [overflow-wrap:anywhere]">
+                <h1 className="player-track-title mt-6 font-semibold text-neutral-950" title={activeTrack.title}>
                   <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
                 </h1>
                 <p className="mt-3 truncate text-xl text-neutral-500">
                   <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
                 </p>
-                <p className="mt-1 text-sm text-neutral-400">{activeTrack.album}</p>
+                <p className="mt-1 truncate text-sm text-neutral-400" title={activeTrack.album}>{activeTrack.album}</p>
               </>
             )}
           </div>
 
-          <div className="mt-4">
+          <div className="mt-4 shrink-0">
             <div className="px-1">
               <SpectrumCanvas
                 analyserRef={analyserRef}
@@ -419,9 +424,9 @@ export function PlayerSurface({
                       className={cn(
                         "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
                         resolvedQualityLevel === option.value && "bg-neutral-950 text-white shadow-sm",
-                        (activeTrack.source !== "netease" || !activeTrack.availableLevels?.includes(option.value)) && "opacity-45",
+                        (activeTrack.source !== "netease" || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))) && "opacity-45",
                       )}
-                      disabled={activeTrack.source !== "netease" || !activeTrack.availableLevels?.includes(option.value)}
+                      disabled={activeTrack.source !== "netease" || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))}
                       onClick={() => onQualityLevelChange(option.value)}
                     >
                       {option.label}
@@ -503,23 +508,23 @@ export function ImmersivePlayerView({
           </Button>
         </div>
 
-        <div className="grid min-h-0 items-center gap-8 lg:grid-cols-[minmax(360px,0.86fr)_minmax(0,1.14fr)]">
+        <div className="immersive-content grid min-h-0 items-center gap-8 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)]">
           <div
-            className="mx-auto aspect-square w-[min(68vh,560px)] overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]"
+            className="immersive-artwork mx-auto aspect-square overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]"
             data-taskbar-anchor="immersive"
           >
             <CoverArt track={activeTrack} className="size-full" fit="cover" large />
           </div>
 
-          <div className="min-w-0 overflow-hidden">
-            <h1 className="line-clamp-3 max-w-[min(100%,58rem)] overflow-hidden break-words text-[clamp(2.25rem,5.2vw,6.2rem)] font-semibold leading-[0.98] tracking-normal [overflow-wrap:anywhere]">
+          <div className="player-detail-panel flex max-h-full min-h-0 min-w-0 flex-col overflow-hidden">
+            <h1 className="player-track-title player-track-title-immersive shrink-0 font-semibold tracking-normal" title={activeTrack.title}>
               <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
             </h1>
-            <p className="mt-5 truncate text-2xl text-white/68">
+            <p className="mt-5 shrink-0 truncate text-2xl text-white/68">
               <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
             </p>
-            <p className="mt-2 truncate text-lg text-white/42">{activeTrack.album}</p>
-            <div className="no-scrollbar mt-8 max-h-[34vh] max-w-5xl overflow-y-auto pr-2">
+            <p className="mt-2 shrink-0 truncate text-lg text-white/42">{activeTrack.album}</p>
+            <div className="no-scrollbar mt-8 min-h-0 max-h-[34vh] max-w-5xl overflow-y-auto pr-2">
               <div className="space-y-2">
                 {immersiveLyricLines.map((line, index) => {
                   const originalIndex = Math.max(0, activeLyricIndex - 2) + index;
@@ -539,7 +544,7 @@ export function ImmersivePlayerView({
                         {line.time}
                       </span>
                       <span className={cn("whitespace-pre-wrap break-words leading-relaxed", active ? "text-4xl font-semibold" : "text-xl")}>
-                        {line.text || "♪"}
+                        {line.text || "?"}
                         {line.translation && (
                           <span className={cn("mt-2 block text-base font-medium leading-relaxed", active ? "text-white/64" : "text-white/34")}>
                             {line.translation}
@@ -639,5 +644,3 @@ function PlaybackProgress({
     </div>
   );
 }
-
-

@@ -19,12 +19,15 @@ export type LyricLine = {
 export type Track = {
   id: string;
   providerId?: string;
+  albumId?: string | null;
+  artistIds?: string[];
+  matchedLyric?: string | null;
   title: string;
   artist: string;
   album: string;
   albumArtist?: string | null;
   duration: string;
-  quality: "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
   source: "local" | "cloud" | "netease";
   streamUrl?: string;
   coverUrl?: string;

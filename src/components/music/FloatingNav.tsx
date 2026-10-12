@@ -4,12 +4,14 @@ import { cn } from "@/lib/utils";
 export function FloatingNav({
   activeView,
   open,
+  raised,
   onOpenChange,
   onRequestClose,
   onPick,
 }: {
   activeView: ViewId;
   open: boolean;
+  raised?: boolean;
   onOpenChange: (open: boolean) => void;
   onRequestClose: () => void;
   onPick: (id: ViewId) => void;
@@ -29,12 +31,17 @@ export function FloatingNav({
 
   return (
     <div
-      className="pointer-events-none absolute bottom-8 left-7 z-40 h-[394px] w-[188px]"
+      className={cn("pointer-events-none absolute bottom-8 left-7 z-40 h-[394px] w-[188px]", raised && "bottom-24")}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onOpenChange(false);
+      }}
     >
       <button
         className="pointer-events-auto absolute z-30 flex size-16 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_18px_50px_rgba(47,55,76,0.16)]"
         style={{ left: center.x - 32, top: center.y - 32 }}
         aria-label="副导航"
+        aria-expanded={open}
+        aria-controls="floating-nav-nodes"
         onMouseEnter={() => onOpenChange(true)}
         onMouseLeave={onRequestClose}
         onClick={() => onOpenChange(!open)}
@@ -81,7 +88,7 @@ export function FloatingNav({
         })}
       </svg>
 
-      <div className="pointer-events-none absolute inset-0">
+      <div id="floating-nav-nodes" className="pointer-events-none absolute inset-0" aria-hidden={!open}>
         {nodes.map((item, index) => {
           const pos = nodePositions[index];
           const Icon = item.icon;
@@ -102,6 +109,7 @@ export function FloatingNav({
                   transitionDelay: open ? `${index * 35}ms` : "0ms",
                 }}
                 aria-label={item.label}
+                tabIndex={open ? 0 : -1}
                 onMouseEnter={() => onOpenChange(true)}
                 onMouseLeave={onRequestClose}
                 onClick={() => onPick(item.id)}
@@ -113,7 +121,7 @@ export function FloatingNav({
                 ) : (
                   <Icon className="size-5" />
                 )}
-                <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100">
+                <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-visible:opacity-100">
                   {item.label}
                 </span>
               </button>
@@ -124,5 +132,4 @@ export function FloatingNav({
     </div>
   );
 }
-
 

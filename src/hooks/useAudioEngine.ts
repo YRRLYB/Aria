@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import type { NativeAudioState } from "@/lib/audioTypes";
-import { nativePlaybackStateChanged } from "@/lib/nativePlaybackState";
+import { nativePlaybackStateChanged, syncNativePlaybackClock } from "@/lib/nativePlaybackState";
 import { api } from "@/lib/api";
 import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
@@ -18,6 +18,7 @@ export function useAudioEngine(options: {
   playing: boolean;
   volume: number;
   hifiEnabled: boolean;
+  masterQualityEnabled: boolean;
   gaplessEnabled: boolean;
   audioOutputMode: AudioOutputMode;
   pageVisible: boolean;
@@ -91,12 +92,26 @@ export function useAudioEngine(options: {
   const nativeLoadedUrlRef = useRef<string | null>(null);
   const nativeAnalyserDelayUntilRef = useRef(0);
   const nativeLoadSequenceRef = useRef(0);
+  const nativeSeekSequenceRef = useRef(0);
   const lastNativeRenderRef = useRef<NativeAudioState | null>(null);
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
   const preloadKeyRef = useRef<string | null>(null);
   const handledGaplessGenerationRef = useRef(0);
+  const previousStreamRef = useRef({ trackId: activeTrack.id, url: activeStreamUrl });
+
+  // A quality change replaces the stream, not the song. Capture the shared
+  // clock before either decoder resets its source; both the native load and
+  // browser loadedmetadata paths consume this position when they are ready.
+  useEffect(() => {
+    const previous = previousStreamRef.current;
+    if (previous.trackId === activeTrack.id && previous.url && activeStreamUrl && previous.url !== activeStreamUrl) {
+      options.pendingSeekRef.current = getPlaybackTime();
+    }
+    previousStreamRef.current = { trackId: activeTrack.id, url: activeStreamUrl };
+  }, [activeTrack.id, activeStreamUrl]);
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
+    if (state.kind === "superseded") return;
     // Position and VBR bitrate ticks do not change the App's presentation.
     // Keep the playhead in its external store and sync the analyser directly.
     if (nativePlaybackStateChanged(lastNativeRenderRef.current, state)) {
@@ -105,6 +120,7 @@ export function useAudioEngine(options: {
     }
     const currentTrackMatches = Boolean(state.trackId && state.trackId === options.activeTrackId);
     const shouldSyncPlayback =
+      nativePlaybackEnabled &&
       currentTrackMatches &&
       (state.active ||
         state.kind === "loading" ||
@@ -116,15 +132,9 @@ export function useAudioEngine(options: {
 
     if (shouldSyncPlayback) {
       const audio = audioRef.current;
-      if (nativePlaybackEnabled && audio?.getAttribute("src") && Number.isFinite(state.position) &&
-          Math.abs(audio.currentTime - state.position) >= 0.45) {
-        audio.currentTime = Math.max(0, state.position);
-      }
+      syncNativePlaybackClock(state, audio?.getAttribute("src") ? audio : null);
       if (typeof state.duration === "number" && state.duration > 0) {
         options.setDurationSeconds(state.duration);
-      }
-      if (typeof state.position === "number") {
-        commitPlaybackTime(state.position, state.kind === "loaded" || state.kind === "advanced" || state.kind === "seek" || state.kind === "ended");
       }
       // Aria owns playback intent (including SMTC commands). An acknowledgement
       // of an older pause must not undo a newer play click during native loading.
@@ -241,14 +251,16 @@ export function useAudioEngine(options: {
     writeCachedAudioSettings({
       sinkId: selectedSinkId,
       hifiEnabled: options.hifiEnabled,
+      masterQualityEnabled: options.masterQualityEnabled,
       gaplessEnabled: options.gaplessEnabled,
       exclusiveMode: options.exclusiveMode,
       outputMode: options.audioOutputMode,
     });
-  }, [options.audioOutputMode, options.exclusiveMode, options.gaplessEnabled, options.hifiEnabled, selectedSinkId]);
+  }, [options.audioOutputMode, options.exclusiveMode, options.gaplessEnabled, options.hifiEnabled, options.masterQualityEnabled, selectedSinkId]);
 
   useEffect(() => {
     setNativePlaybackFailed(false);
+    nativeSeekSequenceRef.current += 1;
     nativeLoadedUrlRef.current = null;
     if (!nativePlaybackRequested) {
       nativeAnalyserDelayUntilRef.current = 0;
@@ -304,7 +316,7 @@ export function useAudioEngine(options: {
       }
       audio.src = nextSrc;
       audio.load();
-      options.setDurationSeconds(0);
+      if (!nativePlaybackEnabled) options.setDurationSeconds(0);
     }
 
     if (options.playing) {
@@ -498,6 +510,32 @@ export function useAudioEngine(options: {
     nativeAudio.setVolume?.(options.volume).catch(() => undefined);
   }, [nativeAudioState?.active, nativePlaybackEnabled, options.volume]);
 
+  const seekNativeTrack = useEffectEvent(async (seconds: number) => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativePlaybackEnabled || !nativeAudio?.seek || !Number.isFinite(seconds)) return false;
+    const position = Math.max(0, seconds);
+    const seekSequence = ++nativeSeekSequenceRef.current;
+    options.pendingSeekRef.current = position;
+    commitPlaybackTime(position, true);
+    // Restored paused tracks may not have a decoder yet. The load effect
+    // consumes this pending position when the user's seek also resumes play.
+    if (!nativeAudioState?.active || nativeAudioState.trackId !== options.activeTrack.id) return true;
+    try {
+      const state = await nativeAudio.seek(position);
+      if (nativeSeekSequenceRef.current !== seekSequence) return false;
+      options.pendingSeekRef.current = 0;
+      if (state) syncNativeAudioState(state as NativeAudioState);
+      return true;
+    } catch {
+      if (nativeSeekSequenceRef.current !== seekSequence) return false;
+      options.pendingSeekRef.current = 0;
+      // Keep future native progress subscribed even when one seek is rejected.
+      const state = await nativeAudio.getState?.().catch(() => undefined);
+      if (state && nativeSeekSequenceRef.current === seekSequence) syncNativeAudioState(state as NativeAudioState);
+      return false;
+    }
+  });
+
   // mpv unloads its file at EOF. A seek to zero after that point operates on
   // the idle player and cannot start a single-track repeat, so reload the
   // source through the native engine instead.
@@ -675,6 +713,7 @@ export function useAudioEngine(options: {
     nativePlaybackRequested,
     nativePlaybackEnabled,
     restartNativeTrack,
+    seekNativeTrack,
     activeStreamUrl,
     audioElementStreamUrl,
     handleAudioError,

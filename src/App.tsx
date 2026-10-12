@@ -10,17 +10,22 @@ import {
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
 import { LibrarySurface as LibrarySurfacePanel } from "@/components/music/LibrarySurface";
-import { HomeSidePanel, HomeSurface, HistorySurface } from "@/components/music/HomeSurfaces";
+import { HistorySurface } from "@/components/music/HomeSurfaces";
+import { HomeSurface } from "@/components/music/HomeDashboard";
+import { AppNavigation } from "@/components/music/AppNavigation";
+import { PlaybackQueue } from "@/components/music/PlaybackQueue";
 import { SearchSurface, ArtistsSurface } from "@/components/music/DiscoverySurfaces";
+import { AlbumDetailSurface, UserDetailSurface } from "@/components/music/DiscoveryDetails";
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
 import { FloatingNav } from "@/components/music/FloatingNav";
 import { AccountPanel, OnboardingDialog, SettingsPanel } from "@/components/music/SettingsPanels";
 import ariaIconUrl from "../build/icon.png";
-import { navItems, type Track, type ViewId } from "@/data/music";
+import { type Track, type ViewId } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
 import { useDiscovery } from "@/hooks/useDiscovery";
+import { useDiscoveryDetails } from "@/hooks/useDiscoveryDetails";
 import { useLocalLibrary } from "@/hooks/useLocalLibrary";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
@@ -31,13 +36,17 @@ import {
   writePlayHistory,
   type PlayHistoryEntry,
 } from "@/lib/playHistory";
-import { api } from "@/lib/api";
+import { api, type ProviderUser } from "@/lib/api";
+import { ArtworkImage } from "@/components/music/ArtworkImage";
+import { AddToPlaylistDialog, PlaylistActionsProvider } from "@/components/music/PlaylistActions";
 import {
   extractDominantColors,
   createCachedQueueSnapshots,
   mergeTracks,
   readCachedAudioSettings,
   readCachedPlayerState,
+  restoreTrackLyrics,
+  selectPlaybackQuality,
   splitArtistNames,
   writeCachedPlayerState,
   type AudioOutputMode,
@@ -95,9 +104,11 @@ async function createMediaSessionArtwork(url: string, signal: AbortSignal): Prom
 
 export default function App() {
   const [initialPlayerCache] = useState(readCachedPlayerState);
-  const [cachedActiveTrackSnapshot] = useState(() => initialPlayerCache.activeTrackSnapshot);
-  const [cachedQueueSnapshots] = useState(() => initialPlayerCache.playQueueSnapshots ?? []);
+  const [cachedActiveTrackSnapshot, setCachedActiveTrackSnapshot] = useState(() => initialPlayerCache.activeTrackSnapshot);
+  const [cachedQueueSnapshots, setCachedQueueSnapshots] = useState(() => initialPlayerCache.playQueueSnapshots ?? []);
   const [activeView, setActiveView] = useState<ViewId>("home");
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [activeTrackId, setActiveTrackId] = useState(
     initialPlayerCache.activeTrackId ?? cachedActiveTrackSnapshot?.id ?? idleTrack.id,
   );
@@ -110,10 +121,11 @@ export default function App() {
   const [playHistory, setPlayHistory] = useState<PlayHistoryEntry[]>(readPlayHistory);
   const [likedTrackIds, setLikedTrackIds] = useState<Record<string, true>>({});
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
-  const [qualityLevel, setQualityLevel] = useState<QualityLevel>(initialPlayerCache.qualityLevel ?? "lossless");
+  const [qualityLevel, setQualityLevel] = useState<QualityLevel>(
+    initialPlayerCache.qualityLevel === "jymaster" ? "hires" : initialPlayerCache.qualityLevel ?? "hires",
+  );
   const [playQueueIds, setPlayQueueIds] = useState<string[]>(initialPlayerCache.playQueueIds ?? []);
   const [mediaArtwork, setMediaArtwork] = useState<{ trackId: string; coverUrl: string; data: string | null } | null>(null);
-  const [navOpen, setNavOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(() => {
     try {
@@ -152,9 +164,22 @@ export default function App() {
   });
   const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcuts>(readKeyboardShortcuts);
   const [query, setQuery] = useState("");
+  const [addPlaylistRequest, setAddPlaylistRequest] = useState<{ tracks: Track[]; playlistId?: string } | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [suggestionIndex, setSuggestionIndex] = useState(-1);
+  const playlistReturnRef = useRef<{ query: string; user: ProviderUser | null } | null>(null);
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
+  const [masterQualityEnabled, setMasterQualityEnabled] = useState(() => {
+    const settings = readCachedAudioSettings();
+    return settings.hifiEnabled !== false && (settings.masterQualityEnabled ?? false);
+  });
   const [gaplessEnabled, setGaplessEnabled] = useState(() => readCachedAudioSettings().gaplessEnabled ?? false);
   const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>(() => readCachedAudioSettings().outputMode ?? "system");
+
+  function handleHifiEnabledChange(value: boolean) {
+    setHifiEnabled(value);
+    if (!value) setMasterQualityEnabled(false);
+  }
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navCloseTimer = useRef<number | null>(null);
@@ -177,6 +202,10 @@ export default function App() {
     ) => updateTrackRef.current(trackId, updateTrack, updateOptions),
   );
   const activeTrackRef = useRef<Track>(idleTrack);
+
+  useEffect(() => () => {
+    if (navCloseTimer.current !== null) window.clearTimeout(navCloseTimer.current);
+  }, []);
 
   const exclusiveMode = audioOutputMode === "exclusive";
 
@@ -248,6 +277,7 @@ export default function App() {
     selectedPlaylist,
     setSelectedPlaylist,
     playlistLoading,
+    playlistError,
     roamRefreshing,
     neteaseLikedIds,
     neteaseWarmupRef,
@@ -256,10 +286,18 @@ export default function App() {
     refreshNeteaseData,
     refreshRoamData,
     openPlaylist,
+    closePlaylist,
+    createPlaylist,
+    updatePlaylist,
+    uploadPlaylistCover,
+    editPlaylistTracks,
+    reorderPlaylistTracks,
+    subscribePlaylist,
+    refreshPlaylistList,
     toggleNeteaseLike,
   } = useNeteaseData({
     applyTrackUpdate,
-    warmupLevel: hifiEnabled ? "jymaster" : qualityLevel,
+    getWarmupLevel: (track) => selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel }),
     playing,
     canAutoSelectFirstTrack: activeTrackId === idleTrack.id && !localTracks.length,
     onAutoSelectTrack: setActiveTrackId,
@@ -293,7 +331,7 @@ export default function App() {
   const artistSummaries = useMemo(() => {
     const artists = new Map<string, ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> }>();
     for (const track of allTracks) {
-      for (const artistName of splitArtistNames(track.artist)) {
+      for (const [artistIndex, artistName] of splitArtistNames(track.artist).entries()) {
         const key = artistName.toLowerCase();
         const current =
           artists.get(key) ??
@@ -312,9 +350,8 @@ export default function App() {
         current.albums.add(track.album);
         current.sources.add(track.source);
         current.source = current.sources.size > 1 ? "mixed" : current.sources.has("netease") ? "netease" : "local";
-        current.avatarUrl = current.avatarUrl ?? (track.source === "netease" ? track.coverUrl : null);
-        if (track.source === "netease" && track.providerId) {
-          current.providerId = current.providerId ?? track.providerId;
+        if (track.source === "netease" && track.artistIds?.[artistIndex]) {
+          current.providerId = current.providerId ?? track.artistIds[artistIndex];
         }
         artists.set(key, current);
       }
@@ -328,18 +365,30 @@ export default function App() {
   }, [allTracks, cachedQueueSnapshots, playQueueIds]);
   const requestedActiveTrack = playQueueTracks.find((track) => track.id === activeTrackId) ??
     allTracks.find((track) => track.id === activeTrackId);
-  const activeTrack =
+  const resolvedActiveTrack =
     requestedActiveTrack ??
     (cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null) ??
     (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
+  // Queue snapshots intentionally omit lyric payloads. When a track is
+  // restored after restart, reattach the hydrated active snapshot lyrics so
+  // the lyric panel can render immediately and the sync hook can refresh
+  // translations when needed.
+  const activeTrack = useMemo(
+    () => restoreTrackLyrics(
+      resolvedActiveTrack,
+      cachedActiveTrackSnapshot?.id === activeTrackId && cachedActiveTrackSnapshot.lyricStatus === "linked"
+        ? cachedActiveTrackSnapshot.lyrics
+        : [],
+    ),
+    [resolvedActiveTrack, cachedActiveTrackSnapshot, activeTrackId],
+  );
   activeTrackRef.current = activeTrack;
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
-  const effectiveQualityLevel = useMemo(() => {
-    if (!hifiEnabled || activeTrack.source !== "netease") return qualityLevel;
-    const levels = activeTrack.availableLevels ?? [];
-    return levels.at(-1) ?? qualityLevel;
-  }, [activeTrack.availableLevels, activeTrack.source, hifiEnabled, qualityLevel]);
+  const effectiveQualityLevel = useMemo(
+    () => selectPlaybackQuality(activeTrack, { hifiEnabled, masterQualityEnabled, qualityLevel }),
+    [activeTrack.availableLevels, activeTrack.source, hifiEnabled, masterQualityEnabled, qualityLevel],
+  );
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -394,9 +443,20 @@ export default function App() {
   const {
     searchBundle,
     searchLoading,
+    searchMode,
+    setSearchMode,
+    searchError,
+    searchSuggestions,
+    searchTotal,
+    searchMore,
+    loadMoreSearch,
+    retrySearch,
     selectedArtist,
     setSelectedArtist,
     artistTracks,
+    artistTracksLoading,
+    artistTracksError,
+    retryArtistTracks,
     artistAvatarCache,
     artistRequestRef,
     artistAvatarLookupRef,
@@ -408,6 +468,30 @@ export default function App() {
     artistSummaries,
     onMergeNeteaseTracks: setNeteaseTracks,
   });
+
+  const {
+    selectedUser, setSelectedUser, userDetail, userPlaylists, userLoading, userError,
+    userPlaylistsMore, loadMoreUserPlaylists, retryUser,
+    selectedAlbum, setSelectedAlbum, albumDetail, albumTracks, albumLoading, albumError, retryAlbum,
+    artistDetail, artistAlbums, artistDetailLoading, artistDetailError, artistAlbumsMore,
+    loadMoreArtistAlbums, retryArtistDetail,
+  } = useDiscoveryDetails({ selectedArtist, onMergeNeteaseTracks: setNeteaseTracks });
+
+  useEffect(() => {
+    setSelectedUser(null);
+    setSelectedAlbum(null);
+    setSearchFocused(false);
+    if (activeView !== "playlists") playlistReturnRef.current = null;
+  }, [activeView]);
+
+  useEffect(() => { setSuggestionIndex(-1); }, [query, searchSuggestions]);
+
+  function pickSuggestion(value: string) {
+    setSelectedUser(null);
+    setSelectedAlbum(null);
+    setQuery(value);
+    setSearchFocused(false);
+  }
 
   const contextualQueueTracks = useMemo(() => {
     switch (activeView) {
@@ -442,8 +526,7 @@ export default function App() {
       const resolvedUrl = api.resolveUrl(track.streamUrl);
       if (track.source !== "netease") return resolvedUrl;
       const url = new URL(resolvedUrl, window.location.href);
-      const levels = track.availableLevels ?? [];
-      url.searchParams.set("level", hifiEnabled ? (levels.at(-1) ?? qualityLevel) : qualityLevel);
+      url.searchParams.set("level", selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel }));
       return url.href;
     };
 
@@ -477,6 +560,7 @@ export default function App() {
     handleAudioError,
     resetAudioError,
     restartNativeTrack,
+    seekNativeTrack,
   } = useAudioEngine({
     activeTrack,
     activeTrackId,
@@ -485,6 +569,7 @@ export default function App() {
     playing,
     volume,
     hifiEnabled,
+    masterQualityEnabled,
     gaplessEnabled,
     audioOutputMode,
     pageVisible,
@@ -586,9 +671,7 @@ export default function App() {
 
   function seekTo(nextTime: number) {
     if (nativePlaybackEnabled) {
-      pendingSeekRef.current = nextTime;
-      commitPlaybackTime(nextTime, true);
-      window.ariaDesktop?.nativeAudio?.seek?.(nextTime).catch(() => undefined);
+      void seekNativeTrack(nextTime);
       if (!playing) setPlaying(true);
       return;
     }
@@ -690,6 +773,8 @@ export default function App() {
     setRoamTracks(applyTo);
     setNeteaseLikedTracks(applyTo);
     setPlaylistTracks(applyTo);
+    setCachedQueueSnapshots(applyTo);
+    setCachedActiveTrackSnapshot((current) => current?.id === trackId ? updateTrack(current) : current);
     if (includeHistory) {
       setPlayHistory((current) =>
         current.some((entry) => entry.track.id === trackId)
@@ -1199,7 +1284,7 @@ export default function App() {
     // warmNeteaseTrackCache closes over fresh state on every render, matching
     // the pre-hook behavior; only its inputs belong in the dependency list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, hifiEnabled, playing, playQueueTracks, roamTracks, qualityLevel, visibleTracks]);
+  }, [activeView, hifiEnabled, masterQualityEnabled, playing, playQueueTracks, roamTracks, qualityLevel, visibleTracks]);
 
   useEffect(() => {
     trimStringSet(neteaseWarmupRef, memoryLimits.neteaseWarmup);
@@ -1467,8 +1552,9 @@ export default function App() {
   }, [localTracks]);
 
   return (
+    <PlaylistActionsProvider openAdd={(tracks, playlistId) => { setAddPlaylistRequest({ tracks, playlistId }); if (neteaseConnected) void refreshPlaylistList().catch(() => undefined); }}>
     <main
-      className="aria-stage relative h-screen overflow-hidden bg-[#f5f6f8] text-neutral-950"
+      className="aria-stage relative h-dvh overflow-hidden text-[var(--text-primary)]"
       style={
         {
           "--aria-accent": activePalette.primary,
@@ -1488,7 +1574,7 @@ export default function App() {
           resetAudioError();
           const duration = event.currentTarget.duration || 0;
           if (!nativePlaybackEnabled) setDurationSeconds(duration);
-          if (pendingSeekRef.current > 0) {
+          if (!nativePlaybackEnabled && pendingSeekRef.current > 0) {
             const nextTime = Math.min(pendingSeekRef.current, Math.max(0, duration - 1));
             event.currentTarget.currentTime = nextTime;
             if (!nativePlaybackEnabled) commitPlaybackTime(nextTime, true);
@@ -1501,8 +1587,6 @@ export default function App() {
         }}
         onError={handleAudioError}
       />
-      <div className="aria-fruit-wash" aria-hidden="true" />
-      <div className="noise" aria-hidden="true" />
       <input
         ref={fileInputRef}
         type="file"
@@ -1525,65 +1609,62 @@ export default function App() {
           event.currentTarget.value = "";
         }}
       />
-
       <div className={cn("app-shell relative z-10 flex h-full w-full flex-col overflow-hidden", activeView === "home" ? "app-shell-home" : "app-shell-standard")}>
         <header
-          className="flex h-20 shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 sm:px-6"
+          className="app-header"
           style={dragRegionStyle}
         >
-          <div className="flex min-w-0 items-center gap-3" style={noDragRegionStyle}>
+          <div className="app-brand" style={noDragRegionStyle}>
             <button
-              className="flex min-w-0 items-center gap-2 rounded-full px-3 py-2 text-left transition hover:bg-white/65"
+              className="flex min-w-0 items-center gap-2.5 rounded-xl text-left"
+              aria-label="Aria 主页"
               onClick={() => {
                 setQuery("");
+                setSelectedUser(null);
+                setSelectedAlbum(null);
                 setActiveView("home");
               }}
             >
-              <img src={ariaIconUrl} alt="" draggable={false} className="size-10 shrink-0 rounded-2xl object-cover" />
-              <p className="truncate text-3xl font-semibold">Aria</p>
+              <img src={ariaIconUrl} alt="" draggable={false} className="size-9 shrink-0 rounded-xl object-cover" />
+              <p className="app-wordmark">Aria</p>
             </button>
           </div>
 
-          <nav
-            className="hidden rounded-full border border-white/70 bg-white/45 p-1 shadow-sm backdrop-blur-xl xl:flex"
-            style={noDragRegionStyle}
-          >
-            {navItems.slice(0, 6).map((item) => {
-              const Icon = item.icon;
-              const active = activeView === item.id;
-
-              return (
-                <button
-                  key={item.id}
-                  className={cn(
-                    "flex h-9 items-center gap-2 rounded-full px-3 text-sm font-medium text-neutral-500 transition hover:text-neutral-950",
-                    active && "bg-white text-neutral-950 shadow-sm",
-                  )}
-                  onClick={() => {
-                    setQuery("");
-                    setActiveView(item.id);
-                  }}
-                >
-                  <Icon className="size-4" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
+          <div className="app-nav-slot" style={noDragRegionStyle}>
+            <AppNavigation activeView={activeView} onPick={(id) => { setQuery(""); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); playlistReturnRef.current = null; } setActiveView(id); }} />
+          </div>
 
           <div
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-neutral-950/12 bg-white/82 px-3 py-2.5 shadow-[0_10px_26px_rgba(30,35,45,0.11)] ring-1 ring-white/75 transition focus-within:border-neutral-950/24 focus-within:bg-white focus-within:shadow-[0_14px_34px_rgba(30,35,45,0.15)] sm:max-w-lg"
+            className="app-search"
             style={noDragRegionStyle}
+            onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSearchFocused(false); }}
           >
             <Search className="size-4 shrink-0 text-neutral-700" />
             <input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => { setQuery(event.target.value); setSelectedUser(null); setSelectedAlbum(null); setSearchFocused(true); }}
+              onFocus={() => setSearchFocused(true)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") { setSearchFocused(false); return; }
+                if (!searchSuggestions.length || !searchFocused) return;
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setSuggestionIndex((current) => (current + (event.key === "ArrowDown" ? 1 : -1) + searchSuggestions.length) % searchSuggestions.length);
+                } else if (event.key === "Enter" && suggestionIndex >= 0) {
+                  event.preventDefault(); pickSuggestion(searchSuggestions[suggestionIndex]);
+                }
+              }}
               spellCheck={false}
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder="搜索音乐、歌手、专辑"
+              placeholder="歌曲、歌词、专辑、歌手、歌单、用户"
+              aria-label="搜索音乐、歌手、专辑、歌单、用户"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={searchFocused && searchSuggestions.length > 0}
+              aria-controls="search-suggestions"
+              aria-activedescendant={searchFocused && suggestionIndex >= 0 ? `search-suggestion-${suggestionIndex}` : undefined}
               className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 outline-none placeholder:text-neutral-500"
             />
             <Button
@@ -1598,9 +1679,13 @@ export default function App() {
             >
               <Settings2 />
             </Button>
+            {searchFocused && query.trim() && searchSuggestions.length > 0 && <div id="search-suggestions" role="listbox" aria-label="搜索建议" className="absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-violet-100 bg-white p-2 shadow-xl">
+              {searchSuggestions.map((suggestion, index) => <button key={suggestion} id={`search-suggestion-${index}`} type="button" role="option" aria-selected={suggestionIndex === index} className={cn("flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-neutral-600 hover:bg-violet-50", suggestionIndex === index && "bg-violet-50 text-violet-700")} onMouseDown={(event) => event.preventDefault()} onClick={() => pickSuggestion(suggestion)}><Search className="size-3.5 shrink-0" /><span className="truncate">{suggestion}</span></button>)}
+            </div>}
           </div>
 
-          <div className="flex items-center gap-2" style={noDragRegionStyle}>
+          <div className="app-header-actions flex items-center gap-2" style={noDragRegionStyle}>
+            {activeView === "player" && <Button className="xl:hidden" variant="ghost" size="icon" aria-label="打开播放队列" onClick={() => setQueueOpen(true)}><ListMusic /></Button>}
             <div className="relative">
             <Button
               variant="glass"
@@ -1609,8 +1694,9 @@ export default function App() {
               onClick={() => setAccountOpen((value) => !value)}
             >
               {neteaseAccount?.avatarUrl ? (
-                <img
+                <ArtworkImage
                   src={neteaseAccount.avatarUrl}
+                  cacheSize={128}
                   alt={neteaseAccount.nickname ?? "account"}
                   draggable={false}
                   className="size-8 rounded-full object-cover"
@@ -1639,7 +1725,7 @@ export default function App() {
             </AnimatePresence>
             </div>
 
-            <div className="flex items-center rounded-full border border-white/70 bg-white/58 p-1 shadow-sm">
+            {window.ariaDesktop && <div className="app-window-controls flex items-center">
               <button
                 className="flex size-9 items-center justify-center rounded-full text-neutral-500 transition hover:bg-white hover:text-neutral-950"
                 aria-label="Minimize window"
@@ -1661,38 +1747,62 @@ export default function App() {
               >
                 <X className="size-4" />
               </button>
-            </div>
+            </div>}
           </div>
         </header>
 
         <section
           className={cn(
-            "grid min-h-0 flex-1 gap-4 p-4 2xl:gap-5 2xl:p-5",
-            activeView === "settings"
+            "app-content grid grid-cols-1 min-h-0 flex-1 gap-4 p-4 2xl:gap-5 2xl:p-5",
+            activeView === "home" && !query.trim() && "app-content-home",
+            activeView === "settings" || activeView === "home"
               ? "grid-cols-1"
               : activeView === "player"
-                ? "xl:grid-cols-[minmax(0,1fr)_minmax(380px,18vw)]"
+                ? "lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_minmax(380px,18vw)]"
                 : "xl:grid-cols-[minmax(0,1fr)_minmax(340px,18vw)]",
           )}
         >
           <AnimatePresence initial={false} mode="popLayout">
             <motion.div
-              key={query.trim() ? "search" : activeView}
+              key={selectedAlbum ? `album:${selectedAlbum.id}` : selectedUser ? `user:${selectedUser.id}` : query.trim() ? "search" : activeView}
               variants={panelVariants}
               initial="initial"
               animate="animate"
               exit="exit"
               transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              className="min-h-0 min-w-0"
+              className={cn(
+                "app-view min-h-0 min-w-0 scrollbar-thin",
+                activeView === "home" && !query.trim() && "app-view-home",
+              )}
               style={{ willChange: "transform, opacity" }}
             >
-              {query.trim() ? (
+              {selectedAlbum ? (
+                <AlbumDetailSurface album={albumDetail ?? selectedAlbum} tracks={albumTracks} loading={albumLoading} error={albumError}
+                  onBack={() => setSelectedAlbum(null)} onRetry={retryAlbum} onPickTrack={chooseTrack}
+                  onPickArtist={(id, name) => { setSelectedAlbum(null); setSelectedArtist({ id: `netease:${id}`, providerId: id, name, source: "netease", trackCount: 0 }); setQuery(""); setActiveView("artists"); }} />
+              ) : selectedUser ? (
+                <UserDetailSurface user={userDetail ?? selectedUser} playlists={userPlaylists} loading={userLoading} error={userError} more={userPlaylistsMore}
+                  onBack={() => setSelectedUser(null)} onRetry={retryUser} onLoadMore={() => void loadMoreUserPlaylists()}
+                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { query, user: selectedUser }; void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); setSelectedUser(null); }} />
+              ) : query.trim() ? (
                 <SearchSurface
                   query={query.trim()}
                   loading={searchLoading}
                   localTracks={searchBundle.localTracks}
                   neteaseTracks={searchBundle.neteaseTracks}
                   artists={searchBundle.artists}
+                  playlists={searchBundle.playlists}
+                  users={searchBundle.users}
+                  albums={searchBundle.albums}
+                  mode={searchMode}
+                  onModeChange={setSearchMode}
+                  error={searchError}
+                  total={searchTotal}
+                  more={searchMore}
+                  onRetry={retrySearch}
+                  onLoadMore={() => void loadMoreSearch()}
+                  onPickUser={setSelectedUser}
+                  onPickAlbum={setSelectedAlbum}
                   artistAvatarCache={artistAvatarCache}
                   onPickTrack={(id, queue) => {
                     chooseTrack(id, queue);
@@ -1703,22 +1813,24 @@ export default function App() {
                     setActiveView("artists");
                     setQuery("");
                   }}
+                  onPickPlaylist={(playlist) => {
+                    playlistReturnRef.current = { query, user: null };
+                    void openPlaylist(playlist);
+                    setActiveView("playlists");
+                    setQuery("");
+                  }}
                 />
               ) : (
                 <>
               {activeView === "home" && (
                 <HomeSurface
                   activeTrack={activeTrack}
-                  tracks={visibleTracks}
-                  playCounts={playCounts}
                   playHistory={displayHistory}
                   playing={playing}
-                  localTrackCount={localTracks.length}
-                  neteaseLikedCount={neteaseLikedDisplayTracks.length}
-                  playlistCount={providerPlaylists.length}
                   onTogglePlay={togglePlayback}
                   onPickTrack={chooseTrack}
                   onOpenPlayer={() => setActiveView("player")}
+                  onNavigate={setActiveView}
                 />
               )}
               {activeView === "player" && (
@@ -1742,10 +1854,22 @@ export default function App() {
                   onVolumeChange={setVolume}
                   qualityLevel={effectiveQualityLevel}
                   onQualityLevelChange={(level) => {
+                    // Explicit levels are manual choices; 臻品 also enables
+                    // HiFi so its companion setting remains visible.
                     setQualityLevel(level);
-                    if (hifiEnabled) setHifiEnabled(false);
+                    if (level === "jymaster") {
+                      // 臻品是 HiFi 优先下的额外处理档位，启用它时同步打开
+                      // HiFi，让设置页能够显示对应的独立开关。
+                      setHifiEnabled(true);
+                      setMasterQualityEnabled(true);
+                    } else {
+                      setHifiEnabled(false);
+                      setMasterQualityEnabled(false);
+                    }
                   }}
                   hifiEnabled={hifiEnabled}
+                  masterQualityEnabled={masterQualityEnabled}
+                  onMasterQualityEnabledChange={setMasterQualityEnabled}
                   exclusiveMode={exclusiveMode}
                   durationSeconds={durationSeconds}
                   analyserRef={analyserRef}
@@ -1791,8 +1915,20 @@ export default function App() {
                   tracks={playlistTracks}
                   playCounts={playCounts}
                   loading={playlistLoading}
-                  onOpenPlaylist={openPlaylist}
-                  onClosePlaylist={() => setSelectedPlaylist(null)}
+                  error={playlistError}
+                  onUpdatePlaylist={updatePlaylist}
+                  onUploadCover={uploadPlaylistCover}
+                  onRemoveTracks={(id, tracks) => editPlaylistTracks(id, tracks, "del")}
+                  onReorderTracks={reorderPlaylistTracks}
+                  onSubscribe={subscribePlaylist}
+                  canCreatePlaylist={neteaseConnected}
+                  onCreatePlaylist={createPlaylist}
+                  onRequireLogin={() => {
+                    setSettingsReturnView("playlists");
+                    setActiveView("settings");
+                  }}
+                  onOpenPlaylist={(playlist) => { if (playlist.id !== selectedPlaylist?.id) playlistReturnRef.current = null; void openPlaylist(playlist); }}
+                  onClosePlaylist={() => { closePlaylist(); const origin = playlistReturnRef.current; playlistReturnRef.current = null; if (origin) { setQuery(origin.query); setSelectedUser(origin.user); } }}
                   onPickTrack={chooseTrack}
                 />
               )}
@@ -1821,6 +1957,17 @@ export default function App() {
                   artists={artistSummaries}
                   selectedArtist={selectedArtist}
                   tracks={artistTracks}
+                  tracksLoading={artistTracksLoading}
+                  tracksError={artistTracksError}
+                  onRetryTracks={retryArtistTracks}
+                  artistDetail={artistDetail}
+                  artistAlbums={artistAlbums}
+                  detailLoading={artistDetailLoading}
+                  detailError={artistDetailError}
+                  albumsMore={artistAlbumsMore}
+                  onRetryDetail={retryArtistDetail}
+                  onLoadMoreAlbums={() => void loadMoreArtistAlbums()}
+                  onPickAlbum={setSelectedAlbum}
                   artistAvatarCache={artistAvatarCache}
                   onPickArtist={(artist) => setSelectedArtist(artist)}
                   onBack={() => setSelectedArtist(null)}
@@ -1844,7 +1991,9 @@ export default function App() {
                   selectedSinkId={selectedSinkId}
                   onSelectedSinkIdChange={setSelectedSinkId}
                   hifiEnabled={hifiEnabled}
-                  onHifiEnabledChange={setHifiEnabled}
+                  onHifiEnabledChange={handleHifiEnabledChange}
+                  masterQualityEnabled={masterQualityEnabled}
+                  onMasterQualityEnabledChange={setMasterQualityEnabled}
                   gaplessEnabled={gaplessEnabled}
                   onGaplessEnabledChange={setGaplessEnabled}
                   nativeAudioSupported={nativeAudioSupported}
@@ -1862,7 +2011,7 @@ export default function App() {
             </motion.div>
           </AnimatePresence>
 
-          {activeView === "settings" ? null : activeView === "player" ? (
+          {activeView === "settings" || activeView === "home" ? null : activeView === "player" ? (
             <PlayerSidePanel
               mode={playerSideView}
               onModeChange={setPlayerSideView}
@@ -1874,17 +2023,8 @@ export default function App() {
               onPickTrack={chooseTrack}
               onSeek={seekTo}
             />
-          ) : activeView === "home" ? (
-            <HomeSidePanel
-              tracks={visibleTracks}
-              playCounts={playCounts}
-              playHistory={displayHistory}
-              onOpenHistory={() => setActiveView("history")}
-              onOpenStats={() => setActiveView("stats")}
-              onPickTrack={chooseTrack}
-            />
           ) : (
-          <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
+          <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 xl:flex">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">
@@ -1892,7 +2032,7 @@ export default function App() {
                 </p>
                 <h2 className="mt-1 text-xl font-semibold">下一首</h2>
               </div>
-              <Button variant="ghost" size="icon" aria-label="展开队列">
+              <Button variant="ghost" size="icon" aria-label="展开队列" onClick={() => setQueueOpen(true)}>
                 <ListMusic />
               </Button>
             </div>
@@ -1901,6 +2041,13 @@ export default function App() {
           </aside>
           )}
         </section>
+
+        {queueOpen && <PlaybackQueue
+          tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
+          activeTrackId={activeTrackId}
+          onPickTrack={chooseTrack}
+          onClose={() => setQueueOpen(false)}
+        />}
 
         <AnimatePresence>
           {immersiveOpen && (
@@ -1928,7 +2075,7 @@ export default function App() {
             <OnboardingDialog
               neteaseAccount={neteaseAccount}
               hifiEnabled={hifiEnabled}
-              onHifiEnabledChange={setHifiEnabled}
+              onHifiEnabledChange={handleHifiEnabledChange}
               backgroundEnabled={backgroundEnabled}
               onBackgroundEnabledChange={setBackgroundEnabled}
               gaplessEnabled={gaplessEnabled}
@@ -1945,32 +2092,45 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <FloatingNav
+        {!immersiveOpen && !onboardingOpen && <FloatingNav
           activeView={activeView}
           open={navOpen}
+          raised={false}
           onOpenChange={(nextOpen) => {
-            if (navCloseTimer.current) {
+            if (navCloseTimer.current !== null) {
               window.clearTimeout(navCloseTimer.current);
               navCloseTimer.current = null;
             }
             setNavOpen(nextOpen);
           }}
           onRequestClose={() => {
-            if (navCloseTimer.current) {
-              window.clearTimeout(navCloseTimer.current);
-            }
+            if (navCloseTimer.current !== null) window.clearTimeout(navCloseTimer.current);
             navCloseTimer.current = window.setTimeout(() => {
               setNavOpen(false);
               navCloseTimer.current = null;
             }, 180);
           }}
           onPick={(id) => {
+            if (navCloseTimer.current !== null) {
+              window.clearTimeout(navCloseTimer.current);
+              navCloseTimer.current = null;
+            }
             setQuery("");
+            setSelectedUser(null);
+            setSelectedAlbum(null);
+            setQueueOpen(false);
+            if (id === "playlists") { closePlaylist(); playlistReturnRef.current = null; }
+            if (id === "settings" && activeView !== "settings") setSettingsReturnView(activeView);
             setActiveView(id);
             setNavOpen(false);
           }}
-        />
+        />}
+
       </div>
+      {addPlaylistRequest && <AddToPlaylistDialog initialTracks={addPlaylistRequest.tracks} initialPlaylistId={addPlaylistRequest.playlistId} playlists={providerPlaylists} connected={neteaseConnected}
+        onClose={() => setAddPlaylistRequest(null)} onRequireLogin={() => { setAddPlaylistRequest(null); setAccountOpen(true); }}
+        onAdd={(id, tracks) => editPlaylistTracks(id, tracks, "add")} onCreate={(name, isPrivate) => createPlaylist(name, isPrivate, false)} />}
     </main>
+    </PlaylistActionsProvider>
   );
 }

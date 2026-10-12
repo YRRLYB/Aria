@@ -19,6 +19,7 @@ import {
   type ShortcutCommand,
 } from "@/lib/keyboardShortcuts";
 import { cn } from "@/lib/utils";
+import { ArtworkImage } from "./ArtworkImage";
 export function SettingsPanel({
   backgroundEnabled,
   onBackgroundEnabledChange,
@@ -34,6 +35,8 @@ export function SettingsPanel({
   onSelectedSinkIdChange,
   hifiEnabled,
   onHifiEnabledChange,
+  masterQualityEnabled,
+  onMasterQualityEnabledChange,
   gaplessEnabled,
   onGaplessEnabledChange,
   nativeAudioSupported,
@@ -59,6 +62,8 @@ export function SettingsPanel({
   onSelectedSinkIdChange: (value: string) => void;
   hifiEnabled: boolean;
   onHifiEnabledChange: (value: boolean) => void;
+  masterQualityEnabled: boolean;
+  onMasterQualityEnabledChange: (value: boolean) => void;
   gaplessEnabled: boolean;
   onGaplessEnabledChange: (value: boolean) => void;
   nativeAudioSupported: boolean;
@@ -200,7 +205,7 @@ export function SettingsPanel({
             </div>
             <div className="mt-4 flex items-center gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               {neteaseAccount?.avatarUrl ? (
-                <img src={neteaseAccount.avatarUrl} alt="" draggable={false} className="size-12 rounded-full object-cover" />
+                <ArtworkImage src={neteaseAccount.avatarUrl} cacheSize={128} alt="" draggable={false} className="size-12 rounded-full object-cover" />
               ) : (
                 <div className="flex size-12 items-center justify-center rounded-full bg-white shadow-sm">
                   <UserRound className="size-5" />
@@ -372,18 +377,25 @@ export function SettingsPanel({
               </p>
             </div>
 
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               <div>
                 <p className="text-sm font-semibold">HiFi 优先</p>
-                <p className="mt-1 text-xs text-neutral-500">自动请求当前歌曲可用的最高音质。</p>
+                <p className="mt-1 text-xs text-neutral-500">优先最高原始音质 Hi-Res，不支持时自动降级。</p>
               </div>
               <button
                 className={cn(
                   "flex h-8 w-14 items-center rounded-full p-1 transition",
                   hifiEnabled ? "bg-neutral-950" : "bg-neutral-200",
                 )}
-                onClick={() => onHifiEnabledChange(!hifiEnabled)}
+                onClick={() => {
+                  const nextEnabled = !hifiEnabled;
+                  onHifiEnabledChange(nextEnabled);
+                  if (!nextEnabled) onMasterQualityEnabledChange(false);
+                }}
                 aria-label="切换 HiFi 优先"
+                role="switch"
+                aria-checked={hifiEnabled}
               >
                 <span
                   className={cn(
@@ -392,6 +404,24 @@ export function SettingsPanel({
                   )}
                 />
               </button>
+            </div>
+            {hifiEnabled && (
+              <div className="flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
+                <div>
+                  <p className="text-sm font-semibold">臻品增强</p>
+                  <p className="mt-1 text-xs text-neutral-500">独立开启臻品音质；不支持的歌曲使用原始音质。</p>
+                </div>
+                <button
+                  className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", masterQualityEnabled ? "bg-neutral-950" : "bg-neutral-200")}
+                  onClick={() => onMasterQualityEnabledChange(!masterQualityEnabled)}
+                  aria-label="切换臻品增强"
+                  role="switch"
+                  aria-checked={masterQualityEnabled}
+                >
+                  <span className={cn("size-6 rounded-full bg-white shadow-sm transition", masterQualityEnabled && "translate-x-6")} />
+                </button>
+              </div>
+            )}
             </div>
             <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               <div>
@@ -675,7 +705,7 @@ export function AccountPanel({
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           {account?.avatarUrl ? (
-            <img src={account.avatarUrl} alt="" draggable={false} className="size-12 rounded-full object-cover shadow-sm" />
+            <ArtworkImage src={account.avatarUrl} cacheSize={128} alt="" draggable={false} className="size-12 rounded-full object-cover shadow-sm" />
           ) : (
             <div className="flex size-12 items-center justify-center rounded-full bg-neutral-950 text-white">
               <UserRound className="size-5" />
@@ -699,7 +729,7 @@ export function AccountPanel({
             {qrLogin?.qrImage ? (
               <img src={qrLogin.qrImage} alt="网易云扫码登录二维码" draggable={false} className="size-full object-contain p-2" />
             ) : account?.avatarUrl ? (
-              <img src={account.avatarUrl} alt="" draggable={false} className="size-full object-cover" />
+              <ArtworkImage src={account.avatarUrl} cacheSize={320} alt="" draggable={false} className="size-full object-cover" />
             ) : (
               <UserRound className="size-9 text-neutral-300" />
             )}
@@ -898,7 +928,7 @@ export function OnboardingDialog({
             <div className="mt-5 space-y-3">
               {[
                 ["后台托管", "关闭主窗口后继续播放，并保留任务栏与媒体快捷控制。", backgroundEnabled, onBackgroundEnabledChange],
-                ["HiFi 优先", "自动请求当前歌曲可用的最高音质。", hifiEnabled, onHifiEnabledChange],
+                ["HiFi 优先", "优先最高原始音质 Hi-Res，不支持时自动降级。", hifiEnabled, onHifiEnabledChange],
                 ["无缝衔接", "提前加载下一首，减少歌曲切换时的空隙。", gaplessEnabled, onGaplessEnabledChange],
               ].map(([label, description, enabled, onChange]) => (
                 <div key={String(label)} className="flex items-center justify-between gap-4 rounded-[1.1rem] bg-white/70 p-4 shadow-sm">

@@ -1,7 +1,5 @@
 import cors from "cors";
 import express from "express";
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -20,7 +18,7 @@ import {
 import { readStore, updateStore } from "./store";
 import { cacheDir } from "./utils/paths";
 import { HttpError } from "./utils/httpError";
-import { pruneDiskCache } from "./utils/diskCache";
+import { RemoteCoverCache } from "./remoteCoverCache";
 import {
   extractRequestToken,
   lanAddresses,
@@ -32,33 +30,12 @@ import {
 const app = express();
 const port = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
 const remoteAccess = loadRemoteAccessConfig();
-const remoteCoverCacheDir = path.join(cacheDir, "covers");
-const maxRemoteCoverBytes = 8 * 1024 * 1024;
-
-class CoverFetchLimiter {
-  private active = 0;
-  private readonly waiting: Array<() => void> = [];
-
-  async run<T>(work: () => Promise<T>) {
-    if (this.active >= 4) await new Promise<void>((resolve) => this.waiting.push(resolve));
-    this.active += 1;
-    try {
-      return await work();
-    } finally {
-      this.active -= 1;
-      this.waiting.shift()?.();
-    }
-  }
-}
-
-const remoteCoverFetchLimiter = new CoverFetchLimiter();
-const remoteCoverRequests = new Map<string, Promise<{ body: Buffer; contentType: string; status: number }>>();
+const remoteCoverCache = new RemoteCoverCache({ directory: path.join(cacheDir, "covers") });
 
 // Cover responses are binary assets and can be several megabytes each. Keep
 // the on-disk cache bounded so repeated browsing cannot grow memory/disk use
 // without limit. Existing oversized caches are trimmed on startup as well.
-const pruneRemoteCoverCache = () =>
-  pruneDiskCache(remoteCoverCacheDir, { maxBytes: 256 * 1024 * 1024, maxFiles: 800 });
+const pruneRemoteCoverCache = () => remoteCoverCache.prune();
 void pruneRemoteCoverCache();
 const remoteCoverPruneTimer = setInterval(pruneRemoteCoverCache, 15 * 60_000);
 remoteCoverPruneTimer.unref?.();
@@ -147,12 +124,114 @@ app.get("/api/providers/:providerId/playlists", async (req, res, next) => {
   }
 });
 
+app.post("/api/providers/netease/playlists", async (req, res, next) => {
+  try {
+    const body = z.object({
+      name: z.string().trim().min(1, "请输入歌单名称").max(40, "歌单名称最多 40 个字符"),
+      isPrivate: z.boolean().default(false),
+    }).parse(req.body);
+    const playlist = await neteaseClient.createPlaylist(body.name, body.isPrivate);
+    res.status(201).json({ playlist });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/providers/netease/playlists/:playlistId/tracks", async (req, res, next) => {
   try {
     res.json({ tracks: await neteaseClient.getPlaylistTracks(req.params.playlistId) });
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/api/providers/netease/playlists/:playlistId", async (req, res, next) => {
+  try { res.json(await neteaseClient.getPlaylistDetail(req.params.playlistId)); } catch (error) { next(error); }
+});
+
+app.patch("/api/providers/netease/playlists/:playlistId", async (req, res, next) => {
+  try {
+    const body = z.object({
+      name: z.string().trim().min(1).max(40).optional(),
+      description: z.string().max(1000).optional(),
+      tags: z.array(z.string().min(1).max(30)).max(3).optional(),
+    }).refine((changes) => Object.values(changes).some((value) => value !== undefined), "请选择要修改的歌单内容").parse(req.body);
+    res.json(await neteaseClient.updatePlaylist(req.params.playlistId, body));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/providers/netease/playlists/:playlistId/tracks", async (req, res, next) => {
+  try {
+    const body = z.object({ trackIds: z.array(z.string().regex(/^\d{1,20}$/)).min(1).max(500), operation: z.enum(["add", "del"]) }).parse(req.body);
+    res.json(await neteaseClient.editPlaylistTracks(req.params.playlistId, body.trackIds, body.operation));
+  } catch (error) { next(error); }
+});
+
+app.put("/api/providers/netease/playlists/:playlistId/tracks/order", async (req, res, next) => {
+  try {
+    const body = z.object({ trackIds: z.array(z.string().regex(/^\d{1,20}$/)).min(1).max(5000) }).parse(req.body);
+    res.json(await neteaseClient.reorderPlaylistTracks(req.params.playlistId, body.trackIds));
+  } catch (error) { next(error); }
+});
+
+// A raw binary upload avoids base64 overhead and retains provider JPEG semantics.
+app.put("/api/providers/netease/playlists/:playlistId/cover", express.raw({ type: ["image/*", "application/octet-stream"], limit: "8mb" }), async (req, res, next) => {
+  try {
+    if (!Buffer.isBuffer(req.body)) throw new HttpError(400, "请选择图片文件", "NETEASE_COVER_IMAGE_REQUIRED");
+    res.json(await neteaseClient.uploadPlaylistCover(req.params.playlistId, req.body));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/providers/netease/playlists/:playlistId/subscription", async (req, res, next) => {
+  try {
+    const body = z.object({ subscribed: z.boolean() }).parse(req.body);
+    res.json(await neteaseClient.subscribePlaylist(req.params.playlistId, body.subscribed));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/search", async (req, res, next) => {
+  try {
+    const query = z.object({
+      q: z.string().trim().min(1).max(120),
+      mode: z.enum(["tracks", "artists", "playlists", "users", "albums", "lyrics"]),
+      limit: z.coerce.number().int().min(1).max(50).default(24),
+      offset: z.coerce.number().int().min(0).max(1000).default(0),
+    }).parse(req.query);
+    res.json(await neteaseClient.search(query.q, query.mode, query.limit, query.offset));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/search/suggestions", async (req, res, next) => {
+  try {
+    const query = z.object({ q: z.string().trim().min(1).max(120) }).parse(req.query);
+    res.json({ suggestions: await neteaseClient.getSearchSuggestions(query.q) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/users/:userId", async (req, res, next) => {
+  try { res.json({ user: await neteaseClient.getUserDetail(req.params.userId) }); } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/users/:userId/playlists", async (req, res, next) => {
+  try {
+    const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(100), offset: z.coerce.number().int().min(0).max(1000).default(0) }).parse(req.query);
+    res.json(await neteaseClient.getUserPlaylists(req.params.userId, query.limit, query.offset));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/albums/:albumId", async (req, res, next) => {
+  try { res.json(await neteaseClient.getAlbum(req.params.albumId)); } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/artists/:artistId", async (req, res, next) => {
+  try { res.json(await neteaseClient.getArtistDetail(req.params.artistId)); } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/artists/:artistId/albums", async (req, res, next) => {
+  try {
+    const query = z.object({ limit: z.coerce.number().int().min(1).max(50).default(30), offset: z.coerce.number().int().min(0).max(1000).default(0) }).parse(req.query);
+    res.json(await neteaseClient.getArtistAlbums(req.params.artistId, query.limit, query.offset));
+  } catch (error) { next(error); }
 });
 
 app.get("/api/providers/:providerId/daily", async (req, res, next) => {
@@ -279,76 +358,28 @@ app.get("/api/providers/netease/cover", async (req, res, next) => {
     const query = z
       .object({ url: z.string().url(), size: z.string().regex(/^\d{2,4}[xy]\d{2,4}$/).optional() })
       .parse(req.query);
-    const target = new URL(query.url);
-    if (!target.hostname.endsWith("music.126.net")) {
-      throw new HttpError(400, "Unsupported cover host", "NETEASE_COVER_HOST_UNSUPPORTED");
-    }
-
-    // Always request a bounded CDN variant. Without a size, NetEase returns
-    // the original multi-megapixel artwork, which is costly to decode in the
-    // renderer and quickly bloats Chromium's image cache.
-    const requestedSize = normalizeCoverSize(query.size);
-    const upstreamTarget = new URL(query.url);
-    upstreamTarget.searchParams.set("param", requestedSize);
-    const upstreamUrl = upstreamTarget.href;
-
-    const cacheKey = createHash("sha1").update(upstreamUrl).digest("hex");
-    const cachedPath = path.join(remoteCoverCacheDir, `${cacheKey}.img`);
-    const cachedMetaPath = path.join(remoteCoverCacheDir, `${cacheKey}.json`);
-    try {
-      const rawMeta = await readFile(cachedMetaPath, "utf8");
-      const meta = JSON.parse(rawMeta) as { contentType?: string };
-      res.setHeader("Content-Type", meta.contentType || "image/jpeg");
-      res.setHeader("Cache-Control", "public, max-age=604800, immutable");
-      res.sendFile(cachedPath, { cacheControl: false }, (error) => {
-        if (error && !res.headersSent) next(error);
-      });
-      return;
-    } catch {
-      // Cache miss; continue with upstream fetch.
-    }
-
-    let coverRequest = remoteCoverRequests.get(upstreamUrl);
-    if (!coverRequest) {
-      coverRequest = remoteCoverFetchLimiter.run(async () => {
-        const upstream = await fetch(upstreamUrl);
-        if (!upstream.ok) {
-          throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
-        }
-        const advertisedLength = Number(upstream.headers.get("content-length") || 0);
-        if (advertisedLength > maxRemoteCoverBytes) {
-          throw new HttpError(502, "Cover response is too large", "NETEASE_COVER_TOO_LARGE");
-        }
-        const contentType = upstream.headers.get("content-type") || "image/jpeg";
-        const body = await readBoundedBody(upstream, maxRemoteCoverBytes);
-        await mkdir(remoteCoverCacheDir, { recursive: true });
-        await Promise.all([
-          writeFile(cachedPath, body),
-          writeFile(cachedMetaPath, JSON.stringify({ contentType }), "utf8"),
-        ]);
-        void pruneRemoteCoverCache();
-        return { body, contentType, status: upstream.status };
-      });
-      remoteCoverRequests.set(upstreamUrl, coverRequest);
-      void coverRequest.then(
-        () => remoteCoverRequests.delete(upstreamUrl),
-        () => remoteCoverRequests.delete(upstreamUrl),
-      );
-    }
-    const { contentType, body, status } = await coverRequest;
-
-    res.status(status);
+    const { contentType, byteLength, etag, filePath, body } = await remoteCoverCache.read(query.url, query.size);
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Length", String(body.byteLength));
+    res.setHeader("Content-Length", String(byteLength));
     res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+    res.setHeader("ETag", etag);
+    res.setHeader("X-Content-Type-Options", "nosniff");
 
+    if (req.fresh) {
+      res.status(304).end();
+      return;
+    }
     if (req.method === "HEAD") {
       res.end();
       return;
     }
-    res.sendFile(cachedPath, { cacheControl: false }, (error) => {
-      if (error && !res.headersSent) next(error);
-    });
+    if (filePath) {
+      res.sendFile(filePath, { cacheControl: false }, (error) => {
+        if (error && !res.headersSent) next(error);
+      });
+    } else {
+      res.send(body);
+    }
   } catch (error) {
     next(error);
   }
@@ -385,8 +416,9 @@ app.get("/api/search", async (req, res, next) => {
   try {
     const query = z
       .object({
-        q: z.string().min(1).max(120),
+        q: z.string().trim().min(1).max(120),
         limit: z.coerce.number().int().min(1).max(50).optional().default(24),
+        mode: z.enum(["tracks", "artists", "playlists", "users", "albums", "lyrics", "local"]).optional(),
       })
       .parse(req.query);
     const normalized = query.q.trim().toLowerCase();
@@ -402,16 +434,29 @@ app.get("/api/search", async (req, res, next) => {
 
     let neteaseTracks: Awaited<ReturnType<typeof neteaseClient.searchTracks>> = [];
     let artists: Awaited<ReturnType<typeof neteaseClient.searchArtists>> = [];
-    try {
-      [neteaseTracks, artists] = await Promise.all([
-        neteaseClient.searchTracks(query.q, query.limit),
-        neteaseClient.searchArtists(query.q, Math.min(query.limit, 18)),
-      ]);
-    } catch {
-      // Local search remains useful when NetEase credentials are missing or temporarily rejected.
+    let playlists: Awaited<ReturnType<typeof neteaseClient.searchPlaylists>> = [];
+    // Keep each remote search independent. A provider can reject one result
+    // type (for example when an endpoint is temporarily unavailable) while
+    // the other result types remain useful to the user.
+    if (query.mode) {
+      if (query.mode === "local") {
+        res.json({ query: query.q, localTracks, neteaseTracks, artists, playlists });
+      } else {
+        const result = await neteaseClient.search(query.q, query.mode, query.limit);
+        res.json({ query: query.q, localTracks: query.mode === "tracks" ? localTracks : [], neteaseTracks: result.tracks, artists: result.artists, playlists: result.playlists, users: result.users, albums: result.albums, total: result.total });
+      }
+      return;
     }
+    const [tracksResult, artistsResult, playlistsResult] = await Promise.allSettled([
+      neteaseClient.searchTracks(query.q, query.limit),
+      neteaseClient.searchArtists(query.q, Math.min(query.limit, 18)),
+      neteaseClient.searchPlaylists(query.q, Math.min(query.limit, 18)),
+    ]);
+    if (tracksResult.status === "fulfilled") neteaseTracks = tracksResult.value;
+    if (artistsResult.status === "fulfilled") artists = artistsResult.value;
+    if (playlistsResult.status === "fulfilled") playlists = playlistsResult.value;
 
-    res.json({ query: query.q, localTracks, neteaseTracks, artists });
+    res.json({ query: query.q, localTracks, neteaseTracks, artists, playlists });
   } catch (error) {
     next(error);
   }
@@ -472,6 +517,10 @@ app.post("/api/lyrics/bind", async (req, res, next) => {
 });
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if ((error as { type?: string } | null)?.type === "entity.too.large") {
+    res.status(413).json({ error: "上传的文件过大，请选择小于 8 MB 的封面图片", code: "REQUEST_TOO_LARGE" });
+    return;
+  }
   if (error instanceof z.ZodError) {
     res.status(400).json({ error: "Bad request", issues: error.issues });
     return;
@@ -498,34 +547,3 @@ const listenHost = remoteAccess.enabled ? "0.0.0.0" : "127.0.0.1";
 app.listen(port, listenHost, () => {
   console.log(`aria-api listening on http://${listenHost}:${port} (remote access ${remoteAccess.enabled ? "enabled" : "disabled"})`);
 });
-
-function normalizeCoverSize(value?: string) {
-  const match = value?.match(/^(\d{2,4})[xy](\d{2,4})$/);
-  if (!match) return "800y800";
-  const width = Math.min(1024, Math.max(64, Number(match[1])));
-  const height = Math.min(1024, Math.max(64, Number(match[2])));
-  return `${width}y${height}`;
-}
-
-async function readBoundedBody(response: Response, maxBytes: number) {
-  if (!response.body) return Buffer.alloc(0);
-  const reader = response.body.getReader();
-  const chunks: Buffer[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      total += chunk.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new HttpError(502, "Cover response is too large", "NETEASE_COVER_TOO_LARGE");
-      }
-      chunks.push(chunk);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks, total);
-}

@@ -1,13 +1,16 @@
-import { useMemo, useState } from "react";
-import { ChevronDown, Cloud, Heart, Plus, RefreshCw } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ChevronDown, Cloud, Heart, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import { capabilities } from "@/data/music";
-import { api, type ProviderPlaylist } from "@/lib/api";
+import type { ProviderPlaylist } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
+import { ArtworkImage } from "./ArtworkImage";
+import { PlaylistDetail } from "./PlaylistDetail";
+import { AddToPlaylistButton } from "./PlaylistActions";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
 export function CollectionSurface({
@@ -148,48 +151,69 @@ export function PlaylistSurface({
   tracks,
   playCounts,
   loading,
+  canCreatePlaylist,
+  onCreatePlaylist,
+  onRequireLogin,
   onOpenPlaylist,
   onClosePlaylist,
   onPickTrack,
+  error,
+  onUpdatePlaylist,
+  onUploadCover,
+  onRemoveTracks,
+  onReorderTracks,
+  onSubscribe,
 }: {
   playlists: ProviderPlaylist[];
   selectedPlaylist: ProviderPlaylist | null;
   tracks: Track[];
   playCounts: Record<string, number>;
   loading: boolean;
+  canCreatePlaylist: boolean;
+  onCreatePlaylist: (name: string, isPrivate: boolean) => Promise<ProviderPlaylist>;
+  onRequireLogin: () => void;
   onOpenPlaylist: (playlist: ProviderPlaylist) => void;
   onClosePlaylist: () => void;
-  onPickTrack: (id: string) => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+  error: string | null;
+  onUpdatePlaylist: (id: string, fields: { name?: string; description?: string }) => Promise<void>;
+  onUploadCover: (id: string, file: File) => Promise<void>;
+  onRemoveTracks: (id: string, tracks: Track[]) => Promise<void>;
+  onReorderTracks: (id: string, tracks: Track[]) => Promise<void>;
+  onSubscribe: (id: string, subscribed: boolean) => Promise<void>;
 }) {
-  const [sortMode, setSortMode] = useState<"added-desc" | "added-asc" | "title-asc" | "title-desc" | "plays-desc">(
-    "added-desc",
-  );
   const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
-  const sortedTracks = useMemo(() => {
-    const indexed = tracks.map((track, index) => ({ track, index }));
-    switch (sortMode) {
-      case "added-asc":
-        return [...indexed].reverse().map((item) => item.track);
-      case "title-asc":
-        return [...indexed]
-          .sort((left, right) => left.track.title.localeCompare(right.track.title, "zh-CN"))
-          .map((item) => item.track);
-      case "title-desc":
-        return [...indexed]
-          .sort((left, right) => right.track.title.localeCompare(left.track.title, "zh-CN"))
-          .map((item) => item.track);
-      case "plays-desc":
-        return [...indexed]
-          .sort((left, right) => {
-            const byCount = (playCounts[right.track.id] ?? 0) - (playCounts[left.track.id] ?? 0);
-            if (byCount !== 0) return byCount;
-            return left.index - right.index;
-          })
-          .map((item) => item.track);
-      default:
-        return indexed.map((item) => item.track);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [playlistName, setPlaylistName] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const createPendingRef = useRef(false);
+
+  async function submitPlaylist(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canCreatePlaylist || createPendingRef.current) return;
+    const name = playlistName.trim();
+    if (!name) {
+      setCreateError("请输入歌单名称");
+      return;
     }
-  }, [playCounts, sortMode, tracks]);
+    createPendingRef.current = true;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await onCreatePlaylist(name, isPrivate);
+      setPlaylistFilter("owned");
+      setCreateOpen(false);
+      setPlaylistName("");
+      setIsPrivate(false);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : "创建失败，请稍后重试");
+    } finally {
+      createPendingRef.current = false;
+      setCreating(false);
+    }
+  }
   const visiblePlaylists = useMemo(() => {
     if (playlistFilter === "owned") return playlists.filter((playlist) => playlist.owned ?? !playlist.subscribed);
     if (playlistFilter === "saved") return playlists.filter((playlist) => playlist.subscribed || playlist.owned === false);
@@ -197,53 +221,11 @@ export function PlaylistSurface({
   }, [playlistFilter, playlists]);
 
   if (selectedPlaylist) {
-    return (
-      <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
-        <div className="flex shrink-0 items-center justify-between gap-4">
-          <div className="min-w-0">
-            <Button variant="ghost" size="sm" onClick={onClosePlaylist}>
-              <ChevronDown className="rotate-90" />
-              返回歌单
-            </Button>
-            <h1 className="mt-4 truncate text-3xl font-semibold sm:text-5xl">{selectedPlaylist.name}</h1>
-            <p className="mt-2 text-sm text-neutral-500">{tracks.length} 首 · 原始顺序来自歌单</p>
-          </div>
-          <Badge>{loading ? "读取中" : "Ready"}</Badge>
-        </div>
-        <div className="mt-5 flex shrink-0 flex-wrap gap-2">
-          {[
-            ["added-desc", "添加倒序"],
-            ["added-asc", "添加正序"],
-            ["title-asc", "名字 A-Z"],
-            ["title-desc", "名字 Z-A"],
-            ["plays-desc", "听的次数"],
-          ].map(([value, label]) => (
-            <button
-              key={value}
-              className={cn(
-                "rounded-full border px-3 py-1.5 text-sm transition",
-                sortMode === value ? "border-neutral-950 bg-neutral-950 text-white" : "border-white/70 bg-white/65 text-neutral-500",
-              )}
-              onClick={() => setSortMode(value as typeof sortMode)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <VirtualTrackList
-          className="mt-6"
-          tracks={sortedTracks}
-          emptyText="这个歌单暂时没有读取到曲目。"
-          onPickTrack={onPickTrack}
-          renderMeta={(track) => (
-            <>
-              <Badge>{playCounts[track.id] ?? 0} 次</Badge>
-              <Badge>{formatAudioDetail(track)}</Badge>
-            </>
-          )}
-        />
-      </div>
-    );
+    return <PlaylistDetail key={selectedPlaylist.id} playlist={selectedPlaylist} tracks={tracks} loading={loading} error={error} connected={canCreatePlaylist} playCounts={playCounts}
+      onBack={onClosePlaylist} onRetry={() => onOpenPlaylist(selectedPlaylist)} onPickTrack={onPickTrack}
+      onUpdate={(fields) => onUpdatePlaylist(selectedPlaylist.id, fields)} onUploadCover={(file) => onUploadCover(selectedPlaylist.id, file)}
+      onRemove={(items) => onRemoveTracks(selectedPlaylist.id, items)} onReorder={(items) => onReorderTracks(selectedPlaylist.id, items)}
+      onSubscribe={(subscribed) => onSubscribe(selectedPlaylist.id, subscribed)} onRequireLogin={onRequireLogin} />;
   }
 
   return (
@@ -253,11 +235,57 @@ export function PlaylistSurface({
           <Badge>Playlist</Badge>
           <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">歌单</h1>
         </div>
-        <Button>
+        <Button onClick={() => {
+          setCreateError(null);
+          setCreateOpen((current) => !current);
+        }} aria-expanded={createOpen} aria-controls="create-playlist-form" disabled={creating}>
           <Plus />
           新建
         </Button>
       </div>
+      {createOpen && (
+        <section id="create-playlist-form" className="mt-6 rounded-2xl border border-white/70 bg-white/65 p-5">
+          <h2 className="text-lg font-semibold">新建网易云歌单</h2>
+          {!canCreatePlaylist ? (
+            <div className="mt-3 flex items-center justify-between gap-4">
+              <p className="text-sm text-neutral-500">登录网易云后即可创建歌单，并同步到你的账号。</p>
+              <Button size="sm" onClick={onRequireLogin}>前往登录</Button>
+            </div>
+          ) : (
+            <form className="mt-4 space-y-4" onSubmit={submitPlaylist} aria-busy={creating}>
+              <label className="block text-sm font-medium" htmlFor="playlist-name">歌单名称</label>
+              <input
+                id="playlist-name"
+                value={playlistName}
+                onChange={(event) => {
+                  setPlaylistName(event.target.value);
+                  if (createError) setCreateError(null);
+                }}
+                placeholder="为新歌单起个名字"
+                maxLength={40}
+                autoFocus
+                required
+                disabled={creating}
+                aria-invalid={Boolean(createError)}
+                aria-describedby={createError ? "playlist-create-error" : undefined}
+                className="w-full rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-60"
+              />
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-600">
+                <input type="checkbox" checked={isPrivate} onChange={(event) => setIsPrivate(event.target.checked)} disabled={creating} className="size-4 accent-[var(--accent)]" />
+                私密歌单，只有自己可见
+              </label>
+              {createError && <p id="playlist-create-error" role="alert" className="text-sm text-red-600">{createError}</p>}
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="sm" disabled={creating} onClick={() => setCreateOpen(false)}>取消</Button>
+                <Button type="submit" size="sm" disabled={creating || !playlistName.trim()}>
+                  {creating && <LoaderCircle className="animate-spin" />}
+                  {creating ? "创建中…" : "创建歌单"}
+                </Button>
+              </div>
+            </form>
+          )}
+        </section>
+      )}
       <div className="mt-6 flex flex-wrap gap-2">
         {[
           ["all", "全部歌单"],
@@ -285,8 +313,9 @@ export function PlaylistSurface({
             onClick={() => onOpenPlaylist(playlist)}
           >
             {playlist.coverUrl ? (
-              <img
-                src={`${api.getNeteaseCoverUrl(playlist.coverUrl)}&size=160y160`}
+              <ArtworkImage
+                src={playlist.coverUrl}
+                cacheSize={160}
                 alt=""
                 loading="lazy"
                 decoding="async"
@@ -432,8 +461,11 @@ function VirtualTrackList({
           const track = tracks[index];
           if (!track) return null;
           return (
-            <button
+            <div
               key={track.id}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id); } }}
               className="absolute left-0 right-0 grid h-20 grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
               style={{ top: offsetTop }}
               onClick={() => onPickTrack(track.id)}
@@ -448,8 +480,8 @@ function VirtualTrackList({
                   <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
                 </p>
               </div>
-              <span className="flex flex-wrap justify-end gap-2">{renderMeta ? renderMeta(track) : <Badge>{formatAudioDetail(track)}</Badge>}</span>
-            </button>
+              <span className="flex flex-wrap justify-end gap-2">{renderMeta ? renderMeta(track) : <Badge>{formatAudioDetail(track)}</Badge>}<AddToPlaylistButton track={track} /></span>
+            </div>
           );
         })}
       </div>
