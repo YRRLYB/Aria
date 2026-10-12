@@ -9,6 +9,7 @@ import { resolveLyricLines, searchLyricCandidates } from "./lyrics";
 import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
 import { createLibraryRouter } from "./routes/library";
+import { createRemoteCoverRouter } from "./routes/remoteCover";
 import {
   checkNeteaseQrLogin,
   getNeteaseAccountSummary,
@@ -353,37 +354,7 @@ app.post("/api/providers/netease/cache/warmup", async (req, res, next) => {
   }
 });
 
-app.get("/api/providers/netease/cover", async (req, res, next) => {
-  try {
-    const query = z
-      .object({ url: z.string().url(), size: z.string().regex(/^\d{2,4}[xy]\d{2,4}$/).optional() })
-      .parse(req.query);
-    const { contentType, byteLength, etag, filePath, body } = await remoteCoverCache.read(query.url, query.size);
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Length", String(byteLength));
-    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
-    res.setHeader("ETag", etag);
-    res.setHeader("X-Content-Type-Options", "nosniff");
-
-    if (req.fresh) {
-      res.status(304).end();
-      return;
-    }
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-    if (filePath) {
-      res.sendFile(filePath, { cacheControl: false }, (error) => {
-        if (error && !res.headersSent) next(error);
-      });
-    } else {
-      res.send(body);
-    }
-  } catch (error) {
-    next(error);
-  }
-});
+app.use("/api/providers/netease/cover", createRemoteCoverRouter(remoteCoverCache));
 
 app.post("/api/settings/netease-cookie", async (req, res, next) => {
   try {
