@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
+  wiki: vi.fn(), creators: vi.fn(),
   playlists: vi.fn(),
   store: vi.fn(),
   account: vi.fn(),
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("NeteaseCloudMusicApi", () => ({
   default: {
     playlist_create: mocks.create, user_playlist: mocks.playlists,
+    song_wiki_summary: mocks.wiki, song_creators: mocks.creators,
     cloudsearch: mocks.search, search_suggest: mocks.suggest, user_detail: mocks.user,
     album: mocks.album, artist_detail: mocks.artist, artist_desc: mocks.artistDesc, artist_album: mocks.artistAlbums,
     playlist_detail: mocks.playlistDetail, playlist_track_all: mocks.playlistTracks,
@@ -42,6 +44,42 @@ beforeEach(() => {
   });
   mocks.clearPersistent.mockImplementation(async (prefix: string) => {
     for (const key of mocks.persistent.keys()) if (key.startsWith(prefix)) mocks.persistent.delete(key);
+  });
+});
+
+describe("NetEase song encyclopedia", () => {
+  const client = new NeteaseClient();
+  const creators = { body: { code: 200, data: { songCreatorsRoleVos: [{ roleName: "作曲", creatorMetaVOS: [{ artistName: "Composer" }] }] } } };
+
+  it("loads public facts without login and reuses each persistent success", async () => {
+    mocks.store.mockResolvedValue({ neteaseCookie: null });
+    mocks.wiki.mockResolvedValue({ body: { code: 200, data: { blocks: [] } } });
+    mocks.creators.mockResolvedValue(creators);
+    const result = await client.getSongEncyclopedia("42");
+    expect(result).toEqual({ sections: [], creators: [{ role: "作曲", creators: [{ name: "Composer" }] }], unavailable: [] });
+    await client.getSongEncyclopedia("42");
+    expect(mocks.wiki).toHaveBeenCalledExactlyOnceWith({ id: "42", cookie: undefined });
+    expect(mocks.creators).toHaveBeenCalledOnce();
+  });
+
+  it("preserves available credits and retries only a failed endpoint", async () => {
+    mocks.wiki.mockRejectedValueOnce(new Error("offline"));
+    mocks.creators.mockResolvedValue(creators);
+    expect(await client.getSongEncyclopedia("42")).toMatchObject({ creators: [{ role: "作曲" }], unavailable: ["wiki"] });
+    mocks.wiki.mockResolvedValue({ body: { code: 200, data: { blocks: [] } } });
+    expect(await client.getSongEncyclopedia("42")).toMatchObject({ unavailable: [] });
+    expect(mocks.wiki).toHaveBeenCalledTimes(2);
+    expect(mocks.creators).toHaveBeenCalledOnce();
+  });
+
+  it("distinguishes legitimate empty data from a failed request", async () => {
+    mocks.wiki.mockResolvedValue({ body: { code: 200, data: { blocks: [] } } });
+    mocks.creators.mockResolvedValue({ body: { code: 200, data: {} } });
+    expect(await client.getSongEncyclopedia("42")).toEqual({ sections: [], creators: [], unavailable: [] });
+    mocks.wiki.mockRejectedValue(new Error("offline"));
+    mocks.creators.mockRejectedValue(new Error("offline"));
+    await expect(client.getSongEncyclopedia("43")).rejects.toMatchObject({ status: 502 });
+    await expect(client.getSongEncyclopedia("invalid")).rejects.toMatchObject({ status: 400 });
   });
 });
 

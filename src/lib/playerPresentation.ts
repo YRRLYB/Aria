@@ -141,8 +141,20 @@ export function createCachedQueueSnapshots(
   tracks: Track[],
   maxItems = maxCachedQueueTracks,
 ) {
-  const uniqueTracks = tracks.filter((track, index) => tracks.findIndex((item) => item.id === track.id) === index);
-  return uniqueTracks.slice(0, Math.max(0, maxItems)).map((track) => ({
+  // Queue state is persisted while the active track changes. Avoid the old
+  // findIndex-per-row dedupe here: a 1200-item queue otherwise turns each
+  // write into an O(n^2) scan on the renderer's main thread.
+  const limit = Math.max(0, maxItems);
+  if (!limit) return [];
+  const uniqueTracks: Track[] = [];
+  const seen = new Set<string>();
+  for (const track of tracks) {
+    if (seen.has(track.id)) continue;
+    seen.add(track.id);
+    uniqueTracks.push(track);
+    if (uniqueTracks.length >= limit) break;
+  }
+  return uniqueTracks.map((track) => ({
     id: track.id,
     providerId: track.providerId,
     title: track.title,

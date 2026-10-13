@@ -103,6 +103,16 @@ describe("playerPresentation", () => {
     expect(snapshot.lyricStatus).toBe("searchable");
   });
 
+  it("deduplicates large queue snapshots in insertion order", () => {
+    const first = { id: "a", title: "first" } as Parameters<typeof createCachedQueueSnapshots>[0][number];
+    const replacement = { id: "a", title: "replacement" } as Parameters<typeof createCachedQueueSnapshots>[0][number];
+    const second = { id: "b", title: "second" } as Parameters<typeof createCachedQueueSnapshots>[0][number];
+
+    expect(createCachedQueueSnapshots([first, replacement, second], 2).map((track) => track.id)).toEqual(["a", "b"]);
+    expect(createCachedQueueSnapshots([first, replacement, second], 2)[0].title).toBe("first");
+    expect(createCachedQueueSnapshots([first], 0)).toEqual([]);
+  });
+
   it("chooses highest original quality and treats master quality as a separate opt-in", () => {
     const full = { source: "netease" as const, availableLevels: ["standard", "lossless", "hires", "jymaster"] as const };
     const track = { ...full, availableLevels: [...full.availableLevels] };

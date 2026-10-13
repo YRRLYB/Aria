@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
 import type { ProviderAlbum, ProviderPlaylist, ProviderUser } from "@/lib/api";
@@ -19,6 +19,7 @@ import {
   trimTrackCache,
 } from "@/lib/playerPresentation";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
+import { createLocalTrackSearchIndex, searchLocalTrackIndex } from "@/lib/localSearch";
 
 export type SearchBundle = {
   localTracks: Track[];
@@ -84,6 +85,19 @@ export function useDiscovery(options: {
     new Map(),
   );
   const selectedArtistIdRef = useRef<string | null>(null);
+  // Local artist summaries are independent of the current query. Build them
+  // once per library update instead of rebuilding the full index for every
+  // debounced artist search.
+  const localArtistSummaries = useMemo(
+    () => createLocalArtistSummaries(options.localTracks),
+    // Artist search only depends on fields included in this signature. This
+    // keeps lyric/cover/bitrate updates from rebuilding the index.
+    [options.localSearchSignature],
+  );
+  const localSearchIndex = useMemo(
+    () => createLocalTrackSearchIndex(options.localTracks),
+    [options.localSearchSignature],
+  );
 
   useEffect(() => {
     selectedArtistIdRef.current = selectedArtist?.id ?? null;
@@ -100,23 +114,15 @@ export function useDiscovery(options: {
     setSearchError(null);
     setSearchTotal(0);
     setSearchMore(false);
+    const normalizedText = text.toLowerCase();
     const localMatches =
       searchMode === "tracks" && text
-        ? localTracksRef.current
-            .filter((track) =>
-              [track.title, track.artist, track.album, track.quality]
-                .join(" ")
-                .toLowerCase()
-                .includes(text.toLowerCase()),
-            )
-            .slice(0, 60)
+        ? searchLocalTrackIndex(localTracksRef.current, localSearchIndex, text)
         : [];
     const localArtists =
       searchMode === "artists" && text
-        ? createLocalArtistSummaries(localTracksRef.current)
-            .filter((artist) =>
-              artist.name.toLowerCase().includes(text.toLowerCase()),
-            )
+        ? localArtistSummaries
+            .filter((artist) => artist.name.toLowerCase().includes(normalizedText))
             .slice(0, 24)
         : [];
     setSearchBundle({
@@ -179,7 +185,7 @@ export function useDiscovery(options: {
       window.clearTimeout(timer);
       searchRequestRef.current += 1;
     };
-  }, [options.localSearchSignature, options.query, searchMode, searchRevision]);
+  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision]);
 
   useEffect(() => {
     const text = options.query.trim();

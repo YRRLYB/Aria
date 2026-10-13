@@ -290,6 +290,12 @@ app.get("/api/providers/:providerId/roam", async (req, res, next) => {
   }
 });
 
+app.get("/api/providers/netease/tracks/:trackId/encyclopedia", async (req, res, next) => {
+  try {
+    res.json(await neteaseClient.getSongEncyclopedia(req.params.trackId));
+  } catch (error) { next(error); }
+});
+
 app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) => {
   try {
     const query = z

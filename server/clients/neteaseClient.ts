@@ -20,6 +20,8 @@ import { HttpError } from "../utils/httpError";
 import { quantizeBitrate } from "../utils/bitrate";
 import { clearCache, remember } from "../utils/memoryCache";
 import { clearPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
+import { normalizeSongCreators, normalizeSongWiki } from "../utils/songEncyclopedia";
+import type { SongEncyclopedia } from "../../src/lib/songEncyclopedia";
 
 type NeteaseSong = {
   id: number | string;
@@ -614,6 +616,26 @@ export class NeteaseClient {
   async getLyrics(songId: string | number) {
     await this.requireSession();
     return this.getLyricsCached(songId);
+  }
+
+  async getSongEncyclopedia(songId: string | number): Promise<SongEncyclopedia> {
+    assertNeteaseId(String(songId));
+    const cookie = await this.getOptionalCookie();
+    const [wikiResult, creatorsResult] = await Promise.allSettled([
+      rememberPersistent(`netease:song-wiki:v1:${songId}`, dayTtl, async () => normalizeSongWiki(await callNetease("song_wiki_summary", { id: String(songId), cookie }))),
+      rememberPersistent(`netease:song-creators:v1:${songId}`, dayTtl, async () => normalizeSongCreators(await callNetease("song_creators", { id: String(songId), cookie }))),
+    ]);
+    if (wikiResult.status === "rejected" && creatorsResult.status === "rejected") {
+      throw new HttpError(502, "歌曲百科暂时不可用，请稍后重试", "NETEASE_SONG_WIKI_UNAVAILABLE");
+    }
+    return {
+      sections: wikiResult.status === "fulfilled" ? wikiResult.value : [],
+      creators: creatorsResult.status === "fulfilled" ? creatorsResult.value : [],
+      unavailable: [
+        ...(wikiResult.status === "rejected" ? ["wiki" as const] : []),
+        ...(creatorsResult.status === "rejected" ? ["creators" as const] : []),
+      ],
+    };
   }
 
   async getSongUrl(songId: string | number, level = "lossless") {

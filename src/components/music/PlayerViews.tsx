@@ -1,7 +1,9 @@
 ﻿import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { motion } from "framer-motion";
+import { lazy, Suspense } from "react";
 import {
   Copy,
+  BookOpen,
   Heart,
   ImagePlus,
   Languages,
@@ -40,6 +42,7 @@ import {
 import { sourceLabel } from "@/lib/trackLabels";
 import { usePlaybackTime } from "@/lib/playbackClock";
 import { cn } from "@/lib/utils";
+const SongEncyclopediaDialog = lazy(() => import("./SongEncyclopediaDialog"));
 export function PlayerSurface({
   activeTrack,
   palette,
@@ -111,12 +114,14 @@ export function PlayerSurface({
   const hasKnownQualityLevels = activeTrack.source === "netease" && availableLevels.length > 0;
   const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [songOptionsOpen, setSongOptionsOpen] = useState(false);
+  const [encyclopediaOpen, setEncyclopediaOpen] = useState(false);
   const artworkFileInputRef = useRef<HTMLInputElement | null>(null);
   const canReplaceArtwork = activeTrack.source === "local";
 
   useEffect(() => {
     setArtworkMenuPosition(null);
     setSongOptionsOpen(false);
+    setEncyclopediaOpen(false);
   }, [activeTrack.id]);
 
   useEffect(() => {
@@ -157,6 +162,7 @@ export function PlayerSurface({
         background: `linear-gradient(135deg, ${themePrimary}, rgba(255,255,255,0.26) 42%, ${themeSecondary})`,
       }}
     >
+      {encyclopediaOpen && <Suspense fallback={null}><SongEncyclopediaDialog key={activeTrack.id} track={activeTrack} onClose={() => setEncyclopediaOpen(false)} /></Suspense>}
       <input
         ref={artworkFileInputRef}
         type="file"
@@ -243,6 +249,7 @@ export function PlayerSurface({
                 <p className="mt-1 text-xs font-medium leading-5 text-neutral-600">{formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
               </div>
               <div className="ml-auto flex items-center gap-2">
+                {activeTrack.source === "netease" && /^\d{1,20}$/.test(activeTrack.providerId ?? activeTrack.id.replace(/^netease:/, "")) && <Button variant="glass" size="icon" aria-label="歌曲百科" title="歌曲百科与制作人员" onClick={() => setEncyclopediaOpen(true)}><BookOpen /></Button>}
                 <AddToPlaylistButton track={activeTrack} />
                 <div className="relative">
                   <Button

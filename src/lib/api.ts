@@ -511,6 +511,9 @@ export const api = {
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
   },
+  getSongEncyclopedia(trackId: string) {
+    return request<import("./songEncyclopedia").SongEncyclopedia>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/encyclopedia`);
+  },
   getNeteaseCloud(limit = 100, offset = 0, refresh = false) {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (refresh) params.set("refresh", "1");
