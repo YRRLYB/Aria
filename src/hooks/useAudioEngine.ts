@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
 import { readCachedAudioSettings, writeCachedAudioSettings, type AudioOutputMode, type QualityLevel } from "@/lib/playerPresentation";
+import loudnessProcessorUrl from "@/lib/loudnessProcessor.js?url&no-inline";
 
 // Owns the media pipeline: the HTML audio element, the mpv native bridge
 // (loading/progress/pause/volume/device + exclusive mode), output device
@@ -20,6 +21,7 @@ export function useAudioEngine(options: {
   hifiEnabled: boolean;
   masterQualityEnabled: boolean;
   gaplessEnabled: boolean;
+  normalizationEnabled: boolean;
   audioOutputMode: AudioOutputMode;
   pageVisible: boolean;
   analyserEnabled: boolean;
@@ -46,6 +48,8 @@ export function useAudioEngine(options: {
   const [selectedSinkId, setSelectedSinkId] = useState(() => readCachedAudioSettings().sinkId ?? "default");
   const [nativePlaybackFailed, setNativePlaybackFailed] = useState(false);
   const [nativeAnalyserWakeToken, setNativeAnalyserWakeToken] = useState(0);
+  const [normalizationError, setNormalizationError] = useState<string | null>(null);
+  const [normalizerReady, setNormalizerReady] = useState(false);
 
   // Browser/System output must remain a Chromium media session. The two
   // WASAPI choices use mpv: Shared exposes Aria as an application-audio
@@ -88,7 +92,10 @@ export function useAudioEngine(options: {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const nativeSilenceGainRef = useRef<GainNode | null>(null);
-  const analyserOutputModeRef = useRef<"audible" | "silent" | null>(null);
+  const normalizerRef = useRef<AudioWorkletNode | null>(null);
+  const outputGainRef = useRef<GainNode | null>(null);
+  const normalizerLoadRef = useRef<Promise<void> | null>(null);
+  const analyserOutputModeRef = useRef<"audible" | "normalized" | "silent" | null>(null);
   const nativeLoadedUrlRef = useRef<string | null>(null);
   const nativeAnalyserDelayUntilRef = useRef(0);
   const nativeLoadSequenceRef = useRef(0);
@@ -191,31 +198,35 @@ export function useAudioEngine(options: {
   useEffect(() => {
     if (nativePlaybackEnabled) return;
     const audio = audioRef.current as (HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }) | null;
-    if (!audio?.setSinkId) return;
-    audio.setSinkId(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => {
+    const sinkId = selectedSinkId === "default" ? "" : selectedSinkId;
+    const context = audioContextRef.current as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | null;
+    context?.setSinkId?.(sinkId).catch(() => setSelectedSinkId("default"));
+    audio?.setSinkId?.(sinkId).catch(() => {
       // Device switching is optional; keep current output if the platform rejects it.
     });
   }, [nativePlaybackEnabled, selectedSinkId]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (nativeAudio?.supported) {
+    if (nativeAudio?.supported && options.audioOutputMode !== "system") {
+      let cancelled = false;
       nativeAudio
         .isSupported?.()
         .then((supported) => {
+          if (cancelled) return [];
           setNativeAudioSupported(Boolean(supported));
           if (!supported) return [];
           return nativeAudio.listDevices?.() ?? [];
         })
         .then((devices) => {
-          if (Array.isArray(devices) && devices.length) {
+          if (!cancelled && Array.isArray(devices) && devices.length) {
             setAudioOutputDevices(devices);
           }
         })
         .catch(() => {
-          setNativeAudioSupported(false);
+          if (!cancelled) setNativeAudioSupported(false);
         });
-      return;
+      return () => { cancelled = true; };
     }
 
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -245,7 +256,7 @@ export function useAudioEngine(options: {
       cancelled = true;
       navigator.mediaDevices.removeEventListener?.("devicechange", refreshDevices);
     };
-  }, []);
+  }, [options.audioOutputMode]);
 
   useEffect(() => {
     writeCachedAudioSettings({
@@ -253,10 +264,11 @@ export function useAudioEngine(options: {
       hifiEnabled: options.hifiEnabled,
       masterQualityEnabled: options.masterQualityEnabled,
       gaplessEnabled: options.gaplessEnabled,
+      normalizationEnabled: options.normalizationEnabled,
       exclusiveMode: options.exclusiveMode,
       outputMode: options.audioOutputMode,
     });
-  }, [options.audioOutputMode, options.exclusiveMode, options.gaplessEnabled, options.hifiEnabled, options.masterQualityEnabled, selectedSinkId]);
+  }, [options.audioOutputMode, options.exclusiveMode, options.gaplessEnabled, options.hifiEnabled, options.masterQualityEnabled, options.normalizationEnabled, selectedSinkId]);
 
   useEffect(() => {
     setNativePlaybackFailed(false);
@@ -293,7 +305,8 @@ export function useAudioEngine(options: {
           performance.now() >= nativeAnalyserDelayUntilRef.current,
       );
     audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
-    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : Math.max(0, Math.min(1, options.volume / 100));
+    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : outputGainRef.current ? 1 : Math.max(0, Math.min(1, options.volume / 100));
+    if (outputGainRef.current) outputGainRef.current.gain.setTargetAtTime(options.volume / 100, audioContextRef.current!.currentTime, 0.03);
     // The mpv path owns audible lossless playback. Chromium only needs a
     // lightweight analyser source, so avoid pre-buffering the whole stream.
     audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : "metadata";
@@ -467,6 +480,7 @@ export function useAudioEngine(options: {
         startChapter: options.activeTrack.nativeStart ?? null,
         endChapter: options.activeTrack.nativeEnd ?? null,
         cdReadQuality: options.activeTrack.cdReadQuality ?? "high",
+        normalizationEnabled: options.normalizationEnabled,
       })
       .then((state) => {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
@@ -509,6 +523,13 @@ export function useAudioEngine(options: {
     if (!nativePlaybackEnabled || !nativeAudio?.supported || !nativeAudioState?.active) return;
     nativeAudio.setVolume?.(options.volume).catch(() => undefined);
   }, [nativeAudioState?.active, nativePlaybackEnabled, options.volume]);
+
+  useEffect(() => {
+    setNormalizationError(null);
+    if (!nativePlaybackEnabled || !nativeAudioState?.active) return;
+    window.ariaDesktop?.nativeAudio?.configure?.({ normalizationEnabled: options.normalizationEnabled })
+      .catch(() => setNormalizationError("音量标准化未能启用，请切换歌曲后重试。"));
+  }, [nativePlaybackEnabled, nativeAudioState?.active, options.normalizationEnabled]);
 
   const seekNativeTrack = useEffectEvent(async (seconds: number) => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
@@ -571,6 +592,7 @@ export function useAudioEngine(options: {
         startChapter: options.activeTrack.nativeStart ?? null,
         endChapter: options.activeTrack.nativeEnd ?? null,
         cdReadQuality: options.activeTrack.cdReadQuality ?? "high",
+        normalizationEnabled: options.normalizationEnabled,
       });
       if (state) syncNativeAudioState(state as NativeAudioState);
       return true;
@@ -582,12 +604,11 @@ export function useAudioEngine(options: {
   });
 
   useEffect(() => {
-    if (
-      !options.playing ||
-      !audioElementStreamUrl ||
-      !options.pageVisible ||
+    if (!audioSourceRef.current && (
+      !options.playing || !audioElementStreamUrl ||
+      (!options.pageVisible && !options.normalizationEnabled) ||
       (nativePlaybackEnabled && !options.analyserEnabled)
-    ) {
+    )) {
       return;
     }
 
@@ -601,6 +622,24 @@ export function useAudioEngine(options: {
 
     const context = audioContextRef.current ?? new AudioContextClass();
     audioContextRef.current = context;
+    if (!nativePlaybackEnabled) {
+      const outputContext = context as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+      outputContext.setSinkId?.(selectedSinkId === "default" ? "" : selectedSinkId).catch(() => setSelectedSinkId("default"));
+    }
+    if (!nativePlaybackEnabled && options.normalizationEnabled && !normalizerRef.current && !normalizerLoadRef.current) {
+      if (!context.audioWorklet) {
+        setNormalizationError("当前输出环境不支持音量标准化，请使用 WASAPI 输出。" );
+      } else {
+        const load = context.audioWorklet.addModule(loudnessProcessorUrl).then(() => {
+          if (audioContextRef.current !== context) return;
+          normalizerRef.current = new AudioWorkletNode(context, "aria-loudness");
+          setNormalizerReady(true);
+        }).catch(() => {
+          if (audioContextRef.current === context) setNormalizationError("音量标准化加载失败，请重新打开播放器。" );
+        });
+        normalizerLoadRef.current = load;
+      }
+    }
     if (!audioSourceRef.current) {
       try {
         audioSourceRef.current = context.createMediaElementSource(audio);
@@ -612,12 +651,15 @@ export function useAudioEngine(options: {
       audioSourceRef.current.connect(analyserRef.current);
     }
 
-    void context.resume();
+    if (options.playing) void context.resume();
     const analyser = analyserRef.current;
     if (!analyser) return;
     configureSpectrumAnalyser(analyser);
+    const outputGain = outputGainRef.current ?? context.createGain();
+    outputGainRef.current = outputGain;
+    outputGain.gain.setTargetAtTime(options.volume / 100, context.currentTime, 0.03);
 
-    const desiredOutputMode = nativePlaybackEnabled ? "silent" : "audible";
+    const desiredOutputMode = nativePlaybackEnabled ? "silent" : options.normalizationEnabled && normalizerRef.current ? "normalized" : "audible";
     if (analyserOutputModeRef.current !== desiredOutputMode) {
       try {
         analyser.disconnect();
@@ -629,6 +671,8 @@ export function useAudioEngine(options: {
       } catch {
         // The silent sink may already be disconnected.
       }
+      normalizerRef.current?.disconnect();
+      outputGain.disconnect();
 
       if (nativePlaybackEnabled) {
         const silentGain = nativeSilenceGainRef.current ?? context.createGain();
@@ -636,13 +680,20 @@ export function useAudioEngine(options: {
         nativeSilenceGainRef.current = silentGain;
         analyser.connect(silentGain);
         silentGain.connect(context.destination);
+      } else if (desiredOutputMode === "normalized" && normalizerRef.current) {
+        analyser.connect(normalizerRef.current);
+        normalizerRef.current.connect(outputGain);
+        outputGain.connect(context.destination);
       } else {
-        analyser.connect(context.destination);
+        analyser.connect(outputGain);
+        outputGain.connect(context.destination);
       }
       analyserOutputModeRef.current = desiredOutputMode;
     }
     if (nativePlaybackEnabled) {
       audio.muted = false;
+      audio.volume = 1;
+    } else {
       audio.volume = 1;
     }
   }, [
@@ -652,7 +703,15 @@ export function useAudioEngine(options: {
     options.analyserEnabled,
     options.pageVisible,
     options.playing,
+    options.normalizationEnabled,
+    normalizerReady,
+    options.volume,
+    selectedSinkId,
   ]);
+
+  useEffect(() => {
+    normalizerRef.current?.port.postMessage("reset");
+  }, [options.activeTrack.id, normalizerReady]);
 
   useEffect(() => {
     return () => {
@@ -674,6 +733,11 @@ export function useAudioEngine(options: {
       audioSourceRef.current = null;
       analyserRef.current = null;
       nativeSilenceGainRef.current = null;
+      normalizerRef.current?.disconnect();
+      normalizerRef.current = null;
+      normalizerLoadRef.current = null;
+      outputGainRef.current?.disconnect();
+      outputGainRef.current = null;
       analyserOutputModeRef.current = null;
       audioContextRef.current?.close().catch(() => undefined);
       audioContextRef.current = null;
@@ -718,5 +782,6 @@ export function useAudioEngine(options: {
     audioElementStreamUrl,
     handleAudioError,
     resetAudioError,
+    normalizationError,
   };
 }

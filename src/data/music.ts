@@ -10,11 +10,8 @@ import {
   Radar,
 } from "lucide-react";
 
-export type LyricLine = {
-  time: string;
-  text: string;
-  translation?: string;
-};
+import type { LyricLine } from "../lib/lyricTypes";
+export type { LyricLine, LyricWord } from "../lib/lyricTypes";
 
 export type Track = {
   id: string;

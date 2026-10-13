@@ -5,10 +5,12 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { readLibrary } from "./libraryStore";
-import { resolveLyricLines, searchLyricCandidates } from "./lyrics";
+import { searchLyricCandidates } from "./lyrics";
+import { bindLocalLyrics } from "./services/lyricBindingService";
 import { neteaseClient } from "./clients/neteaseClient";
 import { getProvider, listProviders } from "./providers";
 import { createLibraryRouter } from "./routes/library";
+import { createLocalMetadataRouter } from "./routes/localMetadata";
 import { createRemoteCoverRouter } from "./routes/remoteCover";
 import {
   checkNeteaseQrLogin,
@@ -78,6 +80,7 @@ app.get("/api/remote-access", (_req, res) => {
 });
 
 app.use("/api/library", createLibraryRouter());
+app.use("/api/library/metadata", createLocalMetadataRouter());
 
 app.get("/api/settings", async (_req, res, next) => {
   try {
@@ -144,6 +147,27 @@ app.get("/api/providers/netease/playlists/:playlistId/tracks", async (req, res, 
   } catch (error) {
     next(error);
   }
+});
+
+// Cloud library is read-only here. Upload/delete/match operations stay out of
+// the desktop surface until there is an explicit confirmation flow, so merely
+// opening the page cannot change a user's account.
+app.get("/api/providers/netease/cloud", async (req, res, next) => {
+  try {
+    const query = z.object({
+      limit: z.coerce.number().int().min(1).max(200).default(100),
+      offset: z.coerce.number().int().min(0).max(100000).default(0),
+      refresh: z.string().optional(),
+    }).parse(req.query);
+    res.json(await neteaseClient.getCloudTracks(query.limit, query.offset, query.refresh === "1" || query.refresh === "true"));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/cloud/:trackId", async (req, res, next) => {
+  try {
+    if (!/^\d{1,20}$/.test(req.params.trackId)) throw new HttpError(400, "无效的云盘歌曲 ID", "NETEASE_CLOUD_TRACK_ID_INVALID");
+    res.json({ item: await neteaseClient.getCloudTrackDetail(req.params.trackId) });
+  } catch (error) { next(error); }
 });
 
 app.get("/api/providers/netease/playlists/:playlistId", async (req, res, next) => {
@@ -303,7 +327,7 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
       res.end();
       return;
     }
-    await pipeline(Readable.fromWeb(upstream.body), res);
+    await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>), res);
   } catch (error) {
     next(error);
   }
@@ -472,16 +496,8 @@ app.get("/api/lyrics/search", async (req, res, next) => {
 
 app.post("/api/lyrics/bind", async (req, res, next) => {
   try {
-    const body = z.object({ trackId: z.string().min(1), candidateId: z.string().min(1) }).parse(req.body);
-    const lyrics = await resolveLyricLines(body.candidateId);
-    const store = await updateStore((current) => ({
-      ...current,
-      lyricBindings: {
-        ...current.lyricBindings,
-        [body.trackId]: body.candidateId,
-      },
-    }));
-    res.json({ ok: true, lyricBindings: store.lyricBindings, lyrics });
+    const body = z.object({ trackId: z.string().min(1), candidateId: z.string().min(1), expectedBinding: z.string().nullable().optional() }).parse(req.body);
+    res.json(await bindLocalLyrics(body.trackId, body.candidateId, body.expectedBinding));
   } catch (error) {
     next(error);
   }

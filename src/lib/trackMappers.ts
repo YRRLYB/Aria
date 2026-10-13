@@ -28,18 +28,19 @@ export const idleTrack: Track = {
 
 export function localTrackToUiTrack(track: ApiScannedTrack, index: number): Track {
   const cachedLyrics = readCachedLyrics(track.id);
-  const artworkOverride = readCachedArtworkOverride(track.id);
+  const matchedArtworkAt = track.metadata?.coverUrl ? Date.parse(track.metadata.artworkUpdatedAt ?? track.metadata.updatedAt) || 0 : 0;
+  const artworkOverride = readCachedArtworkOverride(track.id, matchedArtworkAt);
   return {
     id: track.id,
-    title: track.title,
-    artist: track.artist,
-    album: track.album,
+    title: track.metadata?.title ?? track.title,
+    artist: track.metadata?.artist ?? track.artist,
+    album: track.metadata?.album ?? track.album,
     albumArtist: track.albumArtist ?? null,
     duration: formatDuration(track.duration),
     quality: normalizeQuality(track.quality),
     source: "local",
     streamUrl: track.streamUrl ? api.resolveUrl(track.streamUrl) : api.getTrackStreamUrl(track.id),
-    coverUrl: artworkOverride ?? (track.hasCover ? api.getTrackCoverUrl(track.id) : undefined),
+    coverUrl: artworkOverride ?? (track.metadata?.coverUrl ? api.getNeteaseCoverUrl(track.metadata.coverUrl) : track.hasCover ? api.getTrackCoverUrl(track.id) : undefined),
     trackNumber: track.trackNumber ?? null,
     discNumber: track.discNumber ?? null,
     bitrate: track.bitrate ?? null,
@@ -57,8 +58,8 @@ export function localTrackToUiTrack(track: ApiScannedTrack, index: number): Trac
     cover: localCoverPalettes[index % localCoverPalettes.length],
     accent: ["#5e8ab8", "#c6796d", "#5aa894", "#8680b4"][index % 4],
     waveform: [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48],
-    lyricStatus: cachedLyrics.length ? "linked" : "searchable",
-    lyrics: cachedLyrics.length ? cachedLyrics : [
+    lyricStatus: (track.metadata?.lyrics?.length || cachedLyrics.length) ? "linked" : "searchable",
+    lyrics: track.metadata?.lyrics?.length ? track.metadata.lyrics : cachedLyrics.length ? cachedLyrics : [
       { time: "00:00", text: "本地歌词等待匹配" },
       { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
       { time: "00:30", text: "绑定后会保存到本地索引" },

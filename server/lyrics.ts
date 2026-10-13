@@ -1,5 +1,6 @@
 import neteaseApi from "NeteaseCloudMusicApi";
 import type { LyricCandidate, ScannedTrack } from "./types";
+import { fetchNeteaseLyrics } from "./services/lyricService";
 
 type SearchSong = {
   id: number | string;
@@ -14,7 +15,7 @@ export async function searchLyricCandidates(query: {
   title: string;
   artist?: string;
   album?: string;
-}): Promise<LyricCandidate[]> {
+}, options?: { previewLimit?: number }): Promise<LyricCandidate[]> {
   const keywords = [query.title, query.artist].filter(Boolean).join(" ");
   const response = await neteaseApi.cloudsearch({
     keywords,
@@ -25,7 +26,7 @@ export async function searchLyricCandidates(query: {
 
   const candidates = await Promise.all(
     songs.map(async (song, index) => {
-      const lyric = await readLyricPreview(song.id);
+      const lyric = index < (options?.previewLimit ?? 6) ? await readLyricPreview(song.id) : [];
       return {
         id: `netease:${song.id}`,
         source: "网易云" as const,
@@ -53,10 +54,7 @@ export function candidatesFromTrack(track: ScannedTrack) {
 export async function resolveLyricLines(candidateId: string) {
   if (!candidateId.startsWith("netease:")) return [];
   const songId = candidateId.slice("netease:".length);
-  const response = await neteaseApi.lyric({ id: songId });
-  const lyric = (response.body?.lrc as { lyric?: string } | undefined)?.lyric ?? "";
-  const translation = (response.body?.tlyric as { lyric?: string } | undefined)?.lyric ?? "";
-  return parseLrc(lyric, translation);
+  return fetchNeteaseLyrics(songId);
 }
 
 async function readLyricPreview(songId: string | number) {
@@ -71,28 +69,4 @@ async function readLyricPreview(songId: string | number) {
   } catch {
     return [];
   }
-}
-
-function parseLrc(lyric: string, translation = "") {
-  const translatedByTime = new Map(parseLrcEntries(translation).map((line) => [line.time, line.text]));
-  return parseLrcEntries(lyric).map((line) => ({
-    ...line,
-    translation: translatedByTime.get(line.time) || undefined,
-  }));
-}
-
-function parseLrcEntries(lyric: string) {
-  return lyric
-    .split("\n")
-    .map((line) => {
-      const match = line.match(/^\[(\d{2}):(\d{2})(?:\.\d+)?\](.*)$/);
-      if (!match) return null;
-      const text = match[3].trim();
-      if (!text) return null;
-      return {
-        time: `${match[1]}:${match[2]}`,
-        text,
-      };
-    })
-    .filter((line): line is { time: string; text: string } => Boolean(line));
 }

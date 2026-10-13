@@ -24,9 +24,15 @@ export async function writeStore(nextStore: AppStore) {
   await writeFile(storePath, JSON.stringify(nextStore, null, 2), "utf8");
 }
 
-export async function updateStore(updater: (store: AppStore) => AppStore | Promise<AppStore>) {
-  const current = await readStore();
-  const next = await updater(current);
-  await writeStore(next);
-  return next;
+let pendingUpdate: Promise<unknown> = Promise.resolve();
+
+export function updateStore(updater: (store: AppStore) => AppStore | Promise<AppStore>) {
+  const operation = pendingUpdate.catch(() => undefined).then(async () => {
+    const current = await readStore();
+    const next = await updater(current);
+    await writeStore(next);
+    return next;
+  });
+  pendingUpdate = operation;
+  return operation;
 }

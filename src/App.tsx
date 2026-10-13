@@ -3,12 +3,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ListMusic, Maximize2, Minus, Radio, Search, Settings2, Sparkles, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  CloudSurface,
   CollectionSurface,
   LikedSurface,
   PlaylistSurface,
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
+import { CloudSurface } from "@/components/music/CloudSurface";
 import { LibrarySurface as LibrarySurfacePanel } from "@/components/music/LibrarySurface";
 import { HistorySurface } from "@/components/music/HomeSurfaces";
 import { HomeSurface } from "@/components/music/HomeDashboard";
@@ -24,6 +24,7 @@ import ariaIconUrl from "../build/icon.png";
 import { type Track, type ViewId } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
+import { useCloudLibrary } from "@/hooks/useCloudLibrary";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useDiscoveryDetails } from "@/hooks/useDiscoveryDetails";
 import { useLocalLibrary } from "@/hooks/useLocalLibrary";
@@ -174,6 +175,7 @@ export default function App() {
     return settings.hifiEnabled !== false && (settings.masterQualityEnabled ?? false);
   });
   const [gaplessEnabled, setGaplessEnabled] = useState(() => readCachedAudioSettings().gaplessEnabled ?? false);
+  const [normalizationEnabled, setNormalizationEnabled] = useState(() => readCachedAudioSettings().normalizationEnabled ?? false);
   const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>(() => readCachedAudioSettings().outputMode ?? "system");
 
   function handleHifiEnabledChange(value: boolean) {
@@ -308,10 +310,16 @@ export default function App() {
   });
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
+  const cloudLibrary = useCloudLibrary({
+    enabled: activeView === "cloud",
+    connected: neteaseConnected,
+    accountId: neteaseAccount?.userId ?? null,
+  });
+  const { cloudTracks, setCloudTracks } = cloudLibrary;
 
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks]),
-    [localTracks, neteaseTracks, roamTracks, playlistTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks, ...cloudTracks]),
+    [localTracks, neteaseTracks, roamTracks, playlistTracks, cloudTracks],
   );
   const allTracksById = useMemo(() => {
     const map = new Map<string, Track>();
@@ -507,6 +515,8 @@ export default function App() {
         return dailyTracks;
       case "radar":
         return roamTracks;
+      case "cloud":
+        return cloudLibrary.visibleTracks;
       case "artists":
         return artistTracks;
       case "home":
@@ -514,7 +524,7 @@ export default function App() {
       default:
         return [];
     }
-  }, [activeView, artistTracks, dailyTracks, likedDisplayTracks, playHistory, playlistTracks, roamTracks, visibleLocalTracks, visibleTracks]);
+  }, [activeView, artistTracks, dailyTracks, likedDisplayTracks, playHistory, playlistTracks, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
 
   const hasActiveTrack = activeTrack.id !== idleTrack.id;
 
@@ -561,6 +571,7 @@ export default function App() {
     resetAudioError,
     restartNativeTrack,
     seekNativeTrack,
+    normalizationError,
   } = useAudioEngine({
     activeTrack,
     activeTrackId,
@@ -571,6 +582,7 @@ export default function App() {
     hifiEnabled,
     masterQualityEnabled,
     gaplessEnabled,
+    normalizationEnabled,
     audioOutputMode,
     pageVisible,
     analyserEnabled: pageVisible && (activeView === "player" || immersiveOpen),
@@ -706,6 +718,7 @@ export default function App() {
       dailyTracks,
       roamTracks,
       playlistTracks,
+      cloudTracks,
       neteaseLikedDisplayTracks,
       visibleLocalTracks,
       visibleTracks,
@@ -773,6 +786,7 @@ export default function App() {
     setRoamTracks(applyTo);
     setNeteaseLikedTracks(applyTo);
     setPlaylistTracks(applyTo);
+    setCloudTracks(applyTo);
     setCachedQueueSnapshots(applyTo);
     setCachedActiveTrackSnapshot((current) => current?.id === trackId ? updateTrack(current) : current);
     if (includeHistory) {
@@ -1891,8 +1905,15 @@ export default function App() {
                   onPickTrack={chooseTrack}
                   onScanPath={scanBackendPath}
                   onScanCd={scanCdLibrary}
-                  onLyricsBound={applyLyricsToTrack}
+                  onLyricsBound={(trackId, lyrics, candidateId) => applyLyricsToTrack(trackId, lyrics, candidateId)}
                   onArtworkBound={applyArtworkToTrack}
+                  onMetadataUpdated={(tracks, bindings) => {
+                    setLyricBindings(bindings);
+                    for (const [index, track] of tracks.entries()) {
+                      const updated = localTrackToUiTrack(track, index);
+                      applyTrackUpdate(track.id, (current) => current.id === track.id ? { ...current, ...updated } : current);
+                    }
+                  }}
                 />
               )}
               {activeView === "liked" && (
@@ -1974,7 +1995,18 @@ export default function App() {
                   onPickTrack={chooseTrack}
                 />
               )}
-              {activeView === "cloud" && <CloudSurface />}
+              {activeView === "cloud" && (
+                <CloudSurface
+                  {...cloudLibrary}
+                  connected={neteaseConnected}
+                  activeTrackId={activeTrackId}
+                  onPickTrack={chooseTrack}
+                  onRequireLogin={() => {
+                    setSettingsReturnView("cloud");
+                    setActiveView("settings");
+                  }}
+                />
+              )}
               {activeView === "stats" && <StatsSurface tracks={allTracks} playCounts={playCounts} />}
               {activeView === "settings" && (
                 <SettingsPanel
@@ -1996,6 +2028,9 @@ export default function App() {
                   onMasterQualityEnabledChange={setMasterQualityEnabled}
                   gaplessEnabled={gaplessEnabled}
                   onGaplessEnabledChange={setGaplessEnabled}
+                  normalizationEnabled={normalizationEnabled}
+                  onNormalizationEnabledChange={setNormalizationEnabled}
+                  normalizationError={normalizationError}
                   nativeAudioSupported={nativeAudioSupported}
                   nativeAudioState={nativeAudioState}
                   audioOutputMode={audioOutputMode}
@@ -2013,6 +2048,7 @@ export default function App() {
 
           {activeView === "settings" || activeView === "home" ? null : activeView === "player" ? (
             <PlayerSidePanel
+              playing={playing}
               mode={playerSideView}
               onModeChange={setPlayerSideView}
               track={activeTrack}

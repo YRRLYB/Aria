@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { parseFile } from "music-metadata";
@@ -129,7 +130,7 @@ async function scanCdDrive(drive: CdDrive, qualityMode: CdReadQuality): Promise<
 }
 
 async function collectAudioFiles(dir: string): Promise<string[]> {
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  let entries: Dirent<string>[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {

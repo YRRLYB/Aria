@@ -3,6 +3,7 @@ import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
 import { hasSyncedLyrics, writeCachedLyrics } from "@/lib/playerPresentation";
 import { idleTrack } from "@/lib/trackMappers";
+import { selectAutomaticMetadataCandidate } from "@/lib/localMetadata";
 
 // Owns lyric acquisition: binding-driven rebinds for local tracks, automatic
 // sync (and bilingual translation refresh) for the active track.
@@ -13,11 +14,17 @@ export function useLyricsSync(options: {
 }) {
   const { applyTrackUpdate } = options;
   const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
+  const lyricBindingsRef = useRef(lyricBindings);
+  lyricBindingsRef.current = lyricBindings;
   const lyricSyncingRef = useRef<Set<string>>(new Set());
-  const lyricTranslationRefreshRef = useRef<Set<string>>(new Set());
+  const lyricEnrichmentRefreshRef = useRef<Set<string>>(new Set());
 
-  function applyLyricsToTrack(trackId: string, lyrics: Track["lyrics"]) {
+  function applyLyricsToTrack(trackId: string, lyrics: Track["lyrics"], candidateId?: string) {
     if (!lyrics.length) return;
+    if (candidateId) {
+      lyricBindingsRef.current = { ...lyricBindingsRef.current, [trackId]: candidateId };
+      setLyricBindings((current) => ({ ...current, [trackId]: candidateId }));
+    }
     writeCachedLyrics(trackId, lyrics);
     applyTrackUpdate(trackId, (track) => (track.id === trackId ? { ...track, lyrics, lyricStatus: "linked" as const } : track), {
       includeHistory: true,
@@ -33,9 +40,10 @@ export function useLyricsSync(options: {
     }
 
     if (track.source === "local") {
-      const binding = lyricBindings[track.id];
+      const binding = lyricBindingsRef.current[track.id];
       if (binding) {
-        const result = await api.bindLyric(track.id, binding);
+        const result = await api.bindLyric(track.id, binding, binding);
+        if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return;
         applyLyricsToTrack(track.id, result.lyrics);
         return;
       }
@@ -44,10 +52,11 @@ export function useLyricsSync(options: {
         artist: track.artist,
         album: track.album,
       });
-      const best = candidates.candidates[0];
-      if (!best) return;
-      const result = await api.bindLyric(track.id, best.id);
-      applyLyricsToTrack(track.id, result.lyrics);
+      const best = selectAutomaticMetadataCandidate(track, candidates.candidates);
+      if (!best || lyricBindingsRef.current[track.id] !== binding) return;
+      const result = await api.bindLyric(track.id, best.id, binding ?? null);
+      if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return;
+      applyLyricsToTrack(track.id, result.lyrics, best.id);
     }
   }
 
@@ -58,10 +67,12 @@ export function useLyricsSync(options: {
     if (!boundTracks.length) return;
 
     boundTracks.forEach((track) => {
+      const binding = lyricBindings[track.id];
       lyricSyncingRef.current.add(track.id);
       api
-        .bindLyric(track.id, lyricBindings[track.id])
+        .bindLyric(track.id, binding, binding)
         .then((result) => {
+          if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return;
           applyLyricsToTrack(track.id, result.lyrics);
         })
         .catch(() => {
@@ -77,22 +88,25 @@ export function useLyricsSync(options: {
     const activeTrack = options.activeTrack;
     const hasLyrics = hasSyncedLyrics(activeTrack);
     const needsTranslation = activeTrack.source === "netease" && !activeTrack.lyrics.some((line) => Boolean(line.translation));
-    if (activeTrack.id === idleTrack.id || (hasLyrics && !needsTranslation)) return;
-    if (hasLyrics && needsTranslation && lyricTranslationRefreshRef.current.has(activeTrack.id)) return;
+    const canRefreshTiming = activeTrack.source === "netease" || (activeTrack.source === "local" && Boolean(lyricBindings[activeTrack.id]));
+    const needsTiming = canRefreshTiming && !activeTrack.lyrics.some((line) => line.timingVersion === 1);
+    const needsEnrichment = needsTranslation || needsTiming;
+    if (activeTrack.id === idleTrack.id || (hasLyrics && !needsEnrichment)) return;
+    if (hasLyrics && needsEnrichment && lyricEnrichmentRefreshRef.current.has(activeTrack.id)) return;
     if (lyricSyncingRef.current.has(activeTrack.id)) return;
 
-    if (needsTranslation) {
-      lyricTranslationRefreshRef.current.add(activeTrack.id);
-      if (lyricTranslationRefreshRef.current.size > 240) {
-        const oldestTrackId = lyricTranslationRefreshRef.current.values().next().value;
-        if (oldestTrackId) lyricTranslationRefreshRef.current.delete(oldestTrackId);
+    if (needsEnrichment) {
+      lyricEnrichmentRefreshRef.current.add(activeTrack.id);
+      if (lyricEnrichmentRefreshRef.current.size > 240) {
+        const oldestTrackId = lyricEnrichmentRefreshRef.current.values().next().value;
+        if (oldestTrackId) lyricEnrichmentRefreshRef.current.delete(oldestTrackId);
       }
     }
     lyricSyncingRef.current.add(activeTrack.id);
     syncLyricsForTrack(activeTrack)
       .catch(() => {
         // Keep the track searchable; the manual lyrics panel can retry.
-        lyricTranslationRefreshRef.current.delete(activeTrack.id);
+        lyricEnrichmentRefreshRef.current.delete(activeTrack.id);
       })
       .finally(() => {
         lyricSyncingRef.current.delete(activeTrack.id);
@@ -101,7 +115,7 @@ export function useLyricsSync(options: {
 
   useEffect(() => {
     syncActiveTrackLyrics();
-  }, [syncActiveTrackLyrics, options.activeTrack.id, options.activeTrack.providerId, options.activeTrack.lyricStatus, options.activeTrack.lyrics, options.activeTrack.source]);
+  }, [syncActiveTrackLyrics, options.activeTrack.id, options.activeTrack.providerId, options.activeTrack.lyricStatus, options.activeTrack.lyrics, options.activeTrack.source, lyricBindings]);
 
   return {
     lyricBindings,

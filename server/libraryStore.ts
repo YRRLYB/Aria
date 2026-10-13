@@ -2,6 +2,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ScannedTrack } from "./types";
 import { dataDir } from "./utils/paths";
+import { localMetadataStore } from "./localMetadataStore";
+import { readStore } from "./store";
 
 const libraryPath = path.join(dataDir, "library.json");
 
@@ -21,10 +23,18 @@ export async function readLibrary(): Promise<LibraryIndex> {
   try {
     const raw = await readFile(libraryPath, "utf8");
     const parsed = JSON.parse(raw) as Partial<LibraryIndex>;
+    const metadata = await localMetadataStore.read();
+    const store = await readStore();
     return {
       updatedAt: parsed.updatedAt ?? null,
       roots: parsed.roots ?? [],
-      tracks: parsed.tracks ?? [],
+      tracks: (parsed.tracks ?? []).map((track) => {
+        let override = metadata.overrides[track.id];
+        if (override?.lyrics?.length && store.lyricBindings[track.id] !== (override.lyricCandidateId ?? override.candidateId)) {
+          override = { ...override, lyrics: undefined };
+        }
+        return { ...track, title: override?.title ?? track.title, artist: override?.artist ?? track.artist, album: override?.album ?? track.album, metadata: override };
+      }),
     };
   } catch {
     return defaultLibrary;
@@ -36,6 +46,11 @@ export async function writeLibrary(library: LibraryIndex) {
   await writeFile(libraryPath, JSON.stringify(library, null, 2), "utf8");
 }
 
+async function readOriginalTracks() {
+  try { return (JSON.parse(await readFile(libraryPath, "utf8")) as LibraryIndex).tracks ?? []; }
+  catch { return []; }
+}
+
 export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
   const current = await readLibrary();
   const normalizedRoot = normalizeLibraryRoot(root);
@@ -44,7 +59,7 @@ export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
     libraryRoot: track.libraryRoot ?? normalizedRoot,
   }));
   const nextTracks = [
-    ...current.tracks.filter((track) => !trackMatchesRoot(track, normalizedRoot)),
+    ...(await readOriginalTracks()).filter((track) => !trackMatchesRoot(track, normalizedRoot)),
     ...normalizedTracks,
   ];
   const roots = Array.from(
@@ -56,7 +71,7 @@ export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
     tracks: nextTracks,
   };
   await writeLibrary(next);
-  return next;
+  return readLibrary();
 }
 
 export function normalizeLibraryRoot(root: string) {

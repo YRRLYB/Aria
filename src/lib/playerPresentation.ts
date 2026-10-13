@@ -1,4 +1,5 @@
 import { navItems, type LyricLine, type Track, type ViewId } from "@/data/music";
+import { getLyricStartTime } from "./lyricTiming";
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 
 export type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
@@ -272,6 +273,13 @@ export function writeCachedLyrics(trackId: string, lyrics: LyricLine[]) {
   }
 }
 
+export function removeCachedLyrics(trackId: string) {
+  const cache = { ...readLyricsCache() };
+  delete cache[trackId];
+  lyricsCacheState = cache;
+  try { window.localStorage.setItem(lyricCacheKey, JSON.stringify(cache)); } catch { /* In-memory removal still applies. */ }
+}
+
 export function readCachedAudioSettings() {
   try {
     const raw = window.localStorage.getItem(audioSettingsKey);
@@ -281,6 +289,7 @@ export function readCachedAudioSettings() {
       hifiEnabled?: boolean;
       masterQualityEnabled?: boolean;
       gaplessEnabled?: boolean;
+      normalizationEnabled?: boolean;
       exclusiveMode?: boolean;
       outputMode?: AudioOutputMode;
     };
@@ -295,6 +304,7 @@ export function readCachedAudioSettings() {
       hifiEnabled: typeof parsed.hifiEnabled === "boolean" ? parsed.hifiEnabled : true,
       masterQualityEnabled: typeof parsed.masterQualityEnabled === "boolean" ? parsed.masterQualityEnabled : false,
       gaplessEnabled: typeof parsed.gaplessEnabled === "boolean" ? parsed.gaplessEnabled : false,
+      normalizationEnabled: parsed.normalizationEnabled === true,
       exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
       outputMode,
     };
@@ -308,6 +318,7 @@ export function writeCachedAudioSettings(settings: {
   hifiEnabled: boolean;
   masterQualityEnabled: boolean;
   gaplessEnabled: boolean;
+  normalizationEnabled?: boolean;
   exclusiveMode: boolean;
   outputMode: AudioOutputMode;
 }) {
@@ -338,7 +349,7 @@ export function getActiveLyricIndex(lyrics: Track["lyrics"], currentTime: number
   if (!lyrics.length) return 0;
   let activeIndex = 0;
   lyrics.forEach((line, index) => {
-    if (parseDuration(line.time) <= currentTime + 0.2) {
+    if (getLyricStartTime(line) <= currentTime + (typeof line.startTime === "number" ? 0 : 0.2)) {
       activeIndex = index;
     }
   });

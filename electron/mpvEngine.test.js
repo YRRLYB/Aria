@@ -10,6 +10,26 @@ const {
 } = require("./mpvEngine.cjs");
 
 describe("native mpv output", () => {
+  it("enables and removes only Aria's loudness filter", async () => {
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: vi.fn() });
+    engine.command = vi.fn().mockResolvedValue([]);
+    await engine.setNormalization(true);
+    expect(engine.command).toHaveBeenCalledWith("af", "add", expect.stringContaining("@aria-normalization:lavfi=[dynaudnorm="));
+    expect(engine.state.normalizationEnabled).toBe(true);
+    engine.command.mockClear().mockResolvedValue([{ label: "equalizer" }, { label: "aria-normalization" }]);
+    await engine.setNormalization(true);
+    expect(engine.command).not.toHaveBeenCalledWith("af", "add", expect.anything());
+    await engine.setNormalization(false);
+    expect(engine.command).toHaveBeenCalledWith("af", "remove", "@aria-normalization");
+    expect(engine.state.normalizationEnabled).toBe(false);
+  });
+
+  it("surfaces filter errors without claiming normalization is active", async () => {
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: vi.fn() });
+    engine.command = vi.fn().mockImplementation((command) => command === "af" ? Promise.reject(new Error("unsupported")) : Promise.resolve([]));
+    await expect(engine.setNormalization(true)).rejects.toThrow("unsupported");
+    expect(engine.state.normalizationEnabled).toBe(false);
+  });
   it("keeps the WASAPI session identified as Aria", () => {
     const args = buildMpvArguments("\\\\.\\pipe\\aria-test");
 

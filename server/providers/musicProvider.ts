@@ -41,6 +41,22 @@ export type ProviderPlaylist = {
   tags?: string[];
 };
 
+export type ProviderCloudTrack = {
+  track: ProviderTrack;
+  fileName: string;
+  fileSize: number | null;
+  uploadedAt: number | null;
+};
+
+export type ProviderCloudPage = {
+  items: ProviderCloudTrack[];
+  count: number;
+  more: boolean;
+  nextOffset: number;
+  size: number | null;
+  maxSize: number | null;
+};
+
 export type ProviderArtist = {
   id: string;
   name: string;

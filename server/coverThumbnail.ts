@@ -1,5 +1,5 @@
 // Cloud-only playback does not need to load an extra native image library.
-let processor: Promise<typeof import("sharp")["default"]> | undefined;
+let processor: Promise<typeof import("sharp")> | undefined;
 let active = false;
 const waiting: Array<() => void> = [];
 

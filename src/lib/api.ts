@@ -1,4 +1,5 @@
 import type { LyricCandidate, LyricLine } from "@/data/music";
+import type { LocalMetadataApplyOptions, LocalMetadataOverride, LocalMetadataPreview } from "./localMetadata";
 
 declare global {
   interface Window {
@@ -35,6 +36,7 @@ declare global {
           startChapter?: string | null;
           endChapter?: string | null;
           cdReadQuality?: "high" | "low";
+          normalizationEnabled?: boolean;
         }) => Promise<unknown>;
         loadNext?: (payload: { trackId: string; url: string }) => Promise<unknown>;
         setPaused?: (paused: boolean) => Promise<unknown>;
@@ -44,6 +46,7 @@ declare global {
           exclusive?: boolean;
           deviceId?: string;
           volume?: number;
+          normalizationEnabled?: boolean;
         }) => Promise<unknown>;
         stop?: () => Promise<unknown>;
         onEvent?: (callback: (payload: {
@@ -133,6 +136,7 @@ export type ApiScannedTrack = {
   nativeEnd?: string | null;
   cdReadQuality?: "high" | "low";
   requiresNativePlayback?: boolean;
+  metadata?: LocalMetadataOverride;
 };
 
 export type ApiLibraryIndex = {
@@ -197,6 +201,22 @@ export type ProviderPlaylist = {
   description?: string;
   creatorName?: string;
   tags?: string[];
+};
+
+export type ProviderCloudTrack = {
+  track: ProviderTrack;
+  fileName: string;
+  fileSize: number | null;
+  uploadedAt: number | null;
+};
+
+export type ProviderCloudPage = {
+  items: ProviderCloudTrack[];
+  count: number;
+  more: boolean;
+  nextOffset: number;
+  size: number | null;
+  maxSize: number | null;
 };
 
 export type ProviderArtist = {
@@ -411,6 +431,17 @@ export const api = {
       body: JSON.stringify({ trackIds }),
     });
   },
+  previewLocalMetadata(trackIds: string[]) {
+    return request<LocalMetadataPreview>("/api/library/metadata/preview", { method: "POST", body: JSON.stringify({ trackIds }) });
+  },
+  applyLocalMetadata(previewId: string, entries: Array<{ trackId: string; candidateId: string; hasArtwork?: boolean; hasLyrics?: boolean }>, options: LocalMetadataApplyOptions) {
+    return request<{ tracks: ApiScannedTrack[]; lyricBindings: Record<string, string>; undoId: string | null; failed: Array<{ trackId: string; error: string }> }>("/api/library/metadata/apply", {
+      method: "POST", body: JSON.stringify({ previewId, entries, options }),
+    });
+  },
+  undoLocalMetadata(undoId: string) {
+    return request<{ tracks: ApiScannedTrack[]; lyricBindings: Record<string, string>; skipped: string[]; restoredLyrics: string[] }>("/api/library/metadata/undo", { method: "POST", body: JSON.stringify({ undoId }) });
+  },
   getNeteaseCoverUrl(sourceUrl: string) {
     return apiUrl(`/api/providers/netease/cover?url=${encodeURIComponent(sourceUrl)}`);
   },
@@ -421,14 +452,15 @@ export const api = {
     if (query.album) params.set("album", query.album);
     return request<{ candidates: LyricCandidate[] }>(`/api/lyrics/search?${params}`);
   },
-  bindLyric(trackId: string, candidateId: string) {
+  bindLyric(trackId: string, candidateId: string, expectedBinding?: string | null) {
     return request<{
       ok: boolean;
+      accepted: boolean;
       lyricBindings: Record<string, string>;
       lyrics: LyricLine[];
     }>("/api/lyrics/bind", {
       method: "POST",
-      body: JSON.stringify({ trackId, candidateId }),
+      body: JSON.stringify({ trackId, candidateId, expectedBinding }),
     });
   },
   getSettings() {
@@ -478,6 +510,14 @@ export const api = {
   },
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
+  },
+  getNeteaseCloud(limit = 100, offset = 0, refresh = false) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (refresh) params.set("refresh", "1");
+    return request<ProviderCloudPage>(`/api/providers/netease/cloud?${params}`);
+  },
+  getNeteaseCloudTrack(trackId: string) {
+    return request<{ item: ProviderCloudTrack }>(`/api/providers/netease/cloud/${encodeURIComponent(trackId)}`);
   },
   createNeteasePlaylist(name: string, isPrivate = false) {
     return request<{ playlist: ProviderPlaylist }>("/api/providers/netease/playlists", {

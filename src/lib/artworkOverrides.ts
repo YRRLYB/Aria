@@ -13,9 +13,10 @@ type ArtworkOverrideCache = Record<string, ArtworkOverrideEntry>;
 // re-parsing the (dataURL-heavy) localStorage blob each time is far too costly.
 let artworkOverrideState: ArtworkOverrideCache | null = null;
 
-export function readCachedArtworkOverride(trackId?: string) {
+export function readCachedArtworkOverride(trackId?: string, newerThan = 0) {
   if (!trackId) return undefined;
-  return readArtworkOverrideCache()[trackId]?.dataUrl;
+  const entry = readArtworkOverrideCache()[trackId];
+  return entry && entry.updatedAt >= newerThan ? entry.dataUrl : undefined;
 }
 
 export function writeCachedArtworkOverride(trackId: string, dataUrl: string) {

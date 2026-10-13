@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CoverArt, CopyableTrackText, EmptyState } from "./shared";
+import { LocalMetadataPanel, type LocalMetadataUpdated } from "./LocalMetadataPanel";
 
 type LibrarySurfaceProps = {
   folderName: string;
@@ -20,8 +21,9 @@ type LibrarySurfaceProps = {
   onPickTrack: (id: string, queue?: Track[]) => void;
   onScanPath: (folderPath: string) => Promise<unknown>;
   onScanCd: (qualityMode: "high" | "low") => Promise<void>;
-  onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
+  onLyricsBound: (trackId: string, lyrics: Track["lyrics"], candidateId?: string) => void;
   onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
+  onMetadataUpdated: LocalMetadataUpdated;
 };
 
 type LocalAlbumGroup = {
@@ -46,8 +48,10 @@ export function LibrarySurface({
   onScanCd,
   onLyricsBound,
   onArtworkBound,
+  onMetadataUpdated,
 }: LibrarySurfaceProps) {
   const [lookupOpen, setLookupOpen] = useState(false);
+  const [metadataOpen, setMetadataOpen] = useState(false);
   const [boundCandidateId, setBoundCandidateId] = useState<string | null>(null);
   const [scanPath, setScanPath] = useState("");
   const [scanState, setScanState] = useState<"idle" | "scanning" | "error">("idle");
@@ -96,6 +100,10 @@ export function LibrarySurface({
           <p className="mt-3 text-neutral-500">{folderName}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="glass" onClick={() => setMetadataOpen((value) => !value)}>
+            {metadataOpen ? <X /> : <RefreshCw />}
+            {metadataOpen ? "收起补全" : "批量补全"}
+          </Button>
           <Button variant="glass" onClick={() => setLookupOpen((value) => !value)}>
             {lookupOpen ? <X /> : <Languages />}
             {lookupOpen ? "收起搜词" : "联网搜词"}
@@ -160,6 +168,8 @@ export function LibrarySurface({
           />
         )}
       </AnimatePresence>
+
+      {metadataOpen && <LocalMetadataPanel tracks={fileTracks} onMetadataUpdated={onMetadataUpdated} />}
 
       <div className="mt-7 flex items-center justify-between gap-3">
         <div className="rounded-full border border-white/70 bg-white/52 p-1 shadow-sm">
@@ -562,7 +572,7 @@ function LyricLookupPanel({
   track: Track;
   boundCandidateId: string | null;
   onBind: (id: string) => void;
-  onLyricsBound: (trackId: string, lyrics: Track["lyrics"]) => void;
+  onLyricsBound: (trackId: string, lyrics: Track["lyrics"], candidateId?: string) => void;
   onArtworkBound: (trackId: string, coverUrl?: string | null) => void;
 }) {
   const [candidates, setCandidates] = useState<LyricCandidate[]>([]);
@@ -592,7 +602,7 @@ function LyricLookupPanel({
     onArtworkBound(track.id, candidates.find((candidate) => candidate.id === candidateId)?.coverUrl);
     try {
       const result = await api.bindLyric(track.id, candidateId);
-      onLyricsBound(track.id, result.lyrics);
+      onLyricsBound(track.id, result.lyrics, candidateId);
     } catch {
       setError("后端保存失败，歌词绑定未写入本地索引。");
     }

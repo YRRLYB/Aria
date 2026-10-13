@@ -136,6 +136,19 @@ async function main() {
       const message = JSON.parse(data); const resolve = pending.get(message.id);
       if (resolve) { pending.delete(message.id); resolve(message); }
     });
+    async function waitForRenderer() {
+      const expectedLocation = env.ARIA_SMOKE_RESOURCES
+        ? "location.protocol==='file:'"
+        : `location.origin===${JSON.stringify(base)}`;
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        try {
+          if (await evaluate(`${expectedLocation} && document.readyState==='complete' && Boolean(document.querySelector('.app-navigation')) && Boolean(window.ariaDesktop?.nativeAudio)`)) return;
+        } catch {}
+        await delay(200);
+      }
+      throw new Error("Application renderer did not finish loading");
+    }
+    await waitForRenderer();
     // Exercise extraction and the packaged sharp binary through the real API.
     const libraryDir = path.join(testDir, "library"); fs.mkdirSync(libraryDir);
     const embeddedCover = await sharp(covers[0]).resize(3000, 2000, { fit: "fill" }).png().toBuffer();
@@ -168,10 +181,12 @@ async function main() {
     }));
     const report = [];
     for (const mode of ["system", "shared", "exclusive", "system"]) {
+      await evaluate("window.ariaDesktop.showApp()");
       const player = { activeTrackId: tracks[0].id, activeTrackSnapshot: tracks[0], playQueueIds: tracks.map((track) => track.id), playQueueSnapshots: tracks, volume: 1, activeView: "home" };
       const settings = { outputMode: mode, sinkId: "default", gaplessEnabled: false, hifiEnabled: true, exclusiveMode: mode === "exclusive" };
       await evaluate(`localStorage.setItem('aria-player-state', ${JSON.stringify(JSON.stringify(player))}); localStorage.setItem('aria-audio-settings', ${JSON.stringify(JSON.stringify(settings))}); setTimeout(() => location.reload(), 100)`);
       await delay(600);
+      await waitForRenderer();
       const first = await card("SMTC Test One", "Paused");
       await evaluate("window.__nativeEvents = []; window.ariaDesktop.nativeAudio.onEvent(event => { window.__nativeEvents.push(event); if(window.__nativeEvents.length > 100) window.__nativeEvents.shift(); })");
       assert.equal(first.artist, "Aria Test Artist"); assert.equal(first.album, "Aria Test Album");
@@ -184,6 +199,19 @@ async function main() {
         assert.equal(native.active, true); assert.equal(native.paused, false);
         assert.equal(native.exclusive, mode === "exclusive"); assert.equal(native.trackId, "smtc-0"); assert.ok(native.position > 0);
       }
+      await evaluate("document.querySelector('[aria-label=\"设置\"]').click()");
+      await delay(350);
+      assert.equal(await evaluate("document.querySelector('[aria-label=\"切换音量标准化\"]').getAttribute('aria-checked')"), "false");
+      await evaluate("document.querySelector('[aria-label=\"切换音量标准化\"]').click()");
+      await delay(900);
+      assert.equal(await evaluate("JSON.parse(localStorage.getItem('aria-audio-settings')).normalizationEnabled"), true);
+      assert.equal(await evaluate("document.body.innerText.includes('加载失败') || document.body.innerText.includes('未能启用')"), false);
+      if (mode !== "system") assert.equal((await evaluate("window.ariaDesktop.nativeAudio.getState()")).normalizationEnabled, true);
+      await evaluate("document.querySelector('[aria-label=\"切换音量标准化\"]').click()");
+      await delay(350);
+      if (mode !== "system") assert.equal((await evaluate("window.ariaDesktop.nativeAudio.getState()")).normalizationEnabled, false);
+      await evaluate("document.querySelector('[aria-label=\"返回上一页\"]').click()");
+      console.log(`PASS ${mode}: loudness toggle, persisted setting, active playback`);
       await command("play"); await card("SMTC Test One", "Playing");
       await command("pause"); await card("SMTC Test One", "Paused");
       await command("pause"); await card("SMTC Test One", "Paused");

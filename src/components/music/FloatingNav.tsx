@@ -16,7 +16,7 @@ export function FloatingNav({
   onRequestClose: () => void;
   onPick: (id: ViewId) => void;
 }) {
-  const nodes = (["player", "history", "artists", "daily", "radar", "stats"] as ViewId[])
+  const nodes = (["player", "cloud", "artists", "daily", "radar", "stats"] as ViewId[])
     .map((id) => navItems.find((item) => item.id === id))
     .filter((item): item is (typeof navItems)[number] => Boolean(item));
   const nodePositions = [

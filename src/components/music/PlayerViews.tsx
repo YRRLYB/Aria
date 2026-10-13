@@ -20,6 +20,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AddToPlaylistButton } from "./PlaylistActions";
+import { WordLyricText } from "./WordLyricText";
+import { getLyricStartTime } from "@/lib/lyricTiming";
 import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { Track } from "@/data/music";
@@ -538,13 +540,13 @@ export function ImmersivePlayerView({
                       )}
                       initial={false}
                       animate={{ opacity: active ? 1 : 0.68, y: active ? 0 : 2 }}
-                      onClick={() => onSeek(parseDuration(line.time))}
+                      onClick={() => onSeek(getLyricStartTime(line))}
                     >
                       <span className={cn("pt-1 text-sm font-medium", active ? "text-white/70" : "text-white/34")}>
                         {line.time}
                       </span>
                       <span className={cn("whitespace-pre-wrap break-words leading-relaxed", active ? "text-4xl font-semibold" : "text-xl")}>
-                        {line.text || "?"}
+                        <WordLyricText line={line} active={active} currentTime={currentTime} playing={playing} color="#ffffff" pendingColor="rgba(255,255,255,0.38)" />
                         {line.translation && (
                           <span className={cn("mt-2 block text-base font-medium leading-relaxed", active ? "text-white/64" : "text-white/34")}>
                             {line.translation}

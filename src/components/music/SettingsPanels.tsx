@@ -39,6 +39,9 @@ export function SettingsPanel({
   onMasterQualityEnabledChange,
   gaplessEnabled,
   onGaplessEnabledChange,
+  normalizationEnabled,
+  onNormalizationEnabledChange,
+  normalizationError,
   nativeAudioSupported,
   nativeAudioState,
   audioOutputMode,
@@ -66,6 +69,9 @@ export function SettingsPanel({
   onMasterQualityEnabledChange: (value: boolean) => void;
   gaplessEnabled: boolean;
   onGaplessEnabledChange: (value: boolean) => void;
+  normalizationEnabled: boolean;
+  onNormalizationEnabledChange: (value: boolean) => void;
+  normalizationError: string | null;
   nativeAudioSupported: boolean;
   nativeAudioState: NativeAudioState | null;
   audioOutputMode: AudioOutputMode;
@@ -422,6 +428,23 @@ export function SettingsPanel({
                 </button>
               </div>
             )}
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
+              <div>
+                <p className="text-sm font-semibold">音量标准化</p>
+                <p className="mt-1 text-xs text-neutral-500">平衡歌曲响度，减少忽大忽小。默认关闭，开启后会处理音频动态。</p>
+                {normalizationError && <p role="alert" className="mt-1 text-xs text-rose-600">{normalizationError}</p>}
+              </div>
+              <button
+                type="button"
+                className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", normalizationEnabled ? "bg-neutral-950" : "bg-neutral-200")}
+                onClick={() => onNormalizationEnabledChange(!normalizationEnabled)}
+                aria-label="切换音量标准化"
+                role="switch"
+                aria-checked={normalizationEnabled}
+              >
+                <span className={cn("size-6 rounded-full bg-white shadow-sm transition", normalizationEnabled && "translate-x-6")} />
+              </button>
             </div>
             <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               <div>

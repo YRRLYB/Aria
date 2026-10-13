@@ -5,6 +5,8 @@ import type {
   NeteaseSearchResults,
   ProviderAlbum,
   ProviderArtist,
+  ProviderCloudPage,
+  ProviderCloudTrack,
   ProviderDailyBundle,
   ProviderPlaylist,
   ProviderRoamOptions,
@@ -12,6 +14,7 @@ import type {
   ProviderUser,
 } from "../providers/musicProvider";
 import { getNeteaseAccountSummary } from "../services/neteaseService";
+import { fetchNeteaseLyrics } from "../services/lyricService";
 import { readStore } from "../store";
 import { HttpError } from "../utils/httpError";
 import { quantizeBitrate } from "../utils/bitrate";
@@ -104,6 +107,18 @@ type NeteaseTrackId = {
   at?: number;
 };
 
+type NeteaseCloudSong = {
+  songId?: number | string;
+  songName?: string;
+  artist?: string;
+  album?: string;
+  fileName?: string;
+  fileSize?: number | string;
+  bitrate?: number;
+  addTime?: number;
+  simpleSong?: NeteaseSong;
+};
+
 const shortTtl = 5 * 60_000;
 const dayTtl = 24 * 60 * 60_000;
 const weekTtl = 7 * dayTtl;
@@ -126,6 +141,43 @@ type NeteaseStreamMeta = {
 export class NeteaseClient {
   async getAccount() {
     return getNeteaseAccountSummary();
+  }
+
+  async getCloudTracks(limit = 100, offset = 0, refresh = false): Promise<ProviderCloudPage> {
+    const { cookie, userId } = await this.requireSession();
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const cacheKey = `netease:cloud:v1:${userId}:${safeLimit}:${safeOffset}`;
+    if (refresh) clearCache(`netease:cloud:v1:${userId}:`);
+    return remember(cacheKey, 60_000, async () => {
+      const body = await callNetease("user_cloud", { cookie, limit: safeLimit, offset: safeOffset, timestamp: Date.now() });
+      const records = (body.data as NeteaseCloudSong[] | undefined) ?? [];
+      const nextOffset = safeOffset + records.length;
+      const count = nonnegativeNumber(body.count) ?? nextOffset;
+      return {
+        items: records.filter((record) => record.songId != null || record.simpleSong?.id != null).map(normalizeCloudSong),
+        count,
+        nextOffset,
+        more: records.length > 0 && (typeof body.hasMore === "boolean" ? body.hasMore : typeof body.more === "boolean" ? body.more : nextOffset < count),
+        size: nonnegativeNumber(body.size),
+        maxSize: nonnegativeNumber(body.maxSize),
+      };
+    });
+  }
+
+  async getCloudTrackDetail(songId: string): Promise<ProviderCloudTrack> {
+    assertNeteaseId(songId);
+    const { cookie, userId } = await this.requireSession();
+    return normalizeCloudSong(await this.getCloudSongCached(songId, cookie, userId));
+  }
+
+  private async getCloudSongCached(songId: string, cookie: string, userId: string): Promise<NeteaseCloudSong> {
+    return remember(`netease:cloud-detail:v1:${userId}:${songId}`, shortTtl, async () => {
+      const body = await callNetease("user_cloud_detail", { id: songId, cookie });
+      const record = ((body.data as NeteaseCloudSong[] | undefined) ?? []).find((item) => String(item.songId ?? item.simpleSong?.id) === songId);
+      if (!record) throw new HttpError(404, "这首歌曲已不在云盘中，请刷新后重试", "NETEASE_CLOUD_TRACK_UNAVAILABLE");
+      return record;
+    });
   }
 
   async getLikedTracks() {
@@ -703,17 +755,18 @@ export class NeteaseClient {
   }
 
   private async getLyricsCached(songId: string | number) {
-    return rememberPersistent(`netease:lyrics:v2:${songId}`, weekTtl, async () => {
-      const response = await neteaseApi.lyric({ id: songId });
-      const lyric = (response.body?.lrc as { lyric?: string } | undefined)?.lyric ?? "";
-      const translation = (response.body?.tlyric as { lyric?: string } | undefined)?.lyric ?? "";
-      return parseLrc(lyric, translation);
-    });
+    return rememberPersistent(`netease:lyrics:v3:${songId}`, weekTtl, () => fetchNeteaseLyrics(songId));
   }
 
   private async getSongUrlCached(songId: string | number, level: QualityLevel, cookie: string) {
-    return rememberPersistent(`netease:url:v2:${songId}:${level}`, 25 * 60_000, async () => {
-      const song = await this.getSongDetailCached(songId, cookie);
+    const { userId } = await this.requireSession();
+    return rememberPersistent(`netease:url:v3:${userId}:${songId}:${level}`, 25 * 60_000, async () => {
+      // Private cloud uploads can have no entry in the public song catalogue.
+      // Resolve their own metadata before asking the normal URL endpoint.
+      const song = await this.getSongDetailCached(songId, cookie).catch(async (error: unknown) => {
+        if (!(error instanceof HttpError && error.status === 404)) throw error;
+        return cloudSongToSong(await this.getCloudSongCached(String(songId), cookie, userId));
+      });
       const response = await neteaseApi.song_url_v1({
         id: songId,
         level: level as never,
@@ -776,6 +829,36 @@ export function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> =
     currentLevel,
     availableLevels,
   };
+}
+
+function cloudSongToSong(record: NeteaseCloudSong): NeteaseSong {
+  const song = record.simpleSong;
+  const artist = song?.ar ?? song?.artists;
+  const album = song?.al ?? song?.album;
+  return {
+    ...song,
+    // Use the upload ID, even when simpleSong points at a matched public song.
+    id: record.songId ?? song?.id ?? "",
+    name: record.songName || song?.name || record.fileName?.replace(/\.[^.]+$/, "") || "未命名歌曲",
+    ar: artist?.some((item) => item.name) ? artist : [{ name: record.artist || "未知歌手" }],
+    al: { ...album, name: album?.name || record.album || "未知专辑" },
+  };
+}
+
+export function normalizeCloudSong(record: NeteaseCloudSong): ProviderCloudTrack {
+  const song = cloudSongToSong(record);
+  return {
+    track: normalizeSong(song, { bitrate: normalizeBitrate(record.bitrate) }),
+    fileName: record.fileName || song.name,
+    fileSize: nonnegativeNumber(record.fileSize),
+    uploadedAt: nonnegativeNumber(record.addTime),
+  };
+}
+
+function nonnegativeNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
 }
 
 function availableLevelsFromSong(song: NeteaseSong): QualityLevel[] {
@@ -989,30 +1072,6 @@ function formatLocalDate(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
-}
-
-function parseLrc(lyric: string, translation = "") {
-  const translatedByTime = new Map(parseLrcEntries(translation).map((line) => [line.time, line.text]));
-  return parseLrcEntries(lyric).map((line) => ({
-    ...line,
-    translation: translatedByTime.get(line.time) || undefined,
-  }));
-}
-
-function parseLrcEntries(lyric: string) {
-  return lyric
-    .split("\n")
-    .map((line) => {
-      const match = line.match(/^\[(\d{2}):(\d{2})(?:\.\d+)?\](.*)$/);
-      if (!match) return null;
-      const text = match[3].trim();
-      if (!text) return null;
-      return {
-        time: `${match[1]}:${match[2]}`,
-        text,
-      };
-    })
-    .filter((line): line is { time: string; text: string } => Boolean(line));
 }
 
 export const neteaseClient = new NeteaseClient();

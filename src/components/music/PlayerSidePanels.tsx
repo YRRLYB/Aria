@@ -7,11 +7,12 @@ import {
   colorWithAlpha,
   formatAudioDetail,
   getActiveLyricIndex,
-  parseDuration,
   type CoverPalette,
 } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
 import { AddToPlaylistButton } from "./PlaylistActions";
+import { WordLyricText } from "./WordLyricText";
+import { getLyricStartTime } from "@/lib/lyricTiming";
 export function QueueList({
   tracks,
   activeTrackId,
@@ -71,6 +72,7 @@ export function PlayerSidePanel({
   track,
   palette,
   lyricDisplayMode,
+  playing = false,
   tracks,
   activeTrackId,
   onPickTrack,
@@ -81,6 +83,7 @@ export function PlayerSidePanel({
   track: Track;
   palette: CoverPalette;
   lyricDisplayMode: "original" | "bilingual";
+  playing?: boolean;
   tracks: Track[];
   activeTrackId: string;
   onPickTrack: (id: string) => void;
@@ -93,7 +96,7 @@ export function PlayerSidePanel({
           <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">
             {mode === "lyrics" ? "Lyrics" : "Queue"}
           </p>
-          <h2 className="mt-1 text-xl font-semibold">{mode === "lyrics" ? "同步歌词" : "下一首"}</h2>
+          <h2 className="mt-1 text-xl font-semibold">{mode === "lyrics" ? (track.lyrics.some((line) => line.words?.length) ? "逐字歌词" : "同步歌词") : "下一首"}</h2>
         </div>
         <div className="flex rounded-full bg-white/60 p-1 shadow-sm">
           <button
@@ -122,6 +125,7 @@ export function PlayerSidePanel({
           track={track}
           palette={palette}
           lyricDisplayMode={lyricDisplayMode}
+          playing={playing}
           onSeek={onSeek}
         />
       ) : (
@@ -135,11 +139,13 @@ function SidebarLyrics({
   track,
   palette,
   lyricDisplayMode,
+  playing,
   onSeek,
 }: {
   track: Track;
   palette: CoverPalette;
   lyricDisplayMode: "original" | "bilingual";
+  playing: boolean;
   onSeek: (time: number) => void;
 }) {
   const currentTime = usePlaybackTime();
@@ -189,12 +195,12 @@ function SidebarLyrics({
               style={active ? { backgroundColor: `${palette.primary}18` } : undefined}
               onClick={() => {
                 manualScrollUntilRef.current = 0;
-                onSeek(parseDuration(line.time));
+                onSeek(getLyricStartTime(line));
               }}
             >
               <span className="text-sm font-medium text-neutral-400">{line.time}</span>
               <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7", active ? "text-2xl font-semibold" : "text-base")}>
-                {line.text}
+                <WordLyricText line={line} active={active} currentTime={currentTime} playing={playing} color={palette.primary} />
                 {lyricDisplayMode === "bilingual" && line.translation && (
                   <span className={cn("mt-1 block text-sm font-medium leading-6", active ? "text-neutral-600" : "text-neutral-400")}>
                     {line.translation}

@@ -1,9 +1,8 @@
 import { useMemo, useRef, useState } from "react";
-import { ChevronDown, Cloud, Heart, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { Cloud, Heart, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
-import { capabilities } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
@@ -333,33 +332,6 @@ export function PlaylistSurface({
         ))}
       </div>
       {!playlists.length && <EmptyState text="暂无歌单数据，绑定有效网易云 Cookie 后同步。" />}
-    </div>
-  );
-}
-
-export function CloudSurface() {
-  return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <Badge>Cloud</Badge>
-      <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">音乐云盘</h1>
-      <div className="mt-8 grid gap-4 md:grid-cols-2">
-        {capabilities.map((item) => (
-          <div key={item.title} className="rounded-[1.75rem] bg-white/54 p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">{item.title}</h2>
-            <p className="mt-3 text-sm leading-6 text-neutral-500">{item.desc}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-6 flex flex-wrap gap-3">
-        <Button>
-          <Cloud />
-          上传
-        </Button>
-        <Button variant="glass">
-          <ChevronDown />
-          下载
-        </Button>
-      </div>
     </div>
   );
 }

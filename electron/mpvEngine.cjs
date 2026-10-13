@@ -66,6 +66,7 @@ class MpvAudioEngine {
     this.pendingPause = true;
     this.pauseToken = 0;
     this.seekToken = 0;
+    this.normalizationQueue = Promise.resolve();
     this.lastRecoveryAt = 0;
     // When the renderer preloads the next track, mpv advances its internal
     // playlist on EOF. The pending entry's identity and a generation counter
@@ -86,6 +87,7 @@ class MpvAudioEngine {
       deviceId: "auto",
       bitrate: null,
       gaplessGeneration: 0,
+      normalizationEnabled: false,
     };
   }
 
@@ -393,9 +395,12 @@ class MpvAudioEngine {
     return deviceId;
   }
 
-  async applyOutputSettings({ exclusive, deviceId, volume }) {
+  async applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled = this.state.normalizationEnabled }) {
     const requestedExclusive = typeof exclusive === "boolean" ? exclusive : this.launchExclusive ?? false;
     await this.ensureProcess(requestedExclusive);
+    if (typeof normalizationEnabled === "boolean") {
+      await this.setNormalization(normalizationEnabled);
+    }
     if (typeof volume === "number") {
       this.state.volume = volume;
       await this.command("set_property", "volume", volume);
@@ -437,6 +442,22 @@ class MpvAudioEngine {
     await this.ensureProcess(Boolean(options?.exclusive));
     const token = ++this.loadToken;
     return this.performLoad(options, token);
+  }
+
+  setNormalization(enabled) {
+    const task = this.normalizationQueue.then(async () => {
+      // Label only Aria's filter so toggling never removes other mpv filters.
+      const filters = await this.command("get_property", "af");
+      const installed = Array.isArray(filters) && filters.some((filter) => filter.label === "aria-normalization");
+      if (enabled && !installed) {
+        await this.command("af", "add", "@aria-normalization:lavfi=[dynaudnorm=f=100:g=5:p=0.95:m=4:r=0.12]");
+      } else if (!enabled && installed) {
+        await this.command("af", "remove", "@aria-normalization");
+      }
+      this.state.normalizationEnabled = Boolean(enabled);
+    });
+    this.normalizationQueue = task.catch(() => undefined);
+    return task;
   }
 
   // Append the next track to mpv's internal playlist so the advance happens
@@ -512,6 +533,7 @@ class MpvAudioEngine {
       startChapter = null,
       endChapter = null,
       cdReadQuality = "high",
+      normalizationEnabled = false,
     },
     token,
   ) {
@@ -551,6 +573,7 @@ class MpvAudioEngine {
         volume,
         exclusive,
         deviceId,
+        normalizationEnabled,
         nativeDevice: null,
         startChapter: null,
         endChapter: null,
@@ -571,6 +594,7 @@ class MpvAudioEngine {
       nativeDevice = null,
       startChapter = null,
       endChapter = null,
+      normalizationEnabled = this.state.normalizationEnabled,
     },
     token,
   ) {
@@ -591,7 +615,7 @@ class MpvAudioEngine {
     await this.command("set_property", "pause", true).catch(() => undefined);
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
-    await this.applyOutputSettings({ exclusive, deviceId, volume });
+    await this.applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled });
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     if (String(url).startsWith("cdda://")) {

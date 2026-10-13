@@ -1,3 +1,5 @@
+import type { LocalMetadataOverride } from "../src/lib/localMetadata";
+
 export type ScannedTrack = {
   id: string;
   path: string;
@@ -23,6 +25,7 @@ export type ScannedTrack = {
   nativeEnd?: string | null;
   cdReadQuality?: "high" | "low";
   requiresNativePlayback?: boolean;
+  metadata?: LocalMetadataOverride;
 };
 
 export type LyricCandidate = {
