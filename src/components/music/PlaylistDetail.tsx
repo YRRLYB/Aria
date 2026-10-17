@@ -9,7 +9,7 @@ import { ArtworkImage } from "./ArtworkImage";
 import { CoverArt, EmptyState } from "./shared";
 import { usePlaylistActions } from "./PlaylistActions";
 
-export function PlaylistDetail({ playlist, tracks, loading, error, connected, playCounts, onBack, onRetry, onPickTrack, onUpdate, onUploadCover, onRemove, onReorder, onSubscribe, onRequireLogin }: {
+export function PlaylistDetail({ playlist, tracks, loading, error, connected, playCounts, onBack, onRetry, onPickTrack, onUpdate, onUploadCover, onRemove, onReorder, onSubscribe, onDelete, onRequireLogin }: {
   playlist: ProviderPlaylist;
   tracks: Track[];
   loading: boolean;
@@ -24,6 +24,7 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, pl
   onRemove: (tracks: Track[]) => Promise<void>;
   onReorder: (tracks: Track[]) => Promise<void>;
   onSubscribe: (subscribed: boolean) => Promise<void>;
+  onDelete: () => Promise<void>;
   onRequireLogin: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -42,6 +43,12 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, pl
   const actions = usePlaylistActions();
   const canEditTracks = connected && playlist.owned === true;
   const canEditDetails = connected && playlist.canEdit === true;
+
+  async function deleteCurrentPlaylist() {
+    if (!canEditDetails || busy) return;
+    if (!window.confirm(`确定删除歌单“${playlist.name}”吗？此操作无法撤销。`)) return;
+    await run(onDelete, "歌单已删除");
+  }
 
   useEffect(() => {
     setName(playlist.name);
@@ -91,7 +98,7 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, pl
       <div className="min-w-0 flex-1"><h1 title={playlist.name} className="line-clamp-2 text-3xl font-semibold leading-snug">{playlist.name}</h1><p className="mt-2 text-xs text-neutral-500">{playlist.creatorName || (playlist.owned ? "我创建" : "网易云歌单")} · {loading ? playlist.trackCount : tracks.length} 首</p>{playlist.description && <p title={playlist.description} className="mt-2 line-clamp-2 text-sm leading-relaxed text-neutral-500">{playlist.description}</p>}
         <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" disabled={loading || !tracks.length} onClick={() => { const first = visibleTracks.find((track) => track.streamUrl); if (first) onPickTrack(first.id, visibleTracks); }}><Play />播放全部</Button>
           {canEditTracks && <Button size="sm" variant="glass" disabled={busy || loading} onClick={() => actions?.openAdd([], playlist.id)}><ListPlus />添加歌曲</Button>}
-          {canEditDetails && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditing((value) => !value); setActionError(null); }}><Pencil />编辑歌单</Button>}
+          {canEditDetails && <><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditing((value) => !value); setActionError(null); }}><Pencil />编辑歌单</Button><Button size="sm" variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700" disabled={busy} onClick={() => void deleteCurrentPlaylist()}><Trash2 />删除歌单</Button></>}
           {!playlist.owned && <Button size="sm" variant="glass" disabled={busy || loading} onClick={() => connected ? void run(() => onSubscribe(!playlist.subscribed), playlist.subscribed ? "已取消收藏" : "已收藏歌单") : onRequireLogin()}><Heart className={playlist.subscribed ? "fill-violet-500 text-violet-500" : ""} />{playlist.subscribed ? "取消收藏" : "收藏歌单"}</Button>}
         </div>
       </div>

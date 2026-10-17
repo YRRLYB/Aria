@@ -7,7 +7,8 @@ const mocks = vi.hoisted(() => ({
   store: vi.fn(),
   account: vi.fn(),
   search: vi.fn(), suggest: vi.fn(), user: vi.fn(), album: vi.fn(), artist: vi.fn(), artistDesc: vi.fn(), artistAlbums: vi.fn(),
-  playlistDetail: vi.fn(), playlistTracks: vi.fn(), editTracks: vi.fn(), order: vi.fn(), name: vi.fn(), description: vi.fn(), tags: vi.fn(), cover: vi.fn(), subscribe: vi.fn(),
+  styles: vi.fn(), styleDetail: vi.fn(), styleSongs: vi.fn(), sportRadio: vi.fn(),
+  playlistDetail: vi.fn(), playlistTracks: vi.fn(), editTracks: vi.fn(), order: vi.fn(), name: vi.fn(), description: vi.fn(), tags: vi.fn(), cover: vi.fn(), subscribe: vi.fn(), deletePlaylist: vi.fn(),
   persistent: new Map<string, unknown>(),
   rememberPersistent: vi.fn(), clearPersistent: vi.fn(), setPersistent: vi.fn(),
 }));
@@ -17,11 +18,12 @@ vi.mock("NeteaseCloudMusicApi", () => ({
     playlist_create: mocks.create, user_playlist: mocks.playlists,
     song_wiki_summary: mocks.wiki, song_creators: mocks.creators,
     cloudsearch: mocks.search, search_suggest: mocks.suggest, user_detail: mocks.user,
+    style_list: mocks.styles, style_detail: mocks.styleDetail, style_song: mocks.styleSongs, radio_sport_get: mocks.sportRadio,
     album: mocks.album, artist_detail: mocks.artist, artist_desc: mocks.artistDesc, artist_album: mocks.artistAlbums,
     playlist_detail: mocks.playlistDetail, playlist_track_all: mocks.playlistTracks,
     playlist_tracks: mocks.editTracks, song_order_update: mocks.order,
     playlist_name_update: mocks.name, playlist_desc_update: mocks.description, playlist_tags_update: mocks.tags,
-    playlist_cover_update: mocks.cover, playlist_subscribe: mocks.subscribe,
+    playlist_cover_update: mocks.cover, playlist_subscribe: mocks.subscribe, playlist_delete: mocks.deletePlaylist,
   },
 }));
 vi.mock("../store", () => ({ readStore: mocks.store }));
@@ -145,6 +147,38 @@ describe("NetEase playlist creation", () => {
   });
 });
 
+describe("NetEase playlist deletion", () => {
+  const client = new NeteaseClient();
+  const playlist = { id: 42, name: "澶滈棿", trackCount: 2, creator: { userId: 7 }, specialType: 0 };
+
+  it("revalidates ownership, deletes the playlist, and invalidates related caches", async () => {
+    mocks.playlistDetail.mockResolvedValue({ body: { code: 200, playlist } });
+    mocks.deletePlaylist.mockResolvedValue({ body: { code: 200 } });
+    mocks.persistent.set("netease:playlist-tracks:v2:42", { tracks: [] });
+    mocks.persistent.set("netease:liked:v2:7", { tracks: [] });
+
+    await expect(client.deletePlaylist("42")).resolves.toEqual({ ok: true });
+    expect(mocks.playlistDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "42", cookie: "test-cookie" }));
+    expect(mocks.deletePlaylist).toHaveBeenCalledWith(expect.objectContaining({ id: "42", cookie: "test-cookie", timestamp: expect.any(Number) }));
+    expect(mocks.clearPersistent).toHaveBeenCalledWith("netease:playlist-tracks:v2:42");
+    expect(mocks.clearPersistent).toHaveBeenCalledWith("netease:liked:v2:7");
+  });
+
+  it("protects the special liked-music playlist before sending a delete", async () => {
+    mocks.playlistDetail.mockResolvedValue({ body: { code: 200, playlist: { ...playlist, specialType: 5 } } });
+
+    await expect(client.deletePlaylist("42")).rejects.toMatchObject({ status: 403, code: "NETEASE_PLAYLIST_SPECIAL" });
+    expect(mocks.deletePlaylist).not.toHaveBeenCalled();
+  });
+
+  it("rejects a playlist owned by another account", async () => {
+    mocks.playlistDetail.mockResolvedValue({ body: { code: 200, playlist: { ...playlist, creator: { userId: 9 } } } });
+
+    await expect(client.deletePlaylist("42")).rejects.toMatchObject({ status: 403, code: "NETEASE_PLAYLIST_NOT_OWNED" });
+    expect(mocks.deletePlaylist).not.toHaveBeenCalled();
+  });
+});
+
 describe("NetEase public discovery", () => {
   const client = new NeteaseClient();
 
@@ -194,6 +228,71 @@ describe("NetEase public discovery", () => {
     mocks.artist.mockResolvedValue({ body: { code: 200, data: { artist: { id: 2, name: "歌手", cover: "cover", briefDesc: "概要" } } } });
     mocks.artistDesc.mockRejectedValue({ body: { code: 403 } });
     expect(await client.getArtistDetail("2")).toMatchObject({ artist: { id: "2", avatarUrl: "cover" }, description: "概要", sections: [] });
+  });
+});
+
+describe("NetEase style and sport discovery", () => {
+  const client = new NeteaseClient();
+
+  it("normalizes the live tag hierarchy and relative cover paths without login", async () => {
+    mocks.store.mockResolvedValue({ neteaseCookie: null });
+    mocks.styles.mockResolvedValue({ body: { code: 200, data: [
+      { tagId: 1000, tagName: "Pop", childrenTags: [{ tagId: 1020, tagName: "C-Pop", picUrl: "yyimgs/hash/42" }, { tagName: "Missing id" }] },
+      { tagId: 2000, tagName: "Rock", picUrl: "http://p1.music.126.net/cover" },
+      { tagId: 3000 },
+    ] } });
+    expect(await client.getStyleGroups()).toEqual({ groups: [
+      { id: "1000", name: "Pop", styles: [{ id: "1020", name: "C-Pop", coverUrl: "https://p1.music.126.net/hash/42" }] },
+      { id: "2000", name: "Rock", styles: [{ id: "2000", name: "Rock", coverUrl: "https://p1.music.126.net/cover" }] },
+    ] });
+    await client.getStyleGroups();
+    expect(mocks.styles).toHaveBeenCalledExactlyOnceWith({});
+  });
+
+  it("maps new-song sorting and advances the upstream offset before returning a next cursor", async () => {
+    mocks.store.mockResolvedValue({ neteaseCookie: null });
+    mocks.styleDetail.mockResolvedValue({ body: { code: 200, data: { tagId: 1020, name: "C-Pop", desc: "About this style", cover: ["http://p1.music.126.net/style"] } } });
+    mocks.styleSongs.mockResolvedValue({ body: { code: 200, data: { page: { cursor: "24", size: 24, more: true }, songs: [{ id: 42, name: "Song", ar: [{ name: "Artist" }], al: { name: "Album" }, bpm: "125" }] } } });
+    expect(await client.getStyleDetail("1020", 24, 24, "new")).toMatchObject({
+      style: { id: "1020", name: "C-Pop", description: "About this style", coverUrl: "https://p1.music.126.net/style" },
+      tracks: [{ id: "42", title: "Song", artist: "Artist", bpm: 125 }], cursor: "48", more: true,
+    });
+    expect(mocks.styleDetail).toHaveBeenCalledWith({ tagId: "1020", cookie: undefined });
+    expect(mocks.styleSongs).toHaveBeenCalledWith({ tagId: "1020", size: 24, cursor: 24, sort: 1, cookie: undefined });
+    await client.getStyleDetail("1020", 24, 24, "new");
+    expect(mocks.styleSongs).toHaveBeenCalledOnce();
+  });
+
+  it("handles the final page and refuses a missing style or provider error", async () => {
+    mocks.styleDetail.mockResolvedValue({ body: { code: 200, data: { tagId: 1000, name: "Pop" } } });
+    mocks.styleSongs.mockResolvedValue({ body: { code: 200, data: { page: { cursor: 0, size: 24, more: false }, songs: [] } } });
+    expect(await client.getStyleDetail("1000")).toMatchObject({ tracks: [], cursor: null, more: false });
+    mocks.styleDetail.mockResolvedValueOnce({ body: { code: 200, data: null } });
+    await expect(client.getStyleDetail("9999")).rejects.toMatchObject({ status: 404, code: "NETEASE_STYLE_UNAVAILABLE" });
+    mocks.styleDetail.mockResolvedValueOnce({ body: { code: 403, message: "unavailable" } });
+    await expect(client.getStyleDetail("8888")).rejects.toMatchObject({ status: 403, message: "unavailable" });
+    await expect(client.getStyleDetail("invalid")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("preserves actual track BPM independently of the requested radio BPM and refreshes on demand", async () => {
+    mocks.sportRadio.mockResolvedValue({ body: { code: 200, data: [{ id: 42, name: "Run", bpm: "110" }] } });
+    expect(await client.getSportRadio(100)).toMatchObject({ bpm: 100, tracks: [{ id: "42", bpm: 110 }] });
+    await client.getSportRadio(100);
+    expect(mocks.sportRadio).toHaveBeenCalledOnce();
+    mocks.sportRadio.mockResolvedValueOnce({ body: { code: 200, data: [{ id: 43, name: "Next", bpm: "0" }] } });
+    expect(await client.getSportRadio(100, true)).toMatchObject({ tracks: [{ id: "43", bpm: null }] });
+    expect(mocks.sportRadio).toHaveBeenCalledTimes(2);
+    expect(mocks.sportRadio).toHaveBeenCalledWith({ bpm: 100, cookie: "test-cookie" });
+  });
+
+  it("keeps radio cache scoped to the connected listener and does not cache provider failures", async () => {
+    mocks.sportRadio.mockRejectedValueOnce(new Error("offline"));
+    await expect(client.getSportRadio(120)).rejects.toMatchObject({ status: 502 });
+    mocks.sportRadio.mockResolvedValue({ body: { code: 200, data: [] } });
+    expect(await client.getSportRadio(120)).toEqual({ bpm: 120, tracks: [] });
+    mocks.account.mockResolvedValueOnce({ connected: true, userId: "8" });
+    await client.getSportRadio(120);
+    expect(mocks.sportRadio).toHaveBeenCalledTimes(3);
   });
 });
 

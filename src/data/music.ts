@@ -69,6 +69,7 @@ export type ViewId =
   | "history"
   | "playlists"
   | "artists"
+  | "explore"
   | "daily"
   | "radar"
   | "cloud"
@@ -83,6 +84,7 @@ export const navItems = [
   { id: "history" as const, label: "播放历史", icon: History },
   { id: "playlists" as const, label: "歌单", icon: Cloud },
   { id: "artists" as const, label: "歌手", icon: Music2 },
+  { id: "explore" as const, label: "探索", icon: Compass },
   { id: "daily" as const, label: "每日推荐", icon: Compass },
   { id: "radar" as const, label: "私人漫游", icon: Radar },
   { id: "cloud" as const, label: "音乐云盘", icon: Cloud },

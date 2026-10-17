@@ -162,6 +162,7 @@ export function PlaylistSurface({
   onRemoveTracks,
   onReorderTracks,
   onSubscribe,
+  onDeletePlaylist,
 }: {
   playlists: ProviderPlaylist[];
   selectedPlaylist: ProviderPlaylist | null;
@@ -180,6 +181,7 @@ export function PlaylistSurface({
   onRemoveTracks: (id: string, tracks: Track[]) => Promise<void>;
   onReorderTracks: (id: string, tracks: Track[]) => Promise<void>;
   onSubscribe: (id: string, subscribed: boolean) => Promise<void>;
+  onDeletePlaylist: (id: string) => Promise<void>;
 }) {
   const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
   const [createOpen, setCreateOpen] = useState(false);
@@ -224,7 +226,7 @@ export function PlaylistSurface({
       onBack={onClosePlaylist} onRetry={() => onOpenPlaylist(selectedPlaylist)} onPickTrack={onPickTrack}
       onUpdate={(fields) => onUpdatePlaylist(selectedPlaylist.id, fields)} onUploadCover={(file) => onUploadCover(selectedPlaylist.id, file)}
       onRemove={(items) => onRemoveTracks(selectedPlaylist.id, items)} onReorder={(items) => onReorderTracks(selectedPlaylist.id, items)}
-      onSubscribe={(subscribed) => onSubscribe(selectedPlaylist.id, subscribed)} onRequireLogin={onRequireLogin} />;
+      onSubscribe={(subscribed) => onSubscribe(selectedPlaylist.id, subscribed)} onDelete={() => onDeletePlaylist(selectedPlaylist.id)} onRequireLogin={onRequireLogin} />;
   }
 
   return (

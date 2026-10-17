@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef } from "react";
-import { Badge } from "@/components/ui/badge";
+import { ArrowDown, ArrowUp, ListEnd, Trash2 } from "lucide-react";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
 import type { Track } from "@/data/music";
 import { usePlaybackTime } from "@/lib/playbackClock";
@@ -17,10 +17,16 @@ export function QueueList({
   tracks,
   activeTrackId,
   onPickTrack,
+  onPlayNext,
+  onRemove,
+  onMove,
 }: {
   tracks: Track[];
   activeTrackId: string;
   onPickTrack: (id: string) => void;
+  onPlayNext?: (id: string) => void;
+  onRemove?: (id: string) => void;
+  onMove?: (id: string, direction: "up" | "down") => void;
 }) {
   const displayTracks = useMemo(() => {
     const firstTracks = tracks.slice(0, 48);
@@ -36,23 +42,75 @@ export function QueueList({
         <div
           key={track.id}
           className={cn(
-            "flex w-full items-center gap-3 rounded-3xl p-2 text-left transition hover:bg-white/65",
+            "group flex w-full items-center gap-2 rounded-3xl p-2 text-left transition hover:bg-white/65",
             activeTrackId === track.id && "bg-white shadow-sm",
           )}
         >
           <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onPickTrack(track.id)}>
           <CoverArt track={track} className="size-14 rounded-2xl" />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold">
+            <p className="min-w-0 truncate text-sm font-semibold" title={track.title}>
               <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
             </p>
-            <p className="truncate text-xs text-neutral-500">
-              <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+            <p className="flex min-w-0 items-center gap-1 truncate text-xs text-neutral-500">
+              <span className="min-w-0 truncate">
+                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+              </span>
+              <span className="shrink-0 text-neutral-400" title={formatAudioDetail(track)}>· {formatAudioDetail(track)}</span>
             </p>
           </div>
-          <Badge className="shrink-0">{formatAudioDetail(track)}</Badge>
           </button>
-          <AddToPlaylistButton track={track} />
+          <div className="flex shrink-0 items-center gap-1">
+            {(onPlayNext || onRemove || onMove) && (
+              <div className="flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+                {onPlayNext && track.id !== activeTrackId && (
+                  <button
+                    type="button"
+                    className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
+                    title="下一首播放"
+                    aria-label={`下一首播放：${track.title}`}
+                    onClick={() => onPlayNext(track.id)}
+                  >
+                    <ListEnd className="size-3.5" />
+                  </button>
+                )}
+                {onMove && track.id !== activeTrackId && (
+                  <>
+                    <button
+                      type="button"
+                      className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
+                      title="上移"
+                      aria-label={`上移：${track.title}`}
+                      onClick={() => onMove(track.id, "up")}
+                    >
+                      <ArrowUp className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
+                      title="下移"
+                      aria-label={`下移：${track.title}`}
+                      onClick={() => onMove(track.id, "down")}
+                    >
+                      <ArrowDown className="size-3.5" />
+                    </button>
+                  </>
+                )}
+                {onRemove && track.id !== activeTrackId && (
+                  <button
+                    type="button"
+                    className="rounded-full p-1.5 text-neutral-400 transition hover:bg-red-50 hover:text-red-600"
+                    title="移出队列"
+                    aria-label={`移出队列：${track.title}`}
+                    onClick={() => onRemove(track.id)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+            <AddToPlaylistButton track={track} />
+          </div>
         </div>
       ))}
       {hiddenCount > 0 && (
@@ -77,6 +135,9 @@ export function PlayerSidePanel({
   activeTrackId,
   onPickTrack,
   onSeek,
+  onPlayNext,
+  onRemove,
+  onMove,
 }: {
   mode: "lyrics" | "queue";
   onModeChange: (mode: "lyrics" | "queue") => void;
@@ -88,6 +149,9 @@ export function PlayerSidePanel({
   activeTrackId: string;
   onPickTrack: (id: string) => void;
   onSeek: (time: number) => void;
+  onPlayNext?: (id: string) => void;
+  onRemove?: (id: string) => void;
+  onMove?: (id: string, direction: "up" | "down") => void;
 }) {
   return (
     <aside className="glass hidden min-h-0 min-w-0 flex-col rounded-[1.5rem] p-4 lg:flex">
@@ -129,7 +193,14 @@ export function PlayerSidePanel({
           onSeek={onSeek}
         />
       ) : (
-        <QueueList tracks={tracks} activeTrackId={activeTrackId} onPickTrack={onPickTrack} />
+        <QueueList
+          tracks={tracks}
+          activeTrackId={activeTrackId}
+          onPickTrack={onPickTrack}
+          onPlayNext={onPlayNext}
+          onRemove={onRemove}
+          onMove={onMove}
+        />
       )}
     </aside>
   );

@@ -16,22 +16,23 @@ export function FloatingNav({
   onRequestClose: () => void;
   onPick: (id: ViewId) => void;
 }) {
-  const nodes = (["player", "cloud", "artists", "daily", "radar", "stats"] as ViewId[])
+  const nodes = (["player", "cloud", "artists", "explore", "daily", "radar", "stats"] as ViewId[])
     .map((id) => navItems.find((item) => item.id === id))
     .filter((item): item is (typeof navItems)[number] => Boolean(item));
   const nodePositions = [
     { x: 120, y: 24 },
-    { x: 120, y: 78 },
-    { x: 120, y: 132 },
-    { x: 120, y: 186 },
-    { x: 120, y: 240 },
-    { x: 120, y: 294 },
+    { x: 120, y: 72 },
+    { x: 120, y: 120 },
+    { x: 120, y: 168 },
+    { x: 120, y: 216 },
+    { x: 120, y: 264 },
+    { x: 120, y: 312 },
   ];
-  const center = { x: 42, y: 358 };
+  const center = { x: 42, y: 368 };
 
   return (
     <div
-      className={cn("pointer-events-none absolute bottom-8 left-7 z-40 h-[394px] w-[188px]", raised && "bottom-24")}
+      className={cn("pointer-events-none absolute bottom-8 left-7 z-40 h-[404px] w-[188px]", raised && "bottom-24")}
       onKeyDown={(event) => {
         if (event.key === "Escape") onOpenChange(false);
       }}

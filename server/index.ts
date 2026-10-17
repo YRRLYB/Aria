@@ -141,6 +141,14 @@ app.post("/api/providers/netease/playlists", async (req, res, next) => {
   }
 });
 
+app.delete("/api/providers/netease/playlists/:playlistId", async (req, res, next) => {
+  try {
+    res.json(await neteaseClient.deletePlaylist(req.params.playlistId));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/providers/netease/playlists/:playlistId/tracks", async (req, res, next) => {
   try {
     res.json({ tracks: await neteaseClient.getPlaylistTracks(req.params.playlistId) });
@@ -230,6 +238,38 @@ app.get("/api/providers/netease/search/suggestions", async (req, res, next) => {
   try {
     const query = z.object({ q: z.string().trim().min(1).max(120) }).parse(req.query);
     res.json({ suggestions: await neteaseClient.getSearchSuggestions(query.q) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/styles", async (_req, res, next) => {
+  try { res.json(await neteaseClient.getStyleGroups()); } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/styles/:styleId", async (req, res, next) => {
+  try {
+    const query = z.object({
+      limit: z.coerce.number().int().min(1).max(50).default(24),
+      cursor: z.coerce.number().int().min(0).max(100_000).default(0),
+      sort: z.enum(["hot", "new"]).default("hot"),
+    }).parse(req.query);
+    res.json(await neteaseClient.getStyleDetail(req.params.styleId, query.limit, query.cursor, query.sort));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/sport-radio", async (req, res, next) => {
+  try {
+    const query = z.object({
+      bpm: z.coerce.number().int().min(40).max(240).default(100),
+      refresh: z.enum(["1", "true", "0", "false"]).optional(),
+    }).parse(req.query);
+    res.json(await neteaseClient.getSportRadio(query.bpm, query.refresh === "1" || query.refresh === "true"));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/providers/netease/discovery", async (req, res, next) => {
+  try {
+    const query = z.object({ limit: z.coerce.number().int().min(6).max(30).default(12) }).parse(req.query);
+    res.json(await neteaseClient.getDiscovery(query.limit));
   } catch (error) { next(error); }
 });
 

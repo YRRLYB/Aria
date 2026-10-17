@@ -8,6 +8,7 @@ import type {
   ProviderCloudPage,
   ProviderCloudTrack,
   ProviderDailyBundle,
+  ProviderDiscoveryBundle,
   ProviderPlaylist,
   ProviderRoamOptions,
   ProviderTrack,
@@ -39,12 +40,38 @@ type NeteaseSong = {
   sq?: NeteaseQualityInfo | null;
   h?: NeteaseQualityInfo | null;
   jymaster?: NeteaseQualityInfo | null;
+  bpm?: number | string | null;
   privilege?: {
     maxbr?: number;
     playMaxbr?: number;
     maxBrLevel?: string;
     playMaxBrLevel?: string;
   };
+};
+
+type NeteaseStyleTag = {
+  tagId?: number | string;
+  tagName?: string;
+  name?: string;
+  enName?: string;
+  level?: number;
+  picUrl?: string | null;
+  desc?: string | null;
+  cover?: string[] | string | null;
+  childrenTags?: NeteaseStyleTag[] | null;
+};
+
+type ProviderStyle = {
+  id: string;
+  name: string;
+  description?: string;
+  coverUrl?: string | null;
+};
+
+type ProviderStyleGroup = {
+  id: string;
+  name: string;
+  styles: ProviderStyle[];
 };
 
 type NeteaseQualityInfo = {
@@ -251,6 +278,19 @@ export class NeteaseClient {
     return normalizePlaylist({ ...body.playlist, userId, subscribed: false }, userId);
   }
 
+  async deletePlaylist(playlistId: string) {
+    const { cookie, userId, playlist } = await this.requireOwnedPlaylist(playlistId);
+    if (playlist.specialType === 5) {
+      throw new HttpError(403, "我喜欢的音乐由网易云管理，不能删除", "NETEASE_PLAYLIST_SPECIAL");
+    }
+    try {
+      await callNetease("playlist_delete", { id: playlistId, cookie, timestamp: Date.now() });
+    } finally {
+      await this.invalidatePlaylist(playlistId, userId);
+    }
+    return { ok: true as const };
+  }
+
   async getDailyRecommendations(): Promise<ProviderDailyBundle> {
     const { cookie, userId } = await this.requireSession();
     const bundle = await rememberPersistent(`netease:daily:v2:${userId}`, shortTtl, async () => {
@@ -263,6 +303,42 @@ export class NeteaseClient {
       };
     });
     return { ...bundle, tracks: await this.attachCachedMetadata(bundle.tracks) };
+  }
+
+  /** Public discovery data used by the Explore surface: hot searches, charts,
+   * and the playlist square. These endpoints work before account linking. */
+  async getDiscovery(limit = 12): Promise<ProviderDiscoveryBundle> {
+    const safeLimit = Math.max(6, Math.min(30, Math.floor(limit)));
+    return rememberPersistent(`netease:discovery:v1:${safeLimit}`, shortTtl, async () => {
+      const [hotResult, rankingResult, playlistResult] = await Promise.all([
+        callNetease("search_hot", { limit: safeLimit }),
+        callNetease("toplist", {}),
+        callNetease("top_playlist", { order: "hot", limit: safeLimit, offset: 0 }),
+      ]);
+
+      const hotData = (hotResult.result ?? hotResult.data ?? {}) as { hots?: Array<{ first?: string }>; realkeyword?: string };
+      const hotSearches = (hotData.hots ?? [])
+        .map((item) => typeof item.first === "string" ? item.first.trim() : "")
+        .filter(Boolean)
+        .slice(0, safeLimit);
+      const rankingData = (rankingResult.list ?? rankingResult.data ?? []) as Array<Record<string, unknown>>;
+      const rankings = rankingData
+        .filter((item) => item.id != null && typeof item.name === "string")
+        .slice(0, safeLimit)
+        .map((item) => normalizePlaylist({
+          id: String(item.id),
+          name: String(item.name),
+          trackCount: Number(item.trackCount ?? item.trackNumberUpdateTime ?? 0) || 0,
+          coverImgUrl: typeof item.coverImgUrl === "string" ? item.coverImgUrl : typeof item.coverUrl === "string" ? item.coverUrl : undefined,
+          description: typeof item.updateFrequency === "string" ? item.updateFrequency : undefined,
+        }));
+      const playlistData = (playlistResult.playlists ?? playlistResult.data ?? []) as Array<Record<string, unknown>>;
+      const playlists = playlistData
+        .filter((item) => item.id != null && typeof item.name === "string")
+        .slice(0, safeLimit)
+        .map((item) => normalizePlaylist(item as unknown as NeteasePlaylist));
+      return { hotSearches, rankings, playlists };
+    });
   }
 
   async getPrivateRoaming(limit = 18, options: ProviderRoamOptions = {}): Promise<ProviderDailyBundle> {
@@ -443,6 +519,76 @@ export class NeteaseClient {
           return { ...empty, albums, total: Number(result.albumCount ?? albums.length) };
         }
       }
+    });
+  }
+
+  async getStyleGroups(): Promise<{ groups: ProviderStyleGroup[] }> {
+    return remember("netease:style-groups:v1", weekTtl, async () => {
+      const body = await callNetease("style_list", {});
+      const data = body.data;
+      const tags = Array.isArray(data) ? data as NeteaseStyleTag[] : [];
+      const groups = tags.flatMap((tag) => {
+        if (tag.tagId == null || !tag.tagName) return [];
+        const children = Array.isArray(tag.childrenTags) ? tag.childrenTags : [];
+        return [{
+          id: String(tag.tagId),
+          name: tag.tagName,
+          styles: (children.length ? children : [tag])
+            .filter((style) => style.tagId != null && Boolean(style.tagName))
+            .map((style) => ({ id: String(style.tagId), name: style.tagName!, coverUrl: normalizeStyleCover(style.picUrl) })),
+        }];
+      });
+      return { groups };
+    });
+  }
+
+  async getStyleDetail(styleId: string, limit = 24, cursor = 0, sort: "hot" | "new" = "hot") {
+    assertNeteaseId(styleId);
+    const cookie = await this.getOptionalCookie();
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const safeCursor = Math.max(0, Math.min(100_000, Math.floor(cursor)));
+    const safeSort = sort === "new" ? "new" : "hot";
+    return remember(`netease:style-detail:v1:${styleId}:${safeLimit}:${safeCursor}:${safeSort}`, shortTtl, async () => {
+      const [detailBody, songsBody] = await Promise.all([
+        callNetease("style_detail", { tagId: styleId, cookie }),
+        callNetease("style_song", { tagId: styleId, size: safeLimit, cursor: safeCursor, sort: safeSort === "new" ? 1 : 0, cookie }),
+      ]);
+      const detail = detailBody.data as NeteaseStyleTag | null | undefined;
+      if (!detail?.tagId) throw new HttpError(404, "曲风不存在或暂不可访问", "NETEASE_STYLE_UNAVAILABLE");
+      const data = songsBody.data as { page?: { cursor?: number | string; size?: number; more?: boolean }; songs?: NeteaseSong[] } | undefined;
+      const songs = Array.isArray(data?.songs) ? data.songs : [];
+      const pageCursor = nonnegativeNumber(data?.page?.cursor) ?? safeCursor;
+      const pageSize = nonnegativeNumber(data?.page?.size) ?? safeLimit;
+      const more = Boolean(data?.page?.more);
+      const tracks = await this.attachCachedMetadata(songs.map((song) => normalizeSong(song)));
+      return {
+        style: {
+          id: String(detail.tagId),
+          name: detail.tagName ?? detail.name ?? "未命名曲风",
+          description: detail.desc ?? "",
+          coverUrl: normalizeStyleCover(Array.isArray(detail.cover) ? detail.cover[0] : detail.cover),
+        },
+        tracks,
+        cursor: more ? String(pageCursor + Math.max(1, pageSize)) : null,
+        more,
+      };
+    });
+  }
+
+  async getSportRadio(bpm = 100, refresh = false) {
+    const safeBpm = Math.max(40, Math.min(240, Math.floor(bpm)));
+    const cookie = await this.getOptionalCookie();
+    const userId = cookie ? await this.getOptionalUserId() : null;
+    const cacheKey = `netease:sport-radio:v1:${userId ?? "public"}:${safeBpm}`;
+    if (refresh) clearCache(cacheKey);
+    return remember(cacheKey, 60_000, async () => {
+      const body = await callNetease("radio_sport_get", { bpm: safeBpm, cookie });
+      const data = body.data;
+      const songs = Array.isArray(data) ? data as NeteaseSong[] : Array.isArray((data as { songs?: unknown[] } | null)?.songs) ? (data as { songs: NeteaseSong[] }).songs : [];
+      return {
+        tracks: await this.attachCachedMetadata(songs.map((song) => normalizeSong(song))),
+        bpm: safeBpm,
+      };
     });
   }
 
@@ -748,7 +894,7 @@ export class NeteaseClient {
   }
 
   private async attachCachedMetadata(tracks: ProviderTrack[]) {
-    return tracks.map((track) => ({ ...track, bpm: null }));
+    return tracks.map((track) => ({ ...track, bpm: track.bpm ?? null }));
   }
 
   /** Resolve actual stream bitrates for private-roaming rows before rendering. */
@@ -845,7 +991,7 @@ export function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> =
     streamUrl: `/api/providers/netease/tracks/${song.id}/stream`,
     coverUrl: song.al?.picUrl ?? song.album?.picUrl ?? null,
     likedAt: extra.likedAt ?? null,
-    bpm: null,
+    bpm: normalizeBpm(extra.bpm ?? song.bpm),
     bitrate: extra.bitrate ?? normalizeBitrate(qualityInfo?.br ?? qualityInfo?.bitrate),
     sampleRate: extra.sampleRate ?? normalizeSampleRate(qualityInfo?.sr ?? qualityInfo?.sampleRate),
     currentLevel,
@@ -881,6 +1027,17 @@ function nonnegativeNumber(value: unknown): number | null {
   if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
+}
+
+function normalizeBpm(value: unknown): number | null {
+  const bpm = nonnegativeNumber(value);
+  return bpm != null && bpm > 0 ? bpm : null;
+}
+
+function normalizeStyleCover(value?: string | null): string | null {
+  if (!value) return null;
+  if (value.startsWith("yyimgs/")) return `https://p1.music.126.net/${value.slice("yyimgs/".length)}`;
+  return /^https?:\/\//.test(value) ? value.replace(/^http:/, "https:") : null;
 }
 
 function availableLevelsFromSong(song: NeteaseSong): QualityLevel[] {

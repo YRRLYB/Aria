@@ -106,6 +106,12 @@ export type ProviderDailyBundle = {
   reason: string;
 };
 
+export type ProviderDiscoveryBundle = {
+  hotSearches: string[];
+  rankings: ProviderPlaylist[];
+  playlists: ProviderPlaylist[];
+};
+
 export type ProviderRoamOptions = {
   refresh?: boolean;
   excludeIds?: string[];

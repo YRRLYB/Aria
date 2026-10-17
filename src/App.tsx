@@ -19,6 +19,7 @@ import { AlbumDetailSurface, UserDetailSurface } from "@/components/music/Discov
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
 import { FloatingNav } from "@/components/music/FloatingNav";
+import { ExploreSurface } from "@/components/music/ExploreSurface";
 import { AccountPanel, OnboardingDialog, SettingsPanel } from "@/components/music/SettingsPanels";
 import ariaIconUrl from "../build/icon.png";
 import { type Track, type ViewId } from "@/data/music";
@@ -37,7 +38,7 @@ import {
   writePlayHistory,
   type PlayHistoryEntry,
 } from "@/lib/playHistory";
-import { api, type ProviderUser } from "@/lib/api";
+import { api, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser } from "@/lib/api";
 import { ArtworkImage } from "@/components/music/ArtworkImage";
 import { AddToPlaylistDialog, PlaylistActionsProvider } from "@/components/music/PlaylistActions";
 import {
@@ -59,7 +60,7 @@ import { commitPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
 import { matchesShortcut, readKeyboardShortcuts, writeKeyboardShortcuts, type KeyboardShortcuts } from "@/lib/keyboardShortcuts";
 import { sourceLabel } from "@/lib/trackLabels";
-import { getTrackSearchSignature, idleTrack, localTrackToUiTrack } from "@/lib/trackMappers";
+import { getTrackSearchSignature, idleTrack, localTrackToUiTrack, providerTrackToUiTrack } from "@/lib/trackMappers";
 import { getBoundedCoverUrl } from "@/components/music/shared";
 import { cn } from "@/lib/utils";
 
@@ -165,6 +166,25 @@ export default function App() {
   });
   const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcuts>(readKeyboardShortcuts);
   const [query, setQuery] = useState("");
+  const [exploreTab, setExploreTab] = useState<"styles" | "radio" | "discover">("styles");
+  const [exploreStyleGroups, setExploreStyleGroups] = useState<ProviderStyleGroup[]>([]);
+  const [exploreStyleId, setExploreStyleId] = useState<string | null>(null);
+  const [exploreStyle, setExploreStyle] = useState<ProviderStyle | null>(null);
+  const [exploreTracks, setExploreTracks] = useState<Track[]>([]);
+  const [exploreStyleCursor, setExploreStyleCursor] = useState<string | null>(null);
+  const [exploreStyleMore, setExploreStyleMore] = useState(false);
+  const [exploreStyleSort, setExploreStyleSort] = useState<"hot" | "new">("hot");
+  const [exploreStylesLoading, setExploreStylesLoading] = useState(false);
+  const [exploreTracksLoading, setExploreTracksLoading] = useState(false);
+  const [exploreTracksLoadingMore, setExploreTracksLoadingMore] = useState(false);
+  const [exploreStyleError, setExploreStyleError] = useState<string | null>(null);
+  const [exploreRadioTracks, setExploreRadioTracks] = useState<Track[]>([]);
+  const [exploreRadioLoading, setExploreRadioLoading] = useState(false);
+  const [exploreRadioError, setExploreRadioError] = useState<string | null>(null);
+  const [exploreSelectedBpm, setExploreSelectedBpm] = useState<number | null>(null);
+  const [exploreDiscovery, setExploreDiscovery] = useState<ProviderDiscoveryBundle | null>(null);
+  const [exploreDiscoveryLoading, setExploreDiscoveryLoading] = useState(false);
+  const [exploreDiscoveryError, setExploreDiscoveryError] = useState<string | null>(null);
   const [addPlaylistRequest, setAddPlaylistRequest] = useState<{ tracks: Track[]; playlistId?: string } | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
@@ -291,6 +311,7 @@ export default function App() {
     closePlaylist,
     createPlaylist,
     updatePlaylist,
+    deletePlaylist,
     uploadPlaylistCover,
     editPlaylistTracks,
     reorderPlaylistTracks,
@@ -317,9 +338,100 @@ export default function App() {
   });
   const { cloudTracks, setCloudTracks } = cloudLibrary;
 
+  useEffect(() => {
+    if (activeView !== "explore" || exploreStyleGroups.length) return;
+    let cancelled = false;
+    setExploreStylesLoading(true);
+    setExploreStyleError(null);
+    void api.getNeteaseStyles().then((result) => {
+      if (cancelled) return;
+      setExploreStyleGroups(result.groups);
+      const first = result.groups.flatMap((group) => group.styles)[0];
+      if (first) setExploreStyleId((current) => current ?? first.id);
+    }).catch((error: unknown) => {
+      if (!cancelled) setExploreStyleError(error instanceof Error ? error.message : "曲风列表加载失败");
+    }).finally(() => {
+      if (!cancelled) setExploreStylesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [activeView, exploreStyleGroups.length]);
+
+  useEffect(() => {
+    if (activeView !== "explore" || !exploreStyleId) return;
+    let cancelled = false;
+    setExploreTracksLoading(true);
+    setExploreStyleError(null);
+    setExploreTracks([]);
+    setExploreStyleCursor(null);
+    setExploreStyleMore(false);
+    void api.getNeteaseStyle(exploreStyleId, { sort: exploreStyleSort, limit: 24 }).then((result) => {
+      if (cancelled) return;
+      setExploreStyle(result.style);
+      setExploreTracks(result.tracks.map((track, index) => providerTrackToUiTrack(track, index)));
+      setExploreStyleCursor(result.cursor);
+      setExploreStyleMore(result.more);
+    }).catch((error: unknown) => {
+      if (!cancelled) setExploreStyleError(error instanceof Error ? error.message : "曲风歌曲加载失败");
+    }).finally(() => {
+      if (!cancelled) setExploreTracksLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [activeView, exploreStyleId, exploreStyleSort]);
+
+  async function loadMoreExploreTracks() {
+    if (!exploreStyleId || !exploreStyleCursor || !exploreStyleMore || exploreTracksLoadingMore) return;
+    setExploreTracksLoadingMore(true);
+    setExploreStyleError(null);
+    try {
+      const result = await api.getNeteaseStyle(exploreStyleId, { sort: exploreStyleSort, cursor: exploreStyleCursor, limit: 24 });
+      const offset = exploreTracks.length;
+      setExploreTracks((current) => [...current, ...result.tracks.map((track, index) => providerTrackToUiTrack(track, offset + index))]);
+      setExploreStyleCursor(result.cursor);
+      setExploreStyleMore(result.more);
+    } catch (error) {
+      setExploreStyleError(error instanceof Error ? error.message : "更多歌曲加载失败");
+    } finally {
+      setExploreTracksLoadingMore(false);
+    }
+  }
+
+  async function loadExploreRadio(bpm: number) {
+    setExploreRadioLoading(true);
+    setExploreRadioError(null);
+    try {
+      const result = await api.getNeteaseSportRadio(bpm, true);
+      setExploreRadioTracks(result.tracks.map((track, index) => providerTrackToUiTrack(track, index)));
+      setExploreSelectedBpm(result.bpm);
+    } catch (error) {
+      setExploreRadioError(error instanceof Error ? error.message : "节拍电台加载失败");
+    } finally {
+      setExploreRadioLoading(false);
+    }
+  }
+
+  async function loadExploreDiscovery(force = false) {
+    if (exploreDiscoveryLoading || (exploreDiscovery && !force)) return;
+    setExploreDiscoveryLoading(true);
+    setExploreDiscoveryError(null);
+    try {
+      const result = await api.getNeteaseDiscovery(12);
+      setExploreDiscovery(result);
+    } catch (error) {
+      setExploreDiscoveryError(error instanceof Error ? error.message : "发现内容加载失败");
+    } finally {
+      setExploreDiscoveryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activeView === "explore" && exploreTab === "discover" && !exploreDiscovery && !exploreDiscoveryLoading) {
+      void loadExploreDiscovery();
+    }
+  }, [activeView, exploreDiscovery, exploreDiscoveryLoading, exploreTab]);
+
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks, ...cloudTracks]),
-    [localTracks, neteaseTracks, roamTracks, playlistTracks, cloudTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
+    [localTracks, neteaseTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
   );
   const allTracksById = useMemo(() => {
     const map = new Map<string, Track>();
@@ -515,6 +627,8 @@ export default function App() {
         return dailyTracks;
       case "radar":
         return roamTracks;
+      case "explore":
+        return mergeTracks([...exploreTracks, ...exploreRadioTracks]);
       case "cloud":
         return cloudLibrary.visibleTracks;
       case "artists":
@@ -524,7 +638,7 @@ export default function App() {
       default:
         return [];
     }
-  }, [activeView, artistTracks, dailyTracks, likedDisplayTracks, playHistory, playlistTracks, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
+  }, [activeView, artistTracks, dailyTracks, exploreRadioTracks, exploreTracks, likedDisplayTracks, playHistory, playlistTracks, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
 
   const hasActiveTrack = activeTrack.id !== idleTrack.id;
 
@@ -655,6 +769,43 @@ export default function App() {
     resetPlaybackTime();
     setDurationSeconds(0);
     setPlaying(true);
+  }
+
+  function queueIdsForManagement() {
+    const sourceTracks = playQueueTracks.length ? playQueueTracks : visibleTracks;
+    const ids = playQueueIds.length ? [...playQueueIds] : orderedQueueIds(sourceTracks);
+    if (activeTrack.id !== idleTrack.id && activeTrack.streamUrl && !ids.includes(activeTrack.id)) {
+      ids.unshift(activeTrack.id);
+    }
+    return ids;
+  }
+
+  function playNextTrack(trackId: string) {
+    if (!trackId || trackId === activeTrack.id) return;
+    const ids = queueIdsForManagement().filter((id) => id !== trackId);
+    const activeIndex = ids.indexOf(activeTrack.id);
+    ids.splice(activeIndex >= 0 ? activeIndex + 1 : 0, 0, trackId);
+    setPlayQueueIds(ids);
+  }
+
+  function removeFromQueue(trackId: string) {
+    if (!trackId || trackId === activeTrack.id) return;
+    setPlayQueueIds(queueIdsForManagement().filter((id) => id !== trackId));
+  }
+
+  function clearQueue() {
+    setPlayQueueIds(activeTrack.id !== idleTrack.id && activeTrack.streamUrl ? [activeTrack.id] : []);
+  }
+
+  function moveQueueTrack(trackId: string, direction: "up" | "down") {
+    if (!trackId || trackId === activeTrack.id) return;
+    const ids = queueIdsForManagement();
+    const index = ids.indexOf(trackId);
+    if (index < 0) return;
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= ids.length) return;
+    [ids[index], ids[targetIndex]] = [ids[targetIndex], ids[index]];
+    setPlayQueueIds(ids);
   }
 
   function restartActiveTrack() {
@@ -1291,14 +1442,18 @@ export default function App() {
   }, [handlePlaybackCommand, immersiveOpen, keyboardShortcuts]);
 
   useEffect(() => {
-    const sourceTracks = activeView === "radar" ? roamTracks : playQueueTracks.length ? playQueueTracks : visibleTracks;
-    const tracksToWarm = sourceTracks.slice(0, activeView === "radar" ? 72 : playing ? 12 : 36);
+    const sourceTracks = activeView === "radar"
+      ? roamTracks
+      : activeView === "explore"
+        ? mergeTracks([...exploreTracks, ...exploreRadioTracks])
+        : playQueueTracks.length ? playQueueTracks : visibleTracks;
+    const tracksToWarm = sourceTracks.slice(0, activeView === "radar" || activeView === "explore" ? 72 : playing ? 12 : 36);
     const timer = window.setTimeout(() => warmNeteaseTrackCache(tracksToWarm), playing ? 1600 : 260);
     return () => window.clearTimeout(timer);
     // warmNeteaseTrackCache closes over fresh state on every render, matching
     // the pre-hook behavior; only its inputs belong in the dependency list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, hifiEnabled, masterQualityEnabled, playing, playQueueTracks, roamTracks, qualityLevel, visibleTracks]);
+  }, [activeView, exploreRadioTracks, exploreTracks, hifiEnabled, masterQualityEnabled, playing, playQueueTracks, roamTracks, qualityLevel, visibleTracks]);
 
   useEffect(() => {
     trimStringSet(neteaseWarmupRef, memoryLimits.neteaseWarmup);
@@ -1942,6 +2097,7 @@ export default function App() {
                   onRemoveTracks={(id, tracks) => editPlaylistTracks(id, tracks, "del")}
                   onReorderTracks={reorderPlaylistTracks}
                   onSubscribe={subscribePlaylist}
+                  onDeletePlaylist={deletePlaylist}
                   canCreatePlaylist={neteaseConnected}
                   onCreatePlaylist={createPlaylist}
                   onRequireLogin={() => {
@@ -1971,6 +2127,43 @@ export default function App() {
                   refreshing={roamRefreshing}
                   onRefresh={() => void refreshRoamData()}
                   onPickTrack={chooseTrack}
+                />
+              )}
+              {activeView === "explore" && (
+                <ExploreSurface
+                  styleGroups={exploreStyleGroups}
+                  selectedStyle={exploreStyle}
+                  tracks={exploreTracks}
+                  radioTracks={exploreRadioTracks}
+                  activeTab={exploreTab}
+                  selectedStyleId={exploreStyleId}
+                  stylesLoading={exploreStylesLoading}
+                  loading={exploreTracksLoading}
+                  loadingMore={exploreTracksLoadingMore}
+                  radioLoading={exploreRadioLoading}
+                  styleError={exploreStyleError}
+                  radioError={exploreRadioError}
+                  discovery={exploreDiscovery}
+                  discoveryLoading={exploreDiscoveryLoading}
+                  discoveryError={exploreDiscoveryError}
+                  selectedBpm={exploreSelectedBpm}
+                  sort={exploreStyleSort}
+                  onSelectStyle={(id) => {
+                    setExploreStyleId(id);
+                    setExploreTab("styles");
+                  }}
+                  onRetryStyles={() => {
+                    setExploreStyleGroups([]);
+                  }}
+                  onSortChange={setExploreStyleSort}
+                  onLoadMore={() => void loadMoreExploreTracks()}
+                  onLoadRadio={(bpm) => void loadExploreRadio(bpm)}
+                  onLoadDiscovery={() => void loadExploreDiscovery()}
+                  onRetryDiscovery={() => void loadExploreDiscovery(true)}
+                  onSearchHot={(value) => { setQuery(value); setSearchFocused(false); }}
+                  onOpenPlaylist={(playlist) => { playlistReturnRef.current = { query: "", user: null }; void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); }}
+                  onPickTrack={chooseTrack}
+                  onTabChange={setExploreTab}
                 />
               )}
               {activeView === "artists" && (
@@ -2058,6 +2251,9 @@ export default function App() {
               activeTrackId={activeTrackId}
               onPickTrack={chooseTrack}
               onSeek={seekTo}
+              onPlayNext={playNextTrack}
+              onRemove={removeFromQueue}
+              onMove={moveQueueTrack}
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 xl:flex">
@@ -2073,7 +2269,14 @@ export default function App() {
               </Button>
             </div>
 
-            <QueueList tracks={playQueueTracks.length ? playQueueTracks : visibleTracks} activeTrackId={activeTrackId} onPickTrack={chooseTrack} />
+            <QueueList
+              tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
+              activeTrackId={activeTrackId}
+              onPickTrack={chooseTrack}
+              onPlayNext={playNextTrack}
+              onRemove={removeFromQueue}
+              onMove={moveQueueTrack}
+            />
           </aside>
           )}
         </section>
@@ -2083,6 +2286,10 @@ export default function App() {
           activeTrackId={activeTrackId}
           onPickTrack={chooseTrack}
           onClose={() => setQueueOpen(false)}
+          onPlayNext={playNextTrack}
+          onRemove={removeFromQueue}
+          onMove={moveQueueTrack}
+          onClear={clearQueue}
         />}
 
         <AnimatePresence>

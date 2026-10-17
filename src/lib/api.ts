@@ -188,6 +188,26 @@ export type ProviderTrack = {
   matchedLyric?: string | null;
 };
 
+export type ProviderStyle = {
+  id: string;
+  name: string;
+  description?: string;
+  coverUrl?: string | null;
+};
+
+export type ProviderStyleGroup = {
+  id: string;
+  name: string;
+  styles: ProviderStyle[];
+};
+
+export type ProviderStylePage = {
+  style: ProviderStyle;
+  tracks: ProviderTrack[];
+  cursor: string | null;
+  more: boolean;
+};
+
 export type ProviderPlaylist = {
   id: string;
   name: string;
@@ -266,6 +286,12 @@ export type ProviderDailyBundle = {
   date: string;
   tracks: ProviderTrack[];
   reason: string;
+};
+
+export type ProviderDiscoveryBundle = {
+  hotSearches: string[];
+  rankings: ProviderPlaylist[];
+  playlists: ProviderPlaylist[];
 };
 
 // Connection layer: where the Aria backend lives and how to authenticate.
@@ -528,6 +554,11 @@ export const api = {
       body: JSON.stringify({ name, isPrivate }),
     });
   },
+  deleteNeteasePlaylist(playlistId: string) {
+    return request<{ ok: true }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}`, {
+      method: "DELETE",
+    });
+  },
   getNeteasePlaylistTracks(playlistId: string) {
     return request<{ tracks: ProviderTrack[] }>(`/api/providers/netease/playlists/${encodeURIComponent(playlistId)}/tracks`);
   },
@@ -586,6 +617,23 @@ export const api = {
   getNeteaseSearchSuggestions(query: string) {
     const params = new URLSearchParams({ q: query });
     return request<{ suggestions: string[] }>(`/api/providers/netease/search/suggestions?${params}`);
+  },
+  getNeteaseStyles() {
+    return request<{ groups: ProviderStyleGroup[] }>("/api/providers/netease/styles");
+  },
+  getNeteaseStyle(styleId: string, options: { cursor?: string | null; sort?: "hot" | "new"; limit?: number } = {}) {
+    const params = new URLSearchParams({ sort: options.sort ?? "hot", limit: String(options.limit ?? 24) });
+    if (options.cursor) params.set("cursor", options.cursor);
+    return request<ProviderStylePage>(`/api/providers/netease/styles/${encodeURIComponent(styleId)}?${params}`);
+  },
+  getNeteaseSportRadio(bpm = 100, refresh = false) {
+    const params = new URLSearchParams({ bpm: String(bpm) });
+    if (refresh) params.set("refresh", "1");
+    return request<{ tracks: ProviderTrack[]; bpm: number }>(`/api/providers/netease/sport-radio?${params}`);
+  },
+  getNeteaseDiscovery(limit = 12) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    return request<ProviderDiscoveryBundle>(`/api/providers/netease/discovery?${params}`);
   },
   getNeteaseUserDetail(userId: string) {
     return request<{ user: ProviderUser }>(`/api/providers/netease/users/${encodeURIComponent(userId)}`);

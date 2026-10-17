@@ -241,6 +241,17 @@ export function useNeteaseData(options: {
     applyPlaylistDetails(playlist);
   }
 
+  async function deletePlaylist(id: string) {
+    await api.deleteNeteasePlaylist(id);
+    const wasOpen = selectedPlaylistIdRef.current === id;
+    setProviderPlaylists((current) => current.filter((playlist) => playlist.id !== id));
+    if (wasOpen) {
+      closePlaylist();
+      setPlaylistTracks([]);
+    }
+    await refreshPlaylistList().catch(() => undefined);
+  }
+
   async function uploadPlaylistCover(id: string, file: File) {
     const { playlist } = await api.uploadNeteasePlaylistCover(id, file);
     applyPlaylistDetails(playlist);
@@ -386,6 +397,7 @@ export function useNeteaseData(options: {
     closePlaylist,
     createPlaylist,
     updatePlaylist,
+    deletePlaylist,
     uploadPlaylistCover,
     editPlaylistTracks,
     reorderPlaylistTracks,
