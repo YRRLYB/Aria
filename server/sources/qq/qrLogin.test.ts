@@ -22,6 +22,26 @@ function htmlResponse(body: string, cookies: string[] = [], status = 200) {
 
 const fetchMock = vi.fn<typeof fetch>();
 
+function mockQrShow(qrsig = "qrSigValue") {
+  return new Response(PNG_BYTES, {
+    headers: { "content-type": "image/png", "set-cookie": `qrsig=${qrsig}; Path=/; Domain=.ptlogin2.qq.com` },
+  });
+}
+
+/** check_sig: 302 with the three graph cookies and a login_jump Location. */
+function mockCheckSig() {
+  const headers = new Headers({
+    location: "https://graph.qq.com/oauth2.0/login_jump",
+    "content-type": "text/html",
+  });
+  headers.append("set-cookie", "p_uin=o12345; Domain=graph.qq.com; Path=/");
+  headers.append("set-cookie", "p_skey=pSkeyValue; Domain=graph.qq.com; Path=/");
+  headers.append("set-cookie", "pt_oauth_token=oauth123; Domain=graph.qq.com; Path=/");
+  // A decoy from another domain must not be picked up as the signing cookie.
+  headers.append("set-cookie", "p_skey=; Domain=ptlogin2.qq.com; Path=/");
+  return new Response("", { status: 302, headers });
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   mocks.readStore.mockResolvedValue({ qqCookie: null });
@@ -40,62 +60,52 @@ describe("hash33", () => {
   it("matches the DJB2 variant with explicit seeds", () => {
     expect(hash33("", 5381)).toBe(5381);
     expect(hash33("", 0)).toBe(0);
-    // Manual check of the update rule: h = (h + (h << 5) + char) & 0x7fffffff.
     expect(hash33("a", 0)).toBe(97);
     expect(hash33("ab", 0)).toBe((97 + (97 << 5) + 98) & 0x7fffffff);
   });
 });
 
 describe("qq qr login", () => {
-  it("creates a session with a QR image after xlogin and ptqrshow", async () => {
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=abc123; Path=/; Domain=.qq.com"]))
-      .mockResolvedValueOnce(
-        new Response(PNG_BYTES, {
-          headers: { "content-type": "image/png", "set-cookie": "qrsig=qrSigValue; Path=/; Domain=.ptlogin2.qq.com" },
-        }),
-      );
+  it("creates a session straight from ptqrshow, without xlogin", async () => {
+    fetchMock.mockResolvedValueOnce(mockQrShow());
     const start = await startQqQrLogin();
-    expect(start.key).toBeTruthy();
     expect(start.qrImage).toMatch(/^data:image\/png;base64,/);
     expect(start.expiresIn).toBeGreaterThan(0);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [xloginUrl] = fetchMock.mock.calls[0];
-    expect(String(xloginUrl)).toContain("xlogin");
-    expect(String(xloginUrl)).toContain("appid=716027609");
-    const [, qrInit] = fetchMock.mock.calls[1];
-    expect((qrInit as RequestInit).headers).toMatchObject({ Referer: "https://xui.ptlogin2.qq.com/" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("ssl.ptlogin2.qq.com/ptqrshow");
+    expect(String(url)).toContain("appid=716027609");
+    expect(String(url)).not.toContain("xlogin");
+    expect((init as RequestInit).headers).toMatchObject({ Referer: "https://xui.ptlogin2.qq.com/" });
   });
 
-  it("fails when pt_login_sig is missing", async () => {
-    fetchMock.mockResolvedValueOnce(htmlResponse(""));
-    await expect(startQqQrLogin()).rejects.toMatchObject({ code: "QQ_QR_SESSION_FAILED" });
+  it("fails when the QR response carries no qrsig", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "content-type": "image/png" } }));
+    await expect(startQqQrLogin()).rejects.toMatchObject({ code: "QQ_QR_IMAGE_FAILED" });
   });
 
-  it("reports waiting and scanned states from the poll callback", async () => {
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(
-        new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }),
-      );
+  it("polls with only the qrsig cookie and maps the ptuiCB states", async () => {
+    fetchMock.mockResolvedValueOnce(mockQrShow("tok123"));
     const start = await startQqQrLogin();
 
     fetchMock.mockResolvedValueOnce(htmlResponse("ptuiCB('66','0','','0','二维码未失效。', '')"));
-    const waiting = await checkQqQrLogin(start.key);
-    expect(waiting).toMatchObject({ code: 66, status: "waiting" });
+    expect(await checkQqQrLogin(start.key)).toMatchObject({ code: 66, status: "waiting" });
 
     fetchMock.mockResolvedValueOnce(htmlResponse("ptuiCB('67','0','','0','二维码已扫描。', '')"));
-    const scanned = await checkQqQrLogin(start.key);
-    expect(scanned).toMatchObject({ code: 67, status: "scanned" });
+    expect(await checkQqQrLogin(start.key)).toMatchObject({ code: 67, status: "scanned" });
 
-    const [pollUrl, pollInit] = fetchMock.mock.calls[2];
-    expect(String(pollUrl)).toContain("ptqrlogin");
-    expect(String(pollUrl)).toContain("login_sig=sig");
-    expect((pollInit as RequestInit).headers).toMatchObject({ Cookie: expect.stringContaining("qrsig=tok123") });
+    fetchMock.mockResolvedValueOnce(htmlResponse("ptuiCB('65','0','','0','二维码已失效。', '')"));
+    expect(await checkQqQrLogin(start.key)).toMatchObject({ code: 65, status: "expired" });
+
+    const [pollUrl, pollInit] = fetchMock.mock.calls[1];
+    expect(String(pollUrl)).toContain("ssl.ptlogin2.qq.com/ptqrlogin");
+    expect(String(pollUrl)).toContain(`ptqrtoken=${hash33("tok123", 0)}`);
+    expect(String(pollUrl)).not.toContain("login_sig");
+    const cookie = String((pollInit as RequestInit).headers && (pollInit as RequestInit).headers!["Cookie"]);
+    expect(cookie).toBe("qrsig=tok123");
   });
 
-  it("completes the login chain and stores uin + musickey", async () => {
-    // readStore must reflect the cookie persisted by updateStore mid-flow.
+  it("completes check_sig → authorize → exchange and stores the credentials", async () => {
     let storedCookie: string | null = null;
     mocks.readStore.mockImplementation(async () => ({ qqCookie: storedCookie }));
     mocks.updateStore.mockImplementation(async (update: (store: Record<string, unknown>) => Record<string, unknown>) => {
@@ -103,297 +113,103 @@ describe("qq qr login", () => {
       storedCookie = (next.qqCookie as string | null) ?? null;
       return next;
     });
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }));
+
+    fetchMock.mockResolvedValueOnce(mockQrShow("tok123"));
     const start = await startQqQrLogin();
 
     fetchMock
       .mockResolvedValueOnce(
-        htmlResponse("ptuiCB('0','0','https://ssl.ptlogin2.qq.com/check_sig?uin=12345','0','登录成功！', '听歌人')"),
+        htmlResponse(
+          "ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?uin=o12345&ptsigx=abc','0','登录成功！', '听歌人')",
+        ),
       )
-      // check_sig hop sets p_skey, no further redirect
-      .mockResolvedValueOnce(htmlResponse("", ["p_skey=pSkeyValue; Path=/; Domain=.qq.com"]))
-      // oauth authorize → Location carries the code
+      .mockResolvedValueOnce(mockCheckSig())
+      // login_jump: the JS body is discarded
+      .mockResolvedValueOnce(htmlResponse("<script>location.href='/oauth2.0/authorize'</script>"))
+      // authorize: POST answers with the code in Location
       .mockResolvedValueOnce(
         new Response(null, {
           status: 302,
-          headers: { location: "https://y.qq.com/portal/wx_redirect.html?code=AUTHCODE&state=state" },
+          headers: { location: "https://y.qq.com/portal/wx_redirect.html?login_type=1&code=AUTHCODE" },
         }),
       )
-      // QQConnectLogin.QQLogin exchange
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ code: 0, req: { code: 0, data: { musicid: 12345, musickey: "Q_H_L_musickey", keyExpiresIn: 7776000 } } }),
+          JSON.stringify({ code: 0, req: { code: 0, data: { musicid: 12345, musickey: "Q_H_L_musickey" } } }),
           { headers: { "content-type": "application/json" } },
         ),
       )
-      // profile validation inside saveQqCookie → getQqAccount
+      // account probe inside saveQqCookie → getQqAccount (android profile)
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: { creator: { nick: "听歌人", headpic: "https://gtimg.cn/a.jpg" } } })),
+        new Response(
+          JSON.stringify({
+            req_0: { code: 0, data: { info: { nick: "听歌人", logo: "http://thirdqq.qlogo.cn/g?b=sdk&k=x&s=140" } } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
       );
 
     const result = await checkQqQrLogin(start.key);
-    expect(result.status).toBe("success");
+    expect(result).toMatchObject({ status: "success" });
     expect(result.account).toMatchObject({ connected: true, nickname: "听歌人", userId: "12345" });
 
-    const update = mocks.updateStore.mock.calls[0][0] as (store: Record<string, unknown>) => Record<string, unknown>;
-    expect(update({})).toMatchObject({ qqCookie: "uin=o12345; qqmusic_key=Q_H_L_musickey" });
+    // check_sig is replayed verbatim with no cookies at all.
+    const [, checkSigInit] = fetchMock.mock.calls[2];
+    expect((checkSigInit as RequestInit).headers).not.toHaveProperty("Cookie");
+    expect((checkSigInit as RequestInit).redirect).toBe("manual");
 
-    // The chain stopped on the empty check_sig page, so the browser-style
-    // authorize GET goes out signed with the p_skey-derived g_tk.
-    // Call order: xlogin, ptqrshow, ptqrlogin, check_sig, authorize, exchange, profile.
-    const authorizeCall = fetchMock.mock.calls[4];
-    const authorizeUrl = String(authorizeCall[0]);
-    expect(authorizeUrl).toContain("oauth2.0/authorize");
-    expect(authorizeUrl).toContain("client_id=100497308");
-    expect(authorizeUrl).toContain(`g_tk=${hash33("pSkeyValue")}`);
-    expect(authorizeUrl).toContain(
-      "redirect_uri=" + encodeURIComponent("https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https%3A%2F%2Fy.qq.com%2F"),
+    // authorize is a POST signed with g_tk derived from the graph p_skey.
+    const [authorizeUrl, authorizeInit] = fetchMock.mock.calls[4];
+    expect(String(authorizeUrl)).toBe("https://graph.qq.com/oauth2.0/authorize");
+    expect((authorizeInit as RequestInit).method).toBe("POST");
+    const body = new URLSearchParams(String((authorizeInit as RequestInit).body));
+    expect(body.get("client_id")).toBe("100497308");
+    expect(body.get("g_tk")).toBe(String(hash33("pSkeyValue")));
+    expect(body.get("redirect_uri")).toBe("https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https%3A%2F%2Fy.qq.com%2F");
+    expect(String((authorizeInit as RequestInit).headers && (authorizeInit as RequestInit).headers!["Cookie"])).toContain(
+      "p_skey=pSkeyValue",
     );
-    // exchange carried the authorize code
-    const exchangeCall = fetchMock.mock.calls[5];
-    const exchangeBody = JSON.parse(String((exchangeCall[1] as RequestInit).body)) as {
+
+    const [, exchangeInit] = fetchMock.mock.calls[5];
+    const exchangeBody = JSON.parse(String((exchangeInit as RequestInit).body)) as {
       req: { module: string; param: { code: string } };
     };
     expect(exchangeBody.req.module).toBe("QQConnectLogin.LoginServer");
     expect(exchangeBody.req.param.code).toBe("AUTHCODE");
+
+    expect(storedCookie).toBe("uin=o12345; qm_keyst=Q_H_L_musickey; qqmusic_key=Q_H_L_musickey");
   });
 
-  it("takes the code from the redirect chain without needing p_skey", async () => {
-    let storedCookie: string | null = null;
-    mocks.readStore.mockImplementation(async () => ({ qqCookie: storedCookie }));
-    mocks.updateStore.mockImplementation(async (update: (store: Record<string, unknown>) => Record<string, unknown>) => {
-      const next = update({ qqCookie: storedCookie });
-      storedCookie = (next.qqCookie as string | null) ?? null;
-      return next;
-    });
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }));
+  it("reports a failed confirmation when check_sig does not issue the graph cookies", async () => {
+    fetchMock.mockResolvedValueOnce(mockQrShow("tok123"));
     const start = await startQqQrLogin();
 
     fetchMock
-      .mockResolvedValueOnce(
-        htmlResponse("ptuiCB('0','0','https://ptlogin2.qq.com/check_sig?uin=67890','0','登录成功！', '')"),
-      )
-      // check_sig → graph authorize: no p_skey is set anywhere on the way.
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 302,
-          headers: {
-            location:
-              "https://graph.qq.com/oauth2.0/authorize?response_type=code&client_id=100497308&redirect_uri=https%3A%2F%2Fy.qq.com%2Fportal%2Fwx_redirect.html",
-          },
-        }),
-      )
-      // graph authorize → redirect_uri with the one-time code.
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://y.qq.com/portal/wx_redirect.html?code=CHAINCODE&state=state" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ code: 0, req: { code: 0, data: { musicid: 67890, musickey: "Q_H_L_chain" } } }),
-          { headers: { "content-type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: { creator: { nick: "听歌人2", headpic: null } } })),
-      );
-
-    const result = await checkQqQrLogin(start.key);
-    expect(result.status).toBe("success");
-    expect(result.account).toMatchObject({ connected: true, userId: "67890" });
-
-    // The manual authorize POST must be skipped: the chain already gave us the code.
-    const authorizePosts = fetchMock.mock.calls.filter((call) =>
-      String((call[1] as RequestInit | undefined)?.body ?? "").includes("client_id="),
-    );
-    expect(authorizePosts).toHaveLength(0);
-
-    const exchange = fetchMock.mock.calls.find((call) => String(call[0]).includes("musicu"));
-    const exchangeBody = JSON.parse(String((exchange[1] as RequestInit).body)) as {
-      comm: { g_tk: number };
-      req: { param: { code: string } };
-    };
-    expect(exchangeBody.req.param.code).toBe("CHAINCODE");
-    // No signing cookie at all → fall back to the anonymous g_tk.
-    expect(exchangeBody.comm.g_tk).toBe(5381);
-  });
-
-  it("recovers the code from a landing page that redirects in script", async () => {
-    let storedCookie: string | null = null;
-    mocks.readStore.mockImplementation(async () => ({ qqCookie: storedCookie }));
-    mocks.updateStore.mockImplementation(async (update: (store: Record<string, unknown>) => Record<string, unknown>) => {
-      const next = update({ qqCookie: storedCookie });
-      storedCookie = (next.qqCookie as string | null) ?? null;
-      return next;
-    });
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }));
-    const start = await startQqQrLogin();
-
-    fetchMock
-      .mockResolvedValueOnce(
-        htmlResponse("ptuiCB('0','0','https://ptlogin2.qq.com/check_sig?uin=9999','0','登录成功！', '')"),
-      )
-      // Modern ptlogin answers with a page that finishes the redirect in JS,
-      // and hands out an empty p_skey plus p_skey_forbid.
-      .mockResolvedValueOnce(
-        htmlResponse(
-          '<html><script>window.location.href="https://y.qq.com/portal/wx_redirect.html?code=BODYCODE&state=state";</script></html>',
-          ["p_skey=; Path=/; Domain=.qq.com", "p_skey_forbid=1; Path=/; Domain=.qq.com"],
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ code: 0, req: { code: 0, data: { musicid: 9999, musickey: "Q_H_L_body" } } }),
-          { headers: { "content-type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { creator: { nick: "听歌人3" } } })));
-
-    const result = await checkQqQrLogin(start.key);
-    expect(result.status).toBe("success");
-
-    // The empty p_skey must not be mistaken for a signing cookie.
-    const authorizePosts = fetchMock.mock.calls.filter((call) =>
-      String((call[1] as RequestInit | undefined)?.body ?? "").includes("client_id="),
-    );
-    expect(authorizePosts).toHaveLength(0);
-
-    const exchange = fetchMock.mock.calls.find((call) => String(call[0]).includes("musicu"));
-    const exchangeBody = JSON.parse(String((exchange[1] as RequestInit).body)) as {
-      comm: { g_tk: number };
-      req: { param: { code: string } };
-    };
-    expect(exchangeBody.req.param.code).toBe("BODYCODE");
-    expect(exchangeBody.comm.g_tk).toBe(5381);
-  });
-
-  it("follows the scripted redirect inside the login_jump page", async () => {
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }));
-    const start = await startQqQrLogin();
-
-    fetchMock
-      .mockResolvedValueOnce(
-        htmlResponse("ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?uin=8888','0','登录成功！', '')"),
-      )
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://graph.qq.com/oauth2.0/login_jump?client_id=100497308&g_tk=5381" },
-        }),
-      )
-      // login_jump answers 200 and navigates in JS to the parameter-signed
-      // authorize URL; p_skey is empty here, exactly like the real refusal case.
-      .mockResolvedValueOnce(
-        htmlResponse(
-          '<html><script>window.location.href="https://graph.qq.com/oauth2.0/authorize?response_type=code&amp;client_id=100497308&amp;pt_login_type=3&amp;g_tk=5381";</script></html>',
-          ["p_skey=; Path=/; Domain=.qq.com", "p_skey_forbid=1; Path=/; Domain=.qq.com"],
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://y.qq.com/portal/wx_redirect.html?code=JSCODE&state=state" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ code: 0, req: { code: 0, data: { musicid: 8888, musickey: "Q_H_L_js" } } }),
-          { headers: { "content-type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { creator: { nick: "听歌人4" } } })));
-
-    const result = await checkQqQrLogin(start.key);
-    expect(result.status).toBe("success");
-
-    const authorizeCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("oauth2.0/authorize"));
-    expect(String(authorizeCall?.[0])).toContain("pt_login_type=3");
-    expect(String(authorizeCall?.[0])).toContain("g_tk=5381");
-
-    const exchange = fetchMock.mock.calls.find((call) => String(call[0]).includes("musicu"));
-    const exchangeBody = JSON.parse(String((exchange[1] as RequestInit).body)) as {
-      req: { param: { code: string } };
-    };
-    expect(exchangeBody.req.param.code).toBe("JSCODE");
-  });
-
-  it("explains why confirmation failed when the chain yields neither code nor a signing cookie", async () => {
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }));
-    const start = await startQqQrLogin();
-
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("ptuiCB('0','0','https://ptlogin2.qq.com/check_sig?uin=1','0','登录成功！', '')"))
-      // check_sig hop, then the browser-style authorize GET: neither sets a code or signing cookie.
-      .mockResolvedValueOnce(htmlResponse("", ["ptui_loginuin=12345; Path=/"]))
-      .mockResolvedValueOnce(htmlResponse(""));
+      .mockResolvedValueOnce(htmlResponse("ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?uin=o1','0','ok','n')"))
+      // 200 instead of the 302 that carries p_uin/p_skey/pt_oauth_token
+      .mockResolvedValueOnce(htmlResponse("<html>consent</html>"));
 
     const result = await checkQqQrLogin(start.key);
     expect(result.status).toBe("expired");
-    expect(result.message).toContain("授权链路未返回 code");
-    expect(result.message).toContain("ptui_loginuin");
-    // The dead session is dropped so the app asks for a fresh QR code.
-    await expect(checkQqQrLogin(start.key)).rejects.toMatchObject({ code: "QQ_QR_SESSION_MISSING" });
+    expect(result.message).toContain("check_sig");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("completes the login through the parameter-signed authorize URL", async () => {
-    fetchMock
-      .mockResolvedValueOnce(htmlResponse("", ["pt_login_sig=sig; Path=/"]))
-      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "set-cookie": "qrsig=tok123; Path=/" } }));
+  it("reports a failed authorize when the consent page comes back instead of a code", async () => {
+    fetchMock.mockResolvedValueOnce(mockQrShow("tok123"));
     const start = await startQqQrLogin();
 
     fetchMock
+      .mockResolvedValueOnce(htmlResponse("ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?uin=o1','0','ok','n')"))
+      .mockResolvedValueOnce(mockCheckSig())
+      .mockResolvedValueOnce(htmlResponse("<script></script>"))
       .mockResolvedValueOnce(
-        htmlResponse("ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?uin=7777','0','登录成功！', '')", [
-          "p_skey=; Path=/; Domain=.qq.com",
-          "p_skey_forbid=1; Path=/; Domain=.qq.com",
-          "pt_login_type=3; Path=/; Domain=.qq.com",
-          "pt_oauth_token=oat123; Path=/; Domain=.qq.com",
-        ]),
-      )
-      // check_sig ends on login_jump's scripted page: no code, no redirect URL.
-      .mockResolvedValueOnce(htmlResponse("<html><script>void 0;</script></html>"))
-      // Browser-style authorize with the ptlogin markers → immediate code.
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://y.qq.com/portal/wx_redirect.html?code=FALLBACKCODE&state=state" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ code: 0, req: { code: 0, data: { musicid: 7777, musickey: "Q_H_L_fb" } } }),
-          { headers: { "content-type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { creator: { nick: "听歌人5" } } })));
+        new Response(null, { status: 302, headers: { location: "https://graph.qq.com/oauth2.0/show?which=Login" } }),
+      );
 
     const result = await checkQqQrLogin(start.key);
-    expect(result.status).toBe("success");
-
-    const authorizeCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("oauth2.0/authorize"));
-    const authorizeUrl = String(authorizeCall?.[0]);
-    expect(authorizeUrl).toContain("pt_login_type=3");
-    expect(authorizeUrl).toContain("pt_oauth_token=oat123");
-    // Empty p_skey → unsigned request, so no g_tk is sent.
-    expect(authorizeUrl).not.toContain("g_tk=");
-
-    const exchange = fetchMock.mock.calls.find((call) => String(call[0]).includes("musicu"));
-    const exchangeBody = JSON.parse(String((exchange[1] as RequestInit).body)) as {
-      req: { param: { code: string } };
-    };
-    expect(exchangeBody.req.param.code).toBe("FALLBACKCODE");
+    expect(result.status).toBe("expired");
+    expect(result.message).toContain("QQ 授权失败");
   });
 
   it("rejects unknown session keys", async () => {

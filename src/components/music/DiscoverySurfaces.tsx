@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Cloud,
   Disc3,
@@ -6,6 +6,7 @@ import {
   Globe2,
   HardDrive,
   ListMusic,
+  Music4,
   Play,
   Search,
   UserRound,
@@ -94,7 +95,7 @@ export function SearchSurface({
     [tracks],
   );
   const descriptions = {
-    tracks: "搜索歌曲与本地音乐，可直接播放或加入歌单。",
+    tracks: "同时搜索本地音乐、网易云与 QQ 音乐，可直接播放或加入歌单。",
     artists: "浏览歌手作品、专辑与简介。",
     playlists: "浏览公开歌单并播放完整曲目。",
     users: "搜索网易云用户，查看他们的公开歌单。",
@@ -339,7 +340,7 @@ export function ArtistsSurface({
           <Badge>Artists</Badge>
           <h1 className="mt-3 text-3xl font-semibold">歌手</h1>
           <p className="mt-2 text-sm text-neutral-500">
-            浏览本地与网易云歌手，探索曲目、专辑和创作者资料。
+            浏览本地、网易云与 QQ 音乐歌手，探索曲目、专辑和创作者资料。
           </p>
         </div>
         <UserRound className="size-7 text-neutral-400" />
@@ -358,7 +359,7 @@ export function ArtistsSurface({
           />
         ))}
         {!featuredArtists.length && (
-          <EmptyState text="导入音乐或同步网易云后会生成歌手页。" />
+          <EmptyState text="导入音乐或登录在线音源后会生成歌手页。" />
         )}
       </div>
     </section>
@@ -390,9 +391,9 @@ function ArtistDetailView({
   onPickTrack: (id: string, queue?: Track[]) => void;
 } & ArtistDetailProps) {
   const [tab, setTab] = useState<"tracks" | "albums" | "about">("tracks");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "netease" | "local">(
-    "all",
-  );
+  const [sourceFilter, setSourceFilter] = useState<
+    "all" | "netease" | "qq" | "local"
+  >("all");
   const localTracks = useMemo(
     () => tracks.filter((track) => track.source === "local"),
     [tracks],
@@ -401,12 +402,18 @@ function ArtistDetailView({
     () => tracks.filter((track) => track.source === "netease"),
     [tracks],
   );
+  const qqTracks = useMemo(
+    () => tracks.filter((track) => track.source === "qq"),
+    [tracks],
+  );
   const playAllQueue =
     sourceFilter === "local"
       ? localTracks
       : sourceFilter === "netease"
         ? neteaseTracks
-        : tracks;
+        : sourceFilter === "qq"
+          ? qqTracks
+          : tracks;
   const sections = artistDetail?.sections ?? [];
   const description = artistDetail?.description ?? "";
   return (
@@ -484,6 +491,7 @@ function ArtistDetailView({
                   [
                     ["all", "全部", tracks.length],
                     ["netease", "网易云", neteaseTracks.length],
+                    ["qq", "QQ 音乐", qqTracks.length],
                     ["local", "本地", localTracks.length],
                   ] as const
                 ).map(([value, label, count]) => (
@@ -515,7 +523,7 @@ function ArtistDetailView({
                 播放全部
               </button>
             </div>
-            {sourceFilter !== "local" && (
+            {sourceFilter !== "local" && sourceFilter !== "qq" && (
               <ArtistTrackGroup
                 title="网易云流媒体"
                 icon={<Globe2 className="size-4" />}
@@ -524,7 +532,16 @@ function ArtistDetailView({
                 loading={tracksLoading}
               />
             )}
-            {sourceFilter !== "netease" && (
+            {sourceFilter !== "local" && sourceFilter !== "netease" && (
+              <ArtistTrackGroup
+                title="QQ 音乐"
+                icon={<Music4 className="size-4" />}
+                tracks={qqTracks}
+                onPickTrack={onPickTrack}
+                loading={tracksLoading}
+              />
+            )}
+            {sourceFilter !== "netease" && sourceFilter !== "qq" && (
               <ArtistTrackGroup
                 title="本地文件"
                 icon={<HardDrive className="size-4" />}

@@ -59,7 +59,7 @@ import {
   writePlayHistory,
   type PlayHistoryEntry,
 } from "@/lib/playHistory";
-import { api, type ApiLibraryWatchState, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser, type SourceAccountSummary } from "@/lib/api";
 import { ArtworkImage } from "@/components/music/ArtworkImage";
 import { AddToPlaylistDialog, PlaylistActionsProvider } from "@/components/music/PlaylistActions";
 import { AddToLocalPlaylistDialog } from "@/components/music/LocalPlaylistSurfaces";
@@ -151,6 +151,9 @@ export default function App() {
   const [playQueueIds, setPlayQueueIds] = useState<string[]>(initialPlayerCache.playQueueIds ?? []);
   const [mediaArtwork, setMediaArtwork] = useState<{ trackId: string; coverUrl: string; data: string | null } | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  // Non-NetEase sources live behind /api/sources/<id>/account; keep the QQ
+  // snapshot in App so the header can show the login state everywhere.
+  const [qqAccount, setQqAccount] = useState<SourceAccountSummary | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(() => {
     try {
       const completed = window.localStorage.getItem("aria-onboarding-complete") === "1";
@@ -423,6 +426,25 @@ export default function App() {
   });
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
+  const qqConnected = Boolean(qqAccount?.connected);
+  // The header shows a single account chip; NetEase wins when both are signed in.
+  const primaryAccount = neteaseConnected ? neteaseAccount : qqConnected ? qqAccount : null;
+  const refreshQqAccount = useEffectEvent(() => {
+    api
+      .getSourceAccount("qq")
+      .then(({ account }) => setQqAccount(account))
+      .catch(() => undefined);
+  });
+
+  useEffect(() => {
+    refreshQqAccount();
+  }, [activeView]);
+
+  useEffect(() => {
+    const onFocus = () => refreshQqAccount();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
   const cloudLibrary = useCloudLibrary({
     enabled: activeView === "cloud",
     connected: neteaseConnected,
@@ -2040,14 +2062,19 @@ export default function App() {
             <Button
               variant="glass"
               size="icon"
-              aria-label="网易云账号"
+              aria-label={primaryAccount ? `账号：${primaryAccount.nickname ?? "已登录"}` : "账号登录"}
+              title={
+                primaryAccount
+                  ? `${primaryAccount.nickname ?? "已登录"}${neteaseConnected ? "（网易云音乐）" : "（QQ 音乐）"}`
+                  : "登录播放源账号"
+              }
               onClick={() => setAccountOpen((value) => !value)}
             >
-              {neteaseAccount?.avatarUrl ? (
+              {primaryAccount?.avatarUrl ? (
                 <ArtworkImage
-                  src={neteaseAccount.avatarUrl}
+                  src={primaryAccount.avatarUrl}
                   cacheSize={128}
-                  alt={neteaseAccount.nickname ?? "account"}
+                  alt={primaryAccount.nickname ?? "account"}
                   draggable={false}
                   className="size-8 rounded-full object-cover"
                 />
@@ -2058,13 +2085,22 @@ export default function App() {
             <span
               className={cn(
                 "absolute right-0 top-0 size-2.5 rounded-full ring-2 ring-white",
-                neteaseConnected ? "bg-[#28c840]" : "bg-neutral-300",
+                neteaseConnected || qqConnected ? "bg-[#28c840]" : "bg-neutral-300",
               )}
             />
             <AnimatePresence>
               {accountOpen && (
                 <AccountPanel
                   initialAccount={neteaseAccount}
+                  sourceAccounts={[
+                    { id: "netease", label: "网易云音乐", connected: neteaseConnected, nickname: neteaseAccount?.nickname ?? null },
+                    { id: "qq", label: "QQ 音乐", connected: qqConnected, nickname: qqAccount?.nickname ?? null },
+                  ]}
+                  onManageSources={() => {
+                    setAccountOpen(false);
+                    setSettingsReturnView(activeView === "settings" ? "home" : activeView);
+                    setActiveView("settings");
+                  }}
                   onClose={() => setAccountOpen(false)}
                   onAccountChange={(account) => {
                     setNeteaseAccount(account);
@@ -2075,7 +2111,7 @@ export default function App() {
             </AnimatePresence>
             </div>
 
-            {window.ariaDesktop && <div className="app-window-controls flex items-center">
+            {window.ariaDesktop && window.ariaDesktop.platform !== "darwin" && <div className="app-window-controls flex items-center">
               <button
                 className="flex size-9 items-center justify-center rounded-full text-neutral-500 transition hover:bg-white hover:text-neutral-950"
                 aria-label="Minimize window"
@@ -2455,6 +2491,7 @@ export default function App() {
                   onKeyboardShortcutsChange={setKeyboardShortcuts}
                   theme={theme}
                   onThemeChange={setTheme}
+                  onSourceAccountChange={() => refreshQqAccount()}
                   onClose={() => setActiveView(settingsReturnView)}
                 />
               )}
@@ -2554,6 +2591,8 @@ export default function App() {
                 setNeteaseAccount(account);
                 if (account.connected) void refreshNeteaseData();
               }}
+              onSourceAccountChange={() => refreshQqAccount()}
+              qqAccount={qqAccount}
               onComplete={() => setOnboardingOpen(false)}
             />
           )}

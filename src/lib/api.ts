@@ -4,6 +4,8 @@ import type { LocalMetadataApplyOptions, LocalMetadataOverride, LocalMetadataPre
 declare global {
   interface Window {
     ariaDesktop?: {
+      /** `win32` | `darwin` | `linux` — lets the shell render platform-correct chrome. */
+      platform?: string;
       nativeAudio?: {
         supported?: boolean;
         isSupported?: () => Promise<boolean>;
@@ -155,6 +157,14 @@ export type ApiLibraryWatchState = {
   scanningRoots: string[];
   lastScanAt: number | null;
   lastError: string | null;
+};
+
+/** Account snapshot shared by every non-NetEase source (`/api/sources/<id>/account`). */
+export type SourceAccountSummary = {
+  connected: boolean;
+  nickname: string | null;
+  userId: string | null;
+  avatarUrl: string | null;
 };
 
 export type NeteaseAccountSummary = {
@@ -772,7 +782,7 @@ export const api = {
     );
   },
   getSourceAccount(sourceId: string) {
-    return request<{ account: { connected: boolean; nickname: string | null; userId: string | null; avatarUrl: string | null } }>(
+    return request<{ account: SourceAccountSummary }>(
       `/api/sources/${encodeURIComponent(sourceId)}/account`,
     );
   },
@@ -780,9 +790,15 @@ export const api = {
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/cover?url=${encodeURIComponent(sourceUrl)}`);
   },
   saveQqCookie(cookie: string) {
-    return request<{ ok: boolean; account: { connected: boolean; nickname: string | null; userId: string | null; avatarUrl: string | null } }>(
+    return request<{ ok: boolean; account: SourceAccountSummary }>(
       "/api/settings/qq-cookie",
       { method: "POST", body: JSON.stringify({ cookie }) },
+    );
+  },
+  clearQqCookie() {
+    return request<{ ok: boolean; account: SourceAccountSummary }>(
+      "/api/settings/qq-cookie",
+      { method: "DELETE" },
     );
   },
   startQqQrLogin() {
@@ -796,7 +812,7 @@ export const api = {
       code: number;
       status: "waiting" | "scanned" | "expired" | "success";
       message: string;
-      account: { connected: boolean; nickname: string | null; userId: string | null; avatarUrl: string | null } | null;
+      account: SourceAccountSummary | null;
     }>(`/api/settings/qq-qr/check?${params}`);
   },
 };

@@ -59,6 +59,17 @@ export function selectPlaybackQuality(
   settings: PlaybackQualitySettings,
 ): QualityLevel {
   const originalPreference = settings.qualityLevel === "jymaster" ? "hires" : settings.qualityLevel;
+  // QQ Music exposes standard / 320K / lossless / Hi-Res and has no 臻品母带
+  // tier, so master quality falls back to the highest original level.
+  if (track && track.source === "qq") {
+    const qqLevels = track.availableLevels ?? [];
+    const ceiling: QualityLevel[] = ["hires", "lossless"];
+    if (settings.hifiEnabled) {
+      const reachable = ceiling.filter((level) => !qqLevels.length || qqLevels.includes(level));
+      return reachable[0] ?? originalPreference;
+    }
+    return originalPreference;
+  }
   if (track && track.source !== "netease") return originalPreference;
   const available = track?.availableLevels ?? [];
   if (settings.masterQualityEnabled && (!available.length || available.includes("jymaster"))) return "jymaster";

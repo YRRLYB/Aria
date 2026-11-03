@@ -126,6 +126,12 @@ describe("playerPresentation", () => {
     expect(selectPlaybackQuality(track, { ...settings, hifiEnabled: false, qualityLevel: "exhigh" })).toBe("exhigh");
     expect(selectPlaybackQuality(track, { ...settings, hifiEnabled: false, qualityLevel: "jymaster" })).toBe("hires");
     expect(selectPlaybackQuality({ source: "local", availableLevels: ["jymaster"] }, { ...settings, masterQualityEnabled: true })).toBe("hires");
+    // QQ has no 臻品母带 tier: HiFi picks the highest original level, and a
+    // master-quality preference degrades to Hi-Res instead of jymaster.
+    expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard", "exhigh", "lossless", "hires"] }, settings)).toBe("hires");
+    expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard", "exhigh", "lossless"] }, settings)).toBe("lossless");
+    expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard", "exhigh"] }, settings)).toBe("hires");
+    expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard"] }, { ...settings, hifiEnabled: false, qualityLevel: "exhigh" })).toBe("exhigh");
   });
 
   it("persists master quality independently and defaults legacy audio settings to disabled", () => {

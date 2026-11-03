@@ -1,6 +1,6 @@
 import type { MusicSource, SourceSearchPage } from "../contract";
 import { SourceError } from "../contract";
-import { getQqAccount, getQqLyrics, resolveQqStreamMeta, saveQqCookie, searchQqTracks } from "./client";
+import { getQqAccount, getQqLyrics, resolveQqStreamMeta, saveQqCookie, searchQqTracks, clearQqCookie } from "./client";
 import { checkQqQrLogin, startQqQrLogin } from "./qrLogin";
 import { qqManifest } from "./manifest";
 
@@ -29,6 +29,10 @@ export const qqSource: MusicSource = {
 
   saveCookie(cookie) {
     return saveQqCookie(cookie);
+  },
+
+  clearCookie() {
+    return clearQqCookie();
   },
 
   startQrLogin() {

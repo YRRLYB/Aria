@@ -15,6 +15,8 @@
     "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --external:sharp --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
     "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:web && npm run build:server",
     "dist:beta": "npm run build:desktop && electron-builder --win nsis --x64",
+    "dist:mac": "npm run build:desktop && electron-builder --mac --x64 --arm64",
+    "dist:linux": "npm run build:desktop && electron-builder --linux --x64",
     "test": "vitest run",
     "start:server": "node dist-server/index.cjs",
     "preview": "vite preview --host 127.0.0.1"
@@ -94,6 +96,35 @@
       "artifactName": "Aria-${version}-${arch}.${ext}",
       "shortcutName": "Aria",
       "uninstallDisplayName": "Aria"
+    },
+    "mac": {
+      "icon": "build/icon-1024.png",
+      "category": "public.app-category.music",
+      "darkModeSupport": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "artifactName": "Aria-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon-1024.png",
+      "category": "AudioVideo",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     }
   }
 }

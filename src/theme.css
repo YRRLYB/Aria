@@ -21,6 +21,8 @@ button:disabled { cursor: default; }
   backdrop-filter: blur(18px);
 }
 .app-brand { grid-column: 1; min-width: 0; }
+/* macOS keeps its native traffic lights: leave room before the wordmark. */
+[data-platform="darwin"] .app-header { padding-left: 92px; }
 .app-brand > button { gap: 10px; }
 .app-brand img { width: 32px; height: 32px; border-radius: 9px; }
 .app-wordmark { color: var(--text-primary); font-size: 27px; font-weight: 720; letter-spacing: -1.4px; line-height: 1; }

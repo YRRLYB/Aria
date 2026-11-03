@@ -1,4 +1,4 @@
-﻿import { useMemo } from "react";
+import { useMemo } from "react";
 import { BarChart3, CalendarDays, Headphones, History, Pause, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -147,7 +147,7 @@ export function HomeSurface({
             音乐从这里开始
           </h1>
           <p className="mt-3 max-w-xl text-neutral-500">
-            把本地音乐、网易云喜欢、每日推荐和云盘放在同一个主页里。
+            把本地音乐、网易云喜欢、QQ 音乐搜索、每日推荐和云盘放在同一个主页里。
           </p>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
             <StatTile label="本地曲库" value={String(localTrackCount)} />
@@ -180,7 +180,7 @@ export function HomeSurface({
           {activeTrack.id === "idle" ? (
             <div className="absolute inset-x-5 bottom-5 z-20 rounded-[1rem] border border-white/20 bg-neutral-950/35 px-4 py-3 text-white backdrop-blur-sm">
               <p className="text-lg font-semibold">暂无播放</p>
-              <p className="mt-1 text-xs text-white/70">从本地音乐或网易云选择一首歌开始。</p>
+              <p className="mt-1 text-xs text-white/70">从本地音乐、网易云或 QQ 音乐选择一首歌开始。</p>
             </div>
           ) : (
             <div className="absolute bottom-5 left-5 right-5 z-20">
@@ -224,7 +224,7 @@ export function HomeSurface({
                 <span className="text-sm text-neutral-500">{playCounts[track.id] ? `${playCounts[track.id]} 次` : track.duration}</span>
               </button>
             ))}
-            {!rankedTracks.length && <EmptyState text="扫描本地目录或绑定网易云 Cookie 后显示排行。" />}
+            {!rankedTracks.length && <EmptyState text="扫描本地目录或登录在线音源后显示排行。" />}
           </div>
         </div>
 

@@ -116,7 +116,8 @@ export function PlayerSurface({
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
   const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
   const availableLevels = activeTrack.availableLevels ?? [];
-  const hasKnownQualityLevels = activeTrack.source === "netease" && availableLevels.length > 0;
+  const qualitySwitchableSource = activeTrack.source === "netease" || activeTrack.source === "qq";
+  const hasKnownQualityLevels = qualitySwitchableSource && availableLevels.length > 0;
   const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [songOptionsOpen, setSongOptionsOpen] = useState(false);
   const [encyclopediaOpen, setEncyclopediaOpen] = useState(false);
@@ -230,7 +231,7 @@ export function PlayerSurface({
               >
                 <div>
                   <p className="text-2xl font-semibold text-neutral-900">暂无播放</p>
-                  <p className="mt-2 text-sm text-neutral-600">从本地音乐或网易云选择一首歌开始。</p>
+                  <p className="mt-2 text-sm text-neutral-600">从本地音乐、网易云或 QQ 音乐选择一首歌开始。</p>
                 </div>
               </div>
             ) : (
@@ -330,7 +331,7 @@ export function PlayerSurface({
             {activeTrack.id === "idle" ? (
               <div className="mt-6 rounded-[1.25rem] border border-white/70 bg-white/55 p-5 shadow-sm">
                 <h1 className="text-3xl font-semibold text-neutral-950">暂无播放</h1>
-                <p className="mt-2 text-sm text-neutral-500">从本地音乐或网易云选择一首歌开始。</p>
+                <p className="mt-2 text-sm text-neutral-500">从本地音乐、网易云或 QQ 音乐选择一首歌开始。</p>
               </div>
             ) : (
               <>
@@ -453,9 +454,9 @@ export function PlayerSurface({
                       className={cn(
                         "player-quality-option rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
                         resolvedQualityLevel === option.value && "is-active bg-neutral-950 text-white shadow-sm",
-                        (activeTrack.source !== "netease" || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))) && "opacity-45",
+                        !qualitySwitchableSource || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value)) ? "opacity-45" : undefined,
                       )}
-                      disabled={activeTrack.source !== "netease" || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))}
+                      disabled={!qualitySwitchableSource || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))}
                       onClick={() => onQualityLevelChange(option.value)}
                     >
                       {option.label}

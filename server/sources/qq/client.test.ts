@@ -12,6 +12,8 @@ vi.mock("../../store", () => ({
 
 import {
   availableQqLevels,
+  clearQqCookie,
+  getQqAccount,
   getQqLyrics,
   normalizeQqSong,
   parseQqCookie,
@@ -213,7 +215,7 @@ describe("qq cookie login", () => {
   it("saves a valid cookie and returns the account summary", async () => {
     mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qqmusic_key=k1" });
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ data: { creator: { nick: "听歌人", headpic: "https://gtimg.cn/a.jpg" } } })),
+      new Response(JSON.stringify({ req_0: { code: 0, data: { info: { nick: "听歌人", logo: "https://gtimg.cn/a.jpg" } } } })),
     );
     const account = await saveQqCookie("uin=o12345; qqmusic_key=k1");
     expect(account).toMatchObject({ connected: true, nickname: "听歌人" });
@@ -222,16 +224,82 @@ describe("qq cookie login", () => {
     expect(update({})).toMatchObject({ qqCookie: "uin=o12345; qqmusic_key=k1" });
   });
 
+  it("probes the android profile and upgrades the avatar to https", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          req_0: { code: 0, data: { info: { nick: "YRRLYB", logo: "http://thirdqq.qlogo.cn/g?b=sdk&k=abc&s=140" } } },
+        }),
+      ),
+    );
+
+    const account = await getQqAccount();
+
+    expect(account).toEqual({
+      connected: true,
+      nickname: "YRRLYB",
+      userId: "12345",
+      avatarUrl: "https://thirdqq.qlogo.cn/g?b=sdk&k=abc&s=140",
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("musicu.fcg");
+    const body = JSON.parse(String((init as RequestInit).body)) as {
+      comm: { ct: number; authst: string; qq: string };
+      req_0: { module: string; method: string };
+    };
+    // The web profile (ct 24 / yqq.json) rejects the session with 500003, so the
+    // account probe must use the android client profile.
+    expect(body.comm).toMatchObject({ ct: 11, authst: "k1", qq: "12345" });
+    expect(body.req_0.module).toBe("music.UserInfo.userInfoServer");
+    expect(body.req_0.method).toBe("GetLoginUserInfo");
+    expect(String((init as RequestInit).headers && (init as RequestInit).headers!["Cookie"])).toContain("qqmusic_uin=12345");
+  });
+
+  it("falls back to the profile-homepage endpoint when the android probe is rejected", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ req_0: { code: 500003, subcode: 860100001 } })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: { creator: { nick: "YRRLYB", headpic: "http://thirdqq.qlogo.cn/g?b=sdk&k=abc&s=140", uin: 0 } },
+          }),
+        ),
+      );
+
+    const account = await getQqAccount();
+
+    expect(account).toMatchObject({ connected: true, nickname: "YRRLYB", avatarUrl: "https://thirdqq.qlogo.cn/g?b=sdk&k=abc&s=140" });
+    const fallbackUrl = String(fetchMock.mock.calls[1][0]);
+    expect(fallbackUrl).toContain("fcg_get_profile_homepage.fcg");
+    expect(fallbackUrl).toContain("userid=12345");
+  });
+
   it("rejects cookies without usable credentials", async () => {
     await expect(saveQqCookie("hello=world")).rejects.toMatchObject({ code: "QQ_COOKIE_INVALID" });
     expect(mocks.updateStore).not.toHaveBeenCalled();
   });
 
-  it("reports a disconnected account when the profile call fails", async () => {
+  it("reports a disconnected account when both probes fail", async () => {
     mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qqmusic_key=k1" });
-    fetchMock.mockResolvedValueOnce(new Response("{}", { status: 500 }));
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 500 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 500 }));
 
     const account = await saveQqCookie("uin=o12345; qqmusic_key=k1");
+    expect(account).toMatchObject({ connected: false, nickname: null });
+  });
+
+  it("clears the stored cookie on sign out", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+
+    const account = await clearQqCookie();
+
+    expect(mocks.updateStore).toHaveBeenCalledTimes(1);
+    const update = mocks.updateStore.mock.calls[0][0] as (store: Record<string, unknown>) => Record<string, unknown>;
+    expect(update({ qqCookie: "uin=o12345; qm_keyst=k1" })).toMatchObject({ qqCookie: null });
     expect(account).toMatchObject({ connected: false, nickname: null });
   });
 });

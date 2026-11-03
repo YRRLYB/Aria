@@ -8,7 +8,13 @@ const { CdAudioRipper } = require("./cdAudioRipper.cjs");
 // name (for example, `Aria.exe`).  The branded filename lets the native
 // decoder stay in WASAPI while remaining part of the app selected for share.
 const NATIVE_AUDIO_CLIENT_NAME = "Aria";
-const NATIVE_AUDIO_PROCESS_NAME = `${NATIVE_AUDIO_CLIENT_NAME}.exe`;
+const IS_WINDOWS = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
+// Windows uses the branded .exe so application loopback can select Aria; the
+// other platforms ship (or expect) an `mpv` binary next to it.
+const NATIVE_AUDIO_PROCESS_NAME = IS_WINDOWS ? `${NATIVE_AUDIO_CLIENT_NAME}.exe` : "mpv";
+const NATIVE_AUDIO_EXECUTABLE = IS_WINDOWS ? "mpv.exe" : "mpv";
+const NATIVE_AUDIO_OUTPUT = IS_MAC ? "coreaudio" : IS_WINDOWS ? "wasapi" : "pipewire,pulse,alsa";
 const EQUALIZER_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
 function sanitizeEqualizerBands(value) {
@@ -29,21 +35,22 @@ function buildEqualizerFilter(bands) {
 function buildMpvArguments(pipePath, exclusive = false) {
   return [
     "--idle=yes",
-    "--ao=wasapi",
+    `--ao=${NATIVE_AUDIO_OUTPUT}`,
     "--no-video",
     "--force-window=no",
     "--keep-open=no",
     "--no-terminal",
-    // Aria publishes metadata and queue controls through its own Windows
+    // Aria publishes metadata and queue controls through its own native
     // session. mpv's built-in session knows only its private preload playlist.
     "--media-controls=no",
     "--input-media-keys=no",
-    // Keep the Windows audio session stable for application-loopback tools.
+    // Keep the native audio session stable for application-loopback tools.
     `--audio-client-name=${NATIVE_AUDIO_CLIENT_NAME}`,
     "--audio-set-media-role=yes",
     `--title=${NATIVE_AUDIO_CLIENT_NAME}`,
     `--force-media-title=${NATIVE_AUDIO_CLIENT_NAME}`,
-    `--audio-exclusive=${exclusive ? "yes" : "no"}`,
+    // Exclusive mode is a WASAPI concept; macOS/Linux keep shared output.
+    ...(IS_WINDOWS ? [`--audio-exclusive=${exclusive ? "yes" : "no"}`] : []),
     "--msg-level=all=warn",
     "--no-config",
     "--cache=yes",
@@ -110,7 +117,7 @@ class MpvAudioEngine {
   }
 
   isSupported() {
-    return process.platform === "win32" && fs.existsSync(this.resolveExecutable());
+    return fs.existsSync(this.resolveExecutable());
   }
 
   resolveExecutable() {
@@ -120,7 +127,7 @@ class MpvAudioEngine {
     const brandedExecutable = path.join(mpvDirectory, NATIVE_AUDIO_PROCESS_NAME);
     if (fs.existsSync(brandedExecutable)) return brandedExecutable;
 
-    return path.join(mpvDirectory, "mpv.exe");
+    return path.join(mpvDirectory, NATIVE_AUDIO_EXECUTABLE);
   }
 
   snapshot(extra = {}) {
@@ -141,7 +148,7 @@ class MpvAudioEngine {
     const output = await new Promise((resolve, reject) => {
       execFile(
         this.resolveExecutable(),
-        ["--audio-device=help", "--ao=wasapi", "--no-config", "--msg-level=ao=info"],
+        ["--audio-device=help", `--ao=${NATIVE_AUDIO_OUTPUT}`, "--no-config", "--msg-level=ao=info"],
         { windowsHide: true },
         (error, stdout = "", stderr = "") => {
           if (error && !stdout && !stderr) {
@@ -177,7 +184,9 @@ class MpvAudioEngine {
     this.ensurePromise = (async () => {
       await this.teardown();
 
-      this.pipePath = `\\\\.\\pipe\\aria-mpv-${process.pid}-${Date.now()}`;
+      this.pipePath = IS_WINDOWS
+        ? `\\\\.\\pipe\\aria-mpv-${process.pid}-${Date.now()}`
+        : path.join(require("node:os").tmpdir(), `aria-mpv-${process.pid}-${Date.now()}.sock`);
       this.buffer = "";
       this.launchExclusive = requestedExclusive;
 
@@ -800,6 +809,14 @@ class MpvAudioEngine {
     this.process = null;
     this.launchExclusive = null;
     this.state.ready = false;
+    // POSIX IPC endpoints are real files that mpv does not remove itself.
+    if (!IS_WINDOWS && this.pipePath) {
+      try {
+        fs.rmSync(this.pipePath, { force: true });
+      } catch {
+        /* the socket is already gone */
+      }
+    }
   }
 }
 

@@ -20,7 +20,10 @@ import {
  */
 
 export const MUSICU_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg";
-const PROFILE_URL = "https://c.y.qq.com/rfc/fcg_get_profile";
+// The legacy `rfc/fcg_get_profile` endpoint is dead (404); this is the one the
+// y.qq.com profile page still calls and it accepts the qm_keyst session cookie.
+const PROFILE_URL = "https://c.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg";
+const PROFILE_CID = "205360838";
 const LYRIC_URL = "https://i.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg";
 export const QQ_REFERER = "https://y.qq.com/";
 const REFERER = QQ_REFERER;
@@ -375,39 +378,116 @@ function disconnectedAccount(): SourceAccount {
   return { connected: false, nickname: null, userId: null, avatarUrl: null };
 }
 
+function httpsAvatar(value: string | null | undefined): string | null {
+  if (!value) return null;
+  // QQ still hands out `http://` avatar URLs; upgrading avoids a mixed-content
+  // block inside the renderer.
+  return value.replace(/^http:\/\//i, "https://");
+}
+
+/**
+ * Authenticated modules only answer the android client profile
+ * (`ct: 11 / cv: 20090008`) with `authst=<musickey>` in `comm` plus the
+ * matching cookie; the web profile (`ct: 24 / yqq.json`) rejects the same
+ * session with `500003 / 860100001`. The batch key is `req_0`, not `req`.
+ */
+function androidComm(uin: string, key: string) {
+  const guid = "aria0qqmusic0guid0desktop00000";
+  return {
+    comm: {
+      ct: 11,
+      cv: 20090008,
+      v: 20090008,
+      chid: "10003505",
+      qq: uin,
+      authst: key,
+      tmeAppID: "qqmusic",
+      guid,
+      tmeLoginType: 2,
+    },
+    cookie: `uin=${uin}; qqmusic_uin=${uin}; qm_keyst=${key}; qqmusic_key=${key}; guid=${guid}`,
+  };
+}
+
+async function fetchLoginUserInfo(uin: string, key: string, signal: AbortSignal): Promise<SourceAccount | null> {
+  const { comm, cookie } = androidComm(uin, key);
+  const response = await fetch(MUSICU_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json;charset=utf-8",
+      Referer: REFERER,
+      Origin: "https://y.qq.com",
+      "User-Agent": "QQMusic 20090008(android 14)",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({
+      comm,
+      req_0: { module: "music.UserInfo.userInfoServer", method: "GetLoginUserInfo", param: {} },
+    }),
+    signal,
+  });
+  if (!response.ok) return null;
+  const payload = (await response.json().catch(() => null)) as
+    | { req_0?: { code?: number; data?: { info?: { nick?: string; logo?: string; encryptUin?: string } } } }
+    | null;
+  const section = payload?.req_0;
+  const info = section?.data?.info;
+  if (section?.code !== 0 || !info?.nick) return null;
+  return {
+    connected: true,
+    nickname: info.nick,
+    userId: uin,
+    avatarUrl: httpsAvatar(info.logo),
+  };
+}
+
+/** Web-session fallback: the endpoint the y.qq.com profile page still calls. */
+async function fetchProfileHomepage(uin: string, cookie: string, signal: AbortSignal): Promise<SourceAccount | null> {
+  const params = new URLSearchParams({
+    cid: PROFILE_CID,
+    userid: uin,
+    reqfrom: "1",
+    g_tk: "5381",
+    format: "json",
+    inCharset: "utf8",
+    outCharset: "utf-8",
+    platform: "yqq.json",
+    needNewCode: "0",
+  });
+  const response = await fetch(`${PROFILE_URL}?${params.toString()}`, {
+    headers: {
+      Referer: REFERER,
+      "User-Agent": USER_AGENT,
+      Cookie: cookie,
+    },
+    signal,
+  });
+  if (!response.ok) return null;
+  const payload = (await response.json().catch(() => null)) as
+    | { data?: { creator?: { nick?: string; headpic?: string; uin?: number | string } } }
+    | null;
+  const creator = payload?.data?.creator;
+  if (!creator?.nick) return null;
+  return {
+    connected: true,
+    nickname: creator.nick,
+    userId: creator.uin != null && String(creator.uin) !== "0" ? String(creator.uin) : uin,
+    avatarUrl: httpsAvatar(creator.headpic),
+  };
+}
+
 export async function getQqAccount(): Promise<SourceAccount> {
   const session = await optionalQqCookie();
   if (!session) return disconnectedAccount();
   const signal = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
   try {
-    const params = new URLSearchParams({
-      format: "json",
-      inCharset: "utf8",
-      outCharset: "utf-8",
-      platform: "yqq.json",
-      needNewCode: "0",
-      uin: session.parsed.uin,
-    });
-    const response = await fetch(`${PROFILE_URL}?${params.toString()}`, {
-      headers: {
-        Referer: REFERER,
-        "User-Agent": USER_AGENT,
-        Cookie: session.cookie,
-      },
-      signal,
-    });
-    if (!response.ok) return disconnectedAccount();
-    const payload = (await response.json().catch(() => null)) as
-      | { data?: { creator?: { nick?: string; headpic?: string; userid?: number | string } } }
-      | null;
-    const creator = payload?.data?.creator;
-    if (!creator?.nick) return disconnectedAccount();
-    return {
-      connected: true,
-      nickname: creator.nick,
-      userId: creator.userid != null ? String(creator.userid) : session.parsed.uin,
-      avatarUrl: creator.headpic ?? null,
-    };
+    const fromAndroid = await fetchLoginUserInfo(session.parsed.uin, session.parsed.key, signal);
+    if (fromAndroid) return fromAndroid;
+  } catch {
+    // Fall through to the web-session probe.
+  }
+  try {
+    return (await fetchProfileHomepage(session.parsed.uin, session.cookie, signal)) ?? disconnectedAccount();
   } catch {
     return disconnectedAccount();
   }
@@ -423,6 +503,14 @@ export async function saveQqCookie(cookie: string): Promise<SourceAccount> {
     );
   }
   await updateStore((store) => ({ ...store, qqCookie: trimmed }));
+  clearPurlCache();
+  fileInfoCache.clear();
+  return getQqAccount();
+}
+
+/** Sign out of QQ Music: drop the stored cookie and every cached URL. */
+export async function clearQqCookie(): Promise<SourceAccount> {
+  await updateStore((store) => ({ ...store, qqCookie: null }));
   clearPurlCache();
   fileInfoCache.clear();
   return getQqAccount();

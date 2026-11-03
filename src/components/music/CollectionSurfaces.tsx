@@ -51,7 +51,7 @@ export function CollectionSurface({
       <VirtualTrackList
         className="mt-8"
         tracks={tracks}
-        emptyText="暂无曲目，先同步网易云或扫描本地音乐。"
+        emptyText="暂无曲目，先扫描本地音乐或登录后同步红心。"
         onPickTrack={onPickTrack}
       />
     </div>
@@ -296,9 +296,32 @@ export function PlaylistSurface({
         </section>
       )}
       <div className="mt-6 flex w-fit rounded-full border border-white/70 bg-white/52 p-1 shadow-sm" aria-label="歌单来源">
-        <button type="button" aria-current="page" className="rounded-full bg-neutral-950 px-4 py-2 text-sm font-medium text-white">网易云</button>
-        <button type="button" className="rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition hover:bg-white" onClick={() => { setCreateOpen(false); setPlaylistSource("local"); }}>本地</button>
+        <button
+          type="button"
+          aria-current={playlistSource === "netease" ? "page" : undefined}
+          className={cn(
+            "rounded-full px-4 py-2 text-sm font-medium transition",
+            playlistSource === "netease" ? "bg-neutral-950 text-white" : "text-neutral-500 hover:bg-white",
+          )}
+          onClick={() => { setCreateOpen(false); setPlaylistSource("netease"); }}
+        >
+          网易云
+        </button>
+        <button
+          type="button"
+          aria-current={playlistSource === "local" ? "page" : undefined}
+          className={cn(
+            "rounded-full px-4 py-2 text-sm font-medium transition",
+            playlistSource === "local" ? "bg-neutral-950 text-white" : "text-neutral-500 hover:bg-white",
+          )}
+          onClick={() => { setCreateOpen(false); setPlaylistSource("local"); }}
+        >
+          本地
+        </button>
       </div>
+      <p className="mt-3 text-xs text-neutral-500">
+        QQ 音乐暂不支持歌单同步，搜索到的歌曲可以直接播放或加入本地歌单。
+      </p>
       <div className="mt-4 flex flex-wrap gap-2">
         {[
           ["all", "全部歌单"],

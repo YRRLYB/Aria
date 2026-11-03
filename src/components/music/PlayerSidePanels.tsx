@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ArrowDown, ArrowUp, ListEnd, Trash2 } from "lucide-react";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
 import type { Track } from "@/data/music";
@@ -116,7 +116,7 @@ export function QueueList({
           还有 {hiddenCount} 首，使用搜索快速定位
         </div>
       )}
-      {!tracks.length && <EmptyState text="暂无队列，先扫描本地目录或同步网易云。" />}
+      {!tracks.length && <EmptyState text="暂无队列，先扫描本地目录或登录在线音源。" />}
       <div className="pointer-events-none sticky bottom-0 h-10 bg-gradient-to-t from-white/70 to-transparent" />
     </div>
   );

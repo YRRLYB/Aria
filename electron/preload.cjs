@@ -4,6 +4,7 @@ const apiPort = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_POR
 const nativeIconicThumbnailEnabled = process.platform === "win32" && process.env.ARIA_NATIVE_ICONIC_THUMBNAIL !== "0";
 
 contextBridge.exposeInMainWorld("ariaDesktop", {
+  platform: process.platform,
   apiBase: `http://127.0.0.1:${apiPort}`,
   minimizeToTray: () => ipcRenderer.invoke("aria:minimize-to-tray"),
   minimizeWindow: () => ipcRenderer.invoke("aria:minimize-window"),

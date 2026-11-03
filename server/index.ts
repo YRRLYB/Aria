@@ -454,6 +454,18 @@ app.post("/api/settings/qq-cookie", async (req, res, next) => {
   }
 });
 
+app.delete("/api/settings/qq-cookie", async (_req, res, next) => {
+  try {
+    const source = await getSource("qq");
+    if (!source.clearCookie) {
+      throw new HttpError(400, "该播放源不支持退出登录", "SOURCE_COOKIE_UNSUPPORTED");
+    }
+    res.json({ ok: true, account: await source.clearCookie() });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/settings/qq-qr/start", async (_req, res, next) => {
   try {
     const source = await getSource("qq");

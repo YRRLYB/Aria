@@ -70,32 +70,63 @@ GET  /api/settings/qq-qr/check?key=                 # 扫码登录轮询（66 �
 | `src/lib/coverUrl.ts` | gtimg.cn 域名 → `/api/sources/qq/cover`（尺寸在路径内改写 `T002R{W}x{H}M000`） |
 | `src/hooks/useDiscovery.ts` | 搜索"全部"并行请求网易云 + QQ（`Promise.allSettled`，QQ 失败独立 `searchQqError` 通道） |
 | `src/hooks/useLyricsSync.ts` | QQ 分支：`api.getSourceLyrics("qq", providerId)` |
-| `src/components/music/SettingsPanels.tsx` | `QqSourceCard`：窗口扫码登录 + Cookie 备用 + 在线状态 |
+| `src/components/music/SettingsPanels.tsx` | `QqSourceCard`：扫码登录（服务端二维码）+ 窗口扫码 + Cookie 备用 + 退出登录；`AccountPanel` 的「播放源」列表；`OnboardingDialog` 第 2 步双源登录、第 3 步登录汇总 |
 | `src/lib/trackLabels.ts` | `sourceLabel` 穷举 Record——**加新源必须在这里加条目**，否则 TS 编译失败（这是故意的保险丝） |
 
 播放引擎（`useAudioEngine`、mpv）**完全源无关**：`track.streamUrl` 是后端代理的完整 URL，
-mpv/HTML5 直接放。唯一源相关逻辑是 `?level=` 音质参数追加，目前 netease-only。
+mpv/HTML5 直接放。唯一源相关逻辑是 `?level=` 音质参数追加，`netease` 与 `qq` 都会追加
+（`useAudioEngine` 两个 memo 都按 `source !== "netease" && source !== "qq"` 提前返回）。
 
-### 2.4.1 QQ 应用内窗口登录（主路径）
+### 2.4.0 账号显示（多源）
 
-服务端纯 HTTP 复刻 QQ 网页授权链在真实账号上无法拿到 `code`（`login_jump` 页面靠 JS 跳转，
-`authorize` 一律 302 到 `oauth2.0/show`），所以登录改成在 Electron 里开真实 Chromium 窗口：
+`src/App.tsx` 在 App 里保存 `qqAccount: SourceAccountSummary`（`GET /api/sources/qq/account`），
+挂载时、`activeView` 变化时和窗口 `focus` 时刷新（也作为 `onSourceAccountChange` 传给设置与引导）。
+右上角只有一个账号按钮：`primaryAccount = neteaseConnected ? neteaseAccount : qqConnected ? qqAccount : null`，
+因此只登录 QQ 时头像与昵称来自 QQ（实测 `https://thirdqq.qlogo.cn/...`）。点开的 `AccountPanel`
+会列出「播放源」两行（各自的 未登录 / 昵称）并提供「管理账号」跳到设置。
 
-- 渲染进程：`SettingsPanels.tsx` `loginInWindow()` → `window.ariaDesktop.qqLoginWindow()`；
-- 主进程：`electron/main.cjs` `ipcMain.handle("aria:qq-login-window")` 开 480×760 窗口加载
-  `https://y.qq.com/`（session 分区 `aria:qq-login`，UA 固定为 Chrome 131），每 1.2s 读一次会话 Cookie，
-  拿到非空 `qm_keyst`（或 `qqmusic_key`）+ 4 位以上 `uin` 后关闭窗口并返回**完整 Cookie 头**：
-  `uin=o<uin>` 加上 `qq.com` 域下所有非空 Cookie（`qm_keyst`、`p_skey`、`pt4_token` 等）。
-  ⚠️ 只回传 `uin + qm_keyst` 时账号信息接口会判定未登录（`getQqAccount` 返回 disconnected），
-  所以必须带上整组登录 Cookie；`uin`/`p_uin` 先剔除再统一写成 `uin=o<数字>`，避免重复键；
-- 渲染进程拿到后调 `api.saveQqCookie(cookie)` 走现有 `POST /api/settings/qq-cookie` 入库；
-  界面文案按 `account.connected` 决定：成功才显示"登录成功"，否则状态与提示都写明"未确认登录状态"，
-  不再出现"登录成功"与"未确认"同时出现的情况；
-- 桥接声明在 `src/lib/api.ts:83`（`qqLoginWindow?: () => Promise<{ ok: boolean; cookie?: string; message?: string }>`），
-  `electron/preload.cjs` 暴露同名方法；窗口关闭/加载失败返回 `{ ok:false, message }`，前端提示改用 Cookie 粘贴。
+`getQqAccount()`（`server/sources/qq/client.ts`）必须用 **android comm**：`ct:11, cv:20090008,
+v:20090008, chid:"10003505", qq:<musicid>, authst:<musickey>, tmeAppID:"qqmusic", guid:…,
+tmeLoginType:2`，batch key 是 `req_0`，UA `QQMusic 20090008(android 14)`，Cookie 带
+`uin/qqmusic_uin/qm_keyst/qqmusic_key/guid`。**旧的 web comm（`ct:24` / `platform:"yqq.json"`）会返回
+`500003/860100001`**，`music.UserInfo.userInfo/GetUserInfo` 这条老接口也不要再用；
+用 `music.UserInfo.userInfoServer/GetLoginUserInfo`（`req_0.data.info.nick|logo`）。
+备用路径是 `https://c.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg?cid=205360838&userid=<uin>&reqfrom=1&g_tk=5381&format=json`
+（`data.creator.nick|headpic`）——原来的 `rfc/fcg_get_profile` 已 404。
 
-服务端 `server/sources/qq/qrLogin.ts` 的二维码链路保留未删（接口仍在，可能有其他场景复用），
-但 UI 已不再调用 `startQqQrLogin`/`checkQqQrLogin`。
+### 2.4.1 QQ 扫码登录（网页端 = 服务端二维码，桌面端另有窗口兜底）
+
+主路径是服务端二维码：`SettingsPanels.tsx` `startQrLogin()` 调 `POST /api/settings/qq-qr/start`
+拿 base64 二维码渲染，前端每 2s `GET /api/settings/qq-qr/check?key=…` 轮询状态
+（66 等待 / 67 已扫码 / 65 过期 / 0 成功），成功后后端已写好凭据，前端只刷新账号状态。
+浏览器访问 Web 版时同样可用，不依赖 Electron。
+
+`server/sources/qq/qrLogin.ts` 的正确协议（2026-11 按 L-1124/QQMusicApi、
+Cosmosuperbaka/qqmusic-api-enhanced、yakult-green-tea/qq-music-api 三方实现核对）：
+
+1. `GET ssl.ptlogin2.qq.com/ptqrshow?...`（appid 716027609 / daid 383 / pt_3rd_aid 100497308），
+   只保留 `qrsig`。**不要调用 `xlogin`**：它下发的 `pt4_token`/`supertoken`/`oauthtoken` 会让
+   `check_sig` 返回 `p_skey_forbid` + 空的 `p_skey`，授权接口于是退回确认页。
+2. 轮询 `ssl.ptlogin2.qq.com/ptqrlogin`，Cookie **只发** `qrsig=…`，`ptqrtoken=hash33(qrsig,0)`，
+   `js_ver=20102616`，不发 `login_sig`。
+3. `ptuiCB` 返回 code 0 时的 args[2] 是完整 `check_sig` URL：原样重放、**零 Cookie**、
+   `redirect:"manual"`；从它的 302 `Set-Cookie` 里按 Domain 作用域取 `p_uin`/`p_skey`/`pt_oauth_token`
+   三个（缺任一即失败），不要合并跳转链上的其它 Cookie。
+4. GET 该 302 的 Location（`graph.qq.com/oauth2.0/login_jump`）丢弃响应体。
+5. `POST graph.qq.com/oauth2.0/authorize`（form-urlencoded，Cookie 带上面三个，
+   `g_tk=hash33(p_skey)`，`redirect_uri=https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=…`），
+   从 302 Location 取 `code`；裸 GET 只会拿到 `oauth2.0/show` 授权确认页。
+6. `POST musicu.fcg` `QQConnectLogin.LoginServer` / `QQLogin {code}` → `musicid`+`musickey`，
+   存成 `uin=o<musicid>; qm_keyst=…; qqmusic_key=…`。
+
+Cookie 作用域由 `server/sources/qq/cookieJar.ts` 负责（Domain/Path/Max-Age 解析、空值视为缺失、
+按 host+path 匹配并按路径长度排序），配套测试在 `cookieJar.test.ts`。
+
+桌面端另有兜底：`loginInWindow()` → `window.ariaDesktop.qqLoginWindow()` →
+`electron/main.cjs` `ipcMain.handle("aria:qq-login-window")` 开 480×760 窗口加载 `https://y.qq.com/`
+（session 分区 `aria:qq-login`），每 1.2s 读会话 Cookie，拿到非空 `qm_keyst` + `uin` 后把
+`qq.com` 域下的整组 Cookie 回传（只回 `uin + qm_keyst` 会被 `getQqAccount` 判成未登录），
+再 `api.saveQqCookie(cookie)` 入库；界面文案按 `account.connected` 区分成功/未确认。
 
 ### 2.5 打包注意
 
@@ -113,7 +144,11 @@ mpv/HTML5 直接放。唯一源相关逻辑是 `?level=` 音质参数追加，�
 - 搜索：真实 API 返回正确映射（`晴天 → 周杰伦 / 叶惠美 / FLAC / availableLevels`）
 - 歌词：LRC + 翻译合并（实测《晴天》63 行）
 - 封面：gtimg 代理 + 缓存
-- 扫码登录：服务端 QR 生成（真实 PNG）、轮询（真实 66 等待响应）可用；**实际登录用应用内窗口扫码**（见 §2.4.1），Cookie 粘贴登录也可用
+- 扫码登录：服务端 QR 生成（真实 PNG）、轮询（真实 66 等待响应）可用；授权链已按三方实现重写
+  （见 §2.4.1），**真实手机扫码已由用户实测通过**（store.json 里已写入 `qqCookie`）；
+  桌面端窗口扫码与 Cookie 粘贴为备用路径
+- 账号信息：`getQqAccount()` 用 android comm 实测返回 `connected:true, nickname:"YRRLYB"`、
+  QQ 头像 URL（见 §2.4.0），右上角头像与账号面板据此显示；退出登录走 `DELETE /api/settings/qq-cookie`
 - Cookie 解析：`uin` + `qqmusic_key`/`qm_keyst` 两种名字都认
 
 ### 3.2 播放地址的实测结论 ⚠️
@@ -127,8 +162,8 @@ mpv/HTML5 直接放。唯一源相关逻辑是 `?level=` 音质参数追加，�
 
 ### 3.3 待验证（按顺序做）
 
-1. **用户真实扫码**：设置 → 播放源 · QQ 音乐 → 生成二维码 → 手机 QQ 扫码确认。
-   成功后 `store.json` 应出现 `qqCookie`，账号显示昵称。
+1. ~~**用户真实扫码**~~ 已完成：设置 → 播放源 · QQ 音乐 → 扫码登录 → 手机 QQ 确认，
+   `store.json` 出现 `qqCookie`，`GET /api/sources/qq/account` 返回昵称与头像。
 2. **扫码后播放**：搜索任一歌曲 → 播放。关注三点：
    - 明文 purl 是否放行（应该可以，GetEVkey 对带 Cookie 的明文 filename 未验证）；
    - 128k/320k/FLAC 各档位实际可用性（无 VIP 时 hires/RS01 大概率空）；
@@ -214,16 +249,20 @@ npm.cmd run dev                                       # 本地开发（web + ele
 
 ## 8. 本次 0.6.0 变更文件地图
 
-**新增**：`server/sources/{contract,registry,streamProxy}.ts`、`server/sources/qq/{manifest,client,qrLogin,source}.ts(+tests)`、
-`server/sources/netease/{manifest,source}.ts`、`server/routes/sources.ts(+test)`、`docs/*`（4 份）
+**新增**：`server/sources/{contract,registry,streamProxy}.ts`、`server/sources/qq/{manifest,client,qrLogin,cookieJar,source}.ts(+tests)`、
+`server/sources/netease/{manifest,source}.ts`、`server/routes/sources.ts(+test)`、`docs/*`（5 份）、
+`scripts/`（mac/linux 打包配置在 `package.json` build 段）
 **修改**：`server/index.ts`（挂载 + qq 路由 + SourceError 处理 + 流路由改调 streamProxy）、
 `server/{types,store}.ts`（qqCookie 字段）、`server/remoteCoverCache.ts`（白名单参数化）、
 `server/routes/remoteCover.ts`（抽出 handleCoverRequest）、
 `src/lib/{api,coverUrl,trackLabels,trackMappers}.ts`、`src/data/music.ts`、
-`src/hooks/{useDiscovery,useLyricsSync}.ts`、
-`src/components/music/{DiscoverySurfaces,SettingsPanels}.tsx`、`package.json`（0.6.0）、`CHANGELOG.md`
+`src/hooks/{useDiscovery,useLyricsSync,useAudioEngine}.ts`、`src/main.tsx`（记录 platform）、`src/theme.css`（macOS 头部留白）、
+`src/lib/playerPresentation.ts`（QQ 音质档位）、`src/components/music/{DiscoverySurfaces,CollectionSurfaces,SettingsPanels,PlayerViews,PlayerSidePanels,HomeSurfaces}.tsx`、
+`src/App.tsx`（qqAccount/账号按钮/引导双源）、`electron/{main,preload,mpvEngine}.cjs`、
+`package.json`（0.6.0 + mac/linux 打包）、`CHANGELOG.md`、`README.md`
 
 **测试**：`server/sources/contract.test.ts`（key 往返/多段 ID/错误映射）、
 `server/sources/qq/client.test.ts`（搜索映射/档位降级/purl 缓存与刷新/歌词/Cookie）、
-`server/sources/qq/qrLogin.test.ts`（hash33/QR 全链路/凭据入库）、
+`server/sources/qq/qrLogin.test.ts`（hash33/QR 全链路/凭据入库/授权失败分支）、
+`server/sources/qq/cookieJar.test.ts`（Domain 作用域/空值/过期删除/路径优先级）、
 `server/routes/sources.test.ts`（泛型路由/206 重取/白名单/错误码）

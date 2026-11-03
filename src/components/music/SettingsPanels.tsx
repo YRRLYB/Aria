@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, FolderPlus, FolderSearch, Keyboard, LogIn, Monitor, Moon, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, FolderPlus, FolderSearch, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
 import QRCode from "qrcode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
-import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary } from "@/lib/api";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import type { AudioOutputMode } from "@/lib/playerPresentation";
 import { ariaThemeOptions, type AriaTheme } from "@/lib/theme";
@@ -57,6 +57,7 @@ export function SettingsPanel({
   onKeyboardShortcutsChange,
   theme,
   onThemeChange,
+  onSourceAccountChange,
   onClose,
 }: {
   backgroundEnabled: boolean;
@@ -94,6 +95,8 @@ export function SettingsPanel({
   onKeyboardShortcutsChange: (shortcuts: KeyboardShortcuts) => void;
   theme: AriaTheme;
   onThemeChange: (theme: AriaTheme) => void;
+  /** Fired after a non-NetEase source account changes so the header can refresh. */
+  onSourceAccountChange?: () => void;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
@@ -327,10 +330,10 @@ export function SettingsPanel({
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Account</p>
-                <h3 className="mt-1 truncate text-base font-semibold">{neteaseAccount?.nickname ?? "网易云未绑定"}</h3>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
+                <h3 className="mt-1 truncate text-base font-semibold">播放源 · 网易云音乐</h3>
               </div>
-              <Badge>{neteaseAccount?.connected ? "Ready" : "Cookie"}</Badge>
+              <Badge>{neteaseAccount?.connected ? "已登录" : "未登录"}</Badge>
             </div>
             <div className="mt-4 flex items-center gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               {neteaseAccount?.avatarUrl ? (
@@ -342,14 +345,14 @@ export function SettingsPanel({
               )}
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">
-                  {neteaseAccount?.connected ? neteaseAccount.userId : "等待绑定 Cookie"}
+                  {neteaseAccount?.connected ? neteaseAccount.nickname ?? neteaseAccount.userId : "等待扫码或 Cookie 登录"}
                 </p>
                 <p className="mt-1 truncate text-xs text-neutral-500">{neteaseAccount?.cookiePreview ?? "右上角头像里绑定"}</p>
               </div>
             </div>
           </section>
 
-          <QqSourceCard />
+          <QqSourceCard onAccountChange={onSourceAccountChange} />
 
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">
@@ -706,11 +709,15 @@ export function AccountPanel({
   onClose,
   onAccountChange,
   initialAccount = null,
+  sourceAccounts = [],
+  onManageSources,
   embedded = false,
 }: {
   onClose: () => void;
   onAccountChange?: (account: NeteaseAccountSummary) => void;
   initialAccount?: NeteaseAccountSummary | null;
+  sourceAccounts?: { id: string; label: string; connected: boolean; nickname: string | null }[];
+  onManageSources?: () => void;
   embedded?: boolean;
 }) {
   const [cookie, setCookie] = useState("");
@@ -872,6 +879,29 @@ export function AccountPanel({
         </Button>
       </div>
 
+      {sourceAccounts.length > 0 && (
+        <div className="mt-4 rounded-[1.2rem] border border-white/70 bg-white/55 p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-neutral-500">播放源</p>
+            {onManageSources && (
+              <Button variant="ghost" size="sm" onClick={onManageSources}>
+                管理账号
+              </Button>
+            )}
+          </div>
+          <ul className="mt-2 space-y-1.5">
+            {sourceAccounts.map((source) => (
+              <li key={source.id} className="flex items-center justify-between gap-2 text-sm">
+                <span className="text-neutral-600">{source.label}</span>
+                <span className={cn("truncate text-xs", source.connected ? "text-emerald-600" : "text-neutral-400")}>
+                  {source.connected ? source.nickname ?? "已登录" : "未登录"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="mt-4 rounded-[1.2rem] border border-white/70 bg-white/64 p-3 shadow-sm">
         <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-3">
           <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
@@ -952,6 +982,8 @@ export function OnboardingDialog({
   localMusicInfo,
   scanProgress,
   onAccountChange,
+  onSourceAccountChange,
+  qqAccount = null,
   onComplete,
 }: {
   neteaseAccount: NeteaseAccountSummary | null;
@@ -965,6 +997,10 @@ export function OnboardingDialog({
   localMusicInfo: { path: string; count: number } | null;
   scanProgress: { phase: string; processed: number; total: number; status: string; error?: string | null } | null;
   onAccountChange: (account: NeteaseAccountSummary) => void;
+  /** Refresh callback fired after the QQ source account changes. */
+  onSourceAccountChange?: () => void;
+  /** QQ Music account, shown in the summary step. */
+  qqAccount?: SourceAccountSummary | null;
   onComplete: () => void;
 }) {
   const [step, setStep] = useState(0);
@@ -1006,14 +1042,15 @@ export function OnboardingDialog({
           <div className="mt-8 grid gap-5 sm:grid-cols-[1.1fr_0.9fr] sm:items-center">
             <div>
               <h2 className="text-3xl font-semibold leading-tight">你的音乐，<br />从这里开始。</h2>
-              <p className="mt-4 text-sm leading-6 text-neutral-500">Aria 把本地音乐、网易云歌单和高音质播放集中在一个安静的工作台里。</p>
+              <p className="mt-4 text-sm leading-6 text-neutral-500">Aria 把本地音乐、网易云与 QQ 音乐两个在线音源，以及高音质播放集中在一个安静的工作台里。</p>
             </div>
             <div className="rounded-[1.25rem] bg-neutral-950 p-5 text-white shadow-lg">
               <p className="text-xs uppercase tracking-[0.2em] text-white/55">Ready when you are</p>
               <div className="mt-5 space-y-3 text-sm text-white/80">
-                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />网易云流媒体</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />本地无损音乐</p>
-                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />任务栏快捷控制</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />网易云音乐</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />QQ 音乐</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />{window.ariaDesktop?.platform === "darwin" ? "系统媒体控制" : "任务栏快捷控制"}</p>
               </div>
             </div>
           </div>
@@ -1054,18 +1091,31 @@ export function OnboardingDialog({
 
         {step === 2 && (
           <div className="mt-5">
-            <h2 className="text-xl font-semibold">连接网易云音乐</h2>
-            <p className="mt-2 text-sm text-neutral-500">登录后可以同步每日推荐、私人漫游、歌单和真实音质信息。也可以稍后在右上角完成。</p>
-            {neteaseAccount?.connected && (
-              <p className="mt-3 flex items-center gap-2 text-sm font-medium text-emerald-700"><CheckCircle2 className="size-4" />已登录：{neteaseAccount.nickname ?? "网易云账号"}</p>
-            )}
-            <div className="mt-4 overflow-hidden rounded-[1.25rem] bg-white/55">
-              <AccountPanel
-                embedded
-                initialAccount={neteaseAccount}
-                onClose={() => undefined}
-                onAccountChange={onAccountChange}
-              />
+            <h2 className="text-xl font-semibold">连接你的播放源</h2>
+            <p className="mt-2 text-sm text-neutral-500">
+              Aria 支持多个音源：网易云音乐提供每日推荐、私人漫游与歌单，QQ 音乐提供搜索与高音质在线播放。也可以稍后在设置或右上角完成。
+            </p>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <div className="overflow-hidden rounded-[1.25rem] bg-white/55">
+                <div className="flex items-center justify-between gap-2 px-4 pt-4">
+                  <p className="text-sm font-semibold">网易云音乐</p>
+                  {neteaseAccount?.connected && (
+                    <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                      <CheckCircle2 className="size-3.5" />
+                      {neteaseAccount.nickname ?? "已登录"}
+                    </p>
+                  )}
+                </div>
+                <AccountPanel
+                  embedded
+                  initialAccount={neteaseAccount}
+                  onClose={() => undefined}
+                  onAccountChange={onAccountChange}
+                />
+              </div>
+              <div className="overflow-hidden rounded-[1.25rem] bg-white/55 p-1">
+                <QqSourceCard onAccountChange={onSourceAccountChange} />
+              </div>
             </div>
           </div>
         )}
@@ -1076,7 +1126,7 @@ export function OnboardingDialog({
             <p className="mt-2 text-sm text-neutral-500">这些选项之后都可以在设置中修改。</p>
             <div className="mt-5 space-y-3">
               {[
-                ["后台托管", "关闭主窗口后继续播放，并保留任务栏与媒体快捷控制。", backgroundEnabled, onBackgroundEnabledChange],
+                ["后台托管", "关闭主窗口后继续播放，并保留系统媒体快捷控制。", backgroundEnabled, onBackgroundEnabledChange],
                 ["HiFi 优先", "优先最高原始音质 Hi-Res，不支持时自动降级。", hifiEnabled, onHifiEnabledChange],
                 ["无缝衔接", "提前加载下一首，减少歌曲切换时的空隙。", gaplessEnabled, onGaplessEnabledChange],
               ].map(([label, description, enabled, onChange]) => (
@@ -1093,9 +1143,17 @@ export function OnboardingDialog({
                 </div>
               ))}
             </div>
-            {neteaseAccount?.connected && (
-              <p className="mt-4 flex items-center gap-2 text-sm text-neutral-600"><CheckCircle2 className="size-4 text-emerald-600" />已连接 {neteaseAccount.nickname ?? "网易云账号"}</p>
-            )}
+            <div className="mt-4 space-y-2">
+              {neteaseAccount?.connected && (
+                <p className="flex items-center gap-2 text-sm text-neutral-600"><CheckCircle2 className="size-4 text-emerald-600" />网易云音乐：{neteaseAccount.nickname ?? "已登录"}</p>
+              )}
+              {qqAccount?.connected && (
+                <p className="flex items-center gap-2 text-sm text-neutral-600"><CheckCircle2 className="size-4 text-emerald-600" />QQ 音乐：{qqAccount.nickname ?? "已登录"}</p>
+              )}
+              {!neteaseAccount?.connected && !qqAccount?.connected && (
+                <p className="text-sm text-neutral-500">还没有登录在线音源，随时可以在右上角或设置里连接。</p>
+              )}
+            </div>
           </div>
         )}
 
@@ -1294,22 +1352,17 @@ function RemoteAccessSettings() {
 
 
 
-type SourceAccountSummary = {
-  connected: boolean;
-  nickname: string | null;
-  userId: string | null;
-  avatarUrl: string | null;
-};
-
 /** QQ Music source row: QR/cookie login + live account state from /api/sources/qq. */
-function QqSourceCard() {
+function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
   const [account, setAccount] = useState<SourceAccountSummary | null>(null);
   const [cookie, setCookie] = useState("");
   const [showInput, setShowInput] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [loginStatus, setLoginStatus] = useState("点击窗口登录，在弹出的浏览器窗口里用手机 QQ 扫码。");
+  const [loginStatus, setLoginStatus] = useState("点击扫码登录，用手机 QQ 扫描二维码。");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [qrLogin, setQrLogin] = useState<{ key: string; image: string } | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -1325,6 +1378,65 @@ function QqSourceCard() {
       mounted = false;
     };
   }, []);
+
+  async function startQrLogin() {
+    setQrLoading(true);
+    setMessage(null);
+    try {
+      const started = await api.startQqQrLogin();
+      setQrLogin({ key: started.key, image: started.qrImage });
+      setLoginStatus("请用手机 QQ 扫描二维码，并在手机上确认登录。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "二维码获取失败，请稍后重试");
+    } finally {
+      setQrLoading(false);
+    }
+  }
+
+  // The QR session lives on the server; poll it until it is confirmed, expires,
+  // or the card unmounts.
+  useEffect(() => {
+    if (!qrLogin) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void api
+        .checkQqQrLogin(qrLogin.key)
+        .then((result) => {
+          if (cancelled) return;
+          if (result.status === "scanned") {
+            setLoginStatus("已扫码，请在手机上确认登录。");
+            return;
+          }
+          if (result.status === "waiting") return;
+          window.clearInterval(timer);
+          setQrLogin(null);
+          if (result.status === "success" && result.account) {
+            setAccount(result.account);
+            onAccountChange?.();
+            setLoginStatus(
+              result.account.connected
+                ? "登录成功，账号信息已同步。"
+                : "已获取登录凭证，但资料接口暂未返回账号信息。",
+            );
+            setMessage(
+              result.account.connected
+                ? `已登录：${result.account.nickname ?? "QQ 音乐账号"}`
+                : "登录凭证已保存，可稍后重新打开账号面板查看",
+            );
+          } else {
+            setLoginStatus(result.message);
+            setMessage(result.status === "expired" ? "二维码已失效，请重新获取" : result.message);
+          }
+        })
+        .catch(() => {
+          // Transient poll failures are expected while the QR is pending.
+        });
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [qrLogin]);
 
   async function loginInWindow() {
     const openLoginWindow = window.ariaDesktop?.qqLoginWindow;
@@ -1343,6 +1455,7 @@ function QqSourceCard() {
       }
       const saved = await api.saveQqCookie(result.cookie);
       setAccount(saved.account);
+      onAccountChange?.();
       if (saved.account.connected) {
         setLoginStatus("登录成功，账号信息已同步。");
         setMessage(`已登录：${saved.account.nickname ?? "QQ 音乐账号"}`);
@@ -1367,11 +1480,29 @@ function QqSourceCard() {
     try {
       const result = await api.saveQqCookie(cookie.trim());
       setAccount(result.account);
+      onAccountChange?.();
       setCookie("");
       setShowInput(false);
       setMessage(result.account.connected ? "QQ 音乐 Cookie 已保存并登录" : "Cookie 已保存，但登录状态未确认");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败，请确认后端正在运行");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function logout() {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.clearQqCookie();
+      setAccount(result.account);
+      onAccountChange?.();
+      setQrLogin(null);
+      setLoginStatus("已退出 QQ 音乐，可随时重新扫码登录。");
+      setMessage("已退出 QQ 音乐账号");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "退出失败，请稍后重试");
     } finally {
       setSaving(false);
     }
@@ -1398,17 +1529,45 @@ function QqSourceCard() {
           <p className="text-sm font-semibold">{account?.connected ? account.nickname ?? "已登录" : "窗口扫码登录"}</p>
           <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{loginStatus}</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => void loginInWindow()} disabled={loginLoading}>
-              <LogIn />
-              {loginLoading ? "等待登录" : "窗口扫码登录"}
+            <Button size="sm" onClick={() => void startQrLogin()} disabled={qrLoading || loginLoading}>
+              <QrCode />
+              {qrLoading ? "生成中" : qrLogin ? "重新获取二维码" : "扫码登录"}
             </Button>
+            {window.ariaDesktop?.qqLoginWindow && (
+              <Button size="sm" variant="subtle" onClick={() => void loginInWindow()} disabled={loginLoading}>
+                <LogIn />
+                {loginLoading ? "等待登录" : "窗口扫码登录"}
+              </Button>
+            )}
             <Button size="sm" variant="subtle" onClick={() => setShowInput((value) => !value)}>
               <Cookie />
               Cookie 备用绑定
             </Button>
+            {account?.connected && (
+              <Button size="sm" variant="subtle" onClick={() => void logout()} disabled={saving}>
+                <LogOut />
+                退出登录
+              </Button>
+            )}
           </div>
         </div>
       </div>
+      {qrLogin && (
+        <div className="mt-3 flex items-center gap-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+          <img
+            src={qrLogin.image}
+            alt="QQ 音乐登录二维码"
+            width={132}
+            height={132}
+            className="size-[132px] rounded-[0.9rem] bg-white object-contain shadow-inner"
+          />
+          <div className="min-w-0 text-xs leading-relaxed text-neutral-500">
+            <p className="font-medium text-neutral-600">手机 QQ 扫码</p>
+            <p className="mt-1">扫码后需要在手机上点「确认登录」，二维码约 2 分钟有效。</p>
+            <p className="mt-1 text-neutral-400">二维码会通过本机服务端轮询，不会上传到第三方。</p>
+          </div>
+        </div>
+      )}
       {showInput && (
         <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
           <label className="text-xs font-medium text-neutral-500" htmlFor="qq-cookie">

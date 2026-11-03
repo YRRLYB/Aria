@@ -66,10 +66,11 @@ export function useAudioEngine(options: {
   // made the UI say "Exclusive" while Windows was still mixing the audio.
   const nativePlaybackEnabled = nativePlaybackRequested;
 
+  // Both online sources accept a ?level= override on their stream routes.
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease") return resolvedUrl;
+    if (activeTrack.source !== "netease" && activeTrack.source !== "qq") return resolvedUrl;
 
     const url = new URL(resolvedUrl, window.location.href);
     url.searchParams.set("level", options.effectiveQualityLevel);
@@ -79,10 +80,10 @@ export function useAudioEngine(options: {
   const audioElementStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease") return resolvedUrl;
+    if (activeTrack.source !== "netease" && activeTrack.source !== "qq") return resolvedUrl;
 
     const url = new URL(resolvedUrl, window.location.href);
-    if (activeTrack.source === "netease") {
+    if (activeTrack.source === "netease" || activeTrack.source === "qq") {
       // Native mpv owns the audible lossless stream. The renderer copy is
       // analyser-only, so use the smallest available stream to avoid doubling
       // high-resolution downloads and decoder memory.

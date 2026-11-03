@@ -171,6 +171,7 @@ export type MusicSource = {
   getLyrics?(trackId: string, signal?: AbortSignal): Promise<LyricLine[]>;
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
   saveCookie?(cookie: string): Promise<unknown>;
+  clearCookie?(): Promise<SourceAccount>;
   startQrLogin?(): Promise<SourceQrLoginStart>;
   checkQrLogin?(key: string): Promise<SourceQrLoginCheck>;
 };

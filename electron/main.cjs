@@ -197,7 +197,9 @@ function resolvePreload() {
 }
 
 function resolveIcon() {
-  return path.join(__dirname, "..", "build", "icon.ico");
+  // Windows wants a multi-size .ico; macOS/Linux read the PNG.
+  if (process.platform === "win32") return path.join(__dirname, "..", "build", "icon.ico");
+  return path.join(__dirname, "..", "build", "icon.png");
 }
 
 function resolveTrayIcon() {
@@ -620,13 +622,18 @@ async function createWindow() {
   void backendReady.catch((error) => writeLog("desktop.log", `backend startup failed: ${error?.stack || error}`));
   createTray();
 
+  const isMac = process.platform === "darwin";
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 900,
     minWidth: 1160,
     minHeight: 720,
     show: false,
-    frame: false,
+    // macOS keeps its native traffic lights (inset into our header); Windows and
+    // Linux get the frameless window with the in-app controls.
+    ...(isMac
+      ? { frame: true, titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 20 } }
+      : { frame: false }),
     title: "Aria",
     icon: resolveIcon(),
     autoHideMenuBar: true,
@@ -1037,6 +1044,11 @@ app.whenReady().then(async () => {
   await configureDirectNetwork();
   await createWindow();
   syncGlobalShortcuts(globalShortcutConfig);
+});
+
+app.on("window-all-closed", () => {
+  // macOS apps stay resident in the dock; the tray/window pattern does the rest.
+  if (process.platform !== "darwin") app.quit();
 });
 
 app.on("activate", () => {
