@@ -24,6 +24,7 @@ import { createLocalTrackSearchIndex, searchLocalTrackIndex } from "@/lib/localS
 export type SearchBundle = {
   localTracks: Track[];
   neteaseTracks: Track[];
+  qqTracks: Track[];
   artists: ArtistSummary[];
   playlists: ProviderPlaylist[];
   users: ProviderUser[];
@@ -35,6 +36,7 @@ export type DiscoverySearchMode =
 const emptySearchBundle: SearchBundle = {
   localTracks: [],
   neteaseTracks: [],
+  qqTracks: [],
   artists: [],
   playlists: [],
   users: [],
@@ -57,6 +59,7 @@ export function useDiscovery(options: {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchMode, setSearchMode] = useState<DiscoverySearchMode>("tracks");
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchQqError, setSearchQqError] = useState<string | null>(null);
   const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchMore, setSearchMore] = useState(false);
@@ -112,6 +115,7 @@ export function useDiscovery(options: {
     const requestId = ++searchRequestRef.current;
     searchOffsetRef.current = 0;
     setSearchError(null);
+    setSearchQqError(null);
     setSearchTotal(0);
     setSearchMore(false);
     const normalizedText = text.toLowerCase();
@@ -135,7 +139,9 @@ export function useDiscovery(options: {
     if (!text) return;
 
     const timer = window.setTimeout(() => {
-      api
+      // "全部"搜索并行请求各源：单源失败只留在该源的错误通道里，
+      // 不清空其它源的结果。网易云仍是主结果通道。
+      const neteaseSearch = api
         .searchNetease(text, searchMode, searchPageSize)
         .then((result) => {
           if (requestId !== searchRequestRef.current) return;
@@ -145,9 +151,10 @@ export function useDiscovery(options: {
           options.onMergeNeteaseTracks((current) =>
             trimTrackCache([...current, ...remoteTracks]),
           );
-          setSearchBundle({
+          setSearchBundle((current) => ({
             localTracks: localMatches,
             neteaseTracks: remoteTracks,
+            qqTracks: current.qqTracks,
             artists: mergeArtists([
               ...localArtists,
               ...result.artists.map(providerArtistToUiArtist),
@@ -155,7 +162,7 @@ export function useDiscovery(options: {
             playlists: result.playlists,
             users: result.users,
             albums: result.albums,
-          });
+          }));
           const count =
             result.tracks.length +
             result.artists.length +
@@ -173,13 +180,36 @@ export function useDiscovery(options: {
                 ? error.message
                 : "搜索暂时不可用，请重试。",
             );
-        })
-        .finally(() => {
-          if (requestId === searchRequestRef.current) {
-            setSearchLoading(false);
-            searchLoadingRef.current = false;
-          }
         });
+      const qqSearch =
+        searchMode === "tracks"
+          ? api
+              .searchSource("qq", text, "tracks", searchPageSize)
+              .then((result) => {
+                if (requestId !== searchRequestRef.current) return;
+                setSearchQqError(null);
+                setSearchBundle((current) => ({
+                  ...current,
+                  qqTracks: result.tracks.map((track, index) =>
+                    providerTrackToUiTrack(track, index),
+                  ),
+                }));
+              })
+              .catch((error) => {
+                if (requestId === searchRequestRef.current)
+                  setSearchQqError(
+                    error instanceof Error
+                      ? error.message
+                      : "QQ音乐搜索暂不可用。",
+                  );
+              })
+          : Promise.resolve();
+      Promise.allSettled([neteaseSearch, qqSearch]).finally(() => {
+        if (requestId === searchRequestRef.current) {
+          setSearchLoading(false);
+          searchLoadingRef.current = false;
+        }
+      });
     }, 300);
     return () => {
       window.clearTimeout(timer);
@@ -483,6 +513,7 @@ export function useDiscovery(options: {
     searchMode,
     setSearchMode,
     searchError,
+    searchQqError,
     searchSuggestions,
     searchTotal,
     searchMore,

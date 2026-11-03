@@ -7,10 +7,25 @@ function isNeteaseArtworkSource(source: URL) {
     );
 }
 
+function isQqArtworkSource(source: URL) {
+  return ["http:", "https:"].includes(source.protocol) && !source.username && !source.password && !source.port &&
+    (source.hostname === "gtimg.cn" || source.hostname.endsWith(".gtimg.cn"));
+}
+
 // Keep NetEase artwork on Aria's persistent image cache, including raw URLs
 // restored from older snapshots. Sizes share the same keys across surfaces.
 export function cachedArtworkUrl(url: string | null | undefined, size = 320): string | undefined {
   if (!url) return undefined;
+  try {
+    const source = new URL(url);
+    if (isQqArtworkSource(source)) {
+      // QQ covers encode their size in the path (T002R300x300M000...);
+      // rewrite it before handing the URL to the QQ cover cache.
+      return api.getSourceCoverUrl("qq", applyQqCdnSize(source, size).href);
+    }
+  } catch {
+    return url;
+  }
   let resolved = url;
   if (!/\/api\/providers\/netease\/cover(?:\?|$)/.test(url)) {
     try {
@@ -28,8 +43,22 @@ export function cachedArtworkUrl(url: string | null | undefined, size = 320): st
   return `${base}?${params}`;
 }
 
+function applyNeteaseCdnSize(source: URL, size: number) {
+  const pixels = Math.max(32, Math.min(1024, Math.round(size)));
+  source.searchParams.set("param", `${pixels}y${pixels}`);
+  return source;
+}
+
+function applyQqCdnSize(source: URL, size: number) {
+  const pixels = Math.max(32, Math.min(1024, Math.round(size)));
+  if (/T\d{3}R\d+x\d+M000/.test(source.pathname)) {
+    source.pathname = source.pathname.replace(/T(\d{3})R\d+x\d+M000/, `T$1R${pixels}x${pixels}M000`);
+  }
+  return source;
+}
+
 /** A bounded cache failure must not hide a working upstream cover or avatar. */
-export function directArtworkUrl(url: string | null | undefined): string | undefined {
+export function directArtworkUrl(url: string | null | undefined, size = 320): string | undefined {
   if (!url) return undefined;
   try {
     const source = new URL(url, "http://aria.local");
@@ -39,11 +68,23 @@ export function directArtworkUrl(url: string | null | undefined): string | undef
       const original = new URL(upstream);
       if (!isNeteaseArtworkSource(original)) return undefined;
       original.protocol = "https:";
-      return original.href;
+      return applyNeteaseCdnSize(original, size).href;
+    }
+    if (source.pathname === "/api/sources/qq/cover") {
+      const upstream = source.searchParams.get("url");
+      if (!upstream) return undefined;
+      const original = new URL(upstream);
+      if (!isQqArtworkSource(original)) return undefined;
+      original.protocol = "https:";
+      return applyQqCdnSize(original, size).href;
+    }
+    if (isQqArtworkSource(source)) {
+      source.protocol = "https:";
+      return applyQqCdnSize(source, size).href;
     }
     if (!isNeteaseArtworkSource(source)) return url;
     source.protocol = "https:";
-    return source.href;
+    return applyNeteaseCdnSize(source, size).href;
   } catch {
     return undefined;
   }
@@ -57,12 +98,12 @@ export function artworkImageCandidates(
   const candidates = [
     cachedArtworkUrl(url, size),
     fallbackUrl ? cachedArtworkUrl(fallbackUrl, size) : undefined,
-    directArtworkUrl(fallbackUrl ?? url),
+    directArtworkUrl(fallbackUrl ?? url, size),
   ];
   return [...new Set(candidates.filter((candidate): candidate is string => Boolean(candidate)))];
 }
 
-export function sizedCoverUrl(url: string | undefined, size: 320 | 768): string | undefined {
+export function sizedCoverUrl(url: string | undefined, size: number): string | undefined {
   if (!url || !/\/api\/library\/tracks\/[^/?]+\/cover(?:\?|$)/.test(url)) return url;
   const [base, query = ""] = url.split("?");
   const params = new URLSearchParams(query);

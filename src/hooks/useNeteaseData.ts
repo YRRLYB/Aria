@@ -1,8 +1,9 @@
-import { useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { Track, ViewId } from "@/data/music";
 import type { NeteaseAccountSummary, ProviderPlaylist } from "@/lib/api";
 import { api } from "@/lib/api";
 import { memoryLimits, trimStringSet, warmupBatchLimits } from "@/lib/memoryCache";
+import { clearNeteaseSnapshot, readNeteaseSnapshot, writeNeteaseSnapshot } from "@/lib/neteaseSnapshot";
 import { mergeTracks, trimTrackCache } from "@/lib/playerPresentation";
 import { materializeQueueIds } from "@/lib/playQueue";
 import { isLikedPlaylist, providerTrackToUiTrack, idleTrack } from "@/lib/trackMappers";
@@ -22,22 +23,74 @@ export function useNeteaseData(options: {
   setPlayQueueIds: (updater: (ids: string[]) => string[]) => void;
 }) {
   const { applyTrackUpdate } = options;
+  const initialSnapshot = useRef(readNeteaseSnapshot()).current;
+  const snapshotUserIdRef = useRef<string | null>(initialSnapshot?.userId ?? null);
   const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
-  const [neteaseTracks, setNeteaseTracks] = useState<Track[]>([]);
-  const [neteaseLikedTracks, setNeteaseLikedTracks] = useState<Track[]>([]);
-  const [dailyTracks, setDailyTracks] = useState<Track[]>([]);
-  const [roamTracks, setRoamTracks] = useState<Track[]>([]);
+  const [neteaseTracks, setNeteaseTracks] = useState<Track[]>(initialSnapshot?.neteaseTracks ?? []);
+  const [neteaseLikedTracks, setNeteaseLikedTracks] = useState<Track[]>(initialSnapshot?.likedTracks ?? []);
+  const [dailyTracks, setDailyTracks] = useState<Track[]>(initialSnapshot?.dailyTracks ?? []);
+  const [roamTracks, setRoamTracks] = useState<Track[]>(initialSnapshot?.roamTracks ?? []);
   const [playlistTracks, setPlaylistTracks] = useState<Track[]>([]);
-  const [neteaseLikedIds, setNeteaseLikedIds] = useState<Record<string, true>>({});
+  const [neteaseLikedIds, setNeteaseLikedIds] = useState<Record<string, true>>(
+    () => Object.fromEntries((initialSnapshot?.likedTracks ?? []).map((track) => [track.id, true])),
+  );
   const [selectedPlaylist, setSelectedPlaylist] = useState<ProviderPlaylist | null>(null);
   const [playlistLoading, setPlaylistLoading] = useState(false);
   const [playlistError, setPlaylistError] = useState<string | null>(null);
   const [roamRefreshing, setRoamRefreshing] = useState(false);
-  const [providerPlaylists, setProviderPlaylists] = useState<ProviderPlaylist[]>([]);
+  const [providerPlaylists, setProviderPlaylists] = useState<ProviderPlaylist[]>(initialSnapshot?.playlists ?? []);
   const neteaseWarmupRef = useRef<Set<string>>(new Set());
   const playlistRequestRef = useRef(0);
   const selectedPlaylistIdRef = useRef<string | null>(null);
   selectedPlaylistIdRef.current = selectedPlaylist?.id ?? null;
+
+  useEffect(() => {
+    if (!neteaseAccount) return;
+    if (!neteaseAccount.connected) {
+      snapshotUserIdRef.current = null;
+      setNeteaseTracks([]);
+      setNeteaseLikedTracks([]);
+      setDailyTracks([]);
+      setRoamTracks([]);
+      setPlaylistTracks([]);
+      setNeteaseLikedIds({});
+      setProviderPlaylists([]);
+      clearNeteaseSnapshot();
+      return;
+    }
+    const userId = neteaseAccount.userId;
+    if (!userId) return;
+    if (snapshotUserIdRef.current && snapshotUserIdRef.current !== userId) {
+      // A different account must never inherit the previous account's covers,
+      // liked songs or playlists while the new data is loading.
+      snapshotUserIdRef.current = userId;
+      setNeteaseTracks([]);
+      setNeteaseLikedTracks([]);
+      setDailyTracks([]);
+      setRoamTracks([]);
+      setPlaylistTracks([]);
+      setNeteaseLikedIds({});
+      setProviderPlaylists([]);
+      clearNeteaseSnapshot();
+      return;
+    }
+    snapshotUserIdRef.current = userId;
+  }, [neteaseAccount?.connected, neteaseAccount?.userId]);
+
+  useEffect(() => {
+    if (!neteaseTracks.length && !providerPlaylists.length && !neteaseLikedTracks.length && !dailyTracks.length && !roamTracks.length) return;
+    const timer = window.setTimeout(() => {
+      writeNeteaseSnapshot({
+        userId: snapshotUserIdRef.current,
+        dailyTracks,
+        roamTracks,
+        likedTracks: neteaseLikedTracks,
+        neteaseTracks,
+        playlists: providerPlaylists,
+      });
+    }, 1_200);
+    return () => window.clearTimeout(timer);
+  }, [dailyTracks, neteaseLikedTracks, neteaseTracks, providerPlaylists, roamTracks]);
 
   function providerIdsForTracks(tracksToRead: Track[]) {
     return tracksToRead
@@ -134,28 +187,48 @@ export function useNeteaseData(options: {
   }
 
   async function refreshNeteaseData() {
-    const [liked, daily, roam, playlists] = await Promise.all([
-      api.getProviderLiked(),
-      api.getProviderDaily(),
-      api.getProviderRoam(),
-      api.getProviderPlaylists(),
-    ]);
-    const dailyUiTracks = daily.tracks.map(providerTrackToUiTrack);
-    const roamUiTracks = roam.tracks.map((track, index) => providerTrackToUiTrack(track, index + dailyUiTracks.length));
-    const likedUiTracks = liked.tracks.map((track, index) =>
-      providerTrackToUiTrack(track, index + dailyUiTracks.length + roamUiTracks.length),
-    );
-    const merged = mergeTracks([...dailyUiTracks, ...roamUiTracks, ...likedUiTracks]);
+    const appendTracks = (tracksToAdd: Track[]) => {
+      if (!tracksToAdd.length) return;
+      setNeteaseTracks((current) => trimTrackCache([...current, ...tracksToAdd]));
+    };
 
-    setDailyTracks(dailyUiTracks);
-    setRoamTracks(roamUiTracks);
-    setNeteaseLikedTracks(likedUiTracks);
-    setNeteaseLikedIds(Object.fromEntries(likedUiTracks.map((track) => [track.id, true])));
-    setNeteaseTracks(trimTrackCache(merged));
-    setProviderPlaylists(playlists.playlists);
-    warmNeteaseTrackCache(merged);
-    if (options.canAutoSelectFirstTrack && merged[0]) {
-      options.onAutoSelectTrack(merged[0].id);
+    // Each surface becomes usable as soon as its own request is ready. The old
+    // Promise.all meant a slow private-roaming response held back liked songs,
+    // daily recommendations, playlists and all of their cover artwork.
+    const dailyTask = api.getProviderDaily().then((daily) => {
+      const tracks = daily.tracks.map(providerTrackToUiTrack);
+      setDailyTracks(tracks);
+      appendTracks(tracks);
+      warmNeteaseTrackCache(tracks);
+      return tracks;
+    });
+    const roamTask = api.getProviderRoam().then((roam) => {
+      const tracks = roam.tracks.map((track, index) => providerTrackToUiTrack(track, index + 1000));
+      setRoamTracks(tracks);
+      appendTracks(tracks);
+      return tracks;
+    });
+    const likedTask = api.getProviderLiked().then((liked) => {
+      const tracks = liked.tracks.map((track, index) => providerTrackToUiTrack(track, index + 2000));
+      setNeteaseLikedTracks(tracks);
+      setNeteaseLikedIds(Object.fromEntries(tracks.map((track) => [track.id, true])));
+      appendTracks(tracks);
+      return tracks;
+    });
+    const playlistsTask = api.getProviderPlaylists().then((playlists) => {
+      setProviderPlaylists(playlists.playlists);
+      return playlists.playlists;
+    });
+
+    const results = await Promise.allSettled([dailyTask, roamTask, likedTask, playlistsTask]);
+    const trackResults = results.slice(0, 3);
+    const successfulPools = trackResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    if (!successfulPools.length && trackResults.every((result) => result.status === "rejected")) {
+      throw trackResults[0]?.reason instanceof Error ? trackResults[0].reason : new Error("网易云数据刷新失败");
+    }
+    if (options.canAutoSelectFirstTrack) {
+      const firstTrack = successfulPools.flat()[0];
+      if (firstTrack) options.onAutoSelectTrack(firstTrack.id);
     }
   }
 

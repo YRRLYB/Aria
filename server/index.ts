@@ -1,8 +1,6 @@
 import cors from "cors";
 import express from "express";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { readLibrary } from "./libraryStore";
 import { searchLyricCandidates } from "./lyrics";
@@ -15,11 +13,17 @@ import { createRemoteCoverRouter } from "./routes/remoteCover";
 import {
   checkNeteaseQrLogin,
   getNeteaseAccountSummary,
+  peekNeteaseAccountSummary,
   saveNeteaseCookie,
   startNeteaseQrLogin,
 } from "./services/neteaseService";
+import { startLibraryWatchers } from "./services/libraryWatcher";
 import { readStore, updateStore } from "./store";
 import { cacheDir } from "./utils/paths";
+import { SourceError } from "./sources/contract";
+import { getSource } from "./sources/registry";
+import { proxyAudioStream } from "./sources/streamProxy";
+import { createSourcesRouter } from "./routes/sources";
 import { HttpError } from "./utils/httpError";
 import { RemoteCoverCache } from "./remoteCoverCache";
 import {
@@ -34,11 +38,21 @@ const app = express();
 const port = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
 const remoteAccess = loadRemoteAccessConfig();
 const remoteCoverCache = new RemoteCoverCache({ directory: path.join(cacheDir, "covers") });
+// QQ covers use fixed-size CDN variants, so no resize parameter is appended.
+const qqCoverCache = new RemoteCoverCache({
+  directory: path.join(cacheDir, "covers-qq"),
+  allowedHosts: ["gtimg.cn"],
+  sizing: null,
+  errorPrefix: "QQ_COVER",
+});
 
 // Cover responses are binary assets and can be several megabytes each. Keep
 // the on-disk cache bounded so repeated browsing cannot grow memory/disk use
 // without limit. Existing oversized caches are trimmed on startup as well.
-const pruneRemoteCoverCache = () => remoteCoverCache.prune();
+const pruneRemoteCoverCache = () => {
+  remoteCoverCache.prune();
+  qqCoverCache.prune();
+};
 void pruneRemoteCoverCache();
 const remoteCoverPruneTimer = setInterval(pruneRemoteCoverCache, 15 * 60_000);
 remoteCoverPruneTimer.unref?.();
@@ -81,15 +95,29 @@ app.get("/api/remote-access", (_req, res) => {
 
 app.use("/api/library", createLibraryRouter());
 app.use("/api/library/metadata", createLocalMetadataRouter());
+app.use(
+  "/api/sources",
+  createSourcesRouter({ coverCaches: { netease: remoteCoverCache, qq: qqCoverCache } }),
+);
 
 app.get("/api/settings", async (_req, res, next) => {
   try {
     const store = await readStore();
     res.json({
       hasNeteaseCookie: Boolean(store.neteaseCookie),
-      neteaseAccount: await getNeteaseAccountSummary(),
+      // Never block the first renderer paint on a provider round trip. The
+      // account endpoint below validates the cookie in the background.
+      neteaseAccount: await peekNeteaseAccountSummary(),
       lyricBindings: store.lyricBindings,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/settings/netease-account", async (_req, res, next) => {
+  try {
+    res.json({ account: await getNeteaseAccountSummary() });
   } catch (error) {
     next(error);
   }
@@ -343,37 +371,13 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
         level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional(),
       })
       .parse(req.query);
-    const meta = await neteaseClient.getStreamMeta(req.params.trackId, query.level);
-    if (!meta.url) {
-      throw new HttpError(404, "Playable URL is unavailable", "NETEASE_URL_UNAVAILABLE");
-    }
-    const upstream = await fetch(meta.url, {
-      headers: req.headers.range ? { Range: req.headers.range } : undefined,
+    await proxyAudioStream(req, res, async () => {
+      const meta = await neteaseClient.getStreamMeta(req.params.trackId, query.level);
+      if (!meta.url) {
+        throw new HttpError(404, "Playable URL is unavailable", "NETEASE_URL_UNAVAILABLE");
+      }
+      return meta;
     });
-    if (!upstream.ok && upstream.status !== 206) {
-      throw new HttpError(502, "Upstream audio request failed", "NETEASE_AUDIO_UPSTREAM_FAILED");
-    }
-
-    res.status(upstream.status);
-    for (const header of ["content-type", "content-length", "content-range", "accept-ranges"]) {
-      const value = upstream.headers.get(header);
-      if (value) res.setHeader(header, value);
-    }
-    if (meta.bitrate) res.setHeader("x-aria-bitrate", String(meta.bitrate));
-    if (meta.sampleRate) res.setHeader("x-aria-sample-rate", String(meta.sampleRate));
-    if (meta.currentLevel) res.setHeader("x-aria-level", meta.currentLevel);
-    res.setHeader("Cache-Control", "private, max-age=600");
-
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-    await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>), res);
   } catch (error) {
     next(error);
   }
@@ -431,6 +435,45 @@ app.post("/api/settings/netease-cookie", async (req, res, next) => {
     const body = z.object({ cookie: z.string().min(1) }).parse(req.body);
     const account = await saveNeteaseCookie(body.cookie);
     res.json({ ok: true, account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/settings/qq-cookie", async (req, res, next) => {
+  try {
+    const body = z.object({ cookie: z.string().min(1) }).parse(req.body);
+    const source = await getSource("qq");
+    if (!source.saveCookie) {
+      throw new HttpError(400, "该播放源不支持 Cookie 登录", "SOURCE_COOKIE_UNSUPPORTED");
+    }
+    const account = await source.saveCookie(body.cookie);
+    res.json({ ok: true, account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/settings/qq-qr/start", async (_req, res, next) => {
+  try {
+    const source = await getSource("qq");
+    if (!source.startQrLogin) {
+      throw new HttpError(400, "该播放源不支持扫码登录", "SOURCE_QR_UNSUPPORTED");
+    }
+    res.json(await source.startQrLogin());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/settings/qq-qr/check", async (req, res, next) => {
+  try {
+    const query = z.object({ key: z.string().min(1) }).parse(req.query);
+    const source = await getSource("qq");
+    if (!source.checkQrLogin) {
+      throw new HttpError(400, "该播放源不支持扫码登录", "SOURCE_QR_UNSUPPORTED");
+    }
+    res.json(await source.checkQrLogin(query.key));
   } catch (error) {
     next(error);
   }
@@ -564,6 +607,12 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     return;
   }
 
+  if (error instanceof SourceError) {
+    const http = error.toHttpError();
+    res.status(http.status).json({ error: http.message, code: http.code });
+    return;
+  }
+
   const message = error instanceof Error ? error.message : "Unknown server error";
   res.status(500).json({ error: message });
 });
@@ -579,4 +628,5 @@ function resolveProvider(providerId: string) {
 const listenHost = remoteAccess.enabled ? "0.0.0.0" : "127.0.0.1";
 app.listen(port, listenHost, () => {
   console.log(`aria-api listening on http://${listenHost}:${port} (remote access ${remoteAccess.enabled ? "enabled" : "disabled"})`);
+  startLibraryWatchers();
 });

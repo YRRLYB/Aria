@@ -16,8 +16,8 @@ export function usePlaylistActions() { return useContext(PlaylistActionsContext)
 
 export function AddToPlaylistButton({ track, compact = true }: { track: Track; compact?: boolean }) {
   const actions = usePlaylistActions();
-  if (!actions || track.source !== "netease") return null;
-  return <Button type="button" variant="ghost" size={compact ? "icon" : "sm"} aria-label={`将 ${track.title} 加入歌单`} title="加入歌单" onClick={(event) => {
+  if (!actions || (track.source !== "netease" && track.source !== "local")) return null;
+  return <Button type="button" variant="ghost" size={compact ? "icon" : "sm"} aria-label={`将 ${track.title} 加入${track.source === "local" ? "本地" : ""}歌单`} title={track.source === "local" ? "加入本地歌单" : "加入歌单"} onClick={(event) => {
     event.stopPropagation();
     actions.openAdd([track]);
   }}><ListPlus />{!compact && "加入歌单"}</Button>;

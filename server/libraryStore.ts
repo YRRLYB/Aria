@@ -74,6 +74,18 @@ export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
   return readLibrary();
 }
 
+export async function removeLibraryRoot(root: string) {
+  const normalizedRoot = normalizeLibraryRoot(root);
+  const current = await readLibrary();
+  const next: LibraryIndex = {
+    updatedAt: new Date().toISOString(),
+    roots: current.roots.filter((item) => normalizeLibraryRoot(item) !== normalizedRoot),
+    tracks: (await readOriginalTracks()).filter((track) => !trackMatchesRoot(track, normalizedRoot)),
+  };
+  await writeLibrary(next);
+  return readLibrary();
+}
+
 export function normalizeLibraryRoot(root: string) {
   return root.startsWith("cd:") ? root : path.resolve(root);
 }
@@ -81,7 +93,8 @@ export function normalizeLibraryRoot(root: string) {
 function trackMatchesRoot(track: ScannedTrack, root: string) {
   if (track.libraryRoot) return normalizeLibraryRoot(track.libraryRoot) === root;
   if (root.startsWith("cd:")) return track.path.startsWith(`${root}:`) || track.path.startsWith(root);
-  return path.resolve(track.path).startsWith(root);
+  const relative = path.relative(root, path.resolve(track.path));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 export async function clearLibrary() {

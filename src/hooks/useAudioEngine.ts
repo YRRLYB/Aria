@@ -5,6 +5,7 @@ import { nativePlaybackStateChanged, syncNativePlaybackClock } from "@/lib/nativ
 import { api } from "@/lib/api";
 import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
+import { equalizerFrequencies } from "@/lib/equalizer";
 import { readCachedAudioSettings, writeCachedAudioSettings, type AudioOutputMode, type QualityLevel } from "@/lib/playerPresentation";
 import loudnessProcessorUrl from "@/lib/loudnessProcessor.js?url&no-inline";
 
@@ -22,6 +23,8 @@ export function useAudioEngine(options: {
   masterQualityEnabled: boolean;
   gaplessEnabled: boolean;
   normalizationEnabled: boolean;
+  equalizerEnabled: boolean;
+  equalizerBands: number[];
   audioOutputMode: AudioOutputMode;
   pageVisible: boolean;
   analyserEnabled: boolean;
@@ -49,6 +52,7 @@ export function useAudioEngine(options: {
   const [nativePlaybackFailed, setNativePlaybackFailed] = useState(false);
   const [nativeAnalyserWakeToken, setNativeAnalyserWakeToken] = useState(0);
   const [normalizationError, setNormalizationError] = useState<string | null>(null);
+  const [equalizerError, setEqualizerError] = useState<string | null>(null);
   const [normalizerReady, setNormalizerReady] = useState(false);
 
   // Browser/System output must remain a Chromium media session. The two
@@ -93,6 +97,7 @@ export function useAudioEngine(options: {
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const nativeSilenceGainRef = useRef<GainNode | null>(null);
   const normalizerRef = useRef<AudioWorkletNode | null>(null);
+  const equalizerFiltersRef = useRef<BiquadFilterNode[]>([]);
   const outputGainRef = useRef<GainNode | null>(null);
   const normalizerLoadRef = useRef<Promise<void> | null>(null);
   const analyserOutputModeRef = useRef<"audible" | "normalized" | "silent" | null>(null);
@@ -531,6 +536,20 @@ export function useAudioEngine(options: {
       .catch(() => setNormalizationError("音量标准化未能启用，请切换歌曲后重试。"));
   }, [nativePlaybackEnabled, nativeAudioState?.active, options.normalizationEnabled]);
 
+  useEffect(() => {
+    setEqualizerError(null);
+    if (!nativePlaybackEnabled || !nativeAudioState?.active) return;
+    // Dragging a band produces a stream of updates; mpv rebuilds its `af`
+    // chain for each one, so debounce to keep the native path smooth.
+    const timer = window.setTimeout(() => {
+      window.ariaDesktop?.nativeAudio?.configure?.({
+        equalizerEnabled: options.equalizerEnabled,
+        equalizerBands: options.equalizerBands,
+      }).catch(() => setEqualizerError("均衡器未能应用到 WASAPI 输出，请切换歌曲后重试。"));
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [nativePlaybackEnabled, nativeAudioState?.active, options.equalizerEnabled, options.equalizerBands]);
+
   const seekNativeTrack = useEffectEvent(async (seconds: number) => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativePlaybackEnabled || !nativeAudio?.seek || !Number.isFinite(seconds)) return false;
@@ -593,6 +612,8 @@ export function useAudioEngine(options: {
         endChapter: options.activeTrack.nativeEnd ?? null,
         cdReadQuality: options.activeTrack.cdReadQuality ?? "high",
         normalizationEnabled: options.normalizationEnabled,
+        equalizerEnabled: options.equalizerEnabled,
+        equalizerBands: options.equalizerBands,
       });
       if (state) syncNativeAudioState(state as NativeAudioState);
       return true;
@@ -651,6 +672,30 @@ export function useAudioEngine(options: {
       audioSourceRef.current.connect(analyserRef.current);
     }
 
+    if (!equalizerFiltersRef.current.length) {
+      // A fixed 10-band peaking chain always sits after the analyser. A
+      // disabled EQ simply runs at 0 dB, which avoids clicks and graph
+      // rebuilds while the user toggles it.
+      equalizerFiltersRef.current = equalizerFrequencies.map((frequency) => {
+        const filter = context.createBiquadFilter();
+        filter.type = "peaking";
+        filter.frequency.value = frequency;
+        filter.Q.value = 1.1;
+        filter.gain.value = 0;
+        return filter;
+      });
+      equalizerFiltersRef.current.forEach((filter, index, filters) => {
+        if (index + 1 < filters.length) filter.connect(filters[index + 1]);
+      });
+    }
+    const equalizerFilters = equalizerFiltersRef.current;
+    const equalizerInput = equalizerFilters[0];
+    const equalizerOutput = equalizerFilters[equalizerFilters.length - 1];
+    equalizerFilters.forEach((filter, index) => {
+      const gain = options.equalizerEnabled ? Number(options.equalizerBands[index]) || 0 : 0;
+      filter.gain.setTargetAtTime(gain, context.currentTime, 0.02);
+    });
+
     if (options.playing) void context.resume();
     const analyser = analyserRef.current;
     if (!analyser) return;
@@ -671,21 +716,27 @@ export function useAudioEngine(options: {
       } catch {
         // The silent sink may already be disconnected.
       }
+      try {
+        equalizerOutput.disconnect();
+      } catch {
+        // The EQ tail may already be disconnected.
+      }
       normalizerRef.current?.disconnect();
       outputGain.disconnect();
 
+      analyser.connect(equalizerInput);
       if (nativePlaybackEnabled) {
         const silentGain = nativeSilenceGainRef.current ?? context.createGain();
         silentGain.gain.value = 0;
         nativeSilenceGainRef.current = silentGain;
-        analyser.connect(silentGain);
+        equalizerOutput.connect(silentGain);
         silentGain.connect(context.destination);
       } else if (desiredOutputMode === "normalized" && normalizerRef.current) {
-        analyser.connect(normalizerRef.current);
+        equalizerOutput.connect(normalizerRef.current);
         normalizerRef.current.connect(outputGain);
         outputGain.connect(context.destination);
       } else {
-        analyser.connect(outputGain);
+        equalizerOutput.connect(outputGain);
         outputGain.connect(context.destination);
       }
       analyserOutputModeRef.current = desiredOutputMode;
@@ -704,10 +755,20 @@ export function useAudioEngine(options: {
     options.pageVisible,
     options.playing,
     options.normalizationEnabled,
+    options.equalizerEnabled,
     normalizerReady,
     options.volume,
     selectedSinkId,
   ]);
+
+  useEffect(() => {
+    const context = audioContextRef.current;
+    if (!context) return;
+    equalizerFiltersRef.current.forEach((filter, index) => {
+      const gain = options.equalizerEnabled ? Number(options.equalizerBands[index]) || 0 : 0;
+      filter.gain.setTargetAtTime(gain, context.currentTime, 0.02);
+    });
+  }, [options.equalizerEnabled, options.equalizerBands]);
 
   useEffect(() => {
     normalizerRef.current?.port.postMessage("reset");
@@ -736,6 +797,14 @@ export function useAudioEngine(options: {
       normalizerRef.current?.disconnect();
       normalizerRef.current = null;
       normalizerLoadRef.current = null;
+      equalizerFiltersRef.current.forEach((filter) => {
+        try {
+          filter.disconnect();
+        } catch {
+          // Ignore audio graph shutdown errors.
+        }
+      });
+      equalizerFiltersRef.current = [];
       outputGainRef.current?.disconnect();
       outputGainRef.current = null;
       analyserOutputModeRef.current = null;
@@ -783,5 +852,6 @@ export function useAudioEngine(options: {
     handleAudioError,
     resetAudioError,
     normalizationError,
+    equalizerError,
   };
 }

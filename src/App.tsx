@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ListMusic, Maximize2, Minus, Radio, Search, Settings2, Sparkles, UserRound, X } from "lucide-react";
+import { ListMusic, Maximize2, Minus, Moon, Radio, Search, Settings2, Sparkles, Sun, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   CollectionSurface,
@@ -18,6 +18,7 @@ import { SearchSurface, ArtistsSurface } from "@/components/music/DiscoverySurfa
 import { AlbumDetailSurface, UserDetailSurface } from "@/components/music/DiscoveryDetails";
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
+import { EqualizerDialog } from "@/components/music/EqualizerPanel";
 import { FloatingNav } from "@/components/music/FloatingNav";
 import { ExploreSurface } from "@/components/music/ExploreSurface";
 import { AccountPanel, OnboardingDialog, SettingsPanel } from "@/components/music/SettingsPanels";
@@ -29,8 +30,28 @@ import { useCloudLibrary } from "@/hooks/useCloudLibrary";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useDiscoveryDetails } from "@/hooks/useDiscoveryDetails";
 import { useLocalLibrary } from "@/hooks/useLocalLibrary";
+import { useLocalPlaylists } from "@/hooks/useLocalPlaylists";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
+import {
+  createEqualizerCustomPreset,
+  defaultEqualizerSettings,
+  maxEqualizerCustomPresets,
+  readCachedEqualizerPresets,
+  readCachedEqualizerSettings,
+  writeCachedEqualizerPresets,
+  writeCachedEqualizerSettings,
+  type EqualizerCustomPreset,
+  type EqualizerPresetId,
+} from "@/lib/equalizer";
+import {
+  applyThemeToDocument,
+  readCachedTheme,
+  resolveTheme,
+  systemPrefersDark,
+  writeCachedTheme,
+  type AriaTheme,
+} from "@/lib/theme";
 import { memoryLimits, trimStringSet } from "@/lib/memoryCache";
 import {
   createPlayerCacheSnapshot,
@@ -38,9 +59,10 @@ import {
   writePlayHistory,
   type PlayHistoryEntry,
 } from "@/lib/playHistory";
-import { api, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser } from "@/lib/api";
 import { ArtworkImage } from "@/components/music/ArtworkImage";
 import { AddToPlaylistDialog, PlaylistActionsProvider } from "@/components/music/PlaylistActions";
+import { AddToLocalPlaylistDialog } from "@/components/music/LocalPlaylistSurfaces";
 import {
   extractDominantColors,
   createCachedQueueSnapshots,
@@ -197,11 +219,77 @@ export default function App() {
   const [gaplessEnabled, setGaplessEnabled] = useState(() => readCachedAudioSettings().gaplessEnabled ?? false);
   const [normalizationEnabled, setNormalizationEnabled] = useState(() => readCachedAudioSettings().normalizationEnabled ?? false);
   const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>(() => readCachedAudioSettings().outputMode ?? "system");
+  const [equalizer, setEqualizer] = useState(() => readCachedEqualizerSettings() ?? defaultEqualizerSettings());
+  useEffect(() => {
+    writeCachedEqualizerSettings(equalizer);
+  }, [equalizer]);
+  function updateEqualizer(patch: Partial<typeof equalizer>) {
+    setEqualizer((current) => ({ ...current, ...patch }));
+  }
+  function selectEqualizerPreset(preset: EqualizerPresetId) {
+    updateEqualizer({ preset });
+  }
+  const [equalizerOpen, setEqualizerOpen] = useState(false);
+  const [customEqualizerPresets, setCustomEqualizerPresets] = useState<EqualizerCustomPreset[]>(() => readCachedEqualizerPresets());
+  useEffect(() => {
+    writeCachedEqualizerPresets(customEqualizerPresets);
+  }, [customEqualizerPresets]);
+  useEffect(() => {
+    if (activeView !== "player") setEqualizerOpen(false);
+  }, [activeView]);
+
+  function saveCustomEqualizerPreset(name: string) {
+    const trimmed = name.trim().slice(0, 24);
+    if (!trimmed) return false;
+    const existing = customEqualizerPresets.find((item) => item.name === trimmed);
+    if (!existing && customEqualizerPresets.length >= maxEqualizerCustomPresets) return false;
+    const preset = createEqualizerCustomPreset(trimmed, equalizer.bands);
+    const next = existing
+      ? customEqualizerPresets.map((item) => (item.id === existing.id ? { ...item, bands: preset.bands } : item))
+      : [...customEqualizerPresets, preset];
+    setCustomEqualizerPresets(next);
+    writeCachedEqualizerPresets(next);
+    updateEqualizer({ preset: "custom" });
+    return true;
+  }
+
+  function deleteCustomEqualizerPreset(id: string) {
+    const next = customEqualizerPresets.filter((item) => item.id !== id);
+    setCustomEqualizerPresets(next);
+    writeCachedEqualizerPresets(next);
+  }
+
+  function importCustomEqualizerPresets(presets: EqualizerCustomPreset[]) {
+    const merged = customEqualizerPresets.slice();
+    for (const imported of presets) {
+      const index = merged.findIndex((item) => item.name === imported.name);
+      if (index >= 0) merged[index] = { ...merged[index], bands: imported.bands };
+      else if (merged.length < maxEqualizerCustomPresets) merged.push(imported);
+    }
+    setCustomEqualizerPresets(merged);
+    writeCachedEqualizerPresets(merged);
+  }
 
   function handleHifiEnabledChange(value: boolean) {
     setHifiEnabled(value);
     if (!value) setMasterQualityEnabled(false);
   }
+
+  const [theme, setTheme] = useState<AriaTheme>(() => readCachedTheme());
+  const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = () => setSystemDark(query.matches);
+    handleChange();
+    query.addEventListener?.("change", handleChange);
+    return () => query.removeEventListener?.("change", handleChange);
+  }, []);
+  const resolvedTheme = resolveTheme(theme, systemDark);
+  useEffect(() => {
+    applyThemeToDocument(theme, systemDark);
+    writeCachedTheme(theme);
+  }, [theme, systemDark]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navCloseTimer = useRef<number | null>(null);
@@ -264,6 +352,7 @@ export default function App() {
     applyArtworkToTrack,
     scanBackendPath,
     scanCdLibrary,
+    removeLibraryRoot,
     replaceLocalArtwork,
   } = useLocalLibrary({
     applyTrackUpdate,
@@ -280,6 +369,9 @@ export default function App() {
     },
     onScanProgress: setLibraryScanProgress,
   });
+
+  const localPlaylists = useLocalPlaylists(localTracks);
+  const [libraryWatchState, setLibraryWatchState] = useState<ApiLibraryWatchState | null>(null);
 
   const {
     neteaseAccount,
@@ -566,6 +658,7 @@ export default function App() {
     searchMode,
     setSearchMode,
     searchError,
+    searchQqError,
     searchSuggestions,
     searchTotal,
     searchMore,
@@ -686,6 +779,7 @@ export default function App() {
     restartNativeTrack,
     seekNativeTrack,
     normalizationError,
+    equalizerError,
   } = useAudioEngine({
     activeTrack,
     activeTrackId,
@@ -697,6 +791,8 @@ export default function App() {
     masterQualityEnabled,
     gaplessEnabled,
     normalizationEnabled,
+    equalizerEnabled: equalizer.enabled,
+    equalizerBands: equalizer.bands,
     audioOutputMode,
     pageVisible,
     analyserEnabled: pageVisible && (activeView === "player" || immersiveOpen),
@@ -869,6 +965,7 @@ export default function App() {
       dailyTracks,
       roamTracks,
       playlistTracks,
+      localPlaylists.selectedTracks,
       cloudTracks,
       neteaseLikedDisplayTracks,
       visibleLocalTracks,
@@ -1336,7 +1433,7 @@ export default function App() {
       const previewCoverUrl = activeTrack.coverUrl.includes("/api/providers/netease/cover")
         ? `${activeTrack.coverUrl}${activeTrack.coverUrl.includes("?") ? "&" : "?"}size=320y320`
         : activeTrack.coverUrl;
-      void getBoundedCoverUrl(previewCoverUrl).then((resolvedUrl) => {
+      void getBoundedCoverUrl(previewCoverUrl, 320).then((resolvedUrl) => {
         if (!cancelled && resolvedUrl) imageElement.src = resolvedUrl;
       });
     }
@@ -1487,12 +1584,80 @@ export default function App() {
         const uiTracks = library.tracks.map(localTrackToUiTrack);
         setLocalTracks(uiTracks);
         warmLocalCoverCache(uiTracks);
-        setLibraryMeta({ roots: library.roots.length, updatedAt: library.updatedAt });
+        setLibraryMeta({ roots: library.roots, updatedAt: library.updatedAt });
       })
       .catch(() => {
-        setLibraryMeta({ roots: 0, updatedAt: null });
+        setLibraryMeta({ roots: [], updatedAt: null });
       });
   }, []);
+
+  const lastLibraryWatchScanRef = useRef<number | null>(null);
+  const libraryWatchInitializedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const state = await api.getLibraryWatchState();
+        if (cancelled) return;
+        setLibraryWatchState(state);
+        if (!libraryWatchInitializedRef.current) {
+          libraryWatchInitializedRef.current = true;
+          lastLibraryWatchScanRef.current = state.lastScanAt;
+          return;
+        }
+        if (!state.lastScanAt || state.lastScanAt === lastLibraryWatchScanRef.current) return;
+        lastLibraryWatchScanRef.current = state.lastScanAt;
+        // A watcher scan happens in the backend. Pull the new index so the
+        // local library updates without asking the user to rescan manually.
+        const library = await api.getLibrary();
+        if (cancelled) return;
+        const uiTracks = library.tracks.map(localTrackToUiTrack);
+        setLocalTracks(uiTracks);
+        warmLocalCoverCache(uiTracks);
+        setLibraryMeta({ roots: library.roots, updatedAt: library.updatedAt });
+      } catch {
+        // The backend may still be starting; the next tick retries.
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function addLibraryFolder() {
+    const chooseFolder = window.ariaDesktop?.chooseMusicFolder;
+    if (!chooseFolder) return;
+    const selectedPath = await chooseFolder();
+    if (!selectedPath) return;
+    try {
+      await scanBackendPath(selectedPath, { openLibrary: false });
+      setLibraryWatchState(await api.getLibraryWatchState());
+    } catch {
+      // The scan job already reports its error through libraryScanProgress.
+    }
+  }
+
+  async function removeLibraryFolder(root: string) {
+    if (!window.confirm(`从曲库中移除“${root}”？音频文件不会被删除。`)) return;
+    try {
+      await removeLibraryRoot(root);
+      setLibraryWatchState(await api.getLibraryWatchState());
+    } catch {
+      // Keep the current index if the backend rejects the removal.
+    }
+  }
+
+  async function toggleLibraryAutoScan(enabled: boolean) {
+    try {
+      setLibraryWatchState(await api.setLibraryAutoScan(enabled));
+    } catch {
+      // The switch keeps its previous state when the backend is unavailable.
+    }
+  }
 
   useEffect(() => {
     try {
@@ -1602,14 +1767,18 @@ export default function App() {
         setNeteaseAccount((current) => (current?.connected ? current : settings.neteaseAccount));
         setLyricBindings(settings.lyricBindings);
         if (settings.neteaseAccount.connected) {
+          // Start the music refresh immediately from the persisted identity.
+          // The provider round trip below only replaces the provisional name
+          // and avatar once it completes.
           refreshNeteaseData().catch(() => {
-            setNeteaseTracks([]);
-            setNeteaseLikedTracks([]);
-            setDailyTracks([]);
-            setRoamTracks([]);
-            setPlaylistTracks([]);
-            setProviderPlaylists([]);
+            // Keep the startup snapshot on a transient provider failure. Only
+            // an explicit sign-out (account.connected === false) clears it.
           });
+          if (!settings.neteaseAccount.userId) {
+            void api.getNeteaseAccount()
+              .then(({ account }) => setNeteaseAccount(account))
+              .catch(() => undefined);
+          }
         }
       })
       .catch(() => setNeteaseAccount(null));
@@ -1721,7 +1890,10 @@ export default function App() {
   }, [localTracks]);
 
   return (
-    <PlaylistActionsProvider openAdd={(tracks, playlistId) => { setAddPlaylistRequest({ tracks, playlistId }); if (neteaseConnected) void refreshPlaylistList().catch(() => undefined); }}>
+    <PlaylistActionsProvider openAdd={(tracks, playlistId) => {
+      setAddPlaylistRequest({ tracks, playlistId });
+      if (neteaseConnected && tracks.some((track) => track.source === "netease")) void refreshPlaylistList().catch(() => undefined);
+    }}>
     <main
       className="aria-stage relative h-dvh overflow-hidden text-[var(--text-primary)]"
       style={
@@ -1800,7 +1972,7 @@ export default function App() {
           </div>
 
           <div className="app-nav-slot" style={noDragRegionStyle}>
-            <AppNavigation activeView={activeView} onPick={(id) => { setQuery(""); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); playlistReturnRef.current = null; } setActiveView(id); }} />
+            <AppNavigation activeView={activeView} onPick={(id) => { setQuery(""); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; } setActiveView(id); }} />
           </div>
 
           <div
@@ -1854,6 +2026,15 @@ export default function App() {
           </div>
 
           <div className="app-header-actions flex items-center gap-2" style={noDragRegionStyle}>
+            <Button
+              variant="glass"
+              size="icon"
+              aria-label={resolvedTheme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+              title={resolvedTheme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+            >
+              {resolvedTheme === "dark" ? <Sun /> : <Moon />}
+            </Button>
             {activeView === "player" && <Button className="xl:hidden" variant="ghost" size="icon" aria-label="打开播放队列" onClick={() => setQueueOpen(true)}><ListMusic /></Button>}
             <div className="relative">
             <Button
@@ -1959,6 +2140,8 @@ export default function App() {
                   loading={searchLoading}
                   localTracks={searchBundle.localTracks}
                   neteaseTracks={searchBundle.neteaseTracks}
+                  qqTracks={searchBundle.qqTracks}
+                  qqError={searchQqError}
                   artists={searchBundle.artists}
                   playlists={searchBundle.playlists}
                   users={searchBundle.users}
@@ -2003,6 +2186,7 @@ export default function App() {
                 />
               )}
               {activeView === "player" && (
+                <>
                 <PlayerSurface
                   activeTrack={activeTrack}
                   palette={activePalette}
@@ -2047,7 +2231,25 @@ export default function App() {
                   lyricDisplayMode={lyricDisplayMode}
                   onLyricDisplayModeChange={setLyricDisplayMode}
                   onSeek={seekTo}
+                  equalizerEnabled={equalizer.enabled}
+                  onOpenEqualizer={() => setEqualizerOpen(true)}
                 />
+                <EqualizerDialog
+                  open={equalizerOpen}
+                  onClose={() => setEqualizerOpen(false)}
+                  enabled={equalizer.enabled}
+                  bands={equalizer.bands}
+                  preset={equalizer.preset}
+                  error={equalizerError}
+                  customPresets={customEqualizerPresets}
+                  onEnabledChange={(enabled) => updateEqualizer({ enabled })}
+                  onBandsChange={(bands) => updateEqualizer({ bands })}
+                  onPresetChange={selectEqualizerPreset}
+                  onSavePreset={saveCustomEqualizerPreset}
+                  onDeletePreset={deleteCustomEqualizerPreset}
+                  onImportPresets={importCustomEqualizerPresets}
+                />
+                </>
               )}
               {activeView === "local" && (
                 <LibrarySurfacePanel
@@ -2087,6 +2289,21 @@ export default function App() {
               {activeView === "playlists" && (
                 <PlaylistSurface
                   playlists={providerPlaylists}
+                  local={{
+                    playlists: localPlaylists.playlists,
+                    allTracks: localTracks,
+                    selectedPlaylist: localPlaylists.selectedPlaylist,
+                    selectedTracks: localPlaylists.selectedTracks,
+                    storageError: localPlaylists.storageError,
+                    onOpen: localPlaylists.setSelectedId,
+                    onClose: () => localPlaylists.setSelectedId(null),
+                    onCreate: localPlaylists.create,
+                    onRename: localPlaylists.rename,
+                    onDelete: localPlaylists.remove,
+                    onAdd: localPlaylists.addTracks,
+                    onRemove: localPlaylists.removeTracks,
+                    onPickTrack: chooseTrack,
+                  }}
                   selectedPlaylist={selectedPlaylist}
                   tracks={playlistTracks}
                   playCounts={playCounts}
@@ -2207,6 +2424,11 @@ export default function App() {
                   onBackgroundEnabledChange={setBackgroundEnabled}
                   neteaseAccount={neteaseAccount}
                   libraryMeta={libraryMeta}
+                  libraryAutoScanEnabled={libraryWatchState?.enabled ?? true}
+                  libraryWatchState={libraryWatchState}
+                  onAddLibraryFolder={() => void addLibraryFolder()}
+                  onRemoveLibraryRoot={(root) => void removeLibraryFolder(root)}
+                  onToggleLibraryAutoScan={(enabled) => void toggleLibraryAutoScan(enabled)}
                   trackCount={allTracks.length}
                   likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length}
                   lyricProgress={lyricProgress}
@@ -2231,6 +2453,8 @@ export default function App() {
                   exclusiveMode={exclusiveMode}
                   keyboardShortcuts={keyboardShortcuts}
                   onKeyboardShortcutsChange={setKeyboardShortcuts}
+                  theme={theme}
+                  onThemeChange={setTheme}
                   onClose={() => setActiveView(settingsReturnView)}
                 />
               )}
@@ -2362,7 +2586,7 @@ export default function App() {
             setSelectedUser(null);
             setSelectedAlbum(null);
             setQueueOpen(false);
-            if (id === "playlists") { closePlaylist(); playlistReturnRef.current = null; }
+            if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; }
             if (id === "settings" && activeView !== "settings") setSettingsReturnView(activeView);
             setActiveView(id);
             setNavOpen(false);
@@ -2370,9 +2594,22 @@ export default function App() {
         />}
 
       </div>
-      {addPlaylistRequest && <AddToPlaylistDialog initialTracks={addPlaylistRequest.tracks} initialPlaylistId={addPlaylistRequest.playlistId} playlists={providerPlaylists} connected={neteaseConnected}
-        onClose={() => setAddPlaylistRequest(null)} onRequireLogin={() => { setAddPlaylistRequest(null); setAccountOpen(true); }}
-        onAdd={(id, tracks) => editPlaylistTracks(id, tracks, "add")} onCreate={(name, isPrivate) => createPlaylist(name, isPrivate, false)} />}
+      {addPlaylistRequest && (addPlaylistRequest.tracks.every((track) => track.source === "local") ? (
+        <AddToLocalPlaylistDialog
+          tracks={addPlaylistRequest.tracks}
+          playlists={localPlaylists.playlists}
+          onClose={() => setAddPlaylistRequest(null)}
+          onCreate={localPlaylists.create}
+          onAdd={(id, tracks) => {
+            localPlaylists.addTracks(id, tracks);
+            if (addPlaylistRequest.playlistId === id) localPlaylists.setSelectedId(id);
+          }}
+        />
+      ) : (
+        <AddToPlaylistDialog initialTracks={addPlaylistRequest.tracks} initialPlaylistId={addPlaylistRequest.playlistId} playlists={providerPlaylists} connected={neteaseConnected}
+          onClose={() => setAddPlaylistRequest(null)} onRequireLogin={() => { setAddPlaylistRequest(null); setAccountOpen(true); }}
+          onAdd={(id, tracks) => editPlaylistTracks(id, tracks, "add")} onCreate={(name, isPrivate) => createPlaylist(name, isPrivate, false)} />
+      ))}
     </main>
     </PlaylistActionsProvider>
   );

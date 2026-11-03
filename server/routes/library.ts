@@ -2,9 +2,10 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import express from "express";
 import { z } from "zod";
-import { clearLibrary, findTrack, readLibrary, replaceLibraryRoot } from "../libraryStore";
+import { clearLibrary, findTrack, readLibrary, removeLibraryRoot, replaceLibraryRoot } from "../libraryStore";
 import { readOrExtractLocalCover, warmLocalCovers } from "../localCoverCache";
 import { listCdDrives, scanCdDrives, scanMusicFolder } from "../musicScanner";
+import { getLibraryWatchState, refreshLibraryWatchers, setLibraryAutoScanEnabled } from "../services/libraryWatcher";
 import type { ScannedTrack } from "../types";
 import { HttpError } from "../utils/httpError";
 
@@ -42,6 +43,7 @@ export function createLibraryRouter() {
         .parse(req.body);
       const tracks = await scanMusicFolder(body.folderPath);
       const library = body.persist ? await replaceLibraryRoot(body.folderPath, tracks) : null;
+      if (body.persist) void refreshLibraryWatchers();
       void warmLocalCovers(tracks).catch(() => undefined);
       res.json({ tracks, library });
     } catch (error) {
@@ -74,6 +76,7 @@ export function createLibraryRouter() {
           job.phase = "saving";
           job.updatedAt = Date.now();
           const library = body.persist ? await replaceLibraryRoot(body.folderPath, tracks) : null;
+          if (body.persist) void refreshLibraryWatchers();
           void warmLocalCovers(tracks).catch(() => undefined);
           job.tracks = tracks;
           job.library = library;
@@ -146,6 +149,34 @@ export function createLibraryRouter() {
   router.get("/", async (_req, res, next) => {
     try {
       res.json(await readLibrary());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/watch-state", async (_req, res, next) => {
+    try {
+      res.json(await getLibraryWatchState());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/auto-scan", async (req, res, next) => {
+    try {
+      const body = z.object({ enabled: z.boolean() }).parse(req.body);
+      res.json(await setLibraryAutoScanEnabled(body.enabled));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/roots", async (req, res, next) => {
+    try {
+      const body = z.object({ root: z.string().min(1) }).parse(req.body);
+      const library = await removeLibraryRoot(body.root);
+      await refreshLibraryWatchers();
+      res.json(library);
     } catch (error) {
       next(error);
     }

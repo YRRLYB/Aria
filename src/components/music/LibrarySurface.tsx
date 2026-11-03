@@ -16,7 +16,7 @@ type LibrarySurfaceProps = {
   onChooseFolder: () => void;
   scanProgress?: { phase: string; processed: number; total: number; status: string; error?: string | null } | null;
   tracks: Track[];
-  libraryMeta: { roots: number; updatedAt: string | null };
+  libraryMeta: { roots: string[]; updatedAt: string | null };
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
   onScanPath: (folderPath: string) => Promise<unknown>;
@@ -119,7 +119,7 @@ export function LibrarySurface({
         <LibraryInfoCard label="专辑" value={`${albums.length} 张`} />
         <LibraryInfoCard label="本地曲目" value={`${fileTracks.length} 首`} />
         <LibraryInfoCard label="光盘曲目" value={`${cdTracks.length} 首`} />
-        <LibraryInfoCard label="目录数量" value={`${libraryMeta.roots} 个`} />
+        <LibraryInfoCard label="目录数量" value={`${libraryMeta.roots.length} 个`} />
       </div>
 
       <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">

@@ -1,14 +1,15 @@
-﻿import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, FolderSearch, Keyboard, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, FolderPlus, FolderSearch, Keyboard, LogIn, Monitor, Moon, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
 import QRCode from "qrcode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
-import { api, type NeteaseAccountSummary, type NeteaseQrStart } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart } from "@/lib/api";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import type { AudioOutputMode } from "@/lib/playerPresentation";
+import { ariaThemeOptions, type AriaTheme } from "@/lib/theme";
 import {
   defaultKeyboardShortcuts,
   formatShortcut,
@@ -25,6 +26,11 @@ export function SettingsPanel({
   onBackgroundEnabledChange,
   neteaseAccount,
   libraryMeta,
+  libraryAutoScanEnabled,
+  libraryWatchState,
+  onAddLibraryFolder,
+  onRemoveLibraryRoot,
+  onToggleLibraryAutoScan,
   trackCount,
   likedCount,
   lyricProgress,
@@ -49,12 +55,19 @@ export function SettingsPanel({
   exclusiveMode,
   keyboardShortcuts,
   onKeyboardShortcutsChange,
+  theme,
+  onThemeChange,
   onClose,
 }: {
   backgroundEnabled: boolean;
   onBackgroundEnabledChange: (value: boolean) => void;
   neteaseAccount: NeteaseAccountSummary | null;
-  libraryMeta: { roots: number; updatedAt: string | null };
+  libraryMeta: { roots: string[]; updatedAt: string | null };
+  libraryAutoScanEnabled: boolean;
+  libraryWatchState: ApiLibraryWatchState | null;
+  onAddLibraryFolder: () => void;
+  onRemoveLibraryRoot: (root: string) => void;
+  onToggleLibraryAutoScan: (enabled: boolean) => void;
   trackCount: number;
   likedCount: number;
   lyricProgress: number;
@@ -79,6 +92,8 @@ export function SettingsPanel({
   exclusiveMode: boolean;
   keyboardShortcuts: KeyboardShortcuts;
   onKeyboardShortcutsChange: (shortcuts: KeyboardShortcuts) => void;
+  theme: AriaTheme;
+  onThemeChange: (theme: AriaTheme) => void;
   onClose: () => void;
 }) {
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
@@ -125,7 +140,7 @@ export function SettingsPanel({
           </Button>
         </div>
 
-        <div className="no-scrollbar grid min-h-0 flex-1 grid-cols-1 content-start gap-4 overflow-y-auto p-5 sm:p-7 lg:grid-cols-2">
+        <div className="no-scrollbar grid min-h-0 flex-1 auto-rows-max grid-cols-1 content-start gap-4 overflow-y-auto p-5 sm:p-7 lg:grid-cols-2">
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -176,6 +191,55 @@ export function SettingsPanel({
             </div>
           </section>
 
+          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Appearance</p>
+                <h3 className="mt-1 text-base font-semibold">外观主题</h3>
+              </div>
+              <Badge>{ariaThemeOptions.find((option) => option.value === theme)?.label ?? "跟随系统"}</Badge>
+            </div>
+            <p className="mt-2 text-xs text-neutral-500">深色模式会同步覆盖首页、播放页与设置页的底色、文字与面板阴影。</p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {ariaThemeOptions.map((option) => {
+                const active = theme === option.value;
+                const Icon = option.value === "light" ? Sun : option.value === "dark" ? Moon : Monitor;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={active}
+                    className={cn(
+                      "aria-theme-option flex min-h-24 flex-col justify-between rounded-[1.15rem] border p-3 text-left transition",
+                      active
+                        ? "is-active border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_34px_rgba(23,23,23,0.16)]"
+                        : "border-white/72 bg-white/72 text-neutral-950 hover:bg-white",
+                    )}
+                    onClick={() => onThemeChange(option.value)}
+                  >
+                    <span className="flex items-center justify-between gap-2">
+                      <span
+                        className={cn(
+                          "flex size-9 items-center justify-center rounded-full",
+                          active ? "bg-white/14 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
+                        )}
+                      >
+                        <Icon className="size-4" />
+                      </span>
+                      {active && <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-neutral-950">使用中</span>}
+                    </span>
+                    <span>
+                      <span className="block text-sm font-semibold">{option.label}</span>
+                      <span className={cn("mt-1 block text-xs", active ? "text-white/70" : "text-neutral-500")}>
+                        {option.description}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           <RemoteAccessSettings />
 
           <KeyboardShortcutSettings
@@ -183,13 +247,13 @@ export function SettingsPanel({
             onChange={onKeyboardShortcutsChange}
           />
 
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Library</p>
-                <h3 className="mt-1 text-base font-semibold">曲库状态</h3>
+                <h3 className="mt-1 text-base font-semibold">本地音乐目录</h3>
               </div>
-              <Badge>{libraryMeta.roots} 个目录</Badge>
+              <Badge>{libraryMeta.roots.length} 个目录</Badge>
             </div>
             <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
               <Metric value={String(trackCount)} label="曲目" />
@@ -199,6 +263,65 @@ export function SettingsPanel({
             <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-neutral-950/8">
               <div className="h-full rounded-full bg-neutral-950/65" style={{ width: `${lyricProgress}%` }} />
             </div>
+
+            <div className="mt-5 space-y-2">
+              {libraryMeta.roots.map((root) => (
+                <div key={root} className="flex items-center gap-3 rounded-[1rem] border border-white/70 bg-white/60 px-3 py-2.5 shadow-sm">
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-neutral-950/[0.045] text-neutral-500">
+                    <FolderSearch className="size-4" />
+                  </span>
+                  <p className="min-w-0 flex-1 truncate text-sm font-medium" title={root}>{root}</p>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`移除目录 ${root}`}
+                    title="从曲库移除（不会删除音频文件）"
+                    onClick={() => onRemoveLibraryRoot(root)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              ))}
+              {!libraryMeta.roots.length && (
+                <div className="rounded-[1rem] border border-dashed border-neutral-950/10 bg-white/40 px-4 py-5 text-sm text-neutral-500">
+                  还没有添加音乐目录。添加后 Aria 会扫描歌曲、封面和歌词信息。
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <Button variant="subtle" size="sm" onClick={onAddLibraryFolder} disabled={!window.ariaDesktop?.chooseMusicFolder}>
+                <FolderPlus />
+                添加音乐文件夹
+              </Button>
+              <div className="flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] px-3 py-2 sm:justify-start">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">自动扫描新歌</p>
+                  <p className="mt-0.5 text-xs text-neutral-500">监视目录变化，新加入的文件会自动进入曲库。</p>
+                </div>
+                <button
+                  type="button"
+                  className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", libraryAutoScanEnabled ? "bg-neutral-950" : "bg-neutral-200")}
+                  onClick={() => onToggleLibraryAutoScan(!libraryAutoScanEnabled)}
+                  aria-label="切换自动扫描新歌"
+                  role="switch"
+                  aria-checked={libraryAutoScanEnabled}
+                >
+                  <span className={cn("size-6 rounded-full bg-white shadow-sm transition", libraryAutoScanEnabled && "translate-x-6")} />
+                </button>
+              </div>
+            </div>
+            <p className={cn("mt-3 min-h-4 text-xs", libraryWatchState?.lastError ? "text-rose-500" : "text-neutral-500")}>
+              {libraryWatchState?.scanningRoots.length
+                ? `正在扫描 ${libraryWatchState.scanningRoots.length} 个目录…`
+                : libraryWatchState?.lastError
+                  ? `自动扫描：${libraryWatchState.lastError}`
+                  : !libraryAutoScanEnabled
+                    ? "自动扫描已关闭，添加目录时仍会手动扫描一次。"
+                    : libraryWatchState?.lastScanAt
+                      ? `上次自动扫描：${new Date(libraryWatchState.lastScanAt).toLocaleString()}`
+                      : "自动扫描已开启，Aria 启动后会补扫离线期间新增的文件。"}
+            </p>
           </section>
 
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
@@ -225,6 +348,8 @@ export function SettingsPanel({
               </div>
             </div>
           </section>
+
+          <QqSourceCard />
 
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">
@@ -469,6 +594,7 @@ export function SettingsPanel({
               </button>
             </div>
           </section>
+
         </div>
         <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400 sm:px-7">
           <span>Aria Desktop</span>
@@ -1167,3 +1293,149 @@ function RemoteAccessSettings() {
 
 
 
+
+type SourceAccountSummary = {
+  connected: boolean;
+  nickname: string | null;
+  userId: string | null;
+  avatarUrl: string | null;
+};
+
+/** QQ Music source row: QR/cookie login + live account state from /api/sources/qq. */
+function QqSourceCard() {
+  const [account, setAccount] = useState<SourceAccountSummary | null>(null);
+  const [cookie, setCookie] = useState("");
+  const [showInput, setShowInput] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [loginStatus, setLoginStatus] = useState("点击窗口登录，在弹出的浏览器窗口里用手机 QQ 扫码。");
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    api
+      .getSourceAccount("qq")
+      .then((result) => {
+        if (mounted) setAccount(result.account);
+      })
+      .catch(() => {
+        if (mounted) setMessage("后端未连接");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  async function loginInWindow() {
+    const openLoginWindow = window.ariaDesktop?.qqLoginWindow;
+    if (!openLoginWindow) {
+      setMessage("当前环境不支持窗口登录，请使用 Cookie 备用绑定");
+      return;
+    }
+    setLoginLoading(true);
+    setMessage(null);
+    setLoginStatus("已打开登录窗口，请用手机 QQ 扫码并确认登录。");
+    try {
+      const result = await openLoginWindow();
+      if (!result?.ok || !result.cookie) {
+        setLoginStatus(result?.message ?? "未完成登录");
+        return;
+      }
+      const saved = await api.saveQqCookie(result.cookie);
+      setAccount(saved.account);
+      if (saved.account.connected) {
+        setLoginStatus("登录成功，账号信息已同步。");
+        setMessage(`已登录：${saved.account.nickname ?? "QQ 音乐账号"}`);
+      } else {
+        setLoginStatus("已获取 Cookie，但账号信息接口未确认登录状态。");
+        setMessage("可重新窗口登录一次，或改用 Cookie 备用绑定粘贴完整 Cookie");
+      }
+    } catch {
+      setLoginStatus("窗口登录失败，可改用 Cookie 备用绑定。");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function saveCookie() {
+    if (!cookie.trim()) {
+      setMessage("请先粘贴 Cookie");
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.saveQqCookie(cookie.trim());
+      setAccount(result.account);
+      setCookie("");
+      setShowInput(false);
+      setMessage(result.account.connected ? "QQ 音乐 Cookie 已保存并登录" : "Cookie 已保存，但登录状态未确认");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存失败，请确认后端正在运行");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
+          <h3 className="mt-1 truncate text-base font-semibold">播放源 · QQ 音乐</h3>
+        </div>
+        <Badge>{account?.connected ? "已登录" : "未登录"}</Badge>
+      </div>
+      <div className="mt-4 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3">
+        <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
+          {account?.avatarUrl ? (
+            <ArtworkImage src={account.avatarUrl} cacheSize={320} alt="" draggable={false} className="size-full object-cover" />
+          ) : (
+            <UserRound className="size-9 text-neutral-300" />
+          )}
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">{account?.connected ? account.nickname ?? "已登录" : "窗口扫码登录"}</p>
+          <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{loginStatus}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void loginInWindow()} disabled={loginLoading}>
+              <LogIn />
+              {loginLoading ? "等待登录" : "窗口扫码登录"}
+            </Button>
+            <Button size="sm" variant="subtle" onClick={() => setShowInput((value) => !value)}>
+              <Cookie />
+              Cookie 备用绑定
+            </Button>
+          </div>
+        </div>
+      </div>
+      {showInput && (
+        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+          <label className="text-xs font-medium text-neutral-500" htmlFor="qq-cookie">
+            QQ 音乐 Cookie
+          </label>
+          <textarea
+            id="qq-cookie"
+            value={cookie}
+            onChange={(event) => setCookie(event.target.value)}
+            rows={4}
+            placeholder="uin=o...; qqmusic_key=...; ..."
+            className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+          />
+          <div className="mt-3 flex justify-end">
+            <Button size="sm" onClick={() => void saveCookie()} disabled={saving}>
+              <Cookie />
+              {saving ? "保存中" : "保存 Cookie"}
+            </Button>
+          </div>
+        </div>
+      )}
+      {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
+      {!account?.connected && (
+        <p className="mt-3 text-xs text-neutral-400">
+          绑定后即可搜索播放；部分音质需要 VIP Cookie。
+        </p>
+      )}
+    </section>
+  );
+}

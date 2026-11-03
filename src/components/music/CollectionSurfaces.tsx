@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { ArtworkImage } from "./ArtworkImage";
 import { PlaylistDetail } from "./PlaylistDetail";
 import { AddToPlaylistButton } from "./PlaylistActions";
+import { LocalPlaylistSurface, type LocalPlaylistSurfaceProps } from "./LocalPlaylistSurfaces";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
 export function CollectionSurface({
@@ -163,8 +164,10 @@ export function PlaylistSurface({
   onReorderTracks,
   onSubscribe,
   onDeletePlaylist,
+  local,
 }: {
   playlists: ProviderPlaylist[];
+  local: LocalPlaylistSurfaceProps;
   selectedPlaylist: ProviderPlaylist | null;
   tracks: Track[];
   playCounts: Record<string, number>;
@@ -184,6 +187,7 @@ export function PlaylistSurface({
   onDeletePlaylist: (id: string) => Promise<void>;
 }) {
   const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
+  const [playlistSource, setPlaylistSource] = useState<"netease" | "local">("netease");
   const [createOpen, setCreateOpen] = useState(false);
   const [playlistName, setPlaylistName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
@@ -220,6 +224,10 @@ export function PlaylistSurface({
     if (playlistFilter === "saved") return playlists.filter((playlist) => playlist.subscribed || playlist.owned === false);
     return playlists;
   }, [playlistFilter, playlists]);
+
+  if (playlistSource === "local") {
+    return <LocalPlaylistSurface {...local} onOpenNetease={() => setPlaylistSource("netease")} />;
+  }
 
   if (selectedPlaylist) {
     return <PlaylistDetail key={selectedPlaylist.id} playlist={selectedPlaylist} tracks={tracks} loading={loading} error={error} connected={canCreatePlaylist} playCounts={playCounts}
@@ -287,7 +295,11 @@ export function PlaylistSurface({
           )}
         </section>
       )}
-      <div className="mt-6 flex flex-wrap gap-2">
+      <div className="mt-6 flex w-fit rounded-full border border-white/70 bg-white/52 p-1 shadow-sm" aria-label="歌单来源">
+        <button type="button" aria-current="page" className="rounded-full bg-neutral-950 px-4 py-2 text-sm font-medium text-white">网易云</button>
+        <button type="button" className="rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition hover:bg-white" onClick={() => { setCreateOpen(false); setPlaylistSource("local"); }}>本地</button>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
         {[
           ["all", "全部歌单"],
           ["owned", "我创建"],

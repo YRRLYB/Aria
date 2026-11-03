@@ -9,6 +9,22 @@ const { CdAudioRipper } = require("./cdAudioRipper.cjs");
 // decoder stay in WASAPI while remaining part of the app selected for share.
 const NATIVE_AUDIO_CLIENT_NAME = "Aria";
 const NATIVE_AUDIO_PROCESS_NAME = `${NATIVE_AUDIO_CLIENT_NAME}.exe`;
+const EQUALIZER_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+function sanitizeEqualizerBands(value) {
+  const source = Array.isArray(value) ? value : [];
+  return EQUALIZER_FREQUENCIES.map((_, index) => {
+    const gain = Number(source[index]);
+    if (!Number.isFinite(gain)) return 0;
+    return Math.max(-12, Math.min(12, Math.round(gain * 10) / 10));
+  });
+}
+
+function buildEqualizerFilter(bands) {
+  return bands
+    .map((gain, index) => `equalizer=f=${EQUALIZER_FREQUENCIES[index]}:width_type=o:width=1:g=${gain}`)
+    .join(",");
+}
 
 function buildMpvArguments(pipePath, exclusive = false) {
   return [
@@ -88,6 +104,8 @@ class MpvAudioEngine {
       bitrate: null,
       gaplessGeneration: 0,
       normalizationEnabled: false,
+      equalizerEnabled: false,
+      equalizerBands: EQUALIZER_FREQUENCIES.map(() => 0),
     };
   }
 
@@ -395,11 +413,24 @@ class MpvAudioEngine {
     return deviceId;
   }
 
-  async applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled = this.state.normalizationEnabled }) {
+  async applyOutputSettings({
+    exclusive,
+    deviceId,
+    volume,
+    normalizationEnabled = this.state.normalizationEnabled,
+    equalizerEnabled,
+    equalizerBands,
+  }) {
     const requestedExclusive = typeof exclusive === "boolean" ? exclusive : this.launchExclusive ?? false;
     await this.ensureProcess(requestedExclusive);
     if (typeof normalizationEnabled === "boolean") {
       await this.setNormalization(normalizationEnabled);
+    }
+    if (typeof equalizerEnabled === "boolean" || Array.isArray(equalizerBands)) {
+      await this.setEqualizer(
+        typeof equalizerEnabled === "boolean" ? equalizerEnabled : this.state.equalizerEnabled,
+        Array.isArray(equalizerBands) ? equalizerBands : this.state.equalizerBands,
+      );
     }
     if (typeof volume === "number") {
       this.state.volume = volume;
@@ -455,6 +486,27 @@ class MpvAudioEngine {
         await this.command("af", "remove", "@aria-normalization");
       }
       this.state.normalizationEnabled = Boolean(enabled);
+    });
+    this.normalizationQueue = task.catch(() => undefined);
+    return task;
+  }
+
+  setEqualizer(enabled, bands) {
+    const nextBands = sanitizeEqualizerBands(bands);
+    const task = this.normalizationQueue.then(async () => {
+      // Rebuild Aria's own labeled filter so rapid band changes never touch
+      // normalization or any other mpv filter in the chain.
+      const filters = await this.command("get_property", "af");
+      const installed = Array.isArray(filters) && filters.some((filter) => filter.label === "aria-eq");
+      const active = Boolean(enabled) && nextBands.some((gain) => Math.abs(gain) > 0.05);
+      if (installed) {
+        await this.command("af", "remove", "@aria-eq");
+      }
+      if (active) {
+        await this.command("af", "add", `@aria-eq:lavfi=[${buildEqualizerFilter(nextBands)}]`);
+      }
+      this.state.equalizerEnabled = Boolean(enabled);
+      this.state.equalizerBands = nextBands;
     });
     this.normalizationQueue = task.catch(() => undefined);
     return task;
@@ -534,6 +586,8 @@ class MpvAudioEngine {
       endChapter = null,
       cdReadQuality = "high",
       normalizationEnabled = false,
+      equalizerEnabled = this.state.equalizerEnabled,
+      equalizerBands = this.state.equalizerBands,
     },
     token,
   ) {
@@ -574,6 +628,8 @@ class MpvAudioEngine {
         exclusive,
         deviceId,
         normalizationEnabled,
+        equalizerEnabled,
+        equalizerBands,
         nativeDevice: null,
         startChapter: null,
         endChapter: null,
@@ -595,6 +651,8 @@ class MpvAudioEngine {
       startChapter = null,
       endChapter = null,
       normalizationEnabled = this.state.normalizationEnabled,
+      equalizerEnabled = this.state.equalizerEnabled,
+      equalizerBands = this.state.equalizerBands,
     },
     token,
   ) {
@@ -615,7 +673,7 @@ class MpvAudioEngine {
     await this.command("set_property", "pause", true).catch(() => undefined);
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
-    await this.applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled });
+    await this.applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled, equalizerEnabled, equalizerBands });
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     if (String(url).startsWith("cdda://")) {

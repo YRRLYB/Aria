@@ -33,6 +33,8 @@ export function SearchSurface({
   loading,
   localTracks,
   neteaseTracks,
+  qqTracks = [],
+  qqError = null,
   artists,
   playlists,
   users = [],
@@ -55,6 +57,8 @@ export function SearchSurface({
   loading: boolean;
   localTracks: Track[];
   neteaseTracks: Track[];
+  qqTracks?: Track[];
+  qqError?: string | null;
   artists: ArtistSummary[];
   playlists: ProviderPlaylist[];
   users?: ProviderUser[];
@@ -74,8 +78,8 @@ export function SearchSurface({
   onPickAlbum?: (album: ProviderAlbum) => void;
 }) {
   const tracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks]),
-    [localTracks, neteaseTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks]),
+    [localTracks, neteaseTracks, qqTracks],
   );
   const localQueue = useMemo(
     () => tracks.filter((track) => track.source === "local"),
@@ -83,6 +87,10 @@ export function SearchSurface({
   );
   const neteaseQueue = useMemo(
     () => tracks.filter((track) => track.source === "netease"),
+    [tracks],
+  );
+  const qqQueue = useMemo(
+    () => tracks.filter((track) => track.source === "qq"),
     [tracks],
   );
   const descriptions = {
@@ -163,13 +171,24 @@ export function SearchSurface({
         className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1"
       >
         <DiscoveryError error={error} onRetry={onRetry} />
+        {mode === "tracks" && qqError && (
+          <p className="mb-3 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-700">
+            QQ音乐：{qqError}
+          </p>
+        )}
         {(mode === "tracks" || mode === "lyrics") && (
           <div className="grid gap-2">
             {tracks.map((track) => (
               <DiscoveryTrackRow
                 key={track.id}
                 track={track}
-                queue={track.source === "local" ? localQueue : neteaseQueue}
+                queue={
+                  track.source === "local"
+                    ? localQueue
+                    : track.source === "qq"
+                      ? qqQueue
+                      : neteaseQueue
+                }
                 onPickTrack={onPickTrack}
                 showMatchedLyric={mode === "lyrics"}
               />

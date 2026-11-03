@@ -39,7 +39,20 @@ export type LyricCandidate = {
   preview: string[];
 };
 
+export type StoredNeteaseAccount = {
+  connected: boolean;
+  nickname: string | null;
+  userId: string | null;
+  avatarUrl: string | null;
+  cookiePreview: string | null;
+  validatedAt: number;
+};
+
 export type AppStore = {
   neteaseCookie: string | null;
+  neteaseAccount: StoredNeteaseAccount | null;
+  /** Raw QQ Music cookie header; parsed for uin + qqmusic_key/qm_keyst. */
+  qqCookie?: string | null;
   lyricBindings: Record<string, string>;
+  libraryAutoScanEnabled: boolean;
 };

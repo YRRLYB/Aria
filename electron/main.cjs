@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut, dialog } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut, dialog, session } = require("electron");
 const { spawn, execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -132,8 +132,6 @@ function ensureWindowsTaskbarPreviewPolicy() {
   }
 }
 
-ensureWindowsTaskbarPreviewPolicy();
-
 // Chromium spends GPU process memory on the many frosted-glass layers; keep
 // the app on the integrated GPU when a discrete one is present and cap every
 // V8 heap so long sessions collect garbage instead of growing without bound.
@@ -141,6 +139,11 @@ ensureWindowsTaskbarPreviewPolicy();
 // overlay / lock screen (SMTC) on Windows.
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=256 --expose-gc");
 app.commandLine.appendSwitch("enable-features", "MediaSessionService");
+// Aria is a mainland-first NetEase client. Never attach the renderer to a
+// Windows/Chromium forward proxy: a stale system proxy made artwork and the
+// first library refresh appear frozen. Future providers can opt into their
+// own scoped network policy instead of changing this global default.
+app.commandLine.appendSwitch("no-proxy-server");
 // The app owns SMTC for both Chromium and mpv. Avoid a second Chromium card.
 if (iconicThumbAddon?.mediaSessionAvailable) {
   app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling");
@@ -222,7 +225,7 @@ async function apiOnline(timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${apiBase}/api/health`);
+      const response = await fetch(`${apiBase}/api/health`, { signal: AbortSignal.timeout(750) });
       if (response.ok) return true;
     } catch {
       // Wait for the child process to finish booting.
@@ -290,7 +293,7 @@ async function urlOnline(url, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(750) });
       if (response.ok) return true;
     } catch {
       // Vite is still starting.
@@ -298,6 +301,32 @@ async function urlOnline(url, timeoutMs = 10000) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return false;
+}
+
+function directBackendEnvironment() {
+  const environment = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+    ARIA_API_PORT: String(apiPort),
+    MUSICBOX_API_PORT: String(apiPort),
+    ARIA_DATA_DIR: path.join(app.getPath("userData"), "data"),
+  };
+  // The backend performs NetEase requests directly. Strip inherited proxy
+  // variables as well as the Chromium switch above so a stale system proxy
+  // cannot silently route domestic music, cover or API traffic elsewhere.
+  for (const key of Object.keys(environment)) {
+    if (/^(?:https?_proxy|all_proxy|no_proxy)$/i.test(key)) delete environment[key];
+  }
+  return environment;
+}
+
+async function configureDirectNetwork() {
+  try {
+    await session.defaultSession.setProxy({ mode: "direct" });
+    writeLog("desktop.log", "network mode: direct (proxy disabled)");
+  } catch (error) {
+    writeLog("desktop.log", `unable to force direct network mode: ${error?.stack || error}`);
+  }
 }
 
 async function startBackend() {
@@ -310,13 +339,7 @@ async function startBackend() {
   // grow its old space with machine RAM on large-memory hosts.
   backendProcess = spawn(process.execPath, ["--max-old-space-size=384", serverEntry], {
     cwd: app.getPath("userData"),
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-      ARIA_API_PORT: String(apiPort),
-      MUSICBOX_API_PORT: String(apiPort),
-      ARIA_DATA_DIR: path.join(app.getPath("userData"), "data"),
-    },
+    env: directBackendEnvironment(),
     stdio: app.isPackaged ? ["ignore", "pipe", "pipe"] : "inherit",
     windowsHide: true,
   });
@@ -590,7 +613,11 @@ function createTray() {
 }
 
 async function createWindow() {
-  await startBackend();
+  // Start the API and the renderer concurrently. The first screen paints from
+  // cached state immediately; startup API requests retry briefly until the
+  // local server is listening.
+  const backendReady = startBackend();
+  void backendReady.catch((error) => writeLog("desktop.log", `backend startup failed: ${error?.stack || error}`));
   createTray();
 
   mainWindow = new BrowserWindow({
@@ -755,6 +782,65 @@ ipcMain.handle("aria:choose-music-folder", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   return result.filePaths[0];
+});
+
+// QQ 音乐登录：网页端 OAuth 握手依赖浏览器行为（登录跳转页/风控脚本），
+// 服务端纯 HTTP 复刻只能拿到 p_skey 缺失或授权链不返回 code。
+// 这里在应用内开一个真实 Chromium 窗口完成扫码，登录成功后从会话里取 Cookie。
+const QQ_LOGIN_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+ipcMain.handle("aria:qq-login-window", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, message: "主窗口不可用" };
+  const loginSession = session.fromPartition("aria:qq-login");
+  loginSession.setUserAgent(QQ_LOGIN_USER_AGENT);
+  return new Promise((resolve) => {
+    const loginWindow = new BrowserWindow({
+      width: 480,
+      height: 760,
+      parent: mainWindow,
+      autoHideMenuBar: true,
+      title: "登录 QQ 音乐",
+      webPreferences: {
+        partition: "aria:qq-login",
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearInterval(timer);
+      if (!loginWindow.isDestroyed()) loginWindow.close();
+      resolve(value);
+    };
+    const readLoginCookie = async () => {
+      const cookies = await loginSession.cookies.get({});
+      const byName = new Map(cookies.map((cookie) => [cookie.name, String(cookie.value ?? "")]));
+      const key = (byName.get("qm_keyst") || byName.get("qqmusic_key") || "").trim();
+      const uin = (byName.get("uin") || byName.get("p_uin") || "").trim().replace(/^o/i, "");
+      if (!key || !/^\d{4,}$/.test(uin)) return;
+      // 只带 uin + qm_keyst 时，QQ 的账号信息接口会判定未登录；把 qq.com
+      // 域下的登录 Cookie 原样一起带上，后端校验与播放才能通过与 VIP 相关分支。
+      const parts = cookies
+        .filter((cookie) => typeof cookie.domain === "string" && cookie.domain.includes("qq.com"))
+        .filter((cookie) => cookie.value !== undefined && cookie.value !== null && String(cookie.value) !== "")
+        .filter((cookie) => cookie.name !== "uin" && cookie.name !== "p_uin")
+        .map((cookie) => `${cookie.name}=${String(cookie.value)}`);
+      const cookieHeader = [`uin=o${uin}`, ...parts].join("; ");
+      writeLog("desktop.log", `qq login window: cookies captured (${parts.length + 1} entries)`);
+      finish({ ok: true, cookie: cookieHeader });
+    };
+    timer = setInterval(() => {
+      if (!settled) readLoginCookie().catch(() => {});
+    }, 1200);
+    loginWindow.on("closed", () => finish({ ok: false, message: "登录窗口已关闭" }));
+    loginWindow.webContents.setUserAgent(QQ_LOGIN_USER_AGENT);
+    loginWindow.loadURL("https://y.qq.com/").catch(() => finish({ ok: false, message: "登录页加载失败" }));
+  });
 });
 
 ipcMain.handle("aria:get-remote-access", () => {
@@ -946,6 +1032,9 @@ app.on("second-instance", showWindow);
 
 app.whenReady().then(async () => {
   attachPowerRecoveryHandlers();
+  // Registry/shell maintenance is not part of the first paint path.
+  setImmediate(ensureWindowsTaskbarPreviewPolicy);
+  await configureDirectNetwork();
   await createWindow();
   syncGlobalShortcuts(globalShortcutConfig);
 });

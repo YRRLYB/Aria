@@ -24,9 +24,12 @@ const boundedCoverUrlGraceMs = 60_000;
 const boundedCoverUrls = new Map<string, string>();
 const pendingBoundedCoverUrls = new Map<string, Promise<string | null>>();
 
-export function getBoundedCoverUrl(url?: string | null): Promise<string | null> {
+export function getBoundedCoverUrl(url?: string | null, size = 768): Promise<string | null> {
   if (!url) return Promise.resolve(null);
-  url = sizedCoverUrl(cachedArtworkUrl(url, 512), 768)!;
+  const requestedSize = Math.max(128, Math.min(maxBoundedCoverPixels, Math.round(size)));
+  // NetEase CDN thumbnails top out at 512 for player surfaces; local covers
+  // can use the full bounded size so embedded artwork keeps its detail.
+  url = sizedCoverUrl(cachedArtworkUrl(url, Math.min(512, requestedSize)), requestedSize)!;
   const cached = boundedCoverUrls.get(url);
   if (cached) {
     boundedCoverUrls.delete(url);

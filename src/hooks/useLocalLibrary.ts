@@ -20,7 +20,7 @@ export function useLocalLibrary(options: {
   onScanProgress?: (progress: { phase: string; processed: number; total: number; status: string; error?: string | null }) => void;
 }) {
   const [localTracks, setLocalTracks] = useState<Track[]>([]);
-  const [libraryMeta, setLibraryMeta] = useState({ roots: 0, updatedAt: null as string | null });
+  const [libraryMeta, setLibraryMeta] = useState({ roots: [] as string[], updatedAt: null as string | null });
   const [folderName, setFolderName] = useState("未选择");
   const artworkSyncingRef = useRef<Set<string>>(new Set());
   const localCoverWarmupRef = useRef<Set<string>>(new Set());
@@ -83,7 +83,7 @@ export function useLocalLibrary(options: {
     });
   }
 
-  async function scanBackendPath(scanPath: string) {
+  async function scanBackendPath(scanPath: string, scanOptions: { openLibrary?: boolean } = {}) {
     options.onScanProgress?.({ phase: "discovering", processed: 0, total: 0, status: "running" });
     const { jobId } = await api.startLibraryScan(scanPath);
     let result: Awaited<ReturnType<typeof api.getLibraryScanProgress>>;
@@ -102,11 +102,11 @@ export function useLocalLibrary(options: {
     setFolderName(scanPath);
     options.setPlayQueueIds(() => materializeQueueIds(nextUiTracks, nextUiTracks[0]?.id ?? options.activeTrackId, options.shuffleEnabled));
     setLibraryMeta({
-      roots: result.library?.roots.length ?? 1,
+      roots: result.library?.roots ?? [scanPath],
       updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
     });
     if (nextTracks[0]) options.onTrackScanned(nextTracks[0].id);
-    options.onLibraryOpened();
+    if (scanOptions.openLibrary !== false) options.onLibraryOpened();
     options.onScanProgress?.({ phase: "complete", processed: nextUiTracks.length, total: nextUiTracks.length, status: "complete" });
     return { folderPath: scanPath, trackCount: nextUiTracks.length };
   }
@@ -131,11 +131,22 @@ export function useLocalLibrary(options: {
       options.setPlayQueueIds(() => materializeQueueIds(queue, queue[0].id, options.shuffleEnabled));
     }
     setLibraryMeta({
-      roots: result.library?.roots.length ?? result.drives.length,
+      roots: result.library?.roots ?? [],
       updatedAt: result.library?.updatedAt ?? new Date().toISOString(),
     });
     setFolderName(scannedCdTracks.length ? "光盘库" : folderName);
     options.onLibraryOpened();
+  }
+
+  async function removeLibraryRoot(root: string) {
+    const library = await api.removeLibraryRoot(root);
+    const nextUiTracks = library.tracks.map(localTrackToUiTrack);
+    setLocalTracks(nextUiTracks);
+    warmLocalCoverCache(nextUiTracks);
+    setLibraryMeta({ roots: library.roots, updatedAt: library.updatedAt });
+    if (!library.roots.length) setFolderName("未选择");
+    options.setPlayQueueIds(() => materializeQueueIds(nextUiTracks, nextUiTracks[0]?.id ?? options.activeTrackId, options.shuffleEnabled));
+    return library;
   }
 
   async function replaceLocalArtwork(trackId: string, file: File) {
@@ -160,6 +171,7 @@ export function useLocalLibrary(options: {
     applyArtworkToTrack,
     scanBackendPath,
     scanCdLibrary,
+    removeLibraryRoot,
     replaceLocalArtwork,
   };
 }

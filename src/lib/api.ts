@@ -37,6 +37,8 @@ declare global {
           endChapter?: string | null;
           cdReadQuality?: "high" | "low";
           normalizationEnabled?: boolean;
+          equalizerEnabled?: boolean;
+          equalizerBands?: number[];
         }) => Promise<unknown>;
         loadNext?: (payload: { trackId: string; url: string }) => Promise<unknown>;
         setPaused?: (paused: boolean) => Promise<unknown>;
@@ -47,6 +49,8 @@ declare global {
           deviceId?: string;
           volume?: number;
           normalizationEnabled?: boolean;
+          equalizerEnabled?: boolean;
+          equalizerBands?: number[];
         }) => Promise<unknown>;
         stop?: () => Promise<unknown>;
         onEvent?: (callback: (payload: {
@@ -77,6 +81,7 @@ declare global {
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       chooseMusicFolder?: () => Promise<string | null>;
+      qqLoginWindow?: () => Promise<{ ok: boolean; cookie?: string; message?: string }>;
       getRemoteAccess?: () => Promise<{ enabled: boolean; token: string; port: number; addresses: string[] }>;
       setRemoteAccess?: (enabled: boolean) => Promise<{ enabled: boolean; token: string }>;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
@@ -145,6 +150,13 @@ export type ApiLibraryIndex = {
   tracks: ApiScannedTrack[];
 };
 
+export type ApiLibraryWatchState = {
+  enabled: boolean;
+  scanningRoots: string[];
+  lastScanAt: number | null;
+  lastError: string | null;
+};
+
 export type NeteaseAccountSummary = {
   connected: boolean;
   nickname: string | null;
@@ -165,6 +177,14 @@ export type NeteaseQrCheck = {
   status: "waiting" | "scanned" | "expired" | "success";
   message: string;
   account: NeteaseAccountSummary | null;
+};
+
+export type SourceManifestInfo = {
+  id: string;
+  name: string;
+  shortName: string;
+  version: string;
+  artworkHosts: string[];
 };
 
 export type ProviderTrack = {
@@ -370,14 +390,37 @@ export function apiUrl(url: string) {
   return appendToken(resolved);
 }
 
+const startupRequestDeadline = Date.now() + 12_000;
+const startupRetryStatuses = new Set([502, 503, 504]);
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithStartupRetry(url: string, init?: RequestInit) {
+  for (let attempt = 0; ; attempt += 1) {
+    const canRetry = (!init?.method || init.method.toUpperCase() === "GET") &&
+      !init?.signal?.aborted &&
+      Date.now() < startupRequestDeadline;
+    try {
+      const response = await fetch(apiUrl(url), {
+        headers: {
+          "Content-Type": "application/json",
+          ...init?.headers,
+        },
+        ...init,
+      });
+      if (!canRetry || !startupRetryStatuses.has(response.status)) return response;
+      await response.body?.cancel();
+    } catch (error) {
+      if (!canRetry) throw error;
+    }
+    await wait(Math.min(1200, 150 * 2 ** attempt));
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(url), {
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-    ...init,
-  });
+  const response = await fetchWithStartupRetry(url, init);
 
   if (!response.ok) {
     let message = `Request failed: ${response.status}`;
@@ -440,6 +483,21 @@ export const api = {
   getLibrary() {
     return request<ApiLibraryIndex>("/api/library");
   },
+  getLibraryWatchState() {
+    return request<ApiLibraryWatchState>("/api/library/watch-state");
+  },
+  setLibraryAutoScan(enabled: boolean) {
+    return request<ApiLibraryWatchState>("/api/library/auto-scan", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+  },
+  removeLibraryRoot(root: string) {
+    return request<ApiLibraryIndex>("/api/library/roots", {
+      method: "DELETE",
+      body: JSON.stringify({ root }),
+    });
+  },
   clearLibrary() {
     return request<ApiLibraryIndex>("/api/library", {
       method: "DELETE",
@@ -495,6 +553,9 @@ export const api = {
       neteaseAccount: NeteaseAccountSummary;
       lyricBindings: Record<string, string>;
     }>("/api/settings");
+  },
+  getNeteaseAccount() {
+    return request<{ account: NeteaseAccountSummary }>("/api/settings/netease-account");
   },
   saveNeteaseCookie(cookie: string) {
     return request<{ ok: boolean; account: NeteaseAccountSummary }>("/api/settings/netease-cookie", {
@@ -681,5 +742,61 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ trackIds, level }),
     });
+  },
+  // Unified built-in source contract (/api/sources/:sourceId/...). New sources
+  // plug in here without per-source API copies.
+  listSources() {
+    return request<{ sources: SourceManifestInfo[] }>("/api/sources");
+  },
+  searchSource(sourceId: string, query: string, mode: "tracks" | "artists" | "playlists" = "tracks", limit = 24, offset = 0) {
+    const params = new URLSearchParams({ q: query, mode, limit: String(limit), offset: String(offset) });
+    return request<{ sourceId: string; tracks: ProviderTrack[]; artists: ProviderArtist[]; playlists: ProviderPlaylist[] }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/search?${params}`,
+    );
+  },
+  getSourceStreamUrl(sourceId: string, trackId: string, level?: string) {
+    const params = new URLSearchParams();
+    if (level) params.set("level", level);
+    const suffix = params.size ? `?${params}` : "";
+    return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/stream${suffix}`);
+  },
+  getSourceStreamMetaUrl(sourceId: string, trackId: string, level?: string) {
+    const params = new URLSearchParams();
+    if (level) params.set("level", level);
+    const suffix = params.size ? `?${params}` : "";
+    return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/stream-meta${suffix}`);
+  },
+  getSourceLyrics(sourceId: string, trackId: string) {
+    return request<{ lyrics: LyricLine[] }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/lyrics`,
+    );
+  },
+  getSourceAccount(sourceId: string) {
+    return request<{ account: { connected: boolean; nickname: string | null; userId: string | null; avatarUrl: string | null } }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/account`,
+    );
+  },
+  getSourceCoverUrl(sourceId: string, sourceUrl: string) {
+    return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/cover?url=${encodeURIComponent(sourceUrl)}`);
+  },
+  saveQqCookie(cookie: string) {
+    return request<{ ok: boolean; account: { connected: boolean; nickname: string | null; userId: string | null; avatarUrl: string | null } }>(
+      "/api/settings/qq-cookie",
+      { method: "POST", body: JSON.stringify({ cookie }) },
+    );
+  },
+  startQqQrLogin() {
+    return request<{ key: string; qrImage: string; expiresIn: number }>("/api/settings/qq-qr/start", {
+      method: "POST",
+    });
+  },
+  checkQqQrLogin(key: string) {
+    const params = new URLSearchParams({ key });
+    return request<{
+      code: number;
+      status: "waiting" | "scanned" | "expired" | "success";
+      message: string;
+      account: { connected: boolean; nickname: string | null; userId: string | null; avatarUrl: string | null } | null;
+    }>(`/api/settings/qq-qr/check?${params}`);
   },
 };

@@ -47,13 +47,13 @@ it("recovers a cached avatar or cover using its original HTTPS URL after proxy f
   const proxy = cachedArtworkUrl(original, 128)!;
   expect(artworkImageCandidates(proxy, undefined, 128)).toEqual([
     proxy,
-    "https://p3.music.126.net/avatar.jpg?param=100y100",
+    "https://p3.music.126.net/avatar.jpg?param=128y128",
   ]);
   expect(artworkImageCandidates(original, undefined, 128)).toEqual([
     proxy,
-    "https://p3.music.126.net/avatar.jpg?param=100y100",
+    "https://p3.music.126.net/avatar.jpg?param=128y128",
   ]);
-  expect(directArtworkUrl(proxy)).toBe("https://p3.music.126.net/avatar.jpg?param=100y100");
+  expect(directArtworkUrl(proxy, 320)).toBe("https://p3.music.126.net/avatar.jpg?param=320y320");
 });
 
 it("retains a CDN fallback when player artwork has been decoded to a temporary blob", () => {
@@ -61,7 +61,7 @@ it("retains a CDN fallback when player artwork has been decoded to a temporary b
   expect(artworkImageCandidates("blob:http://localhost/artwork", original, 512)).toEqual([
     "blob:http://localhost/artwork",
     cachedArtworkUrl(original, 512),
-    original,
+    `${original}?param=512y512`,
   ]);
   expect(artworkImageCandidates("data:image/png;base64,aaa")).toEqual(["data:image/png;base64,aaa"]);
   expect(artworkImageCandidates(undefined)).toEqual([]);

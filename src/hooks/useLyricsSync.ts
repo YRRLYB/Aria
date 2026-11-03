@@ -32,7 +32,12 @@ export function useLyricsSync(options: {
   }
 
   async function syncLyricsForTrack(track: Track) {
-    const providerId = track.providerId ?? (track.id.startsWith("netease:") ? track.id.slice("netease:".length) : undefined);
+    const providerId = track.providerId ?? (track.id.startsWith(`${track.source}:`) ? track.id.slice(track.source.length + 1) : undefined);
+    if (track.source === "qq" && providerId) {
+      const result = await api.getSourceLyrics("qq", providerId);
+      applyLyricsToTrack(track.id, result.lyrics);
+      return;
+    }
     if (track.source === "netease" && providerId) {
       const result = await api.getNeteaseLyrics(providerId);
       applyLyricsToTrack(track.id, result.lyrics);

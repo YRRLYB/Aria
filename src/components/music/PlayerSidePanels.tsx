@@ -42,72 +42,70 @@ export function QueueList({
         <div
           key={track.id}
           className={cn(
-            "group flex w-full items-center gap-2 rounded-3xl p-2 text-left transition hover:bg-white/65",
+            "group relative flex w-full items-center rounded-3xl p-2 text-left transition hover:bg-white/65",
             activeTrackId === track.id && "bg-white shadow-sm",
           )}
         >
           <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onPickTrack(track.id)}>
-          <CoverArt track={track} className="size-14 rounded-2xl" />
-          <div className="min-w-0 flex-1">
-            <p className="min-w-0 truncate text-sm font-semibold" title={track.title}>
-              <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-            </p>
-            <p className="flex min-w-0 items-center gap-1 truncate text-xs text-neutral-500">
-              <span className="min-w-0 truncate">
-                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-              </span>
-              <span className="shrink-0 text-neutral-400" title={formatAudioDetail(track)}>· {formatAudioDetail(track)}</span>
-            </p>
-          </div>
+            <CoverArt track={track} className="size-14 rounded-2xl" />
+            <div className="min-w-0 flex-1">
+              {/* Actions float above the row instead of reserving ~130px of
+                  transparent width, so song names can use the full sidebar. */}
+              <p className="line-clamp-2 min-w-0 break-words text-sm font-semibold leading-5" title={track.title}>
+                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+              </p>
+              <p className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-xs text-neutral-500">
+                <span className="min-w-0 truncate">
+                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                </span>
+                <span className="shrink-0 text-neutral-400" title={formatAudioDetail(track)}>· {formatAudioDetail(track)}</span>
+              </p>
+            </div>
           </button>
-          <div className="flex shrink-0 items-center gap-1">
-            {(onPlayNext || onRemove || onMove) && (
-              <div className="flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
-                {onPlayNext && track.id !== activeTrackId && (
-                  <button
-                    type="button"
-                    className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
-                    title="下一首播放"
-                    aria-label={`下一首播放：${track.title}`}
-                    onClick={() => onPlayNext(track.id)}
-                  >
-                    <ListEnd className="size-3.5" />
-                  </button>
-                )}
-                {onMove && track.id !== activeTrackId && (
-                  <>
-                    <button
-                      type="button"
-                      className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
-                      title="上移"
-                      aria-label={`上移：${track.title}`}
-                      onClick={() => onMove(track.id, "up")}
-                    >
-                      <ArrowUp className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
-                      title="下移"
-                      aria-label={`下移：${track.title}`}
-                      onClick={() => onMove(track.id, "down")}
-                    >
-                      <ArrowDown className="size-3.5" />
-                    </button>
-                  </>
-                )}
-                {onRemove && track.id !== activeTrackId && (
-                  <button
-                    type="button"
-                    className="rounded-full p-1.5 text-neutral-400 transition hover:bg-red-50 hover:text-red-600"
-                    title="移出队列"
-                    aria-label={`移出队列：${track.title}`}
-                    onClick={() => onRemove(track.id)}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                )}
-              </div>
+          <div className="pointer-events-none absolute right-2 top-1/2 z-10 flex max-w-[calc(100%-1rem)] -translate-y-1/2 flex-wrap items-center justify-end gap-0.5 rounded-full bg-white/95 p-0.5 opacity-0 shadow-md ring-1 ring-black/5 transition group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+            {onPlayNext && track.id !== activeTrackId && (
+              <button
+                type="button"
+                className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
+                title="下一首播放"
+                aria-label={`下一首播放：${track.title}`}
+                onClick={() => onPlayNext(track.id)}
+              >
+                <ListEnd className="size-3.5" />
+              </button>
+            )}
+            {onMove && track.id !== activeTrackId && (
+              <>
+                <button
+                  type="button"
+                  className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
+                  title="上移"
+                  aria-label={`上移：${track.title}`}
+                  onClick={() => onMove(track.id, "up")}
+                >
+                  <ArrowUp className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-full p-1.5 text-neutral-400 transition hover:bg-white hover:text-neutral-950"
+                  title="下移"
+                  aria-label={`下移：${track.title}`}
+                  onClick={() => onMove(track.id, "down")}
+                >
+                  <ArrowDown className="size-3.5" />
+                </button>
+              </>
+            )}
+            {onRemove && track.id !== activeTrackId && (
+              <button
+                type="button"
+                className="rounded-full p-1.5 text-neutral-400 transition hover:bg-red-50 hover:text-red-600"
+                title="移出队列"
+                aria-label={`移出队列：${track.title}`}
+                onClick={() => onRemove(track.id)}
+              >
+                <Trash2 className="size-3.5" />
+              </button>
             )}
             <AddToPlaylistButton track={track} />
           </div>
@@ -237,10 +235,10 @@ function SidebarLyrics({
   return (
     <div className="relative mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.25rem] bg-white p-4 shadow-sm">
       <div className="relative z-10 mb-3 min-w-0">
-        <p className="truncate text-sm font-semibold">
+        <p className="line-clamp-2 break-words text-sm font-semibold leading-5" title={track.title}>
           <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
         </p>
-        <p className="truncate text-xs text-neutral-500">
+        <p className="truncate text-xs text-neutral-500" title={track.artist}>
           <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
         </p>
       </div>

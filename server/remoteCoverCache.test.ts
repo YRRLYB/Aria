@@ -81,7 +81,8 @@ describe("persistent remote image cache", () => {
     expect(await readFile(filePath)).toEqual(artwork);
   });
 
-  it("deduplicates simultaneous requests and retries after a failed fetch", async () => {
+  it("deduplicates simultaneous requests and retries after a short failure cooldown", async () => {
+    vi.useFakeTimers();
     const fetcher = vi.fn<typeof fetch>()
       .mockRejectedValueOnce(new Error("network offline"))
       .mockImplementation(async () => imageResponse());
@@ -89,6 +90,9 @@ describe("persistent remote image cache", () => {
     const failed = await Promise.allSettled([cache.read(coverUrl), cache.read(coverUrl)]);
     expect(failed.map((result) => result.status)).toEqual(["rejected", "rejected"]);
     expect(fetcher).toHaveBeenCalledTimes(1);
+    await expect(cache.read(coverUrl)).rejects.toMatchObject({ status: 502 });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5_001);
     const [first, second] = await Promise.all([cache.read(coverUrl), cache.read(coverUrl)]);
     expect(first).toEqual(second);
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -122,13 +126,16 @@ describe("persistent remote image cache", () => {
   });
 
   it("never caches HTML errors or responses beyond the advertised or streamed byte limit", async () => {
+    vi.useFakeTimers();
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("error page", { headers: { "content-type": "text/html" } }))
       .mockResolvedValueOnce(new Response(artwork, { headers: { "content-type": "image/jpeg", "content-length": "1000" } }))
       .mockResolvedValueOnce(imageResponse());
     const cache = new RemoteCoverCache({ directory, fetcher, maxAssetBytes: 8 });
     await expect(cache.read(coverUrl)).rejects.toMatchObject({ code: "NETEASE_COVER_UPSTREAM_FAILED" });
+    vi.advanceTimersByTime(5_001);
     await expect(cache.read(coverUrl)).rejects.toMatchObject({ code: "NETEASE_COVER_TOO_LARGE" });
+    vi.advanceTimersByTime(5_001);
     await expect(cache.read(coverUrl)).rejects.toMatchObject({ code: "NETEASE_COVER_TOO_LARGE" });
     expect(await readdir(directory)).toEqual([]);
   });

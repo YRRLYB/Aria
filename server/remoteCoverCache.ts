@@ -18,9 +18,20 @@ type RemoteCoverCacheOptions = {
   maxAssetBytes?: number;
   maxCacheBytes?: number;
   maxFiles?: number;
+  /** Allowed upstream image hosts (suffix match); defaults to the NetEase CDN. */
+  allowedHosts?: string[];
+  /**
+   * Applies the source's resize convention to the validated URL. Defaults to
+   * NetEase's `?param=WxH`; pass null to request the URL exactly as given
+   * (sources whose CDN already serves sized variants, e.g. QQ Music).
+   */
+  sizing?: ((target: URL, size?: string) => void) | null;
+  /** Prefix for error codes; defaults to "NETEASE_COVER". */
+  errorPrefix?: string;
 };
 
 const rasterContentType = /^image\/(?:jpeg|png|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon|tiff)$/i;
+const DEFAULT_ALLOWED_HOSTS = ["music.126.net", "music.163.com"];
 
 function canonicalRasterContentType(value: string | null | undefined) {
   const contentType = value?.split(";", 1)[0].trim().toLowerCase();
@@ -36,25 +47,41 @@ function canonicalRasterContentType(value: string | null | undefined) {
   return normalized && rasterContentType.test(normalized) ? normalized : undefined;
 }
 
-/** Restrict the image proxy to the CDN, including every redirect destination. */
-function validateCoverUrl(value: string) {
+/** Restrict the image proxy to known CDNs, including every redirect destination. */
+function validateCoverUrl(value: string, allowedHosts: string[], errorPrefix: string) {
   const target = new URL(value);
   if (
     !["http:", "https:"].includes(target.protocol) || target.username || target.password || target.port ||
-    !["music.126.net", "music.163.com"].some((host) => target.hostname === host || target.hostname.endsWith(`.${host}`))
+    !allowedHosts.some((host) => target.hostname === host || target.hostname.endsWith(`.${host}`))
   ) {
-    throw new HttpError(400, "Unsupported cover host", "NETEASE_COVER_HOST_UNSUPPORTED");
+    throw new HttpError(400, "Unsupported cover host", `${errorPrefix}_HOST_UNSUPPORTED`);
   }
   target.hash = "";
   return target;
 }
 
-export function normalizeRemoteCoverUrl(value: string, size?: string) {
-  const target = validateCoverUrl(value);
+function parseSize(size?: string) {
   const match = size?.match(/^(\d{2,4})[xy](\d{2,4})$/);
   const width = match ? Math.min(1024, Math.max(64, Number(match[1]))) : 800;
   const height = match ? Math.min(1024, Math.max(64, Number(match[2]))) : 800;
+  return { width, height };
+}
+
+function neteaseSizing(target: URL, size?: string) {
+  const { width, height } = parseSize(size);
   target.searchParams.set("param", `${width}y${height}`);
+}
+
+function identitySizing() {
+  // Sources with fixed-size CDN variants keep their URLs untouched.
+}
+
+const defaultSizing: (target: URL, size?: string) => void = neteaseSizing;
+
+/** NetEase behavior kept for existing callers and cache keys. */
+export function normalizeRemoteCoverUrl(value: string, size?: string) {
+  const target = validateCoverUrl(value, DEFAULT_ALLOWED_HOSTS, "NETEASE_COVER");
+  neteaseSizing(target, size);
   return target.href;
 }
 
@@ -63,7 +90,7 @@ class FetchLimiter {
   private waiting: Array<() => void> = [];
 
   async run<T>(work: () => Promise<T>) {
-    if (this.active >= 4) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    if (this.active >= 8) await new Promise<void>((resolve) => this.waiting.push(resolve));
     else this.active += 1;
     try {
       return await work();
@@ -79,12 +106,19 @@ class FetchLimiter {
 export class RemoteCoverCache {
   private readonly fetcher: typeof fetch;
   private readonly maxAssetBytes: number;
+  private readonly allowedHosts: string[];
+  private readonly sizing: (target: URL, size?: string) => void;
+  private readonly errorPrefix: string;
   private readonly pending = new Map<string, Promise<CachedCover>>();
+  private readonly failures = new Map<string, { error: HttpError; expiresAt: number }>();
   private readonly limiter = new FetchLimiter();
 
   constructor(private readonly options: RemoteCoverCacheOptions) {
     this.fetcher = options.fetcher ?? fetch;
     this.maxAssetBytes = options.maxAssetBytes ?? 8 * 1024 * 1024;
+    this.allowedHosts = options.allowedHosts ?? DEFAULT_ALLOWED_HOSTS;
+    this.sizing = options.sizing === undefined ? defaultSizing : options.sizing ?? identitySizing;
+    this.errorPrefix = options.errorPrefix ?? "NETEASE_COVER";
   }
 
   prune() {
@@ -94,11 +128,32 @@ export class RemoteCoverCache {
     });
   }
 
+  private normalize(url: string, size?: string) {
+    const target = validateCoverUrl(url, this.allowedHosts, this.errorPrefix);
+    this.sizing(target, size);
+    return target.href;
+  }
+
   read(url: string, size?: string): Promise<CachedCover> {
-    const upstreamUrl = normalizeRemoteCoverUrl(url, size);
+    const upstreamUrl = this.normalize(url, size);
+    const failed = this.failures.get(upstreamUrl);
+    if (failed && failed.expiresAt > Date.now()) return Promise.reject(failed.error);
+    if (failed) this.failures.delete(upstreamUrl);
+
     const existing = this.pending.get(upstreamUrl);
     if (existing) return existing;
-    const request = this.load(upstreamUrl);
+    const request = this.load(upstreamUrl).catch((error: unknown) => {
+      // A dead CDN connection otherwise makes every remount wait the full
+      // upstream timeout before the renderer can fall back to the direct CDN.
+      if (error instanceof HttpError && error.status >= 500) {
+        this.failures.set(upstreamUrl, { error, expiresAt: Date.now() + 5_000 });
+        if (this.failures.size > 256) {
+          const oldest = this.failures.keys().next().value;
+          if (oldest !== undefined) this.failures.delete(oldest);
+        }
+      }
+      throw error;
+    });
     this.pending.set(upstreamUrl, request);
     void request.then(
       () => this.pending.delete(upstreamUrl),
@@ -136,25 +191,25 @@ export class RemoteCoverCache {
         upstream = await this.fetchImage(upstreamUrl);
       } catch (error) {
         if (error instanceof HttpError) throw error;
-        throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
+        throw new HttpError(502, "Cover request failed", `${this.errorPrefix}_UPSTREAM_FAILED`);
       }
       const contentType = canonicalRasterContentType(upstream.headers.get("content-type"));
       if (!upstream.ok || !contentType) {
         await upstream.body?.cancel();
-        throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
+        throw new HttpError(502, "Cover request failed", `${this.errorPrefix}_UPSTREAM_FAILED`);
       }
       if (Number(upstream.headers.get("content-length") || 0) > this.maxAssetBytes) {
         await upstream.body?.cancel();
-        throw new HttpError(502, "Cover response is too large", "NETEASE_COVER_TOO_LARGE");
+        throw new HttpError(502, "Cover response is too large", `${this.errorPrefix}_TOO_LARGE`);
       }
       let body: Buffer;
       try {
-        body = await readBoundedBody(upstream, this.maxAssetBytes);
+        body = await readBoundedBody(upstream, this.maxAssetBytes, this.errorPrefix);
       } catch (error) {
         if (error instanceof HttpError) throw error;
-        throw new HttpError(502, "Cover request failed", "NETEASE_COVER_UPSTREAM_FAILED");
+        throw new HttpError(502, "Cover request failed", `${this.errorPrefix}_UPSTREAM_FAILED`);
       }
-      if (!body.byteLength) throw new HttpError(502, "Cover response is empty", "NETEASE_COVER_UPSTREAM_FAILED");
+      if (!body.byteLength) throw new HttpError(502, "Cover response is empty", `${this.errorPrefix}_UPSTREAM_FAILED`);
       const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
       const cover = { contentType, byteLength: body.byteLength, etag };
       const temporaryImage = `${filePath}.${randomUUID()}.tmp`;
@@ -179,21 +234,21 @@ export class RemoteCoverCache {
   }
 
   private async fetchImage(url: string) {
-    let target = validateCoverUrl(url);
-    const signal = AbortSignal.timeout(12_000);
+    let target = validateCoverUrl(url, this.allowedHosts, this.errorPrefix);
+    const signal = AbortSignal.timeout(6_000);
     for (let redirects = 0; redirects <= 3; redirects += 1) {
       const response = await this.fetcher(target.href, { redirect: "manual", signal });
       if (![301, 302, 303, 307, 308].includes(response.status)) return response;
       await response.body?.cancel();
       const location = response.headers.get("location");
       if (!location || redirects === 3) break;
-      target = validateCoverUrl(new URL(location, target).href);
+      target = validateCoverUrl(new URL(location, target).href, this.allowedHosts, this.errorPrefix);
     }
-    throw new HttpError(502, "Cover redirect failed", "NETEASE_COVER_UPSTREAM_FAILED");
+    throw new HttpError(502, "Cover redirect failed", `${this.errorPrefix}_UPSTREAM_FAILED`);
   }
 }
 
-async function readBoundedBody(response: Response, maxBytes: number) {
+async function readBoundedBody(response: Response, maxBytes: number, errorPrefix: string) {
   if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const chunks: Buffer[] = [];
@@ -205,7 +260,7 @@ async function readBoundedBody(response: Response, maxBytes: number) {
       total += value.byteLength;
       if (total > maxBytes) {
         await reader.cancel();
-        throw new HttpError(502, "Cover response is too large", "NETEASE_COVER_TOO_LARGE");
+        throw new HttpError(502, "Cover response is too large", `${errorPrefix}_TOO_LARGE`);
       }
       chunks.push(Buffer.from(value));
     }

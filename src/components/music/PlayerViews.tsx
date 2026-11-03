@@ -1,7 +1,8 @@
-﻿import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { motion } from "framer-motion";
 import { lazy, Suspense } from "react";
 import {
+  AudioLines,
   Copy,
   BookOpen,
   Heart,
@@ -57,6 +58,8 @@ export function PlayerSurface({
   onNext,
   onPrevious,
   onOpenImmersive,
+  equalizerEnabled,
+  onOpenEqualizer,
   onReplaceLocalArtwork,
   liked,
   onToggleLike,
@@ -88,6 +91,8 @@ export function PlayerSurface({
   onNext: () => void;
   onPrevious: () => void;
   onOpenImmersive: () => void;
+  equalizerEnabled: boolean;
+  onOpenEqualizer: () => void;
   onReplaceLocalArtwork: (trackId: string, file: File) => Promise<void>;
   liked: boolean;
   onToggleLike: () => void;
@@ -159,7 +164,7 @@ export function PlayerSurface({
       className="player-surface relative grid overflow-hidden rounded-[1.5rem] border border-white/55 shadow-[0_22px_70px_rgba(47,55,76,0.12)]"
       style={{
         ["--track-accent" as string]: palette.primary,
-        background: `linear-gradient(135deg, ${themePrimary}, rgba(255,255,255,0.26) 42%, ${themeSecondary})`,
+        background: `linear-gradient(135deg, ${themePrimary}, var(--player-sheen) 42%, ${themeSecondary})`,
       }}
     >
       {encyclopediaOpen && <Suspense fallback={null}><SongEncyclopediaDialog key={activeTrack.id} track={activeTrack} onClose={() => setEncyclopediaOpen(false)} /></Suspense>}
@@ -214,12 +219,15 @@ export function PlayerSurface({
         <div
           className="relative min-h-[420px] overflow-hidden bg-neutral-950"
           style={{
-            background: `linear-gradient(145deg, ${palette.primary}30, ${palette.secondary}18, rgba(255,255,255,0.48))`,
+            background: `linear-gradient(145deg, ${palette.primary}30, ${palette.secondary}18, var(--cover-lift))`,
           }}
         >
           <div className="absolute inset-0" data-taskbar-anchor="player-cover">
             {activeTrack.id === "idle" ? (
-              <div className="flex size-full items-center justify-center bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.8),transparent_42%),linear-gradient(145deg,#e9edf2,#9ba6b5)] p-8 text-center">
+              <div
+                className="player-idle-cover flex size-full items-center justify-center p-8 text-center"
+                style={{ background: "radial-gradient(circle at 30% 20%, rgba(255,255,255,0.8), transparent 42%), linear-gradient(145deg, var(--idle-cover-a), var(--idle-cover-b))" }}
+              >
                 <div>
                   <p className="text-2xl font-semibold text-neutral-900">暂无播放</p>
                   <p className="mt-2 text-sm text-neutral-600">从本地音乐或网易云选择一首歌开始。</p>
@@ -240,7 +248,7 @@ export function PlayerSurface({
 
         <div
           className="player-detail-panel flex min-h-0 min-w-0 flex-col justify-between p-5 sm:p-8 2xl:p-10"
-          style={{ background: `linear-gradient(160deg, rgba(255,255,255,0.36), ${themeSoft} 48%, ${themeSecondary})` }}
+          style={{ background: `linear-gradient(160deg, var(--player-panel-sheen), ${themeSoft} 48%, ${themeSecondary})` }}
         >
           <div className="min-w-0 shrink-0">
             <div className="flex items-start gap-3">
@@ -301,6 +309,18 @@ export function PlayerSurface({
                     </div>
                   )}
                 </div>
+                <Button
+                  variant="glass"
+                  size="sm"
+                  title={equalizerEnabled ? "均衡器已启用，点击调整" : "打开均衡器"}
+                  aria-label={equalizerEnabled ? "均衡器已启用，点击调整" : "打开均衡器"}
+                  aria-pressed={equalizerEnabled}
+                  className={cn("size-8 px-0", equalizerEnabled && "text-violet-700")}
+                  onClick={onOpenEqualizer}
+                >
+                  <AudioLines />
+                  {equalizerEnabled && <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-violet-500" />}
+                </Button>
                 <Button variant="glass" size="sm" title="打开沉浸视图" onClick={onOpenImmersive}>
                   <Maximize2 />
                   沉浸
@@ -419,20 +439,20 @@ export function PlayerSurface({
             </div>
 
             <div
-              className="mt-3 rounded-[1.25rem] border border-white/35 p-3 shadow-sm"
-              style={{ background: `linear-gradient(135deg, rgba(255,255,255,0.28), ${colorWithAlpha(palette.secondary, 0.1)})` }}
+              className="player-quality mt-3 rounded-[1.25rem] border border-white/35 p-3 shadow-sm"
+              style={{ background: `linear-gradient(135deg, var(--player-quality-sheen, rgba(255,255,255,0.28)), ${colorWithAlpha(palette.secondary, 0.1)})` }}
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Quality</p>
                 <div className="flex items-center gap-2">
                   {hifiEnabled && <Badge>HiFi 优先</Badge>}
-                  <div className="flex flex-wrap gap-1 rounded-full bg-white/60 p-1">
+                  <div className="player-quality-group flex flex-wrap gap-1 rounded-full bg-white/60 p-1">
                   {qualityOptions.map((option) => (
                     <button
                       key={option.value}
                       className={cn(
-                        "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
-                        resolvedQualityLevel === option.value && "bg-neutral-950 text-white shadow-sm",
+                        "player-quality-option rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
+                        resolvedQualityLevel === option.value && "is-active bg-neutral-950 text-white shadow-sm",
                         (activeTrack.source !== "netease" || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))) && "opacity-45",
                       )}
                       disabled={activeTrack.source !== "netease" || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))}
@@ -493,7 +513,7 @@ export function ImmersivePlayerView({
 
   return (
     <motion.div
-      className="fixed inset-0 z-50 overflow-hidden bg-neutral-950 text-white"
+      className="aria-immersive fixed inset-0 z-50 overflow-hidden bg-neutral-950 text-white"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

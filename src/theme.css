@@ -286,3 +286,31 @@ button:disabled { cursor: default; }
   .app-nav-link, .home-song-play, .home-recent-track, .home-card-play { transition: none; }
   .home-dashboard::before { animation: none; }
 }
+
+/* Equalizer surfaces: base (light) values; night overrides live in dark.css. */
+.aria-eq-plot {
+  border-color: rgba(23, 23, 23, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(250, 249, 253, 0.8));
+}
+.aria-eq-sheet {
+  border-color: rgba(23, 23, 23, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 249, 253, 0.96));
+  color: #17171b;
+  box-shadow: 0 30px 90px rgba(23, 23, 23, 0.22);
+}
+.aria-eq-track {
+  background: rgba(23, 23, 23, 0.06);
+}
+.aria-eq-track-selected {
+  background: rgba(139, 115, 227, 0.2);
+}
+.aria-eq-handle {
+  border-color: #ffffff;
+  background: #ffffff;
+}
+
+/* Preset pills: a hairline border keeps them legible on the pale sheet and
+   gives the active pill a defined edge in both themes. */
+.aria-eq-chip {
+  border: 1px solid rgba(23, 23, 23, 0.08);
+}

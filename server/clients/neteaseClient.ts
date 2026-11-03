@@ -1,5 +1,4 @@
 import neteaseApi from "NeteaseCloudMusicApi";
-import sharp from "sharp";
 import type {
   NeteaseSearchMode,
   NeteaseSearchResults,
@@ -377,10 +376,12 @@ export class NeteaseClient {
         }
       }
 
-      const enrichedTracks = await this.attachRoamStreamMetadata(tracks, cookie);
+      // Resolving every song detail and play URL here delayed the first render
+      // by several seconds. Rows use the summary quality immediately; the
+      // visible radar rows are enriched lazily by the renderer warmup path.
       return {
         date: formatLocalDate(new Date()),
-        tracks: enrichedTracks,
+        tracks,
         reason: "netease-private-roaming",
       };
     };
@@ -729,6 +730,9 @@ export class NeteaseClient {
     if (playlist.specialType === 5) throw new HttpError(403, "我喜欢的音乐的封面由网易云管理", "NETEASE_PLAYLIST_SPECIAL");
     let jpeg: Buffer;
     try {
+      // sharp is only needed for playlist cover uploads. Loading it at server
+      // boot delayed the first window and every command that starts the API.
+      const { default: sharp } = await import("sharp");
       jpeg = await sharp(image, { limitInputPixels: 40_000_000, animated: false }).rotate()
         .resize(1000, 1000, { fit: "cover" }).jpeg({ quality: 90 }).toBuffer();
     } catch {
@@ -785,14 +789,14 @@ export class NeteaseClient {
   }
 
   async getSongUrl(songId: string | number, level = "lossless") {
-    const { cookie } = await this.requireSession();
-    const meta = await this.getSongUrlCached(songId, level as QualityLevel, cookie);
+    const { cookie, userId } = await this.requireSession();
+    const meta = await this.getSongUrlCached(songId, level as QualityLevel, cookie, userId);
     return meta.url;
   }
 
   async getStreamMeta(songId: string | number, level = "lossless") {
-    const { cookie } = await this.requireSession();
-    return this.getSongUrlCached(songId, level as QualityLevel, cookie);
+    const { cookie, userId } = await this.requireSession();
+    return this.getSongUrlCached(songId, level as QualityLevel, cookie, userId);
   }
 
   async setLike(songId: string | number, liked: boolean) {
@@ -807,11 +811,11 @@ export class NeteaseClient {
   }
 
   async warmupTracks(songIds: Array<string | number>, level: QualityLevel = "lossless") {
-    const { cookie } = await this.requireSession();
+    const { cookie, userId } = await this.requireSession();
     const uniqueIds = Array.from(new Set(songIds.map(String).filter(Boolean))).slice(0, 160);
     let cached = 0;
     await promisePool(uniqueIds, 4, async (songId) => {
-      await Promise.allSettled([this.getLyricsCached(songId), this.getSongUrlCached(songId, level, cookie)]);
+      await Promise.allSettled([this.getLyricsCached(songId), this.getSongUrlCached(songId, level, cookie, userId)]);
       cached += 1;
     });
     return cached;
@@ -897,37 +901,11 @@ export class NeteaseClient {
     return tracks.map((track) => ({ ...track, bpm: track.bpm ?? null }));
   }
 
-  /** Resolve actual stream bitrates for private-roaming rows before rendering. */
-  private async attachRoamStreamMetadata(tracks: ProviderTrack[], cookie: string) {
-    const enriched = tracks.slice();
-    await promisePool(enriched, 3, async (track, index) => {
-      // Personal-FM payloads expose a quality bucket whose bitrate can differ
-      // from the URL ultimately returned by song_url_v1. Resolve every row so
-      // the roaming list never presents the generic 320K bucket as fact.
-      const preferredLevel = track.availableLevels?.filter((level) => level !== "jymaster").at(-1) ?? "hires";
-      try {
-        const meta = await this.getSongUrlCached(track.id, preferredLevel, cookie);
-        enriched[index] = {
-          ...track,
-          quality: meta.currentLevel ? meta.quality : track.quality,
-          bitrate: meta.bitrate ?? track.bitrate,
-          sampleRate: meta.sampleRate ?? track.sampleRate,
-          currentLevel: meta.currentLevel ?? track.currentLevel,
-          availableLevels: meta.availableLevels.length ? meta.availableLevels : track.availableLevels,
-        };
-      } catch {
-        // Restricted tracks may reject metadata requests; retain their summary.
-      }
-    });
-    return enriched;
-  }
-
   private async getLyricsCached(songId: string | number) {
     return rememberPersistent(`netease:lyrics:v3:${songId}`, weekTtl, () => fetchNeteaseLyrics(songId));
   }
 
-  private async getSongUrlCached(songId: string | number, level: QualityLevel, cookie: string) {
-    const { userId } = await this.requireSession();
+  private async getSongUrlCached(songId: string | number, level: QualityLevel, cookie: string, userId: string) {
     return rememberPersistent(`netease:url:v3:${userId}:${songId}:${level}`, 25 * 60_000, async () => {
       // Private cloud uploads can have no entry in the public song catalogue.
       // Resolve their own metadata before asking the normal URL endpoint.

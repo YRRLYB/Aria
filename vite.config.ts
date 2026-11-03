@@ -12,7 +12,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:3636",
+      "/api": `http://127.0.0.1:${process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636}`,
     },
   },
   resolve: {

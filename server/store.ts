@@ -7,7 +7,10 @@ const storePath = path.join(dataDir, "store.json");
 
 const defaultStore: AppStore = {
   neteaseCookie: null,
+  neteaseAccount: null,
+  qqCookie: null,
   lyricBindings: {},
+  libraryAutoScanEnabled: true,
 };
 
 export async function readStore(): Promise<AppStore> {

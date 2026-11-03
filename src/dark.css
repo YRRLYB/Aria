@@ -1,0 +1,816 @@
+/* Aria night theme.
+   The token layer is switched by `.dark` on <html>; everything else here maps
+   the hardcoded glass values used across the shell, home canvas and player. */
+
+/* `html.dark` (specificity 0,1,1) is required: the light tokens are declared in
+   `:root` later in the bundle, and a plain `.dark` selector would lose to it. */
+html.dark {
+  color-scheme: dark;
+  color: var(--text-primary);
+  background: var(--page);
+  --page: #0f0f16;
+  --ink: #ecebf4;
+  --muted: #9b98ad;
+  --surface: #17171f;
+  --surface-muted: #1f1f29;
+  --line: #2b2b38;
+  --text-primary: #ecebf4;
+  --text-secondary: #a29fb3;
+  --accent: #b49bf3;
+  --accent-soft: #2b2340;
+  --cover-lift: rgba(14, 14, 21, 0.55);
+  --player-sheen: rgba(10, 10, 17, 0.52);
+  --player-panel-sheen: rgba(255, 255, 255, 0.05);
+  --idle-cover-a: #2a2c3a;
+  --idle-cover-b: #151722;
+  --eq-grid: rgba(255, 255, 255, 0.08);
+  --eq-grid-major: rgba(255, 255, 255, 0.18);
+  --eq-label: rgba(255, 255, 255, 0.42);
+  --player-quality-sheen: rgba(255, 255, 255, 0.05);
+}
+
+/* ---------- shell ---------- */
+
+.dark .app-header {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+  background: rgba(17, 17, 24, 0.86);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.28);
+}
+
+.dark .app-nav-link {
+  color: #9d9ab2;
+}
+
+.dark .app-nav-link:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dark .app-nav-link.is-active {
+  background: rgba(180, 155, 243, 0.16);
+  color: #cbb8ff;
+}
+
+.dark .app-search {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 4px 19px rgba(0, 0, 0, 0.25);
+}
+
+.dark .app-search:focus-within {
+  border-color: rgba(180, 155, 243, 0.8);
+  box-shadow: 0 0 0 3px rgba(180, 155, 243, 0.14);
+}
+
+.dark .app-search > svg {
+  color: #918da6;
+}
+
+.dark .app-search input::placeholder {
+  color: #7c7990;
+}
+
+.dark .app-search > button {
+  color: #a5a2b8;
+}
+
+.dark .app-header-actions > .relative > button {
+  background: rgba(255, 255, 255, 0.06);
+  color: #c8b6ff;
+}
+
+.dark .app-header-actions > .relative > button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dark .glass {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, rgba(27, 27, 38, 0.94), rgba(22, 22, 30, 0.92));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 18px 44px rgba(0, 0, 0, 0.36);
+}
+
+/* A dim ambient wash keeps the shell from reading as flat black; it is static,
+   so it costs nothing at scroll time. */
+.dark .aria-stage {
+  background:
+    radial-gradient(ellipse 120% 80% at 8% -12%, rgba(110, 86, 214, 0.24), transparent 62%),
+    radial-gradient(ellipse 90% 60% at 96% 4%, rgba(58, 74, 160, 0.18), transparent 58%),
+    radial-gradient(ellipse 100% 70% at 46% 112%, rgba(139, 115, 227, 0.16), transparent 62%),
+    var(--page);
+}
+
+/* ---------- home canvas ---------- */
+
+.dark .home-dashboard {
+  background: var(--page);
+}
+
+.dark .home-dashboard::before {
+  opacity: 0.55;
+  background:
+    radial-gradient(ellipse at 18% 22%, #3a2a6a80 0 10%, transparent 32%),
+    radial-gradient(ellipse at 82% 76%, #2b2450b3 0 12%, transparent 35%),
+    radial-gradient(ellipse at 54% 100%, #231d3fcc 0 12%, transparent 34%);
+}
+
+.dark .home-greeting {
+  color: #9c99b2;
+}
+
+.dark .home-hero-title {
+  color: #eae7f7;
+}
+
+.dark .home-hero-subtitle {
+  color: #a5a2b8;
+}
+
+.dark .home-hero-caption {
+  color: #8b889f;
+}
+
+.dark .home-today {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(160deg, rgba(31, 31, 42, 0.86), rgba(26, 24, 38, 0.82));
+  color: #e8e6f2;
+}
+
+.dark .home-today-heading h2 {
+  color: #eeecf8;
+}
+
+.dark .home-today-icon {
+  border-color: rgba(180, 155, 243, 0.22);
+  background: rgba(180, 155, 243, 0.12);
+  color: #c8b4ff;
+}
+
+.dark .home-today-primary {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .home-today-primary > div + div {
+  border-left-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .home-today-primary strong {
+  color: #eceaf7;
+}
+
+.dark .home-today-primary span {
+  color: #8e8ba1;
+}
+
+.dark .home-today-period {
+  color: #9996ab;
+}
+
+.dark .home-today-period svg {
+  color: #b9a6ef;
+}
+
+.dark .home-today-period strong {
+  color: #c3b9e6;
+}
+
+.dark .home-today-activity-heading {
+  color: #9996ab;
+}
+
+.dark .home-today-activity-heading span:last-child {
+  color: #827f93;
+}
+
+.dark .home-activity-bars {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark .home-activity-bar {
+  background: linear-gradient(180deg, #8f74dd, #4b3d7d);
+}
+
+.dark .home-activity-labels {
+  color: #86839a;
+}
+
+.dark .home-today-note {
+  border-top-color: rgba(255, 255, 255, 0.08);
+  color: #8b889e;
+}
+
+.dark .home-today-note svg {
+  color: #b6a2e8;
+}
+
+.dark .home-section-title-block::before {
+  background: #9c7fe8;
+}
+
+.dark .home-eyebrow {
+  color: #8f8ca3;
+}
+
+.dark .home-eyebrow span {
+  color: #c3adff;
+}
+
+.dark .home-section-heading h2 {
+  color: #dcd9ea;
+}
+
+.dark .home-heading-english {
+  color: #8b889e;
+}
+
+.dark .home-more {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #b0a9cc;
+}
+
+.dark .home-more:hover {
+  border-color: rgba(180, 155, 243, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+  color: #cdb9ff;
+}
+
+.dark .home-recent-track {
+  border-bottom-color: rgba(255, 255, 255, 0.05);
+  color: #d9d6e6;
+}
+
+.dark .home-recent-track:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.dark .home-recent-index {
+  color: #7f7c91;
+}
+
+.dark .home-recent-art {
+  background: #24222f;
+}
+
+.dark .home-recent-title {
+  color: #e2dff0;
+}
+
+.dark .home-recent-artist {
+  color: #8d8a9e;
+}
+
+.dark .home-recent-date {
+  color: #827f93;
+}
+
+.dark .home-card-play {
+  background: rgba(180, 155, 243, 0.16);
+  color: #c3b0f8;
+}
+
+.dark .home-recent-track:hover .home-card-play {
+  background: rgba(180, 155, 243, 0.24);
+}
+
+.dark .home-recent-empty {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dark .home-empty-disc {
+  border-color: rgba(180, 155, 243, 0.24);
+  background: rgba(180, 155, 243, 0.1);
+  color: #c0adf5;
+}
+
+.dark .home-recent-empty strong {
+  color: #e7e4f2;
+}
+
+.dark .home-recent-empty small {
+  color: #9996a9;
+}
+
+.dark .home-recent-empty button {
+  background: rgba(180, 155, 243, 0.16);
+  color: #cbb8ff;
+}
+
+.dark .player-idle-cover {
+  background: radial-gradient(circle at 30% 20%, rgba(180, 155, 243, 0.14), transparent 42%), linear-gradient(145deg, var(--idle-cover-a), var(--idle-cover-b)) !important;
+}
+
+/* ---------- player ---------- */
+
+.dark .player-controls,
+.dark .player-volume {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(120deg, rgba(31, 31, 43, 0.9), rgba(24, 24, 33, 0.74));
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.32);
+}
+
+.dark .player-control-button {
+  color: rgba(236, 235, 244, 0.68);
+}
+
+.dark .player-control-button:hover {
+  color: #f4f2fb;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+}
+
+.dark .player-control-button:hover::before,
+.dark .player-control-button:focus-visible::before {
+  border-color: color-mix(in srgb, var(--track-accent) 40%, white);
+}
+
+.dark .player-control-button:focus-visible {
+  outline-color: color-mix(in srgb, var(--track-accent) 48%, #ecebf4);
+}
+
+.dark .player-control-button.is-active {
+  color: color-mix(in srgb, var(--track-accent) 55%, #ffffff);
+  background: color-mix(in srgb, var(--track-accent) 26%, #17171f);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--track-accent) 34%, transparent);
+}
+
+.dark .player-control-button.is-liked {
+  color: #fb7185;
+  background: rgba(244, 63, 94, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(244, 63, 94, 0.24);
+}
+
+.dark .player-volume-icon {
+  color: rgba(236, 235, 244, 0.55);
+}
+
+/* Quality strip: the light theme tints it with the artwork palette, which turns
+   into a pale band on a dark stage. Rebuild it as a raised dark panel and give
+   the selected level the accent colour instead of near-black. */
+.dark .player-quality {
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 12px 30px rgba(0, 0, 0, 0.26);
+}
+
+.dark .player-quality-group {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.dark .player-quality-option {
+  color: var(--text-secondary);
+}
+
+.dark .player-quality-option:not(:disabled):hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.09);
+}
+
+.dark .player-quality-option.is-active {
+  background: linear-gradient(135deg, #8b73e3, #6a56d0);
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(106, 86, 208, 0.36);
+}
+
+.dark input[type="range"].aria-range,
+.dark input[type="range"].player-range {
+  background:
+    linear-gradient(currentColor, currentColor) 0 /
+      calc(var(--range-thumb-size) / 2 + (100% - var(--range-thumb-size)) * var(--range-value, 0)) 100% no-repeat,
+    rgba(255, 255, 255, 0.14);
+}
+
+.dark input[type="range"].aria-range::-webkit-slider-thumb,
+.dark input[type="range"].player-range::-webkit-slider-thumb,
+.dark input[type="range"].aria-range::-moz-range-thumb,
+.dark input[type="range"].player-range::-moz-range-thumb {
+  border-color: #1b1b25;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.dark .scrollbar-thin {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+/* ---------- equalizer ---------- */
+
+.dark .aria-eq-plot {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(31, 31, 43, 0.92), rgba(23, 23, 32, 0.82));
+}
+
+.dark .aria-eq-sheet {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: linear-gradient(180deg, rgba(26, 26, 36, 0.98), rgba(20, 20, 28, 0.96));
+  color: var(--text-primary);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+}
+
+.dark .aria-eq-track {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .aria-eq-chip {
+  border-color: rgba(255, 255, 255, 0.11);
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+}
+
+.dark .aria-eq-chip:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.dark .aria-eq-chip-active {
+  background: linear-gradient(135deg, #8b73e3, #6a56d0);
+  box-shadow: 0 10px 24px rgba(106, 86, 208, 0.38);
+}
+
+.dark .aria-eq-chip-on {
+  border-color: rgba(167, 139, 250, 0.5);
+  background-color: rgba(139, 115, 227, 0.16);
+  color: #cdc2ff;
+}
+
+.dark .aria-eq-track-selected {
+  background: rgba(180, 155, 243, 0.26);
+}
+
+.dark .aria-eq-handle {
+  border-color: rgba(255, 255, 255, 0.65);
+  background: #efeaff;
+}
+
+/* Switch knobs and icon discs stay white so they keep contrast on the dark
+   violet tracks and panels. */
+.dark [class~="size-6"][class~="rounded-full"][class~="bg-white"],
+.dark [class~="size-5"][class~="rounded-full"][class~="bg-white"],
+.dark [class~="size-11"][class~="rounded-full"][class~="bg-white"],
+.dark [class~="size-12"][class~="rounded-full"][class~="bg-white"],
+.dark [class~="aria-eq-handle"][class~="bg-white"] {
+  background-color: #ffffff;
+}
+
+/* ---------- utilities ---------- */
+
+.dark [class~="bg-white"] {
+  background-color: #1c1c27;
+}
+
+.dark [class~="bg-[#faf9fd]"] {
+  background-color: #1a1a24;
+}
+
+.dark [class~="bg-[#f7f8fa]/95"] {
+  background-color: rgba(22, 22, 30, 0.97);
+}
+
+.dark [class~="bg-white/40"],
+.dark [class~="bg-white/45"],
+.dark [class~="bg-white/48"],
+.dark [class~="bg-white/50"],
+.dark [class~="bg-white/52"],
+.dark [class~="bg-white/54"],
+.dark [class~="bg-white/55"],
+.dark [class~="bg-white/56"],
+.dark [class~="bg-white/58"],
+.dark [class~="bg-white/60"],
+.dark [class~="bg-white/62"],
+.dark [class~="bg-white/64"],
+.dark [class~="bg-white/65"] {
+  background-color: rgba(30, 30, 42, 0.72);
+}
+
+.dark [class~="bg-white/70"],
+.dark [class~="bg-white/72"],
+.dark [class~="bg-white/75"],
+.dark [class~="bg-white/76"],
+.dark [class~="bg-white/78"],
+.dark [class~="bg-white/80"],
+.dark [class~="bg-white/85"],
+.dark [class~="bg-white/90"],
+.dark [class~="bg-white/92"],
+.dark [class~="bg-white/95"] {
+  background-color: rgba(30, 30, 42, 0.86);
+}
+
+.dark [class~="bg-white/8"],
+.dark [class~="bg-white/12"],
+.dark [class~="bg-white/14"],
+.dark [class~="bg-white/15"],
+.dark [class~="bg-white/18"] {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+
+.dark [class~="bg-neutral-100"] {
+  background-color: #232330;
+}
+
+.dark [class~="bg-neutral-200"] {
+  background-color: #2c2c3a;
+}
+
+.dark [class~="bg-neutral-300"] {
+  background-color: #35354a;
+}
+
+.dark [class~="bg-neutral-800"] {
+  background-color: #262633;
+}
+
+.dark [class~="bg-neutral-900"] {
+  background-color: #242430;
+}
+
+.dark [class~="bg-neutral-950"] {
+  background-color: #7c63d8;
+}
+
+/* Theme picker: the shared near-black mapping above would turn the selected
+   card into a flat violet billboard. Give it a deeper gradient instead. */
+.dark .aria-theme-option.is-active {
+  background: linear-gradient(140deg, #7f68d6, #4a3b92);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 16px 34px rgba(66, 50, 140, 0.34);
+}
+
+.dark [class~="bg-neutral-950/[0.03]"],
+.dark [class~="bg-neutral-950/[0.04]"],
+.dark [class~="bg-neutral-950/[0.045]"],
+.dark [class~="bg-neutral-950/[0.05]"],
+.dark [class~="bg-neutral-950/[0.06]"] {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.dark [class~="bg-neutral-950/8"],
+.dark [class~="bg-neutral-950/15"] {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark [class~="bg-neutral-950/25"] {
+  background-color: rgba(4, 4, 9, 0.55);
+}
+
+.dark [class~="bg-neutral-950/35"] {
+  background-color: rgba(4, 4, 9, 0.45);
+}
+
+.dark [class~="bg-neutral-950/65"] {
+  background-color: rgba(255, 255, 255, 0.72);
+}
+
+.dark [class~="bg-black/5"] {
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.dark [class~="bg-black/25"] {
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.dark [class~="bg-black/45"] {
+  background-color: rgba(0, 0, 0, 0.72);
+}
+
+.dark [class~="bg-violet-50"] {
+  background-color: rgba(180, 155, 243, 0.14);
+}
+
+.dark [class~="bg-violet-100"] {
+  background-color: rgba(180, 155, 243, 0.2);
+}
+
+.dark [class~="bg-red-50"] {
+  background-color: rgba(244, 63, 94, 0.14);
+}
+
+.dark [class~="bg-rose-50"] {
+  background-color: rgba(244, 63, 94, 0.14);
+}
+
+.dark [class~="bg-sky-50"],
+.dark [class~="bg-sky-50/70"] {
+  background-color: rgba(56, 189, 248, 0.12);
+}
+
+.dark [class~="bg-sky-100"] {
+  background-color: rgba(56, 189, 248, 0.18);
+}
+
+.dark [class~="bg-emerald-50"],
+.dark [class~="bg-emerald-50/70"] {
+  background-color: rgba(52, 211, 153, 0.13);
+}
+
+.dark [class~="bg-amber-50"] {
+  background-color: rgba(251, 191, 36, 0.14);
+}
+
+.dark [class~="bg-neutral-950/25"][class~="backdrop-blur"],
+.dark [class~="bg-neutral-950/25"][class~="backdrop-blur-sm"] {
+  background-color: rgba(4, 4, 9, 0.6);
+}
+
+.dark [class~="border-white/20"],
+.dark [class~="border-white/35"],
+.dark [class~="border-white/55"],
+.dark [class~="border-white/70"],
+.dark [class~="border-white/72"],
+.dark [class~="border-white/75"],
+.dark [class~="border-white/80"] {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark [class~="border-neutral-200"],
+.dark [class~="border-neutral-300"],
+.dark [class~="border-neutral-200/60"],
+.dark [class~="border-neutral-200/65"],
+.dark [class~="border-neutral-200/70"] {
+  border-color: rgba(255, 255, 255, 0.11);
+}
+
+.dark [class~="border-neutral-950"] {
+  border-color: #8672d9;
+}
+
+.dark [class~="border-neutral-950/6"],
+.dark [class~="border-neutral-950/10"] {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.dark [class~="text-neutral-950"],
+.dark [class~="text-neutral-900"],
+.dark [class~="text-neutral-800"] {
+  color: #f2f0fa;
+}
+
+.dark [class~="text-neutral-700"],
+.dark [class~="text-neutral-600"] {
+  color: #cfcbdd;
+}
+
+.dark [class~="text-neutral-500"],
+.dark [class~="text-neutral-400"] {
+  color: #a29fb3;
+}
+
+.dark [class~="text-neutral-300"],
+.dark [class~="text-neutral-200"] {
+  color: #7d7a90;
+}
+
+.dark [class~="text-violet-300"] {
+  color: #d8caff;
+}
+
+.dark [class~="text-violet-500"] {
+  color: #b49bf3;
+}
+
+.dark [class~="text-violet-600"],
+.dark [class~="text-violet-700"] {
+  color: #c4b0ff;
+}
+
+.dark [class~="text-red-600"],
+.dark [class~="text-red-700"] {
+  color: #fda4af;
+}
+
+.dark [class~="text-rose-500"],
+.dark [class~="text-rose-600"] {
+  color: #fb7185;
+}
+
+.dark [class~="text-sky-700"] {
+  color: #7dd3fc;
+}
+
+.dark [class~="text-emerald-600"],
+.dark [class~="text-emerald-700"] {
+  color: #6ee7b7;
+}
+
+.dark [class~="text-emerald-700/70"] {
+  color: rgba(110, 231, 183, 0.7);
+}
+
+.dark [class~="text-emerald-900"],
+.dark [class~="text-emerald-950"] {
+  color: #a7f3d0;
+}
+
+.dark [class~="text-amber-700"] {
+  color: #fcd34d;
+}
+
+.dark [class~="ring-white"] {
+  --tw-ring-color: #1c1c27;
+}
+
+.dark [class~="hover:bg-white"]:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark [class~="hover:bg-white/8"]:hover,
+.dark [class~="hover:bg-white/18"]:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+
+.dark [class~="hover:bg-white/65"]:hover,
+.dark [class~="hover:bg-white/72"]:hover,
+.dark [class~="hover:bg-white/75"]:hover,
+.dark [class~="hover:bg-white/78"]:hover,
+.dark [class~="hover:bg-white/85"]:hover,
+.dark [class~="hover:bg-white/90"]:hover,
+.dark [class~="hover:bg-white/92"]:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.dark [class~="hover:bg-neutral-950"]:hover {
+  background-color: rgba(180, 155, 243, 0.22);
+}
+
+.dark [class~="hover:bg-violet-50"]:hover {
+  background-color: rgba(180, 155, 243, 0.16);
+}
+
+.dark [class~="hover:text-neutral-950"]:hover {
+  color: #f2f0fa;
+}
+
+.dark .group:hover [class~="group-hover:text-neutral-600"] {
+  color: #cfcbdd;
+}
+
+.dark .group:hover [class~="group-hover:text-neutral-700"] {
+  color: #d8d4e6;
+}
+
+.dark [class~="placeholder:text-neutral-400"]::placeholder {
+  color: #8a879c;
+}
+
+.dark [class~="placeholder:text-neutral-500"]::placeholder {
+  color: #8a879c;
+}
+
+.dark [class~="disabled:text-neutral-400"]:disabled {
+  color: #6f6c80;
+}
+
+/* The immersive view is intentionally a dark stage in both themes, so its
+   white pills keep their native contrast instead of flipping with the theme. */
+.dark .aria-immersive[class~="bg-neutral-950"] {
+  background-color: #0d0d14;
+}
+
+.dark .aria-immersive [class~="bg-white"] {
+  background-color: #f5f3ff;
+}
+
+.dark .aria-immersive [class~="text-neutral-950"] {
+  color: #17171b;
+}
+
+.dark .aria-immersive [class~="hover:bg-white/90"]:hover {
+  background-color: rgba(245, 243, 255, 0.9);
+}
+
+/* ---------- gradient surfaces ----------
+   Tailwind's gradient utilities encode colour in --tw-gradient-* variables, so a
+   plain colour override would leave the painted gradient untouched. Repaint the
+   handful of decorative gradients that read as "white paper" in light mode. */
+
+.dark [class~="from-white/70"][class~="to-transparent"] {
+  background-image: linear-gradient(to top, rgba(11, 11, 18, 0.94), rgba(11, 11, 18, 0));
+}
+
+.dark [class~="from-white/80"][class~="via-white/20"] {
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.02) 48%,
+    rgba(10, 10, 16, 0.4)
+  );
+}
+
+.dark [class~="from-violet-100"][class~="via-white"] {
+  background-image: linear-gradient(135deg, #2b2444, #1c1b26 52%, #262536);
+}
+
+.dark [class~="from-neutral-200"][class~="via-white"] {
+  background-image: linear-gradient(135deg, #2c2c3a, #232330 52%, #333346);
+}
+
+.dark [class~="from-neutral-200"][class~="via-white"] [class~="text-neutral-500"] {
+  color: #a29fb3;
+}
+
+/* Invaluable light cards that paint themselves with an explicit white gradient
+   instead of a utility class. */
+.dark [class~="bg-white/62"][class~="bg-gradient-to-br"] {
+  background-image: linear-gradient(135deg, rgba(35, 35, 47, 0.94), rgba(26, 26, 35, 0.9));
+}
+

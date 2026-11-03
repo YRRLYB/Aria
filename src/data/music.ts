@@ -25,7 +25,7 @@ export type Track = {
   albumArtist?: string | null;
   duration: string;
   quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
-  source: "local" | "cloud" | "netease";
+  source: "local" | "cloud" | "netease" | "qq";
   streamUrl?: string;
   coverUrl?: string;
   trackNumber?: number | null;

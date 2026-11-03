@@ -1,5 +1,6 @@
 import neteaseApi from "NeteaseCloudMusicApi";
 import { readStore, updateStore } from "../store";
+import type { StoredNeteaseAccount } from "../types";
 
 export type NeteaseAccountSummary = {
   connected: boolean;
@@ -9,10 +10,64 @@ export type NeteaseAccountSummary = {
   cookiePreview: string | null;
 };
 
+const accountCacheTtl = 30_000;
+const accountValidationTtl = 5 * 60_000;
+const failedAccountCacheTtl = 1_500;
+let accountCache: { cookie: string; expiresAt: number; value: NeteaseAccountSummary } | null = null;
+let accountRequest: { cookie: string; promise: Promise<NeteaseAccountSummary> } | null = null;
+
+export function invalidateNeteaseAccountCache() {
+  accountCache = null;
+  accountRequest = null;
+}
+
 export async function saveNeteaseCookie(cookie: string) {
-  await updateStore((store) => ({ ...store, neteaseCookie: cookie }));
+  invalidateNeteaseAccountCache();
+  await updateStore((store) => ({ ...store, neteaseCookie: cookie, neteaseAccount: null }));
   return getNeteaseAccountSummary();
 }
+
+function disconnectedSummary(cookiePreview: string | null = null): NeteaseAccountSummary {
+  return {
+    connected: false,
+    nickname: null,
+    userId: null,
+    avatarUrl: null,
+    cookiePreview,
+  };
+}
+
+function publicSummary(account: StoredNeteaseAccount): NeteaseAccountSummary {
+  return {
+    connected: account.connected,
+    nickname: account.nickname,
+    userId: account.userId,
+    avatarUrl: account.avatarUrl,
+    cookiePreview: account.cookiePreview,
+  };
+}
+
+/** Fast, network-free account state for the first settings response. */
+export async function peekNeteaseAccountSummary(): Promise<NeteaseAccountSummary> {
+  const store = await readStore();
+  const cookie = store.neteaseCookie;
+  if (!cookie) return disconnectedSummary();
+  // A failed background validation must not make the startup path look signed
+  // out; keep showing the persisted identity (or a provisional connection)
+  // until the account endpoint explicitly reports otherwise.
+  if (store.neteaseAccount?.userId) return publicSummary(store.neteaseAccount);
+  if (accountCache?.cookie === cookie && accountCache.expiresAt > Date.now() && accountCache.value.connected) {
+    return accountCache.value;
+  }
+  return {
+    connected: true,
+    nickname: null,
+    userId: null,
+    avatarUrl: null,
+    cookiePreview: maskCookie(cookie),
+  };
+}
+
 
 export async function startNeteaseQrLogin() {
   const keyResponse = await neteaseApi.login_qr_key({ timestamp: Date.now() } as never);
@@ -71,22 +126,61 @@ export async function checkNeteaseQrLogin(key: string) {
 
 export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary> {
   const store = await readStore();
-  if (!store.neteaseCookie) {
-    return {
-      connected: false,
-      nickname: null,
-      userId: null,
-      avatarUrl: null,
-      cookiePreview: null,
-    };
+  const cookie = store.neteaseCookie;
+  if (!cookie) return disconnectedSummary();
+
+  // Stream resolution, warmups and playlist reads all need the same account
+  // identity. Reusing one successful lookup avoids a burst of duplicate
+  // user_account calls whenever a page requests several tracks at once.
+  const now = Date.now();
+  if (accountCache?.cookie === cookie && accountCache.expiresAt > now) return accountCache.value;
+  if (accountRequest?.cookie === cookie) return accountRequest.promise;
+
+  // The account identity is persisted after the first successful lookup. A
+  // cold start can therefore render and resolve streams immediately; the
+  // provider round trip only validates the cookie in the background.
+  if (store.neteaseAccount?.userId) {
+    const stored = publicSummary(store.neteaseAccount);
+    accountCache = { cookie, value: stored, expiresAt: now + accountCacheTtl };
+    if (now - store.neteaseAccount.validatedAt > accountValidationTtl) {
+      void refreshNeteaseAccount(cookie).catch(() => undefined);
+    }
+    return stored;
   }
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  return refreshNeteaseAccount(cookie);
+}
+
+function refreshNeteaseAccount(cookie: string) {
+  if (accountRequest?.cookie === cookie) return accountRequest.promise;
+  const request = loadNeteaseAccountSummary(cookie)
+    .then(async (value) => {
+      if (value.connected && value.userId) {
+        await updateStore((store) => store.neteaseCookie === cookie
+          ? { ...store, neteaseAccount: { ...value, validatedAt: Date.now() } }
+          : store).catch(() => undefined);
+      }
+      accountCache = {
+        cookie,
+        value,
+        expiresAt: Date.now() + (value.connected ? accountCacheTtl : failedAccountCacheTtl),
+      };
+      return value;
+    })
+    .finally(() => {
+      if (accountRequest?.promise === request) accountRequest = null;
+    });
+  accountRequest = { cookie, promise: request };
+  return request;
+}
+
+async function loadNeteaseAccountSummary(cookie: string): Promise<NeteaseAccountSummary> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await neteaseApi.user_account({ cookie: store.neteaseCookie });
+      const response = await neteaseApi.user_account({ cookie });
       const profile =
         findNeteaseProfile(response.body) ??
-        findNeteaseProfile((await neteaseApi.login_status({ cookie: store.neteaseCookie })).body);
+        findNeteaseProfile((await neteaseApi.login_status({ cookie })).body);
 
       if (profile?.userId) {
         return {
@@ -94,13 +188,13 @@ export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary>
           nickname: profile.nickname ?? "Netease Account",
           userId: String(profile.userId),
           avatarUrl: profile.avatarUrl ?? null,
-          cookiePreview: maskCookie(store.neteaseCookie),
+          cookiePreview: maskCookie(cookie),
         };
       }
     } catch {
       // A saved cookie may need one short retry while the provider session settles.
     }
-    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 300));
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   return {
@@ -108,7 +202,7 @@ export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary>
     nickname: null,
     userId: null,
     avatarUrl: null,
-    cookiePreview: maskCookie(store.neteaseCookie),
+    cookiePreview: maskCookie(cookie),
   };
 }
 
