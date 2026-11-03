@@ -45,19 +45,36 @@ Aria 想解决的事情很简单：本地曲库、网易云喜欢、每日推荐
 
 ## 开发
 
+需要 Node.js 20+（推荐 22）与 npm。仓库里不含 `node_modules`、`release/`、`vendor/mpv/`、`dist/` 这类产物，克隆后先安装依赖：
+
 ```bash
 npm install
-npm run dev
+npm run dev        # 先打包后端，再同时启动 Vite 与 Electron
+```
+
+只跑网页版（浏览器访问 http://127.0.0.1:5173，后端由 `npm run dev:server` 提供）：
+
+```bash
+npm run dev:server
+npm run dev:web
 ```
 
 常用命令：
 
 ```bash
-npm run dev:web
-npm run dev:server
-npm run build:desktop
-npm run dist:beta
+npm test           # vitest
+npm run build:web  # 前端产物
+npm run build:server
+npm run build:desktop   # 含 vendor/mpv 与原生音频模块
+npm run dist:beta       # Windows 安装包 → release/
+npm run dist:mac        # macOS dmg（需自备 vendor/mpv/mpv）
 ```
+
+注意事项：
+
+- `vendor/mpv/` 被 `.gitignore` 忽略，WASAPI / 独占输出需要 `npm run build:desktop`（Windows 会自动下载 mpv）。没有它时播放走系统音频。
+- `.musicbox/` 保存运行期数据（账号 Cookie、曲库缓存），同样不入库；新机器上首次运行需要重新扫码登录网易云 / QQ 音乐。
+- 账号凭据只存在本机，仓库和安装包里都没有任何账号信息。
 
 ## 目录
 
