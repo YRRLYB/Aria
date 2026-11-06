@@ -11,6 +11,9 @@
 - QQ 音乐「我喜欢」同步改进：只登录 QQ 时默认展示 QQ 我喜欢；进入我喜欢页、登录成功与手动点「同步红心」都会重新拉取；刷新改为替换而不是追加，换账号/退出时丢弃在途响应，避免旧列表残留。服务端在个人主页缺失「我喜欢」时回退到 `fcg_user_created_diss` 的 dirid-201 歌单。
 - QQ 音乐显示码率：搜索、歌单与我喜欢行根据各档位文件大小/时长估算码率（如 FLAC · 952k、128K · 132k），播放后仍以实际流元数据为准；没有 file size 时回退 128k/320k 名义码率。
 - 流畅度优化：移除整宽顶部栏的实时背景模糊（只保留接近不透明的底色）；音源滑块只重新测量、不再每次切换重建 ResizeObserver；封面候选 URL 做 memo；QQ 收藏刷新做并发合并与账号代次保护。
+- Windows 桌面端完成 0.6.0 回归与打包验证：最新源码在 Windows 11 + Electron 43 上构建通过，SMTC 系统媒体控制、任务栏缩略图按钮、WASAPI 共享/独占输出、mpv 原生播放、无缝切歌与单曲循环均通过 `scripts/test-desktop.cjs`（开发态与 `release/win-unpacked/resources` 打包态各跑一遍）；打包版真机确认渲染进程挂载、后端在线、QQ 音乐窗口扫码可打开，并补充了窗口最大化/还原与设置页截图检查。桌面集成测试会先等待后端健康检查，消除慢启动时扫描接口偶发 `ECONNREFUSED` 的问题。验证记录见 `docs/windows-0.6.0.md`。
+- 修复 `npx tsc -b` 报出的类型错误（此前只跑 `tsc --noEmit -p tsconfig.json`，根配置 `files: []` 导致实际没有检查）：`CollectionSurface` 的来源切换回调与 `SourceToggle` 的三源联合类型对齐；QQ 歌单详情「重试」闭包内保留 `selectedPlaylist` 的非空收窄；`theme.test.ts` 的 storage mock 显式适配 `Storage`。
+- 修复搜索结果「加载更多」会丢掉 QQ 音乐结果的问题：分页只追加网易云数据，更新 `SearchBundle` 时必须保留已有的 `qqTracks`。
 
 ## 0.6.0（多播放源架构与 QQ 音乐）
 

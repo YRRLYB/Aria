@@ -31,14 +31,14 @@ describe("aria theme", () => {
     const storage = {
       getItem: vi.fn((key: string) => values.get(key) ?? null),
       setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
-    };
+    } as unknown as Storage;
     expect(readCachedTheme(storage)).toBe("system");
     expect(writeCachedTheme("dark", storage)).toBe(true);
     expect(storage.setItem).toHaveBeenCalledWith("aria-theme-v1", "dark");
     expect(readCachedTheme(storage)).toBe("dark");
 
-    expect(writeCachedTheme("dark", { setItem: () => { throw new Error("quota"); } })).toBe(false);
-    expect(readCachedTheme({ getItem: () => { throw new Error("denied"); } })).toBe("system");
+    expect(writeCachedTheme("dark", { setItem: () => { throw new Error("quota"); } } as unknown as Storage)).toBe(false);
+    expect(readCachedTheme({ getItem: () => { throw new Error("denied"); } } as unknown as Storage)).toBe("system");
   });
 
   it("reads the OS preference and applies the resolved class to a root element", () => {

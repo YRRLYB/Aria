@@ -39,7 +39,7 @@ Aria 想解决的事情很简单：本地曲库、网易云喜欢、每日推荐
 
 ## 下载
 
-当前主要面向 Windows 桌面端，0.6.0 起也开始适配 macOS（`npm run dist:mac` 生成 dmg，`ensure:mpv` 会自动准备对应架构的 mpv，详见 [macOS 适配说明](docs/macos-0.6.0.md)）。测试包会放在仓库的 Release 或本地 `release/` 目录中。
+当前主要面向 Windows 桌面端，0.6.0 起也开始适配 macOS（`npm run dist:mac` 生成 dmg，`ensure:mpv` 会自动准备对应架构的 mpv，详见 [macOS 适配说明](docs/macos-0.6.0.md)）。Windows 桌面端已按 0.6.0 最新源码完成构建、原生播放链路与打包版真机验证，详见 [Windows 适配验证记录](docs/windows-0.6.0.md)。测试包会放在仓库的 Release 或本地 `release/` 目录中。
 
 如果你只是想试用，建议直接安装最新的 beta 包；如果你想参与开发，可以按下面的方式从源码运行。
 

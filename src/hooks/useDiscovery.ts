@@ -294,6 +294,8 @@ export function useDiscovery(options: {
       setSearchBundle((current) => ({
         localTracks: current.localTracks,
         neteaseTracks: mergeTracks([...current.neteaseTracks, ...remoteTracks]),
+        // 分页只追加网易云结果，QQ 结果必须原样保留，否则加载更多会丢源。
+        qqTracks: current.qqTracks,
         artists: mergeArtists([
           ...current.artists,
           ...result.artists.map(providerArtistToUiArtist),

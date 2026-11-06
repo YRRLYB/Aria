@@ -60,7 +60,15 @@ export function CollectionSurface({
       </div>
       {sourceToggle && (
         <div className="mt-5 shrink-0">
-          <SourceToggle value={sourceToggle.value} onChange={sourceToggle.onChange} options={["netease", "qq"]} ariaLabel="推荐来源" />
+          <SourceToggle
+            value={sourceToggle.value}
+            onChange={(source) => {
+              // 本切换器只提供在线双源选项，SourceToggle 的联合类型里还有 local。
+              if (source !== "local") sourceToggle.onChange(source);
+            }}
+            options={["netease", "qq"]}
+            ariaLabel="推荐来源"
+          />
         </div>
       )}
       {error && (
@@ -351,8 +359,9 @@ export function PlaylistSurface({
 
   if (playlistSource === "qq") {
     if (qq.selectedPlaylist) {
-      return <PlaylistDetail key={qq.selectedPlaylist.id} playlist={qq.selectedPlaylist} tracks={qq.tracks} loading={qq.loading} error={qq.error} connected={false} playCounts={playCounts}
-        onBack={qq.onClose} onRetry={() => qq.onOpen(qq.selectedPlaylist)} onPickTrack={qq.onPickTrack}
+      const selectedPlaylist = qq.selectedPlaylist;
+      return <PlaylistDetail key={selectedPlaylist.id} playlist={selectedPlaylist} tracks={qq.tracks} loading={qq.loading} error={qq.error} connected={false} playCounts={playCounts}
+        onBack={qq.onClose} onRetry={() => qq.onOpen(selectedPlaylist)} onPickTrack={qq.onPickTrack}
         onUpdate={async () => {}} onUploadCover={async () => {}} onRemove={async () => {}} onReorder={async () => {}}
         onSubscribe={async () => {}} onDelete={async () => {}} onRequireLogin={onRequireLogin} />;
     }

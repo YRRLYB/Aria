@@ -148,7 +148,22 @@ async function main() {
       }
       throw new Error("Application renderer did not finish loading");
     }
+    async function waitForBackend() {
+      // The renderer can mount while the bundled backend is still starting;
+      // scan/api calls before it listens fail with ECONNREFUSED. Poll health
+      // first so the smoke run is deterministic on slower machines.
+      const healthUrl = `http://127.0.0.1:${env.ARIA_API_PORT}/api/health`;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          const response = await fetch(healthUrl);
+          if (response.ok) return;
+        } catch {}
+        await delay(200);
+      }
+      throw new Error("Application backend did not become ready");
+    }
     await waitForRenderer();
+    await waitForBackend();
     // Exercise extraction and the packaged sharp binary through the real API.
     const libraryDir = path.join(testDir, "library"); fs.mkdirSync(libraryDir);
     const embeddedCover = await sharp(covers[0]).resize(3000, 2000, { fit: "fill" }).png().toBuffer();
