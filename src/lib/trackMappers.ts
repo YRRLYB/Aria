@@ -82,6 +82,7 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     albumId: track.albumId ?? null,
     artistIds: track.artistIds ?? [],
     matchedLyric: track.matchedLyric ?? null,
+    vip: track.vip === true,
     title: track.title,
     artist: track.artist,
     album: track.album,

@@ -3,7 +3,7 @@
 > 写给下一次对话 / 接手人。目标：读完全文即可继续开发，不需要重新考古。
 > 配套：`docs/multi-source-plan-0.6.0.md`（架构取舍）、`docs/multi-source-impl-0.6.0.md`
 > （原重构版里程碑 + 顶部"0.6.0 实际执行路径"定稿小节）、`CHANGELOG.md` 0.6.0 段。
-> 本文档截至：**0.6.0 安装包已构建，QQ 登录改为应用内窗口扫码（Web 授权链在无浏览器环境不可靠），QQ 播放待真实 Cookie 验证。**
+> 本文档截至：**QQ 播放已用真实 Cookie 端到端验证并修正（见 §9），QQ 收藏/歌单只读同步已接入，macOS 适配补全（含原生 Now Playing）。0.6.0 尚未重新出包。**
 
 ## 0. 安装包信息
 
@@ -266,3 +266,57 @@ npm.cmd run dev                                       # 本地开发（web + ele
 `server/sources/qq/qrLogin.test.ts`（hash33/QR 全链路/凭据入库/授权失败分支）、
 `server/sources/qq/cookieJar.test.ts`（Domain 作用域/空值/过期删除/路径优先级）、
 `server/routes/sources.test.ts`（泛型路由/206 重取/白名单/错误码）
+
+## 9. 2026-11-04 更新：QQ 播放实测、收藏/歌单接入、mac 适配
+
+### 9.1 QQ 播放实测结论（替换 §3.2/§3.3 的待验证状态）
+
+真实账号（扫码登录，免费/无 VIP 账号）端到端验证：**登录 Cookie 下 GetEVkey 可以返回明文 purl，但放行哪个格式不稳定**：
+
+- `M500<media_mid>.mp3`（128k MP3）与 `C400<media_mid>.m4a`（AAC）交替放行，同一会话内多轮观察两种都出现过 purl；`M800/F000/RS01` 明文对无 VIP 账号始终为空。
+- VIP 曲目（如晴天）连 C400/M500 都为空——与账号绿钻权限相关，属预期行为；错误文案已区分"可能需要 VIP 或登录过期"。
+- **客户端对策**：`QQ_FILE_SPECS` 每个档位声明多个格式候选，一次 GetEVkey 请求带全部 filename，按档位从高到低、同档位按声明顺序取第一个有 purl 的格式。若腾讯将来对授权账号恢复明文高档位，自动生效。
+- 实测比特率按 `filesize*8/duration` 推导（搜索时缓存 `interval`）；音质标签如实为 `128K`（M500）/`AAC`（C400），`quality` 联合类型扩了这两档。
+- 拉流验证：purl 拼接 `sip[0]` + `Referer: https://y.qq.com/` 后 206/Range 正常；浏览器 `<audio>` 经 `/api/sources/qq/tracks/:id/stream` 播放、进度推进、`level` 参数降级均正常。
+
+### 9.2 搜索结果播放的关键修复（易踩）
+
+QQ 搜索结果此前只存在于 `useDiscovery` 内部状态，App 级 `allTracks`/队列池解析不到 `qq:` id → 点击 QQ 行后 `requestedActiveTrack` 解析失败，播放悄悄落到别的轨道。修复：`useDiscovery` 新增 `onMergeQqTracks`，搜索成功后把 QQ 结果并入 App 的 `qqSearchTracks` 池（进 `allTracks`、`updateTrackRef` 的 applyTo 清单）。**新源接入时必须做同样的合并**，否则搜索结果不可播。
+
+### 9.3 QQ 收藏/歌单（只读）
+
+- 接口：个人主页 `fcg_get_profile_homepage`（`mymusic[0]` 即"我喜欢"，id 为 disstid；`mydiss` 为自建歌单）+ 歌单详情 `qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?disstid=`（曲目结构与搜索 song 一致，复用 `normalizeQqSong`/`rememberFileInfo`）。
+- 服务端：`server/providers/qqProvider.ts`（实现 `MusicProvider` 的 getAccount/getLikedTracks/getPlaylists/getPlaylistTracks）；`MusicProvider` 接口新增可选 `getPlaylistTracks?`；`server/index.ts` 新增通用路由 `GET /api/providers/:providerId/playlists/:playlistId/tracks`（netease 专属路由在前仍优先匹配）。
+- 未登录时返回 `AUTH_REQUIRED`（401），前端在歌单页 QQ 标签显示"前往登录"。
+- 注意：搜索接口对短时间高频请求会软风控（code 0 但 list 为空）；**search 请求不要带 `comm` 块**（带上反而返回空列表），`musicu` 帮助函数保持无 comm 即可。
+- 前端：`useQqData` hook（与 useNeteaseData 平行）；"我喜欢"页三栏；歌单页来源切换（网易云/QQ 音乐/本地），QQ 详情 `connected={false}` 走只读 PlaylistDetail。
+
+### 9.4 macOS 适配补全
+
+- `preload.cjs` `nativeAudio.supported` 改为 `win32 || darwin`；`useAudioEngine` 挂载时调 `isSupported()`（引擎检查 vendor 二进制存在性）二次确认，无 mpv 二进制自动回落 Web Audio。
+- `main.cjs` 应用菜单平台守卫：darwin 设标准菜单（about/Edit roles/View/Window，恢复 Cmd+Q、Cmd+C/V），`mainWindow.removeMenu()` 仅非 darwin 执行。
+- 新增 `electron/native/aria-nowplaying/`（ObjC++ N-API）：MPNowPlayingInfoCenter + MPRemoteCommandCenter（注意 mac 上访问器是 **`sharedCommandCenter`** 而非 iOS 风格的 `defaultCenter`——只有 MPNowPlayingInfoCenter 用 `defaultCenter`）。`scripts/build-native.cjs` 增加 darwin 分支（构建失败不阻塞出包）。`main.cjs` 复用 `aria:update-media-session` IPC 与 `sendPlaybackCommand`，生效时追加 `disable-features HardwareMediaKeyHandling`。
+- `mpvEngine.test.js` 在 require 前把 `process.platform` 钉为 win32 再恢复（引擎的平台常量在 require 时捕获），非 Windows 平台测试全绿。
+- `ensure-mpv.cjs` darwin 分支：探测 `/opt/homebrew/bin/mpv`、`/usr/local/bin/mpv` 并复制到 `vendor/mpv/mpv`，找不到只提示不报错。
+
+### 9.5 验收基线（2026-11-04）
+
+`tsc --noEmit` / `vitest run`（231 项全绿，含 mpvEngine 在 mac 上）/ `build:web` / `build:server` / `node --check electron/main.cjs` 全部通过；浏览器端到端：QQ 搜索→点击→播放（进度推进）→"我喜欢"三栏→歌单 QQ 标签页→只读详情。
+
+### 9.6 2026-11-04 补充：macOS 打包版白屏修复 + 音源切换 UI
+
+- **白屏根因**（打包版必读）：`syncTaskbarPlayback()` 在 `process.platform !== "win32"` 守卫**之前**调用了 `mainWindow.setThumbnailToolTip(...)`（Windows 专属 API）。macOS 上该函数不存在 → TypeError → async `createWindow` 在 `loadFile` 之前中断 → 窗口永久白屏。修复：Windows 专属 API 全部移到守卫之后。dev 模式与打包版均需真机验证（这次教训：0.6.0 的 mac 适配此前从未真机跑过打包版）。
+- 音源 UI 按用户要求改为"融合但一次一源"：新组件 `src/components/music/SourceLogos.tsx`（`NeteaseLogo`/`QqLogo` 内联 SVG + `SourceToggle` logo 切换按钮）。"我喜欢"页三栏改为 logo 切换单栏；搜索结果新增来源筛选芯片（全部/网易云/QQ 音乐/本地，客户端按 `track.source` 过滤）；歌单页 `SourceTabs` 复用同一组件。
+- **打包注意**：本机（x64 mac）`npm install` 只下载 x64 Electron，而 `build.electronDist` 固定指向 `node_modules/electron/dist`，导致 `dist:mac` 产出的 arm64 DMG 内嵌的也是 x64 Electron——**真 arm64 机器上不可用**。在 arm64 机器上出包，或按 arch 分开提供 electronDist（TODO）。x64 DMG / `release/mac/Aria.app` 已真机验证（renderer mounted + Now Playing attach + 零报错），并已覆盖安装到本机 /Applications。
+
+### 9.7 2026-11-05/06 补充：网易云扫码登录 eapi 化 + 账号面板
+
+- **网易云登录被风控的原因**：旧 SDK（4.32.0）的 weapi 链在 2025+ 风控下扫码确认后被拦截（-462/8821）。修复：`neteaseService.ts` 的 key/create/check 三调用改走 `crypto: "eapi"`，SDK 的 eapi 分支会把 cookie 里的 `deviceId/os/appver/osver` 写进 eapi header——因此 `neteaseDeviceId()` 首次生成 16 位 hex 持久化到 store（键 `neteaseDeviceId`），跨重启复用；`withEapiDevice()` 把设备 Cookie 打底、会话 Cookie（key/create 回传的 `__csrf`/`NMTID`）叠加。803 后只持久化网易回传的登录 Cookie（不混设备字段）。匿名轮询：会话丢失（进程重启）时用 `noCookie: true` 再查一次真实状态。规格测试 `server/services/neteaseQrLogin.test.ts`（另一会话编写）已全部满足。真实账号扫码验证通过。
+- 账号面板（`AccountPanel`）：点头像显示两张**同样式**来源卡片（头像/昵称/登录态/logo），`sourceAccounts` 新增 `avatarUrl`。
+- `SourceToggle` 改滑块式（深色滑块 transform 平移）。注意另一会话同期改动：`parseQqCookie` 返回 `loginType`（支持微信登录 wxuin/wxmusic_key）、`getQqPlaylists` 的 mydiss 字段改读 `dissid ?? tid`（dirid 是用户内文件夹号，歌单详情要全局 disstid）——测试已对齐。
+
+### 9.8 2026-11-06 补充:GetEVkey 付费档毒化请求(关键)
+
+- **实测发现**:GetEVkey 请求的 filename 列表里只要混入付费档位文件名(F000/M800/RS01),免费账号的**整个请求**都被拒——连 M500 明文都不给(对照实验:仅 [M500,C400] → M500 给 purl;混入付费档 → 全空)。此前的"多格式候选一次带全"设计正是免费歌时灵时不灵的根因。
+- **修复**:请求按档位类别分开——免费歌(pay.play_play=0,搜索时缓存)永远只发 [M500,C400],请求档位再高也降级 128k;VIP 歌按会话级账号能力探测(vipProbeState):unknown 先免费档再付费探测,capable 直接付费档(单档单请求),incapable 直接报"需要 VIP"不再打接口。saveQqCookie/clearQqCookie 重置探测状态。测试 resetQqStreamStateForTests() 保证用例隔离。
+- VIP 标识:QQ 搜索结果按 pay.play_play、网易云按 fee===1(含 privilege.fee)在 ProviderTrack.vip 上透传,搜索行显示 VIP 徽章。

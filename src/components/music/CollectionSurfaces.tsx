@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Cloud, Heart, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import type { ProviderPlaylist } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
+import { SourceToggle, type SourceToggleOption } from "./SourceLogos";
 import { ArtworkImage } from "./ArtworkImage";
 import { PlaylistDetail } from "./PlaylistDetail";
 import { AddToPlaylistButton } from "./PlaylistActions";
@@ -21,6 +22,10 @@ export function CollectionSurface({
   refreshing = false,
   onRefresh,
   onPickTrack,
+  sourceToggle,
+  emptyText,
+  loading = false,
+  error = null,
 }: {
   title: string;
   subtitle: string;
@@ -29,6 +34,11 @@ export function CollectionSurface({
   refreshing?: boolean;
   onRefresh?: () => void;
   onPickTrack: (id: string) => void;
+  /** 双源切换:每日推荐/私人漫游等聚合页按 logo 切换网易云与 QQ。 */
+  sourceToggle?: { value: "netease" | "qq"; onChange: (source: "netease" | "qq") => void };
+  emptyText?: string;
+  loading?: boolean;
+  error?: string | null;
 }) {
   return (
     <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
@@ -48,12 +58,33 @@ export function CollectionSurface({
           </Button>
         )}
       </div>
-      <VirtualTrackList
-        className="mt-8"
-        tracks={tracks}
-        emptyText="暂无曲目，先扫描本地音乐或登录后同步红心。"
-        onPickTrack={onPickTrack}
-      />
+      {sourceToggle && (
+        <div className="mt-5 shrink-0">
+          <SourceToggle value={sourceToggle.value} onChange={sourceToggle.onChange} options={["netease", "qq"]} ariaLabel="推荐来源" />
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="mt-4 flex shrink-0 items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span>{error}</span>
+          {onRefresh && (
+            <Button variant="ghost" size="sm" onClick={onRefresh}>
+              重试
+            </Button>
+          )}
+        </div>
+      )}
+      {loading && !tracks.length ? (
+        <div className="mt-6 flex min-h-0 flex-1 items-center justify-center text-sm text-neutral-400">
+          <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在载入…
+        </div>
+      ) : (
+        <VirtualTrackList
+          className={sourceToggle ? "mt-5" : "mt-8"}
+          tracks={tracks}
+          emptyText={emptyText ?? "暂无曲目，先扫描本地音乐或登录后同步红心。"}
+          onPickTrack={onPickTrack}
+        />
+      )}
     </div>
   );
 }
@@ -61,29 +92,94 @@ export function CollectionSurface({
 export function LikedSurface({
   localTracks,
   neteaseTracks,
+  qqTracks,
+  neteaseConnected,
+  qqConnected,
+  refreshing = false,
+  onRefresh,
   onPickTrack,
 }: {
   localTracks: Track[];
   neteaseTracks: Track[];
+  qqTracks: Track[];
+  neteaseConnected: boolean;
+  qqConnected: boolean;
+  refreshing?: boolean;
+  onRefresh?: (source: SourceToggleOption) => void;
   onPickTrack: (id: string) => void;
 }) {
+  // 融合但不同时铺开：点来源图标切换查看，一次只显示一个来源的收藏。
+  // 只登录了 QQ 时默认展示 QQ 我喜欢，避免用户以为"没有同步"却停在
+  // 空的网易云栏。两边都登录时仍默认网易云，保留原有习惯。
+  const [likedSource, setLikedSource] = useState<SourceToggleOption>(() =>
+    qqConnected && !neteaseConnected ? "qq" : "netease",
+  );
+  const connectionRef = useRef({ neteaseConnected, qqConnected });
+  useEffect(() => {
+    const previous = connectionRef.current;
+    if (!previous.qqConnected && qqConnected && !neteaseConnected) setLikedSource("qq");
+    if (!previous.neteaseConnected && neteaseConnected && !qqConnected) setLikedSource("netease");
+    connectionRef.current = { neteaseConnected, qqConnected };
+  }, [neteaseConnected, qqConnected]);
+
+  const columns: Record<SourceToggleOption, { title: string; subtitle: string; emptyText: string; tracks: Track[] }> = {
+    local: {
+      title: "本地我喜欢",
+      subtitle: "来自本地音乐库的红心歌曲",
+      emptyText: "暂无本地红心歌曲，在播放页点亮红心后会出现在这里。",
+      tracks: localTracks,
+    },
+    netease: {
+      title: "网易云我喜欢",
+      subtitle: neteaseConnected ? `网易云账号已同步 ${neteaseTracks.length} 首` : "扫码或 Cookie 登录后读取",
+      emptyText: neteaseConnected ? "网易云账号暂无红心歌曲。" : "登录网易云后即可同步红心歌曲。",
+      tracks: neteaseTracks,
+    },
+    qq: {
+      title: "QQ 音乐我喜欢",
+      subtitle: qqConnected
+        ? qqTracks.length
+          ? `QQ 音乐账号已同步 ${qqTracks.length} 首`
+          : "QQ 音乐账号暂无红心歌曲"
+        : "登录 QQ 音乐后读取",
+      emptyText: qqConnected
+        ? "QQ 音乐账号暂无红心歌曲；如果刚在手机上点过红心，点右上角「同步红心」再试一次。"
+        : "登录 QQ 音乐后即可同步红心歌曲。",
+      tracks: qqTracks,
+    },
+  };
+  const active = columns[likedSource];
+
   return (
     <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
       <div className="flex shrink-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <Badge>Favorite</Badge>
           <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">我喜欢</h1>
-          <p className="mt-3 text-neutral-500">本地红心和网易云红心分开收纳，同步时不混乱。</p>
+          <p className="mt-3 text-neutral-500">本地红心与在线收藏分开收纳，点来源图标切换查看。</p>
         </div>
-        <Button variant="glass">
-          <Heart className="fill-current" />
-          同步红心
+        <Button
+          variant="glass"
+          onClick={() => onRefresh?.(likedSource)}
+          disabled={likedSource === "local" || refreshing}
+          title={likedSource === "local" ? "本地红心由播放页维护" : "重新同步当前音源的喜欢列表"}
+        >
+          <RefreshCw className={cn(refreshing && "animate-spin")} />
+          {refreshing ? "同步中…" : "同步红心"}
         </Button>
       </div>
 
-      <div className="mt-8 grid min-h-0 flex-1 gap-5 xl:grid-cols-2">
-        <LikedColumn title="本地我喜欢" subtitle="来自本地音乐库" tracks={localTracks} onPickTrack={onPickTrack} />
-        <LikedColumn title="网易云我喜欢" subtitle="扫码或 Cookie 登录后读取" tracks={neteaseTracks} onPickTrack={onPickTrack} />
+      <div className="mt-6 shrink-0">
+        <SourceToggle
+          value={likedSource}
+          onChange={setLikedSource}
+          options={["local", "netease", "qq"]}
+          ariaLabel="收藏来源"
+        />
+      </div>
+
+      <div className="mt-5 grid min-h-0 flex-1">
+        <LikedColumn title={active.title} subtitle={active.subtitle} emptyText={active.emptyText} tracks={active.tracks} onPickTrack={onPickTrack} />
       </div>
     </div>
   );
@@ -92,11 +188,13 @@ export function LikedSurface({
 function LikedColumn({
   title,
   subtitle,
+  emptyText,
   tracks,
   onPickTrack,
 }: {
   title: string;
   subtitle: string;
+  emptyText: string;
   tracks: Track[];
   onPickTrack: (id: string) => void;
 }) {
@@ -119,7 +217,7 @@ function LikedColumn({
             return (
               <button
                 key={track.id}
-                className="absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
+                className="absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_auto_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
                 style={{ top: offsetTop }}
                 onClick={() => onPickTrack(track.id)}
               >
@@ -132,6 +230,7 @@ function LikedColumn({
                     <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
                   </p>
                 </div>
+                <Badge className="hidden sm:inline-flex">{formatAudioDetail(track)}</Badge>
                 <span className="flex size-7 items-center justify-center rounded-full bg-white/70">
                   <Heart className="size-4 fill-neutral-950" />
                 </span>
@@ -139,7 +238,7 @@ function LikedColumn({
             );
           })}
         </div>
-        {!tracks.length && <EmptyState text="暂无歌曲，先点亮播放页里的红心。" />}
+        {!tracks.length && <EmptyState text={emptyText} />}
       </div>
     </section>
   );
@@ -165,6 +264,7 @@ export function PlaylistSurface({
   onSubscribe,
   onDeletePlaylist,
   local,
+  qq,
 }: {
   playlists: ProviderPlaylist[];
   local: LocalPlaylistSurfaceProps;
@@ -185,9 +285,29 @@ export function PlaylistSurface({
   onReorderTracks: (id: string, tracks: Track[]) => Promise<void>;
   onSubscribe: (id: string, subscribed: boolean) => Promise<void>;
   onDeletePlaylist: (id: string) => Promise<void>;
+  qq: {
+    connected: boolean;
+    playlists: ProviderPlaylist[];
+    selectedPlaylist: ProviderPlaylist | null;
+    tracks: Track[];
+    loading: boolean;
+    error: string | null;
+    onOpen: (playlist: ProviderPlaylist) => void;
+    onClose: () => void;
+    onPickTrack: (id: string, queue?: Track[]) => void;
+  };
 }) {
   const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
-  const [playlistSource, setPlaylistSource] = useState<"netease" | "local">("netease");
+  const [playlistSource, setPlaylistSource] = useState<"netease" | "local" | "qq">(() =>
+    qq.connected && !canCreatePlaylist ? "qq" : "netease",
+  );
+  const playlistConnectionRef = useRef({ netease: canCreatePlaylist, qq: qq.connected });
+  useEffect(() => {
+    const previous = playlistConnectionRef.current;
+    if (!previous.qq && qq.connected && !canCreatePlaylist) setPlaylistSource("qq");
+    if (!previous.netease && canCreatePlaylist && !qq.connected) setPlaylistSource("netease");
+    playlistConnectionRef.current = { netease: canCreatePlaylist, qq: qq.connected };
+  }, [canCreatePlaylist, qq.connected]);
   const [createOpen, setCreateOpen] = useState(false);
   const [playlistName, setPlaylistName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
@@ -227,6 +347,61 @@ export function PlaylistSurface({
 
   if (playlistSource === "local") {
     return <LocalPlaylistSurface {...local} onOpenNetease={() => setPlaylistSource("netease")} />;
+  }
+
+  if (playlistSource === "qq") {
+    if (qq.selectedPlaylist) {
+      return <PlaylistDetail key={qq.selectedPlaylist.id} playlist={qq.selectedPlaylist} tracks={qq.tracks} loading={qq.loading} error={qq.error} connected={false} playCounts={playCounts}
+        onBack={qq.onClose} onRetry={() => qq.onOpen(qq.selectedPlaylist)} onPickTrack={qq.onPickTrack}
+        onUpdate={async () => {}} onUploadCover={async () => {}} onRemove={async () => {}} onReorder={async () => {}}
+        onSubscribe={async () => {}} onDelete={async () => {}} onRequireLogin={onRequireLogin} />;
+    }
+    return (
+      <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Badge>Playlist</Badge>
+            <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">QQ 音乐歌单</h1>
+            <p className="mt-3 text-sm text-neutral-500">只读同步：播放你 QQ 音乐账号里的歌单，整理请前往 QQ 音乐。</p>
+          </div>
+        </div>
+        {qq.error && (
+          <div role="alert" className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+            <span>{qq.error}</span>
+            <Button size="sm" onClick={onRequireLogin}>前往登录</Button>
+          </div>
+        )}
+        <SourceTabs playlistSource="qq" onSelect={setPlaylistSource} />
+        <div className="mt-4 grid gap-4 md:grid-cols-3">
+          {qq.playlists.map((playlist) => (
+            <button
+              key={playlist.id}
+              className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+              onClick={() => qq.onOpen(playlist)}
+            >
+              {playlist.coverUrl ? (
+                <ArtworkImage
+                  src={playlist.coverUrl}
+                  cacheSize={160}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                  fetchPriority="low"
+                  draggable={false}
+                  className="size-16 rounded-2xl object-cover shadow-sm"
+                />
+              ) : (
+                <Cloud className="size-6 text-neutral-500" />
+              )}
+              <h2 className="mt-8 text-2xl font-semibold">{playlist.name}</h2>
+              <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount ? `${playlist.trackCount} 首` : "在 QQ 音乐中查看"}</p>
+              <Badge className="mt-5">{playlist.owned ? "创建歌单" : "收藏歌单"}</Badge>
+            </button>
+          ))}
+        </div>
+        {!qq.playlists.length && !qq.error && <EmptyState text={qq.connected ? "还没有可同步的 QQ 音乐歌单。" : "登录 QQ 音乐后即可同步“我喜欢”和你的歌单。"} />}
+      </div>
+    );
   }
 
   if (selectedPlaylist) {
@@ -295,33 +470,7 @@ export function PlaylistSurface({
           )}
         </section>
       )}
-      <div className="mt-6 flex w-fit rounded-full border border-white/70 bg-white/52 p-1 shadow-sm" aria-label="歌单来源">
-        <button
-          type="button"
-          aria-current={playlistSource === "netease" ? "page" : undefined}
-          className={cn(
-            "rounded-full px-4 py-2 text-sm font-medium transition",
-            playlistSource === "netease" ? "bg-neutral-950 text-white" : "text-neutral-500 hover:bg-white",
-          )}
-          onClick={() => { setCreateOpen(false); setPlaylistSource("netease"); }}
-        >
-          网易云
-        </button>
-        <button
-          type="button"
-          aria-current={playlistSource === "local" ? "page" : undefined}
-          className={cn(
-            "rounded-full px-4 py-2 text-sm font-medium transition",
-            playlistSource === "local" ? "bg-neutral-950 text-white" : "text-neutral-500 hover:bg-white",
-          )}
-          onClick={() => { setCreateOpen(false); setPlaylistSource("local"); }}
-        >
-          本地
-        </button>
-      </div>
-      <p className="mt-3 text-xs text-neutral-500">
-        QQ 音乐暂不支持歌单同步，搜索到的歌曲可以直接播放或加入本地歌单。
-      </p>
+      <SourceTabs playlistSource={playlistSource} onSelect={(source) => { setCreateOpen(false); setPlaylistSource(source); }} />
       <div className="mt-4 flex flex-wrap gap-2">
         {[
           ["all", "全部歌单"],
@@ -369,6 +518,17 @@ export function PlaylistSurface({
         ))}
       </div>
       {!playlists.length && <EmptyState text="暂无歌单数据，绑定有效网易云 Cookie 后同步。" />}
+    </div>
+  );
+}
+
+function SourceTabs({ playlistSource, onSelect }: {
+  playlistSource: "netease" | "local" | "qq";
+  onSelect: (source: "netease" | "local" | "qq") => void;
+}) {
+  return (
+    <div className="mt-6">
+      <SourceToggle value={playlistSource} onChange={onSelect} options={["netease", "qq", "local"]} ariaLabel="歌单来源" />
     </div>
   );
 }

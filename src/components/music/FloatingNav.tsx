@@ -124,6 +124,9 @@ export function FloatingNav({
                 )}
                 <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-visible:opacity-100">
                   {item.label}
+                  {(item.id === "cloud" || item.id === "artists" || item.id === "explore") && (
+                    <span className="ml-1.5 text-white/55">网易云</span>
+                  )}
                 </span>
               </button>
             </div>

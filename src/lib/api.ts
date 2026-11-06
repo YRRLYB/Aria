@@ -195,6 +195,10 @@ export type SourceManifestInfo = {
   shortName: string;
   version: string;
   artworkHosts: string[];
+  /** False when the user switched this source off in settings. */
+  enabled?: boolean;
+  /** ms timestamp while the source is skipped after repeated upstream errors. */
+  unavailableUntil?: number | null;
 };
 
 export type ProviderTrack = {
@@ -203,7 +207,7 @@ export type ProviderTrack = {
   artist: string;
   album: string;
   duration: number;
-  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K" | "128K" | "AAC";
   source: string;
   streamUrl?: string | null;
   coverUrl?: string | null;
@@ -216,6 +220,8 @@ export type ProviderTrack = {
   albumId?: string | null;
   artistIds?: string[];
   matchedLyric?: string | null;
+  /** QQ 音乐等源的会员专属标记：true 表示无 VIP 账号大概率拿不到播放地址。 */
+  vip?: boolean;
 };
 
 export type ProviderStyle = {
@@ -560,7 +566,10 @@ export const api = {
   getSettings() {
     return request<{
       hasNeteaseCookie: boolean;
+      hasQqCookie?: boolean;
       neteaseAccount: NeteaseAccountSummary;
+      /** Opt-in mainland egress IP used for NetEase's 460 mitigation. */
+      neteaseRealIp?: string | null;
       lyricBindings: Record<string, string>;
     }>("/api/settings");
   },
@@ -571,6 +580,21 @@ export const api = {
     return request<{ ok: boolean; account: NeteaseAccountSummary }>("/api/settings/netease-cookie", {
       method: "POST",
       body: JSON.stringify({ cookie }),
+    });
+  },
+  clearNeteaseCookie() {
+    return request<{ ok: boolean; account: NeteaseAccountSummary }>("/api/settings/netease-cookie", {
+      method: "DELETE",
+    });
+  },
+  /**
+   * Pins the mainland IP NetEase should see. Pass an empty string to clear it
+   * and go back to the machine's real connection.
+   */
+  saveNeteaseRealIp(realIP: string) {
+    return request<{ ok: boolean; realIP: string | null }>("/api/settings/netease-real-ip", {
+      method: "POST",
+      body: JSON.stringify({ realIP }),
     });
   },
   startNeteaseQrLogin() {
@@ -607,6 +631,9 @@ export const api = {
   },
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
+  },
+  getProviderPlaylistTracks(providerId: string, playlistId: string) {
+    return request<{ tracks: ProviderTrack[] }>(`/api/providers/${encodeURIComponent(providerId)}/playlists/${encodeURIComponent(playlistId)}/tracks`);
   },
   getSongEncyclopedia(trackId: string) {
     return request<import("./songEncyclopedia").SongEncyclopedia>(`/api/providers/netease/tracks/${encodeURIComponent(trackId)}/encyclopedia`);
@@ -758,6 +785,12 @@ export const api = {
   listSources() {
     return request<{ sources: SourceManifestInfo[] }>("/api/sources");
   },
+  setSourceEnabled(sourceId: string, enabled: boolean) {
+    return request<{ ok: boolean; sources: SourceManifestInfo[] }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/enabled`,
+      { method: "POST", body: JSON.stringify({ enabled }) },
+    );
+  },
   searchSource(sourceId: string, query: string, mode: "tracks" | "artists" | "playlists" = "tracks", limit = 24, offset = 0) {
     const params = new URLSearchParams({ q: query, mode, limit: String(limit), offset: String(offset) });
     return request<{ sourceId: string; tracks: ProviderTrack[]; artists: ProviderArtist[]; playlists: ProviderPlaylist[] }>(
@@ -785,6 +818,14 @@ export const api = {
     return request<{ account: SourceAccountSummary }>(
       `/api/sources/${encodeURIComponent(sourceId)}/account`,
     );
+  },
+  getSourceDailyTracks(sourceId: string) {
+    return request<{ sourceId: string; tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/daily`);
+  },
+  getSourceRoamTracks(sourceId: string, limit = 30, excludeIds: string[] = []) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (excludeIds.length) params.set("exclude", excludeIds.join(","));
+    return request<{ sourceId: string; tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/roam?${params}`);
   },
   getSourceCoverUrl(sourceId: string, sourceUrl: string) {
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/cover?url=${encodeURIComponent(sourceUrl)}`);

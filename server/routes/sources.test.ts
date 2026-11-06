@@ -2,7 +2,7 @@ import express from "express";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { get as httpGet, type IncomingHttpHeaders } from "node:http";
+import { get as httpGet, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { RemoteCoverCache, type RemoteCoverCache as RemoteCoverCacheType } from "../remoteCoverCache";
@@ -14,12 +14,14 @@ import { createSourcesRouter } from "./sources";
 
 const mocks = vi.hoisted(() => ({
   getSource: vi.fn(),
-  listManifests: vi.fn(),
+  listStates: vi.fn(),
+  setEnabled: vi.fn(),
 }));
 
 vi.mock("../sources/registry", () => ({
   getSource: mocks.getSource,
-  listSourceManifests: mocks.listManifests,
+  listSourceStates: mocks.listStates,
+  setSourceEnabled: mocks.setEnabled,
 }));
 
 const qqManifest: SourceManifest = {
@@ -95,7 +97,14 @@ beforeEach(async () => {
     if (id === "netease") return neteaseSource;
     throw new SourceError("UNAVAILABLE", `未知的播放源: ${id}`);
   });
-  mocks.listManifests.mockReturnValue([qqManifest, neteaseManifest]);
+  mocks.listStates.mockResolvedValue([
+    { manifest: qqManifest, enabled: true, unavailableUntil: null },
+    { manifest: neteaseManifest, enabled: true, unavailableUntil: null },
+  ]);
+  mocks.setEnabled.mockImplementation(async (id: string, enabled: boolean) => [
+    { manifest: qqManifest, enabled: id === "qq" ? enabled : true, unavailableUntil: null },
+    { manifest: neteaseManifest, enabled: id === "netease" ? enabled : true, unavailableUntil: null },
+  ]);
 });
 
 afterEach(async () => {
@@ -119,6 +128,27 @@ function request(url: string, headers: Record<string, string> = {}): Promise<Loc
         body: Buffer.concat(chunks),
       }));
     }).on("error", reject);
+  });
+}
+
+function post(url: string, payload: unknown): Promise<LocalResponse> {
+  const body = Buffer.from(JSON.stringify(payload), "utf8");
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      url,
+      { method: "POST", headers: { "content-type": "application/json", "content-length": String(body.length) } },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => resolve({
+          status: response.statusCode,
+          headers: response.headers,
+          body: Buffer.concat(chunks),
+        }));
+      },
+    );
+    request.on("error", reject);
+    request.end(body);
   });
 }
 
@@ -163,7 +193,38 @@ describe("unified source routes", () => {
     try {
       const response = await request(base);
       expect(response.status).toBe(200);
-      expect(jsonOf(response)).toEqual({ sources: [qqManifest, neteaseManifest] });
+      expect(jsonOf(response)).toEqual({
+        sources: [
+          { ...qqManifest, enabled: true, unavailableUntil: null },
+          { ...neteaseManifest, enabled: true, unavailableUntil: null },
+        ],
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("toggles a source and returns the refreshed switches", async () => {
+    const { base, close } = await listen();
+    try {
+      const response = await post(`${base}/netease/enabled`, { enabled: false });
+      expect(response.status).toBe(200);
+      expect(mocks.setEnabled).toHaveBeenCalledWith("netease", false);
+      expect(jsonOf(response)).toMatchObject({
+        ok: true,
+        sources: [{ id: "qq", enabled: true }, { id: "netease", enabled: false }],
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects a toggle without a boolean flag", async () => {
+    const { base, close } = await listen();
+    try {
+      const response = await post(`${base}/qq/enabled`, { enabled: "yes" });
+      expect(response.status).toBe(400);
+      expect(mocks.setEnabled).not.toHaveBeenCalled();
     } finally {
       await close();
     }

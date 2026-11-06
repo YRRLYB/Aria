@@ -2,12 +2,20 @@ import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
+
+// The argument assertions describe the shipped Windows configuration (WASAPI,
+// aria.exe, named pipes). The engine captures process.platform into module
+// constants at require time, so pin it before loading and restore right after;
+// vitest runs this file in its own worker either way.
+const hostPlatform = process.platform;
+Object.defineProperty(process, "platform", { value: "win32" });
 const {
   buildMpvArguments,
   MpvAudioEngine,
   NATIVE_AUDIO_CLIENT_NAME,
   NATIVE_AUDIO_PROCESS_NAME,
 } = require("./mpvEngine.cjs");
+Object.defineProperty(process, "platform", { value: hostPlatform });
 
 describe("native mpv output", () => {
   it("enables and removes only Aria's loudness filter", async () => {
@@ -48,6 +56,18 @@ describe("native mpv output", () => {
 
     expect(args).toContain("--audio-exclusive=yes");
     expect(args).not.toContain("--audio-exclusive=no");
+  });
+
+  it("omits media-session flags when the resolved mpv build does not support them", () => {
+    // Community macOS builds (for example the Intel Sonoma build) reject
+    // unknown options and exit before creating the IPC socket. The engine
+    // probes --list-options and must only pass what exists.
+    const args = buildMpvArguments("\\\\.\\pipe\\aria-options-test", false, new Set(["audio-client-name"]));
+
+    expect(args).toContain("--audio-client-name=Aria");
+    expect(args).toContain("--input-media-keys=no");
+    expect(args).not.toContain("--media-controls=no");
+    expect(args).not.toContain("--audio-set-media-role=yes");
   });
 
   it("keeps shared and exclusive output flags mutually exclusive", () => {

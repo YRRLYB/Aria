@@ -1,6 +1,15 @@
 import type { MusicSource, SourceSearchPage } from "../contract";
 import { SourceError } from "../contract";
-import { getQqAccount, getQqLyrics, resolveQqStreamMeta, saveQqCookie, searchQqTracks, clearQqCookie } from "./client";
+import {
+  clearQqCookie,
+  getQqAccount,
+  getQqDailyRecommendTracks,
+  getQqLyrics,
+  getQqRoamTracks,
+  resolveQqStreamMeta,
+  saveQqCookie,
+  searchQqTracks,
+} from "./client";
 import { checkQqQrLogin, startQqQrLogin } from "./qrLogin";
 import { qqManifest } from "./manifest";
 
@@ -25,6 +34,14 @@ export const qqSource: MusicSource = {
 
   getAccount() {
     return getQqAccount();
+  },
+
+  async getDailyRecommendTracks() {
+    return getQqDailyRecommendTracks();
+  },
+
+  async getRoamTracks(limit, excludeIds) {
+    return getQqRoamTracks(limit, excludeIds);
   },
 
   saveCookie(cookie) {

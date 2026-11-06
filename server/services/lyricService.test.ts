@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ words: vi.fn(), lines: vi.fn() }));
 vi.mock("NeteaseCloudMusicApi", () => ({ default: { lyric_new: mocks.words, lyric: mocks.lines } }));
+// Keep the suite hermetic: a locally configured egress IP must not leak into
+// the exact argument assertions below.
+vi.mock("../store", () => ({ readStore: async () => ({ neteaseCookie: null, neteaseRealIp: null }) }));
 import { fetchNeteaseLyrics } from "./lyricService";
 
 beforeEach(() => vi.resetAllMocks());

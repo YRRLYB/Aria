@@ -221,10 +221,10 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     albumArtist: typeof track.albumArtist === "string" ? track.albumArtist : null,
     duration: typeof track.duration === "string" ? track.duration : "--:--",
     quality:
-      track.quality === "臻品" || track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K"
+      track.quality === "臻品" || track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K" || track.quality === "128K" || track.quality === "AAC"
         ? track.quality
         : "320K",
-    source: track.source === "netease" || track.source === "cloud" || track.source === "local" ? track.source : "local",
+    source: track.source === "netease" || track.source === "cloud" || track.source === "qq" || track.source === "local" ? track.source : "local",
     streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
     coverUrl: readCachedArtworkOverride(track.id) ?? (typeof track.coverUrl === "string" ? track.coverUrl : undefined),
     trackNumber: typeof track.trackNumber === "number" ? track.trackNumber : null,
@@ -455,7 +455,7 @@ export function colorWithAlpha(hex: string, alpha: number) {
 }
 
 export function normalizeQuality(quality: string): Track["quality"] {
-  if (quality === "臻品" || quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K") {
+  if (quality === "臻品" || quality === "Hi-Res" || quality === "FLAC" || quality === "Lossless" || quality === "320K" || quality === "128K" || quality === "AAC") {
     return quality;
   }
   return "320K";

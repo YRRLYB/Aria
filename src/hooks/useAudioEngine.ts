@@ -12,6 +12,15 @@ import loudnessProcessorUrl from "@/lib/loudnessProcessor.js?url&no-inline";
 // Owns the media pipeline: the HTML audio element, the mpv native bridge
 // (loading/progress/pause/volume/device + exclusive mode), output device
 // enumeration and the Web Audio graph that feeds the spectrum visualizer.
+/**
+ * 感知音量曲线:人耳对响度的感受接近平方律,线性映射会让滑块中高段
+ * 显得比预期响得多(HTML 引擎尤其明显)。平方衰减后 100% 不变,
+ * 72% ≈ 0.52 实际增益。mpv 路径(WASAPI/coreaudio)保持线性不受影响。
+ */
+function perceptualVolume(volume: number): number {
+  return Math.max(0, Math.min(1, volume / 100)) ** 2;
+}
+
 export function useAudioEngine(options: {
   activeTrack: Track;
   activeTrackId: string;
@@ -111,6 +120,24 @@ export function useAudioEngine(options: {
   const preloadKeyRef = useRef<string | null>(null);
   const handledGaplessGenerationRef = useRef(0);
   const previousStreamRef = useRef({ trackId: activeTrack.id, url: activeStreamUrl });
+
+  // The static `supported` flag only knows the platform. The engine's
+  // isSupported() checks the platform mpv binary, which macOS ships without
+  // until the user adds vendor/mpv/mpv — fall back to Web Audio there.
+  useEffect(() => {
+    const nativeAudio = window.ariaDesktop?.nativeAudio;
+    if (!nativeAudio?.isSupported) return;
+    let cancelled = false;
+    nativeAudio
+      .isSupported()
+      .then((supported) => {
+        if (!cancelled) setNativeAudioSupported(Boolean(supported));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // A quality change replaces the stream, not the song. Capture the shared
   // clock before either decoder resets its source; both the native load and
@@ -311,8 +338,8 @@ export function useAudioEngine(options: {
           performance.now() >= nativeAnalyserDelayUntilRef.current,
       );
     audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
-    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : outputGainRef.current ? 1 : Math.max(0, Math.min(1, options.volume / 100));
-    if (outputGainRef.current) outputGainRef.current.gain.setTargetAtTime(options.volume / 100, audioContextRef.current!.currentTime, 0.03);
+    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : outputGainRef.current ? 1 : perceptualVolume(options.volume);
+    if (outputGainRef.current) outputGainRef.current.gain.setTargetAtTime(perceptualVolume(options.volume), audioContextRef.current!.currentTime, 0.03);
     // The mpv path owns audible lossless playback. Chromium only needs a
     // lightweight analyser source, so avoid pre-buffering the whole stream.
     audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : "metadata";
@@ -703,7 +730,7 @@ export function useAudioEngine(options: {
     configureSpectrumAnalyser(analyser);
     const outputGain = outputGainRef.current ?? context.createGain();
     outputGainRef.current = outputGain;
-    outputGain.gain.setTargetAtTime(options.volume / 100, context.currentTime, 0.03);
+    outputGain.gain.setTargetAtTime(perceptualVolume(options.volume), context.currentTime, 0.03);
 
     const desiredOutputMode = nativePlaybackEnabled ? "silent" : options.normalizationEnabled && normalizerRef.current ? "normalized" : "audible";
     if (analyserOutputModeRef.current !== desiredOutputMode) {

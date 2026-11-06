@@ -53,6 +53,7 @@ export function useDiscovery(options: {
   allTracks: Track[];
   artistSummaries: ArtistSummary[];
   onMergeNeteaseTracks: (updater: (current: Track[]) => Track[]) => void;
+  onMergeQqTracks: (updater: (current: Track[]) => Track[]) => void;
 }) {
   const [searchBundle, setSearchBundle] =
     useState<SearchBundle>(emptySearchBundle);
@@ -102,6 +103,26 @@ export function useDiscovery(options: {
     [options.localSearchSignature],
   );
 
+  // Source switches from settings: a disabled source must not receive requests
+  // (multi-source impl §5), so the fused search skips it instead of surfacing
+  // an error chip for something the user turned off on purpose.
+  const [sourceSwitches, setSourceSwitches] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    let alive = true;
+    void api
+      .listSources()
+      .then((result) => {
+        if (!alive) return;
+        const next: Record<string, boolean> = {};
+        for (const source of result.sources) next[source.id] = source.enabled !== false;
+        setSourceSwitches(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   useEffect(() => {
     selectedArtistIdRef.current = selectedArtist?.id ?? null;
   }, [selectedArtist]);
@@ -141,10 +162,11 @@ export function useDiscovery(options: {
     const timer = window.setTimeout(() => {
       // "全部"搜索并行请求各源：单源失败只留在该源的错误通道里，
       // 不清空其它源的结果。网易云仍是主结果通道。
-      const neteaseSearch = api
-        .searchNetease(text, searchMode, searchPageSize)
+      const neteaseSearch = (sourceSwitches.netease === false
+        ? Promise.resolve(null)
+        : api.searchNetease(text, searchMode, searchPageSize))
         .then((result) => {
-          if (requestId !== searchRequestRef.current) return;
+          if (!result || requestId !== searchRequestRef.current) return;
           const remoteTracks = result.tracks.map((track, index) =>
             providerTrackToUiTrack(track, index),
           );
@@ -182,17 +204,24 @@ export function useDiscovery(options: {
             );
         });
       const qqSearch =
-        searchMode === "tracks"
+        searchMode === "tracks" && sourceSwitches.qq !== false
           ? api
               .searchSource("qq", text, "tracks", searchPageSize)
               .then((result) => {
                 if (requestId !== searchRequestRef.current) return;
                 setSearchQqError(null);
+                const qqUiTracks = result.tracks.map((track, index) =>
+                  providerTrackToUiTrack(track, index),
+                );
+                // Search results must also reach the app-level track pools so
+                // choosing a QQ row resolves an active track (qq: ids are not
+                // in allTracks otherwise) and survives queue re-resolution.
+                options.onMergeQqTracks((current) =>
+                  trimTrackCache([...current, ...qqUiTracks]),
+                );
                 setSearchBundle((current) => ({
                   ...current,
-                  qqTracks: result.tracks.map((track, index) =>
-                    providerTrackToUiTrack(track, index),
-                  ),
+                  qqTracks: qqUiTracks,
                 }));
               })
               .catch((error) => {
@@ -215,7 +244,7 @@ export function useDiscovery(options: {
       window.clearTimeout(timer);
       searchRequestRef.current += 1;
     };
-  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision]);
+  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision, sourceSwitches.qq, sourceSwitches.netease]);
 
   useEffect(() => {
     const text = options.query.trim();

@@ -53,6 +53,17 @@ export type AppStore = {
   neteaseAccount: StoredNeteaseAccount | null;
   /** Raw QQ Music cookie header; parsed for uin + qqmusic_key/qm_keyst. */
   qqCookie?: string | null;
+  /**
+   * Mainland egress IP the NetEase client should claim. Only needed when the
+   * machine's real exit IP makes NetEase answer 460/"环境异常" (overseas or
+   * hosting networks); empty means "use the real connection".
+   */
+  neteaseRealIp?: string | null;
+  /**
+   * Per-source switches. A source missing from this record is enabled, so
+   * existing stores keep working after an upgrade adds a new source.
+   */
+  sources?: Record<string, { enabled?: boolean }>;
   lyricBindings: Record<string, string>;
   libraryAutoScanEnabled: boolean;
 };

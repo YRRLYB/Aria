@@ -6,7 +6,7 @@ import {
   isAriaLevel,
   type AriaLevel,
 } from "../sources/contract";
-import { getSource, listSourceManifests } from "../sources/registry";
+import { getSource, listSourceStates, setSourceEnabled } from "../sources/registry";
 import { proxyAudioStream } from "../sources/streamProxy";
 import { handleCoverRequest } from "./remoteCover";
 
@@ -21,6 +21,18 @@ const searchQuery = z.object({
   offset: z.coerce.number().int().min(0).max(1000).default(0),
 });
 
+const enabledBody = z.object({ enabled: z.boolean() });
+
+/** Manifests plus runtime flags, so the UI can grey out a disabled source. */
+async function describeSources() {
+  const states = await listSourceStates();
+  return states.map((state) => ({
+    ...state.manifest,
+    enabled: state.enabled,
+    unavailableUntil: state.unavailableUntil,
+  }));
+}
+
 /**
  * Unified built-in source routes. Source implementations are loaded lazily by
  * the registry; unknown ids fail as `SOURCE_UNAVAILABLE` without touching any
@@ -29,8 +41,29 @@ const searchQuery = z.object({
 export function createSourcesRouter(options: SourcesRouterOptions) {
   const router = express.Router();
 
-  router.get("/", (_req, res) => {
-    res.json({ sources: listSourceManifests() });
+  router.get("/", async (_req, res, next) => {
+    try {
+      res.json({ sources: await describeSources() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sourceId/enabled", async (req, res, next) => {
+    try {
+      const body = enabledBody.parse(req.body);
+      const states = await setSourceEnabled(req.params.sourceId, body.enabled);
+      res.json({
+        ok: true,
+        sources: states.map((state) => ({
+          ...state.manifest,
+          enabled: state.enabled,
+          unavailableUntil: state.unavailableUntil,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/:sourceId/search", async (req, res, next) => {
@@ -110,6 +143,35 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
         throw new SourceError("UNAVAILABLE", `未知的播放源封面代理: ${req.params.sourceId}`);
       }
       await handleCoverRequest(cache, req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/daily", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getDailyRecommendTracks) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持每日推荐`, { source: source.manifest.id });
+      }
+      res.json({ sourceId: req.params.sourceId, tracks: await source.getDailyRecommendTracks() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/roam", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getRoamTracks) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持私人漫游`, { source: source.manifest.id });
+      }
+      const query = z.object({
+        limit: z.coerce.number().int().min(1).max(50).default(30),
+        exclude: z.string().optional(),
+      }).parse(req.query);
+      const excludeIds = (query.exclude ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+      res.json({ sourceId: req.params.sourceId, tracks: await source.getRoamTracks(query.limit, excludeIds) });
     } catch (error) {
       next(error);
     }

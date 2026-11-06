@@ -19,12 +19,14 @@ export type Track = {
   albumId?: string | null;
   artistIds?: string[];
   matchedLyric?: string | null;
+  /** QQ 音乐等源的会员专属标记：true 表示无 VIP 账号大概率拿不到播放地址。 */
+  vip?: boolean;
   title: string;
   artist: string;
   album: string;
   albumArtist?: string | null;
   duration: string;
-  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K" | "128K" | "AAC";
   source: "local" | "cloud" | "netease" | "qq";
   streamUrl?: string;
   coverUrl?: string;

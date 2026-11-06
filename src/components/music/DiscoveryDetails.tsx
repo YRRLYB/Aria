@@ -226,7 +226,17 @@ export function DiscoveryTrackRow({
           )}
         </span>
         <span className="ml-2 flex shrink-0 flex-col items-end gap-1 text-xs text-neutral-400">
-          <span>{formatAudioDetail(track)}</span>
+          <span className="flex items-center gap-1.5">
+            {track.vip && (
+              <span
+                className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+                title="会员专属歌曲：没有会员的账号可能拿不到播放地址或高音质"
+              >
+                VIP
+              </span>
+            )}
+            {formatAudioDetail(track)}
+          </span>
           <span>
             {sourceLabel[track.source]} · {track.duration}
           </span>

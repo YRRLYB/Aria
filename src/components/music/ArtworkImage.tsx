@@ -1,4 +1,4 @@
-import { useState, type ImgHTMLAttributes, type SyntheticEvent } from "react";
+import { useMemo, useState, type ImgHTMLAttributes, type SyntheticEvent } from "react";
 import { artworkImageCandidates } from "@/lib/coverUrl";
 
 type ArtworkImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -15,8 +15,11 @@ export function ArtworkImage({
   onError,
   ...props
 }: ArtworkImageProps) {
-  const candidates = artworkImageCandidates(src, fallbackSrc, cacheSize);
-  const sourceKey = JSON.stringify(candidates);
+  const candidates = useMemo(
+    () => artworkImageCandidates(src, fallbackSrc, cacheSize),
+    [src, fallbackSrc, cacheSize],
+  );
+  const sourceKey = useMemo(() => candidates.join("|"), [candidates]);
   const [attempt, setAttempt] = useState({ key: sourceKey, index: 0 });
   const index = attempt.key === sourceKey ? attempt.index : 0;
   const imageSrc = candidates[index];

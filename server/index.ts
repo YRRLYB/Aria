@@ -5,13 +5,15 @@ import { z } from "zod";
 import { readLibrary } from "./libraryStore";
 import { searchLyricCandidates } from "./lyrics";
 import { bindLocalLyrics } from "./services/lyricBindingService";
-import { neteaseClient } from "./clients/neteaseClient";
+import { NETEASE_NO_PLAYABLE_URL_MESSAGE, neteaseClient } from "./clients/neteaseClient";
+import { invalidateNeteaseIdentity, normalizeRealIp } from "./clients/neteaseIdentity";
 import { getProvider, listProviders } from "./providers";
 import { createLibraryRouter } from "./routes/library";
 import { createLocalMetadataRouter } from "./routes/localMetadata";
 import { createRemoteCoverRouter } from "./routes/remoteCover";
 import {
   checkNeteaseQrLogin,
+  clearNeteaseCookie,
   getNeteaseAccountSummary,
   peekNeteaseAccountSummary,
   saveNeteaseCookie,
@@ -105,9 +107,14 @@ app.get("/api/settings", async (_req, res, next) => {
     const store = await readStore();
     res.json({
       hasNeteaseCookie: Boolean(store.neteaseCookie),
+      // A stored cookie whose account probe reports disconnected means the
+      // session expired — the settings card distinguishes this from signed-out.
+      hasQqCookie: Boolean(store.qqCookie),
       // Never block the first renderer paint on a provider round trip. The
       // account endpoint below validates the cookie in the background.
       neteaseAccount: await peekNeteaseAccountSummary(),
+      // Opt-in mainland egress IP for NetEase's 460/"环境异常" mitigation.
+      neteaseRealIp: store.neteaseRealIp ?? null,
       lyricBindings: store.lyricBindings,
     });
   } catch (error) {
@@ -180,6 +187,20 @@ app.delete("/api/providers/netease/playlists/:playlistId", async (req, res, next
 app.get("/api/providers/netease/playlists/:playlistId/tracks", async (req, res, next) => {
   try {
     res.json({ tracks: await neteaseClient.getPlaylistTracks(req.params.playlistId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Generic provider playlist tracks. The netease route above keeps matching
+// netease first; this serves the other providers that implement the method.
+app.get("/api/providers/:providerId/playlists/:playlistId/tracks", async (req, res, next) => {
+  try {
+    const provider = resolveProvider(req.params.providerId);
+    if (!provider.getPlaylistTracks) {
+      throw new HttpError(400, `${provider.name}暂不支持读取歌单内容`, "PROVIDER_PLAYLIST_TRACKS_UNSUPPORTED");
+    }
+    res.json({ tracks: await provider.getPlaylistTracks(req.params.playlistId) });
   } catch (error) {
     next(error);
   }
@@ -374,7 +395,7 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
     await proxyAudioStream(req, res, async () => {
       const meta = await neteaseClient.getStreamMeta(req.params.trackId, query.level);
       if (!meta.url) {
-        throw new HttpError(404, "Playable URL is unavailable", "NETEASE_URL_UNAVAILABLE");
+        throw new HttpError(404, NETEASE_NO_PLAYABLE_URL_MESSAGE, "NETEASE_URL_UNAVAILABLE");
       }
       return meta;
     });
@@ -435,6 +456,35 @@ app.post("/api/settings/netease-cookie", async (req, res, next) => {
     const body = z.object({ cookie: z.string().min(1) }).parse(req.body);
     const account = await saveNeteaseCookie(body.cookie);
     res.json({ ok: true, account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/settings/netease-cookie", async (_req, res, next) => {
+  try {
+    res.json({ ok: true, account: await clearNeteaseCookie() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Lets the user pin the mainland IP NetEase should see. Stored (not env-only) so
+ * the desktop build exposes it in Settings; an empty value restores the real
+ * connection. Requests are unaffected until the value is set.
+ */
+app.post("/api/settings/netease-real-ip", async (req, res, next) => {
+  try {
+    const body = z.object({ realIP: z.string().max(64).optional().default("") }).parse(req.body ?? {});
+    const trimmed = body.realIP.trim();
+    const normalized = trimmed ? normalizeRealIp(trimmed) : null;
+    if (trimmed && !normalized) {
+      throw new HttpError(400, "请输入有效的 IPv4 或 IPv6 地址", "NETEASE_REAL_IP_INVALID");
+    }
+    await updateStore((store) => ({ ...store, neteaseRealIp: normalized }));
+    invalidateNeteaseIdentity();
+    res.json({ ok: true, realIP: normalized });
   } catch (error) {
     next(error);
   }

@@ -33,6 +33,7 @@ import { useLocalLibrary } from "@/hooks/useLocalLibrary";
 import { useLocalPlaylists } from "@/hooks/useLocalPlaylists";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
+import { useQqData } from "@/hooks/useQqData";
 import {
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
@@ -374,6 +375,9 @@ export default function App() {
   });
 
   const localPlaylists = useLocalPlaylists(localTracks);
+  // QQ search results live in their own pool: choosing a search row must
+  // resolve the qq: id through allTracks/queues like every other source.
+  const [qqSearchTracks, setQqSearchTracks] = useState<Track[]>([]);
   const [libraryWatchState, setLibraryWatchState] = useState<ApiLibraryWatchState | null>(null);
 
   const {
@@ -445,6 +449,31 @@ export default function App() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+  const qqData = useQqData({ connected: qqConnected, applyTrackUpdate });
+  // Reload the QQ liked/playlists whenever the account connects (mount, login,
+  // or re-login from settings); disconnect clears inside the hook.
+  useEffect(() => {
+    if (qqConnected) void qqData.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qqConnected]);
+  // 进入「我喜欢」时重新拉一次 QQ 收藏，手机端刚点过的红心不必重启应用。
+  useEffect(() => {
+    if (activeView === "liked" && qqConnected) void qqData.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, qqConnected]);
+  // 推荐视图的来源切换:每日推荐/私人漫游都支持网易云与 QQ 两套数据。
+  const [recommendSource, setRecommendSource] = useState<"netease" | "qq">("netease");
+  const recentQqRoamExcludes = () =>
+    displayHistory
+      .map((entry) => entry.track.id)
+      .filter((id) => id.startsWith("qq:"))
+      .slice(0, 20);
+  useEffect(() => {
+    if (recommendSource !== "qq" || !qqConnected) return;
+    if (activeView === "daily") void qqData.loadDaily();
+    if (activeView === "radar") void qqData.loadRoam(recentQqRoamExcludes());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recommendSource, activeView, qqConnected]);
   const cloudLibrary = useCloudLibrary({
     enabled: activeView === "cloud",
     connected: neteaseConnected,
@@ -544,8 +573,8 @@ export default function App() {
   }, [activeView, exploreDiscovery, exploreDiscoveryLoading, exploreTab]);
 
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
-    [localTracks, neteaseTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
+    [localTracks, neteaseTracks, qqSearchTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
   );
   const allTracksById = useMemo(() => {
     const map = new Map<string, Track>();
@@ -702,6 +731,7 @@ export default function App() {
     allTracks,
     artistSummaries,
     onMergeNeteaseTracks: setNeteaseTracks,
+    onMergeQqTracks: setQqSearchTracks,
   });
 
   const {
@@ -1052,6 +1082,7 @@ export default function App() {
       tracks.some((track) => track.id === trackId) ? tracks.map(updateTrack) : tracks;
     setLocalTracks(applyTo);
     setNeteaseTracks(applyTo);
+    setQqSearchTracks(applyTo);
     setDailyTracks(applyTo);
     setRoamTracks(applyTo);
     setNeteaseLikedTracks(applyTo);
@@ -2091,10 +2122,21 @@ export default function App() {
             <AnimatePresence>
               {accountOpen && (
                 <AccountPanel
-                  initialAccount={neteaseAccount}
                   sourceAccounts={[
-                    { id: "netease", label: "网易云音乐", connected: neteaseConnected, nickname: neteaseAccount?.nickname ?? null },
-                    { id: "qq", label: "QQ 音乐", connected: qqConnected, nickname: qqAccount?.nickname ?? null },
+                    {
+                      id: "netease",
+                      label: "网易云音乐",
+                      connected: neteaseConnected,
+                      nickname: neteaseAccount?.nickname ?? null,
+                      avatarUrl: neteaseAccount?.avatarUrl ?? null,
+                    },
+                    {
+                      id: "qq",
+                      label: "QQ 音乐",
+                      connected: qqConnected,
+                      nickname: qqAccount?.nickname ?? null,
+                      avatarUrl: qqAccount?.avatarUrl ?? null,
+                    },
                   ]}
                   onManageSources={() => {
                     setAccountOpen(false);
@@ -2102,10 +2144,6 @@ export default function App() {
                     setActiveView("settings");
                   }}
                   onClose={() => setAccountOpen(false)}
-                  onAccountChange={(account) => {
-                    setNeteaseAccount(account);
-                    if (account.connected) refreshNeteaseData();
-                  }}
                 />
               )}
             </AnimatePresence>
@@ -2313,6 +2351,14 @@ export default function App() {
                 <LikedSurface
                   localTracks={localLikedTracks}
                   neteaseTracks={neteaseLikedDisplayTracks}
+                  qqTracks={qqData.likedTracks}
+                  neteaseConnected={neteaseConnected}
+                  qqConnected={qqConnected}
+                  refreshing={qqData.listLoading}
+                  onRefresh={(source) => {
+                    if (source === "netease") void refreshNeteaseData();
+                    else if (source === "qq") void qqData.refresh();
+                  }}
                   onPickTrack={chooseTrack}
                 />
               )}
@@ -2360,26 +2406,46 @@ export default function App() {
                   onOpenPlaylist={(playlist) => { if (playlist.id !== selectedPlaylist?.id) playlistReturnRef.current = null; void openPlaylist(playlist); }}
                   onClosePlaylist={() => { closePlaylist(); const origin = playlistReturnRef.current; playlistReturnRef.current = null; if (origin) { setQuery(origin.query); setSelectedUser(origin.user); } }}
                   onPickTrack={chooseTrack}
+                  qq={{
+                    connected: qqConnected,
+                    playlists: qqData.playlists,
+                    selectedPlaylist: qqData.selectedPlaylist,
+                    tracks: qqData.playlistTracks,
+                    loading: qqData.playlistLoading,
+                    error: qqData.listError ?? qqData.playlistError,
+                    onOpen: (playlist) => void qqData.openPlaylist(playlist),
+                    onClose: () => qqData.closePlaylist(),
+                    onPickTrack: chooseTrack,
+                  }}
                 />
               )}
               {activeView === "daily" && (
                 <CollectionSurface
-                  title="每日推荐"
-                  subtitle="30 首"
+                  title={recommendSource === "qq" ? "QQ 每日推荐" : "每日推荐"}
+                  subtitle={recommendSource === "qq" ? "QQ音乐官方榜单聚合，每日更新" : "30 首"}
                   icon={<Sparkles className="size-5" />}
-                  tracks={dailyTracks}
+                  tracks={recommendSource === "qq" ? qqData.dailyTracks : dailyTracks}
+                  loading={recommendSource === "qq" ? qqData.dailyLoading : undefined}
+                  error={recommendSource === "qq" ? qqData.dailyError : undefined}
                   onPickTrack={chooseTrack}
+                  sourceToggle={{ value: recommendSource, onChange: setRecommendSource }}
+                  emptyText={recommendSource === "qq" ? "QQ 榜单还没拿到歌曲，点刷新或稍后再试。" : undefined}
                 />
               )}
               {activeView === "radar" && (
                 <CollectionSurface
-                  title="私人漫游"
-                  subtitle="基于最近偏好漫游"
+                  title={recommendSource === "qq" ? "QQ 私人漫游" : "私人漫游"}
+                  subtitle={recommendSource === "qq" ? "从 QQ 音乐官方榜单里随机发现" : "基于最近偏好漫游"}
                   icon={<Radio className="size-5" />}
-                  tracks={roamTracks}
-                  refreshing={roamRefreshing}
-                  onRefresh={() => void refreshRoamData()}
+                  tracks={recommendSource === "qq" ? qqData.roamTracks : roamTracks}
+                  refreshing={recommendSource === "qq" ? qqData.roamLoading : roamRefreshing}
+                  onRefresh={() => {
+                    if (recommendSource === "qq") void qqData.loadRoam(recentQqRoamExcludes());
+                    else void refreshRoamData();
+                  }}
                   onPickTrack={chooseTrack}
+                  sourceToggle={{ value: recommendSource, onChange: setRecommendSource }}
+                  emptyText={recommendSource === "qq" ? "还没拿到漫游歌曲，点刷新试一次。" : undefined}
                 />
               )}
               {activeView === "explore" && (
@@ -2491,7 +2557,11 @@ export default function App() {
                   onKeyboardShortcutsChange={setKeyboardShortcuts}
                   theme={theme}
                   onThemeChange={setTheme}
-                  onSourceAccountChange={() => refreshQqAccount()}
+                  onSourceAccountChange={() => { refreshQqAccount(); void qqData.refresh(); }}
+                  onNeteaseAccountChange={(account) => {
+                    setNeteaseAccount(account);
+                    if (account.connected) void refreshNeteaseData();
+                  }}
                   onClose={() => setActiveView(settingsReturnView)}
                 />
               )}
@@ -2591,7 +2661,7 @@ export default function App() {
                 setNeteaseAccount(account);
                 if (account.connected) void refreshNeteaseData();
               }}
-              onSourceAccountChange={() => refreshQqAccount()}
+              onSourceAccountChange={() => { refreshQqAccount(); void qqData.refresh(); }}
               qqAccount={qqAccount}
               onComplete={() => setOnboardingOpen(false)}
             />

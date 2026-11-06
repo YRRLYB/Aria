@@ -13,6 +13,7 @@ import type {
   ProviderTrack,
   ProviderUser,
 } from "../providers/musicProvider";
+import { withNeteaseIdentity } from "./neteaseIdentity";
 import { getNeteaseAccountSummary } from "../services/neteaseService";
 import { fetchNeteaseLyrics } from "../services/lyricService";
 import { readStore } from "../store";
@@ -23,6 +24,14 @@ import { clearPersistent, rememberPersistent, setPersistent } from "../utils/per
 import { normalizeSongCreators, normalizeSongWiki } from "../utils/songEncyclopedia";
 import type { SongEncyclopedia } from "../../src/lib/songEncyclopedia";
 
+/**
+ * NetEase reports a missing stream for two very different reasons (paid-only
+ * track vs expired session) with the same empty URL. One actionable sentence
+ * covers both instead of a bare English placeholder.
+ */
+export const NETEASE_NO_PLAYABLE_URL_MESSAGE =
+  "该歌曲暂无可播放的音频链接：可能需要网易云会员，或登录已过期（设置 → 播放源 重新登录）";
+
 type NeteaseSong = {
   id: number | string;
   name: string;
@@ -32,6 +41,8 @@ type NeteaseSong = {
   album?: { id?: number | string; name?: string; picUrl?: string };
   dt?: number;
   duration?: number;
+  /** 付费标记:1 = VIP 专属(免费账号拿不到高音质甚至拿不到地址)。 */
+  fee?: number;
   lyrics?: string[] | string;
   l?: NeteaseQualityInfo | null;
   m?: NeteaseQualityInfo | null;
@@ -45,6 +56,7 @@ type NeteaseSong = {
     playMaxbr?: number;
     maxBrLevel?: string;
     playMaxBrLevel?: string;
+    fee?: number;
   };
 };
 
@@ -428,12 +440,12 @@ export class NeteaseClient {
     if (!safeKeywords) return [];
     const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
     const tracks = await rememberPersistent(`netease:search:tracks:v2:${safeKeywords}:${safeLimit}`, 5 * 60_000, async () => {
-      const response = await neteaseApi.cloudsearch({
+      const response = await retryOnNetworkError(async () => neteaseApi.cloudsearch(await withNeteaseIdentity({
         keywords: safeKeywords,
         type: 1,
         limit: safeLimit,
         cookie,
-      });
+      })));
       const result = response.body?.result as { songs?: NeteaseSong[] } | undefined;
       return (result?.songs ?? []).map((song) => normalizeSong(song));
     });
@@ -446,12 +458,12 @@ export class NeteaseClient {
     if (!safeKeywords) return [];
     const safeLimit = Math.max(1, Math.min(40, Math.floor(limit)));
     return rememberPersistent(`netease:search:artists:${safeKeywords}:${safeLimit}`, dayTtl, async () => {
-      const response = await neteaseApi.cloudsearch({
+      const response = await retryOnNetworkError(async () => neteaseApi.cloudsearch(await withNeteaseIdentity({
         keywords: safeKeywords,
         type: 100,
         limit: safeLimit,
         cookie,
-      });
+      })));
       const result = response.body?.result as { artists?: NeteaseArtist[] } | undefined;
       return (result?.artists ?? []).map(normalizeArtist);
     });
@@ -464,12 +476,12 @@ export class NeteaseClient {
     if (!safeKeywords) return [];
     const safeLimit = Math.max(1, Math.min(40, Math.floor(limit)));
     return rememberPersistent(`netease:search:playlists:${safeKeywords}:${safeLimit}`, shortTtl, async () => {
-      const response = await neteaseApi.cloudsearch({
+      const response = await retryOnNetworkError(async () => neteaseApi.cloudsearch(await withNeteaseIdentity({
         keywords: safeKeywords,
         type: 1000,
         limit: safeLimit,
         cookie,
-      });
+      })));
       const result = response.body?.result as { playlists?: NeteasePlaylist[] } | undefined;
       return (result?.playlists ?? []).map((playlist) => normalizePlaylist(playlist));
     });
@@ -795,7 +807,10 @@ export class NeteaseClient {
   }
 
   async getStreamMeta(songId: string | number, level = "lossless") {
-    const { cookie, userId } = await this.requireSession();
+    // Playback must not depend on a login: NetEase serves free tracks (and the
+    // best quality the anonymous session is allowed) without a cookie, and the
+    // URL endpoint already degrades lossless down to exhigh/standard by itself.
+    const { cookie, userId } = await this.optionalSession();
     return this.getSongUrlCached(songId, level as QualityLevel, cookie, userId);
   }
 
@@ -811,10 +826,17 @@ export class NeteaseClient {
   }
 
   async warmupTracks(songIds: Array<string | number>, level: QualityLevel = "lossless") {
-    const { cookie, userId } = await this.requireSession();
+    // Preloading is best-effort: it must keep working for anonymous sessions so
+    // a mac install without a NetEase login still gets gapless-friendly URLs.
+    if (neteaseUrlResolveCoolingDown()) {
+      // 频控冷却期内预取直接让路：用户正在播的那一首不受影响，曲库预取别再火上浇油。
+      return 0;
+    }
+    const { cookie, userId } = await this.optionalSession();
     const uniqueIds = Array.from(new Set(songIds.map(String).filter(Boolean))).slice(0, 160);
     let cached = 0;
-    await promisePool(uniqueIds, 4, async (songId) => {
+    await promisePool(uniqueIds, 2, async (songId) => {
+      if (neteaseUrlResolveCoolingDown()) return;
       await Promise.allSettled([this.getLyricsCached(songId), this.getSongUrlCached(songId, level, cookie, userId)]);
       cached += 1;
     });
@@ -833,6 +855,24 @@ export class NeteaseClient {
     }
 
     return { cookie: store.neteaseCookie, userId: account.userId };
+  }
+
+  /**
+   * Playback-only session: a missing or broken login must not block streams,
+   * because NetEase serves free tracks to anonymous callers. The cache key still
+   * separates the anonymous slice from every real account so a public URL is
+   * never mixed with a private-cloud one.
+   */
+  private async optionalSession(): Promise<{ cookie: string; userId: string }> {
+    const store = await readStore();
+    const cookie = store.neteaseCookie ?? "";
+    if (!cookie) return { cookie, userId: "anonymous" };
+    try {
+      const account = await getNeteaseAccountSummary();
+      return { cookie, userId: account.userId ?? "anonymous" };
+    } catch {
+      return { cookie, userId: "anonymous" };
+    }
   }
 
   private async getOptionalCookie() {
@@ -908,15 +948,19 @@ export class NeteaseClient {
   private async getSongUrlCached(songId: string | number, level: QualityLevel, cookie: string, userId: string) {
     return rememberPersistent(`netease:url:v3:${userId}:${songId}:${level}`, 25 * 60_000, async () => {
       // Private cloud uploads can have no entry in the public song catalogue.
-      // Resolve their own metadata before asking the normal URL endpoint.
+      // Resolve their own metadata before asking the normal URL endpoint. The
+      // cloud-disk fallback needs a real session, so an anonymous request keeps
+      // the original failure instead of replacing it with a login error.
       const song = await this.getSongDetailCached(songId, cookie).catch(async (error: unknown) => {
-        if (!(error instanceof HttpError && error.status === 404)) throw error;
+        if (!(error instanceof HttpError && error.status === 404) || !cookie) throw error;
         return cloudSongToSong(await this.getCloudSongCached(String(songId), cookie, userId));
       });
-      const response = await neteaseApi.song_url_v1({
+      const response = await neteaseApi.song_url_v1(await withNeteaseIdentity({
         id: songId,
         level: level as never,
         cookie,
+      })).catch((error: unknown) => {
+        throw classifyNeteaseUrlError(error);
       });
       const data = response.body?.data as
         | Array<{
@@ -943,7 +987,7 @@ export class NeteaseClient {
 
   private async getSongDetailCached(songId: string | number, cookie: string) {
     return rememberPersistent(`netease:song-detail:${songId}`, dayTtl, async () => {
-      const detail = await neteaseApi.song_detail({ ids: String(songId), cookie });
+      const detail = await neteaseApi.song_detail({ ids: String(songId), cookie: cookie || undefined });
       const song = (detail.body?.songs as NeteaseSong[] | undefined)?.[0];
       if (!song) throw new HttpError(404, "Track detail is unavailable", "NETEASE_TRACK_DETAIL_UNAVAILABLE");
       return song;
@@ -963,6 +1007,7 @@ export function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> =
     albumId: song.al?.id != null ? String(song.al.id) : song.album?.id != null ? String(song.album.id) : null,
     artistIds: (song.ar ?? song.artists ?? []).flatMap((artist) => artist.id == null ? [] : [String(artist.id)]),
     matchedLyric: normalizeMatchedLyric(song.lyrics),
+    vip: (song.fee ?? song.privilege?.fee) === 1,
     duration: Math.round((song.dt ?? song.duration ?? 0) / 1000),
     quality: qualityFromLevel(currentLevel),
     source: "netease",
@@ -1171,7 +1216,7 @@ async function callNetease(name: string, query: Record<string, unknown>): Promis
   const fn = (neteaseApi as unknown as Record<string, (query: Record<string, unknown>) => Promise<{ body?: Record<string, unknown> }>>)[name];
   if (!fn) throw new HttpError(501, "当前网易云接口不支持该功能", "NETEASE_API_UNAVAILABLE");
   try {
-    const response = await fn(query);
+    const response = await fn(await withNeteaseIdentity(query));
     let body = response.body ?? {};
     if (body.body && typeof body.body === "object") body = body.body as Record<string, unknown>;
     checkNeteaseBody(body);
@@ -1183,6 +1228,55 @@ async function callNetease(name: string, query: Record<string, unknown>): Promis
     const upstream = error as { body?: Record<string, unknown>; message?: string } | null;
     if (upstream?.body) checkNeteaseBody(upstream.body);
     throw new HttpError(502, String(upstream?.body?.message ?? upstream?.body?.msg ?? upstream?.message ?? "网易云请求失败，请稍后重试"), "NETEASE_REQUEST_FAILED");
+  }
+}
+
+/**
+ * 网易云对播放地址解析接口有频控（405 操作频繁）与 IP 风控（-460 网络风险）。
+ * 曲库预取一次翻页就会打几十上百次解析，触发 405 后必须整体退避，否则越打越死。
+ */
+const urlResolveCooldown = { until: 0 };
+const urlResolveCooldownMs = 60_000;
+
+export function neteaseUrlResolveCoolingDown(): boolean {
+  return Date.now() < urlResolveCooldown.until;
+}
+
+function classifyNeteaseUrlError(error: unknown): Error {
+  const upstream = error as { body?: { code?: number; message?: string; msg?: string }; message?: string } | null;
+  const code = Number(upstream?.body?.code ?? 0);
+  const text = String(upstream?.body?.message ?? upstream?.body?.msg ?? "");
+  if (code === 405 || /操作频繁/.test(text)) {
+    urlResolveCooldown.until = Date.now() + urlResolveCooldownMs;
+    return new HttpError(429, "网易云暂时限制了请求频率，请等十几秒再试", "NETEASE_RATE_LIMITED");
+  }
+  if (code === -460 || code === 460 || /网络环境存在风险/.test(text)) {
+    return new HttpError(502, "网易云检测到网络环境风险：海外或云主机出口请在 设置 → 播放源 配置网络环境补偿，或稍后再试", "NETEASE_RISK_CONTROL");
+  }
+  if (upstream?.body) {
+    try {
+      checkNeteaseBody(upstream.body);
+    } catch (wrapped) {
+      return wrapped instanceof Error ? wrapped : new HttpError(502, "网易云请求失败，请稍后重试", "NETEASE_REQUEST_FAILED");
+    }
+  }
+  return new HttpError(502, String(text || upstream?.message || "网易云请求失败，请稍后重试"), "NETEASE_REQUEST_FAILED");
+}
+
+/**
+ * SDK 的网络层错误（axios AggregateError / ECONNRESET 等，没有 body）是瞬时
+ * 抖动，直接 502 表现为前端"搜索没反应"。业务错误（带 body）不重试；
+ * 网络错误最多重试两次（400ms/800ms 退避），覆盖冷启动首击。
+ */
+async function retryOnNetworkError<T>(attempt: () => Promise<T>): Promise<T> {
+  for (let round = 0; ; round += 1) {
+    try {
+      return await attempt();
+    } catch (error) {
+      const upstream = error as { body?: unknown };
+      if (upstream?.body || round >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 400 * (round + 1)));
+    }
   }
 }
 

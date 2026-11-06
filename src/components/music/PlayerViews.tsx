@@ -5,23 +5,15 @@ import {
   AudioLines,
   Copy,
   BookOpen,
-  Heart,
   ImagePlus,
   Languages,
   Maximize2,
-  Pause,
-  Play,
-  Repeat1,
-  Repeat2,
-  Shuffle,
-  StepBack,
-  StepForward,
   SlidersHorizontal,
-  Volume2,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AriaIcon, ariaVolumeIcon } from "@/components/icons/aria";
 import { AddToPlaylistButton } from "./PlaylistActions";
 import { WordLyricText } from "./WordLyricText";
 import { getLyricStartTime } from "@/lib/lyricTiming";
@@ -377,10 +369,10 @@ export function PlayerSurface({
                     title="随机播放"
                     onClick={onToggleShuffle}
                   >
-                    <Shuffle strokeWidth={1.75} />
+                    <AriaIcon name="shuffle" className="size-5" />
                   </Button>
                   <Button className="player-control-button" variant="ghost" size="icon" aria-label="上一首" title="上一首" onClick={onPrevious}>
-                    <StepBack strokeWidth={1.75} />
+                    <AriaIcon name="prev" className="size-5" />
                   </Button>
                   <Button
                     className="player-play-button text-white"
@@ -389,10 +381,10 @@ export function PlayerSurface({
                     title={playing ? "暂停" : "播放"}
                     onClick={onTogglePlay}
                   >
-                    {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
+                    <AriaIcon name={playing ? "pause" : "play"} className="size-6" />
                   </Button>
                   <Button className="player-control-button" variant="ghost" size="icon" aria-label="下一首" title="下一首" onClick={onNext}>
-                    <StepForward strokeWidth={1.75} />
+                    <AriaIcon name="next" className="size-5" />
                   </Button>
                   <Button
                     className={cn("player-control-button", repeatMode === "one" && "is-active")}
@@ -403,7 +395,7 @@ export function PlayerSurface({
                     title="循环播放"
                     onClick={onCycleRepeatMode}
                   >
-                    {repeatMode === "one" ? <Repeat1 strokeWidth={1.75} /> : <Repeat2 strokeWidth={1.75} />}
+                    <AriaIcon name={repeatMode === "one" ? "repeat-one" : "repeat"} className="size-5" />
                   </Button>
                   <Button
                     className={cn("player-control-button", liked && "is-liked")}
@@ -414,11 +406,11 @@ export function PlayerSurface({
                     title={liked ? "取消喜欢" : "喜欢"}
                     onClick={onToggleLike}
                   >
-                    <Heart className={cn(liked && "fill-current")} strokeWidth={1.75} />
+                    <AriaIcon name={liked ? "heart-fill" : "heart"} className="size-5" />
                   </Button>
                 </div>
                 <div className="player-volume">
-                  <Volume2 className="player-volume-icon" strokeWidth={1.75} />
+                  <AriaIcon name={ariaVolumeIcon(volume, false)} className="player-volume-icon size-5" />
                   <input
                     aria-label="音量"
                     type="range"
@@ -620,13 +612,13 @@ export function ImmersivePlayerView({
           </div>
           <div className="mt-5 flex items-center justify-center gap-3">
             <Button className="bg-white/12 text-white hover:bg-white/18" size="icon" aria-label="上一首" onClick={onPrevious}>
-              <StepBack />
+              <AriaIcon name="prev" className="size-5" />
             </Button>
             <Button className="bg-white text-neutral-950 hover:bg-white/90" size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
-              {playing ? <Pause className="size-6 fill-current" /> : <Play className="size-6 fill-current" />}
+              <AriaIcon name={playing ? "pause" : "play"} className="size-6" />
             </Button>
             <Button className="bg-white/12 text-white hover:bg-white/18" size="icon" aria-label="下一首" onClick={onNext}>
-              <StepForward />
+              <AriaIcon name="next" className="size-5" />
             </Button>
           </div>
         </div>

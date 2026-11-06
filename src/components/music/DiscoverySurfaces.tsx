@@ -5,6 +5,7 @@ import {
   FileText,
   Globe2,
   HardDrive,
+  LayoutGrid,
   ListMusic,
   Music4,
   Play,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, ArtistAvatar } from "@/components/music/shared";
+import { SourceLogo, type SourceToggleOption } from "./SourceLogos";
 import { artistSourceLabel, type ArtistSummary } from "@/lib/artists";
 import type { ProviderAlbum, ProviderPlaylist, ProviderUser } from "@/lib/api";
 import { mergeTracks } from "@/lib/playerPresentation";
@@ -82,6 +84,12 @@ export function SearchSurface({
     () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks]),
     [localTracks, neteaseTracks, qqTracks],
   );
+  // 融合但不同时铺开：来源芯片切到单一源时，只显示该源的结果。
+  const [sourceFilter, setSourceFilter] = useState<"all" | SourceToggleOption>("all");
+  const filteredTracks = useMemo(
+    () => (sourceFilter === "all" ? tracks : tracks.filter((track) => track.source === sourceFilter)),
+    [tracks, sourceFilter],
+  );
   const localQueue = useMemo(
     () => tracks.filter((track) => track.source === "local"),
     [tracks],
@@ -95,7 +103,7 @@ export function SearchSurface({
     [tracks],
   );
   const descriptions = {
-    tracks: "同时搜索本地音乐、网易云与 QQ 音乐，可直接播放或加入歌单。",
+    tracks: "本地、网易云与 QQ 音乐一起搜，点来源图标切换查看。",
     artists: "浏览歌手作品、专辑与简介。",
     playlists: "浏览公开歌单并播放完整曲目。",
     users: "搜索网易云用户，查看他们的公开歌单。",
@@ -104,7 +112,7 @@ export function SearchSurface({
   };
   const count =
     mode === "tracks" || mode === "lyrics"
-      ? tracks.length
+      ? filteredTracks.length
       : mode === "artists"
         ? artists.length
         : mode === "playlists"
@@ -167,19 +175,50 @@ export function SearchSurface({
               : `${count} 项结果`}
         </span>
       </div>
+      {(mode === "tracks" || mode === "lyrics") && (
+        <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2" aria-label="搜索结果来源">
+          {(
+            [
+              ["all", "全部", null],
+              ["netease", "网易云", "netease"],
+              ["qq", "QQ 音乐", "qq"],
+              ["local", "本地", "local"],
+            ] as const
+          ).map(([value, label, logo]) => {
+            const active = sourceFilter === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={active}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                  active
+                    ? "border-neutral-950 bg-neutral-950 text-white"
+                    : "border-white/70 bg-white/60 text-neutral-500 hover:bg-white",
+                )}
+                onClick={() => setSourceFilter(value)}
+              >
+                {logo ? <SourceLogo source={logo} className="size-3.5" /> : <LayoutGrid className="size-3.5" />}
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div
         role="tabpanel"
         className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1"
       >
         <DiscoveryError error={error} onRetry={onRetry} />
-        {mode === "tracks" && qqError && (
+        {mode === "tracks" && qqError && sourceFilter !== "qq" && (
           <p className="mb-3 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-700">
             QQ音乐：{qqError}
           </p>
         )}
         {(mode === "tracks" || mode === "lyrics") && (
           <div className="grid gap-2">
-            {tracks.map((track) => (
+            {filteredTracks.map((track) => (
               <DiscoveryTrackRow
                 key={track.id}
                 track={track}
@@ -270,7 +309,9 @@ export function SearchSurface({
             text={
               loading
                 ? "正在查找相关结果。"
-                : "没有找到相关结果，换个关键词试试。"
+                : mode === "tracks" && sourceFilter !== "all" && tracks.length
+                  ? "这个来源没有匹配结果，点其他来源图标或换个关键词试试。"
+                  : "没有找到相关结果，换个关键词试试。"
             }
           />
         )}

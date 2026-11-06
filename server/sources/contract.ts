@@ -170,6 +170,10 @@ export type MusicSource = {
   ): Promise<SourceStreamMeta>;
   getLyrics?(trackId: string, signal?: AbortSignal): Promise<LyricLine[]>;
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
+  /** 每日推荐(源内聚实现;网易云走旧路由,这里服务于新源)。 */
+  getDailyRecommendTracks?(signal?: AbortSignal): Promise<ProviderTrack[]>;
+  /** 私人漫游:随机发现,excludeIds 为最近播放的 TrackKey。 */
+  getRoamTracks?(limit: number, excludeIds: string[], signal?: AbortSignal): Promise<ProviderTrack[]>;
   saveCookie?(cookie: string): Promise<unknown>;
   clearCookie?(): Promise<SourceAccount>;
   startQrLogin?(): Promise<SourceQrLoginStart>;

@@ -39,7 +39,7 @@ Aria 想解决的事情很简单：本地曲库、网易云喜欢、每日推荐
 
 ## 下载
 
-当前主要面向 Windows 桌面端，0.6.0 起也开始适配 macOS（`npm run dist:mac` 生成 dmg，需要自备 `vendor/mpv/mpv`，详见 [macOS 适配说明](docs/macos-0.6.0.md)）。测试包会放在仓库的 Release 或本地 `release/` 目录中。
+当前主要面向 Windows 桌面端，0.6.0 起也开始适配 macOS（`npm run dist:mac` 生成 dmg，`ensure:mpv` 会自动准备对应架构的 mpv，详见 [macOS 适配说明](docs/macos-0.6.0.md)）。测试包会放在仓库的 Release 或本地 `release/` 目录中。
 
 如果你只是想试用，建议直接安装最新的 beta 包；如果你想参与开发，可以按下面的方式从源码运行。
 
@@ -67,12 +67,12 @@ npm run build:web  # 前端产物
 npm run build:server
 npm run build:desktop   # 含 vendor/mpv 与原生音频模块
 npm run dist:beta       # Windows 安装包 → release/
-npm run dist:mac        # macOS dmg（需自备 vendor/mpv/mpv）
+npm run dist:mac        # macOS dmg（自动下载/打包 mpv）
 ```
 
 注意事项：
 
-- `vendor/mpv/` 被 `.gitignore` 忽略，WASAPI / 独占输出需要 `npm run build:desktop`（Windows 会自动下载 mpv）。没有它时播放走系统音频。
+- `vendor/mpv/` 被 `.gitignore` 忽略，WASAPI / 独占输出需要 `npm run build:desktop`（Windows 与 macOS 都会自动准备 mpv；macOS 会按系统版本和 CPU 架构选择兼容的预编译包）。没有它时播放走系统音频。
 - `.musicbox/` 保存运行期数据（账号 Cookie、曲库缓存），同样不入库；新机器上首次运行需要重新扫码登录网易云 / QQ 音乐。
 - 账号凭据只存在本机，仓库和安装包里都没有任何账号信息。
 

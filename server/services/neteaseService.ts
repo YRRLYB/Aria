@@ -1,6 +1,9 @@
+import { randomBytes } from "node:crypto";
 import neteaseApi from "NeteaseCloudMusicApi";
+import { withNeteaseIdentity } from "../clients/neteaseIdentity";
 import { readStore, updateStore } from "../store";
 import type { StoredNeteaseAccount } from "../types";
+import { HttpError } from "../utils/httpError";
 
 export type NeteaseAccountSummary = {
   connected: boolean;
@@ -25,6 +28,13 @@ export async function saveNeteaseCookie(cookie: string) {
   invalidateNeteaseAccountCache();
   await updateStore((store) => ({ ...store, neteaseCookie: cookie, neteaseAccount: null }));
   return getNeteaseAccountSummary();
+}
+
+/** Sign out without deleting the device fingerprint used by QR login. */
+export async function clearNeteaseCookie(): Promise<NeteaseAccountSummary> {
+  invalidateNeteaseAccountCache();
+  await updateStore((store) => ({ ...store, neteaseCookie: null, neteaseAccount: null }));
+  return disconnectedSummary();
 }
 
 function disconnectedSummary(cookiePreview: string | null = null): NeteaseAccountSummary {
@@ -69,59 +79,200 @@ export async function peekNeteaseAccountSummary(): Promise<NeteaseAccountSummary
 }
 
 
-export async function startNeteaseQrLogin() {
-  const keyResponse = await neteaseApi.login_qr_key({ timestamp: Date.now() } as never);
-  const key = String((keyResponse.body?.data as { unikey?: string } | undefined)?.unikey ?? "");
-  if (!key) throw new Error("Failed to create Netease QR login key.");
+// Keep the device fingerprint and response cookies together for the entire
+// challenge. The SDK otherwise generates a new _ntes_nuid for every request.
+type NeteaseQrResult = {
+  code: number;
+  status: "success" | "expired" | "scanned" | "waiting";
+  message: string;
+  account: NeteaseAccountSummary | null;
+};
+type NeteaseQrSession = {
+  cookie: string;
+  expiresAt: number;
+  result?: NeteaseQrResult;
+  request?: Promise<NeteaseQrResult>;
+};
+const qrSessions = new Map<string, NeteaseQrSession>();
+const qrSessionTtl = 180_000;
+const maxQrSessions = 32;
+const qrUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 NeteaseMusicDesktop/3.1.17.204416";
 
-  const qrResponse = await neteaseApi.login_qr_create({
-    key,
-    qrimg: true,
-    platform: "web",
-    timestamp: Date.now(),
-  } as never);
-  const data = qrResponse.body?.data as { qrurl?: string; qrimg?: string } | undefined;
+/**
+ * 2025+ 网易风控要求登录请求携带稳定的设备指纹：eapi header 里的 deviceId
+ * 必须跨 key/create/check 一致，且跨重启保持不变（登录会话与设备绑定）。
+ * 首次生成 16 位十六进制并持久化到 store，之后每次登录复用同一台"设备"。
+ */
+const NETEASE_DEVICE_ID_KEY = "neteaseDeviceId";
+async function neteaseDeviceId(): Promise<string> {
+  const store = await readStore();
+  const existing = (store as Record<string, unknown> | null)?.[NETEASE_DEVICE_ID_KEY];
+  if (typeof existing === "string" && /^[0-9a-f]{16,32}$/i.test(existing)) return existing;
+  const deviceId = randomBytes(8).toString("hex");
+  await updateStore((current) => ({ ...current, [NETEASE_DEVICE_ID_KEY]: deviceId }));
+  return deviceId;
+}
 
+/** eapi 加密链的设备 Cookie；request.js 会把同名字段写进 eapi header。 */
+async function qrDeviceCookie(): Promise<string> {
+  const deviceId = await neteaseDeviceId();
+  return [
+    `os=pc`,
+    `appver=3.1.17.204416`,
+    `osver=Microsoft-Windows-10--buildver`,
+    `deviceId=${deviceId}`,
+    `resolution=1920x1080`,
+    `channel=netease`,
+  ].join("; ");
+}
+
+/**
+ * eapi + 稳定设备指纹。调用方传入的会话 Cookie（key/create 返回的
+ * __csrf、NMTID 等）叠加在设备字段之上，同名以会话为准——整个扫码挑战
+ * 必须跑在同一台"设备"上，这是 2025+ 风控的硬要求。
+ */
+async function withEapiDevice(query: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const identity = await withNeteaseIdentity(query);
+  const sessionCookie = typeof query.cookie === "string" && query.cookie.trim() ? query.cookie : undefined;
   return {
-    key,
-    qrUrl: data?.qrurl ?? "",
-    qrImage: data?.qrimg ?? "",
-    expiresIn: 180,
+    ...identity,
+    crypto: "eapi",
+    ua: qrUserAgent,
+    cookie: mergeCookies(await qrDeviceCookie(), sessionCookie),
+    timestamp: Date.now(),
   };
 }
 
-export async function checkNeteaseQrLogin(key: string) {
-  const response = await neteaseApi.login_qr_check({
-    key,
-    timestamp: Date.now(),
-    noCookie: true,
-  } as never);
-  const body = response.body as { code?: number; message?: string; cookie?: string; data?: { code?: number } } | undefined;
-  const code = Number(body?.code ?? body?.data?.code ?? 0);
-  const cookie = typeof body?.cookie === "string" ? body.cookie : Array.isArray(response.cookie) ? response.cookie.join(";") : "";
-
-  if (code === 803) {
-    if (!cookie) throw new Error("Netease QR login succeeded without a cookie.");
-    const account = await saveNeteaseCookie(cookie);
-    return {
-      code,
-      status: "success" as const,
-      message: body?.message ?? "Login confirmed.",
-      account,
-    };
+/** Set-Cookie attributes must never become entries in a Cookie request header. */
+function mergeCookies(...values: unknown[]): string {
+  const pairs = new Map<string, string>();
+  const attributes = /^(?:path|domain|expires|max-age|samesite|secure|httponly|priority|partitioned)$/i;
+  for (const value of values) {
+    for (const line of Array.isArray(value) ? value : [value]) {
+      if (typeof line !== "string") continue;
+      for (const segment of line.split(";")) {
+        const separator = segment.indexOf("=");
+        if (separator < 1) continue;
+        const name = segment.slice(0, separator).trim();
+        if (attributes.test(name)) continue;
+        pairs.set(name, segment.slice(separator + 1).trim());
+      }
+    }
   }
+  return [...pairs].map(([name, value]) => `${name}=${value}`).join("; ");
+}
 
-  const status =
-    code === 800 ? "expired" :
-    code === 802 ? "scanned" :
-    "waiting";
+function qrFailure(error: unknown): HttpError {
+  if (error instanceof HttpError) return error;
+  const upstream = error as { body?: { code?: number; message?: string; msg?: string }; message?: string } | null;
+  const bodyCode = Number(upstream?.body?.code ?? 0);
+  const bodyText = upstream?.body?.message ?? upstream?.body?.msg ?? "";
+  if (bodyCode === 460 || /环境异常/.test(bodyText)) {
+    return new HttpError(502, "网易云拒绝了当前登录环境，请关闭代理后重新生成二维码，或使用网页登录后导入 Cookie。", "NETEASE_LOGIN_ENVIRONMENT_REJECTED");
+  }
+  if (bodyCode === -462 || bodyCode === 8821 || bodyCode === 462) {
+    return new HttpError(502, "网易云风控拦截了本次登录，请稍后重试；如持续失败请使用网页登录后导入 Cookie。", "NETEASE_LOGIN_RISK_REJECTED");
+  }
+  return new HttpError(502, "网易云扫码状态请求失败，请重新生成二维码或使用 Cookie 登录。", "NETEASE_QR_REQUEST_FAILED");
+}
 
-  return {
+export async function startNeteaseQrLogin() {
+  const now = Date.now();
+  for (const [key, session] of qrSessions) {
+    if (session.expiresAt <= now) qrSessions.delete(key);
+  }
+  while (qrSessions.size >= maxQrSessions) qrSessions.delete(qrSessions.keys().next().value!);
+
+  const initialCookie = await qrDeviceCookie();
+  try {
+    const keyResponse = await neteaseApi.login_qr_key(await withEapiDevice({ cookie: initialCookie }));
+    const key = String((keyResponse.body?.data as { unikey?: string } | undefined)?.unikey ?? "");
+    if (!key) throw qrFailure({ body: keyResponse.body });
+    const keyCookie = mergeCookies(initialCookie, keyResponse.cookie);
+    const qrResponse = await neteaseApi.login_qr_create(await withEapiDevice({
+      key,
+      qrimg: true,
+      platform: "pc",
+      cookie: keyCookie,
+    }));
+    const data = qrResponse.body?.data as { qrurl?: string; qrimg?: string } | undefined;
+    if (!data?.qrurl || !data.qrimg) throw qrFailure(null);
+    qrSessions.set(key, { cookie: mergeCookies(keyCookie, qrResponse.cookie), expiresAt: now + qrSessionTtl });
+    return { key, qrUrl: data.qrurl, qrImage: data.qrimg, expiresIn: qrSessionTtl / 1000 };
+  } catch (error) {
+    throw qrFailure(error);
+  }
+}
+
+export async function checkNeteaseQrLogin(key: string): Promise<NeteaseQrResult> {
+  const session = qrSessions.get(key);
+  if (!session) {
+    // 后端重启等情况会话丢失：仍匿名轮询一次，让网易告知二维码的真实状态
+    // （800 过期 / 801 等待），而不是本地直接判定过期。
+    return pollNeteaseQrLogin(key, null);
+  }
+  if (session.expiresAt <= Date.now()) {
+    qrSessions.delete(key);
+    return { code: 800, status: "expired", message: "二维码已过期，请重新生成。", account: null };
+  }
+  // A repeated/in-flight poll must not consume the provider challenge twice or
+  // reset the saved account after the phone has confirmed it.
+  if (session.result) return session.result;
+  if (session.request) return session.request;
+  const request = pollNeteaseQrLogin(key, session).finally(() => {
+    if (session.request === request) session.request = undefined;
+  });
+  session.request = request;
+  return request;
+}
+
+/** Maps a login_qr_check response; `session` is null for anonymous re-polls. */
+async function applyNeteaseQrCheckResponse(session: NeteaseQrSession | null, response: {
+  body?: { code?: number; message?: string; msg?: string; cookie?: string; data?: { code?: number } };
+  cookie?: string[];
+}): Promise<NeteaseQrResult> {
+  const body = response.body;
+  const code = Number(body?.code ?? body?.data?.code ?? 0);
+  if (session) session.cookie = mergeCookies(session.cookie, response.cookie, body?.cookie);
+  if (code === 803) {
+    // 只持久化网易回传的登录 Cookie（MUSIC_U 等），不混入本地设备字段。
+    const loginCookie = mergeCookies(response.cookie, body?.cookie);
+    if (!/(?:^|;\s*)MUSIC_U=[^;]+/.test(loginCookie)) {
+      throw new HttpError(502, "网易云已确认登录但未返回有效凭据，请重新扫码。", "NETEASE_QR_COOKIE_MISSING");
+    }
+    const account = await saveNeteaseCookie(loginCookie);
+    const result: NeteaseQrResult = { code, status: "success", message: body?.message ?? "登录成功。", account };
+    if (session) session.result = result;
+    return result;
+  }
+  if (![800, 801, 802].includes(code)) throw qrFailure({ body });
+  const status = code === 800 ? "expired" : code === 802 ? "scanned" : "waiting";
+  const result: NeteaseQrResult = {
     code,
     status,
-    message: body?.message ?? (status === "expired" ? "QR code expired." : status === "scanned" ? "Waiting for confirmation." : "Waiting for scan."),
+    message: body?.message ?? (status === "expired" ? "二维码已过期，请重新生成。" : status === "scanned" ? "已扫码，请在手机上确认。" : "等待扫码。"),
     account: null,
   };
+  if (status === "expired" && session) session.result = result;
+  return result;
+}
+
+async function pollNeteaseQrLogin(key: string, session: NeteaseQrSession | null): Promise<NeteaseQrResult> {
+  try {
+    const response = session
+      ? await neteaseApi.login_qr_check(await withEapiDevice({
+          key,
+          cookie: session.cookie,
+        }))
+      : await neteaseApi.login_qr_check({ key, noCookie: true, ua: qrUserAgent, timestamp: Date.now() });
+    return await applyNeteaseQrCheckResponse(session, response);
+  } catch (error) {
+    if (!session) {
+      // 没有可重试的会话；网络抖动按过期处理，前端会引导重新生成。
+      return { code: 800, status: "expired", message: "二维码已过期，请重新生成。", account: null };
+    }
+    throw qrFailure(error);
+  }
 }
 
 export async function getNeteaseAccountSummary(): Promise<NeteaseAccountSummary> {
@@ -177,10 +328,10 @@ function refreshNeteaseAccount(cookie: string) {
 async function loadNeteaseAccountSummary(cookie: string): Promise<NeteaseAccountSummary> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await neteaseApi.user_account({ cookie });
+      const response = await neteaseApi.user_account(await withNeteaseIdentity({ cookie }));
       const profile =
         findNeteaseProfile(response.body) ??
-        findNeteaseProfile((await neteaseApi.login_status({ cookie })).body);
+        findNeteaseProfile((await neteaseApi.login_status(await withNeteaseIdentity({ cookie }))).body);
 
       if (profile?.userId) {
         return {

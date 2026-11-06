@@ -19,6 +19,9 @@ export const neteaseProvider: MusicProvider = {
   async getPlaylists() {
     return neteaseClient.getPlaylists();
   },
+  async getPlaylistTracks(playlistId: string) {
+    return neteaseClient.getPlaylistTracks(playlistId);
+  },
   async getDailyRecommendations() {
     return neteaseClient.getDailyRecommendations();
   },

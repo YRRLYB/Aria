@@ -16,9 +16,12 @@ button:disabled { cursor: default; }
   min-height: 76px;
   padding: 11px 26px;
   border-bottom: 1px solid #eef0fa;
-  background: rgba(255, 255, 255, .87);
+  background: rgba(255, 255, 255, .92);
   box-shadow: 0 5px 30px rgba(78, 83, 154, .035);
-  backdrop-filter: blur(18px);
+  /* The header spans the whole window; an 18px backdrop blur forced a full
+     width re-composite for every frame of the drifting background. The
+     opaque-ish fill looks the same and keeps scrolling on Intel Macs smooth. */
+  backdrop-filter: none;
 }
 .app-brand { grid-column: 1; min-width: 0; }
 /* macOS keeps its native traffic lights: leave room before the wordmark. */
@@ -99,6 +102,7 @@ button:disabled { cursor: default; }
   opacity: .72;
   content: "";
   animation: home-fluid-drift 26s ease-in-out infinite alternate;
+  will-change: transform;
   pointer-events: none;
 }
 .home-content { --home-row-height: clamp(48px, calc(48px + (100dvh - 720px) * .045), 56px); width: 100%; max-width: 1880px; height: 100%; margin: 0 auto; padding: 22px 28px 104px; }

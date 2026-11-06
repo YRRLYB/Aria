@@ -1,4 +1,4 @@
-import { neteaseClient } from "../../clients/neteaseClient";
+import { NETEASE_NO_PLAYABLE_URL_MESSAGE, neteaseClient } from "../../clients/neteaseClient";
 import { getNeteaseAccountSummary } from "../../services/neteaseService";
 import { HttpError } from "../../utils/httpError";
 import type { MusicSource, SourceSearchPage, SourceStreamMeta } from "../contract";
@@ -28,7 +28,7 @@ export const neteaseSource: MusicSource = {
   async resolveStreamMeta(trackId, { level }): Promise<SourceStreamMeta> {
     const meta = await neteaseClient.getStreamMeta(trackId, level ?? "lossless");
     if (!meta.url) {
-      throw new HttpError(404, "Playable URL is unavailable", "NETEASE_URL_UNAVAILABLE");
+      throw new HttpError(404, NETEASE_NO_PLAYABLE_URL_MESSAGE, "NETEASE_URL_UNAVAILABLE");
     }
     return { ...meta, url: meta.url };
   },

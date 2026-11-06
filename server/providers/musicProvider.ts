@@ -11,7 +11,7 @@ export type ProviderTrack = {
   artist: string;
   album: string;
   duration: number;
-  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K";
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K" | "128K" | "AAC";
   source: string;
   streamUrl?: string | null;
   coverUrl?: string | null;
@@ -24,6 +24,8 @@ export type ProviderTrack = {
   albumId?: string | null;
   artistIds?: string[];
   matchedLyric?: string | null;
+  /** QQ 音乐等源的会员专属标记：true 表示无 VIP 账号大概率拿不到播放地址。 */
+  vip?: boolean;
 };
 
 export type ProviderPlaylist = {
@@ -123,6 +125,7 @@ export type MusicProvider = {
   getAccount(): Promise<ProviderAccount>;
   getLikedTracks(): Promise<ProviderTrack[]>;
   getPlaylists(): Promise<ProviderPlaylist[]>;
+  getPlaylistTracks?(playlistId: string): Promise<ProviderTrack[]>;
   getDailyRecommendations(): Promise<ProviderDailyBundle>;
   getPrivateRoaming(limit?: number, options?: ProviderRoamOptions): Promise<ProviderDailyBundle>;
 };

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+<rect x="4.9" y="6.2" width="2.2" height="11.6" rx="1.1"/>
+<rect x="8.4" y="8.5" width="2.2" height="7" rx="1.1"/>
+<circle cx="13.3" cy="12" r="1.5" style="fill:var(--aria-dot,currentColor)"/>
+<rect x="16.8" y="5" width="2.2" height="14" rx="1.1"/>
+</svg>

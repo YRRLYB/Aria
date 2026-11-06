@@ -1,7 +1,8 @@
 import type { MusicProvider } from "./musicProvider";
 import { neteaseProvider } from "./neteaseProvider";
+import { qqProvider } from "./qqProvider";
 
-const providers = [neteaseProvider] satisfies MusicProvider[];
+const providers = [neteaseProvider, qqProvider] satisfies MusicProvider[];
 
 export function listProviders() {
   return providers;

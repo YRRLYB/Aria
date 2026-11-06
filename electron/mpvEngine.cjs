@@ -1,4 +1,4 @@
-const { execFile, spawn } = require("node:child_process");
+const { execFile, execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -32,7 +32,13 @@ function buildEqualizerFilter(bands) {
     .join(",");
 }
 
-function buildMpvArguments(pipePath, exclusive = false) {
+function buildMpvArguments(pipePath, exclusive = false, supportedOptions = null) {
+  // macOS bundled mpv builds (and older community builds) do not expose every
+  // option the Windows decoder has. Only pass the optional media-session flags
+  // when the resolved binary actually lists them; an unknown option makes mpv
+  // exit before the IPC socket is created, which previously looked like
+  // "mpv is not usable on macOS".
+  const hasOption = (name) => !(supportedOptions instanceof Set) || supportedOptions.has(name);
   return [
     "--idle=yes",
     `--ao=${NATIVE_AUDIO_OUTPUT}`,
@@ -42,11 +48,11 @@ function buildMpvArguments(pipePath, exclusive = false) {
     "--no-terminal",
     // Aria publishes metadata and queue controls through its own native
     // session. mpv's built-in session knows only its private preload playlist.
-    "--media-controls=no",
+    ...(hasOption("media-controls") ? ["--media-controls=no"] : []),
     "--input-media-keys=no",
     // Keep the native audio session stable for application-loopback tools.
-    `--audio-client-name=${NATIVE_AUDIO_CLIENT_NAME}`,
-    "--audio-set-media-role=yes",
+    ...(hasOption("audio-client-name") ? [`--audio-client-name=${NATIVE_AUDIO_CLIENT_NAME}`] : []),
+    ...(hasOption("audio-set-media-role") ? ["--audio-set-media-role=yes"] : []),
     `--title=${NATIVE_AUDIO_CLIENT_NAME}`,
     `--force-media-title=${NATIVE_AUDIO_CLIENT_NAME}`,
     // Exclusive mode is a WASAPI concept; macOS/Linux keep shared output.
@@ -69,6 +75,62 @@ function buildMpvArguments(pipePath, exclusive = false) {
     "--audio-buffer=0.12",
     `--input-ipc-server=${pipePath}`,
   ];
+}
+
+// `mpv --list-options` is cheap and cached per executable. It also tells us
+// whether the binary is runnable at all (Gatekeeper/quarantine, wrong arch).
+const mpvOptionsCache = new Map();
+
+function readSupportedMpvOptions(executable) {
+  if (mpvOptionsCache.has(executable)) return mpvOptionsCache.get(executable);
+  let options = null;
+  try {
+    const output = execFileSync(
+      executable,
+      ["--list-options", "--no-config"],
+      { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const names = new Set();
+    for (const line of String(output).split(/\r?\n/)) {
+      const match = line.match(/^\s+--([a-z0-9-]+)/);
+      if (match) names.add(match[1]);
+    }
+    if (names.size) options = names;
+  } catch {
+    options = null;
+  }
+  mpvOptionsCache.set(executable, options);
+  return options;
+}
+
+const MAC_MPV_CANDIDATES = [
+  "/opt/homebrew/bin/mpv",
+  "/usr/local/bin/mpv",
+  "/opt/local/bin/mpv",
+  "/Applications/mpv.app/Contents/MacOS/mpv",
+];
+
+let cachedSystemMpv = null;
+
+/** First runnable mpv on this Mac (bundled vendor copy is checked separately). */
+function findSystemMpvExecutable() {
+  if (cachedSystemMpv !== null) return cachedSystemMpv || null;
+  const candidates = [...MAC_MPV_CANDIDATES];
+  for (const directory of String(process.env.PATH || "").split(path.delimiter)) {
+    if (!directory) continue;
+    if (!candidates.includes(path.join(directory, "mpv"))) candidates.push(path.join(directory, "mpv"));
+  }
+  cachedSystemMpv = candidates.find((candidate) => {
+    try {
+      const stats = fs.statSync(candidate);
+      if (!stats.isFile()) return false;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }) || "";
+  return cachedSystemMpv || null;
 }
 
 class MpvAudioEngine {
@@ -127,7 +189,17 @@ class MpvAudioEngine {
     const brandedExecutable = path.join(mpvDirectory, NATIVE_AUDIO_PROCESS_NAME);
     if (fs.existsSync(brandedExecutable)) return brandedExecutable;
 
-    return path.join(mpvDirectory, NATIVE_AUDIO_EXECUTABLE);
+    const vendored = path.join(mpvDirectory, NATIVE_AUDIO_EXECUTABLE);
+    // macOS has no official mpv release to bundle, so a packaged build often
+    // ships without vendor/mpv. Reuse the user's own install (Homebrew, MacPorts,
+    // or the official .app) instead of forcing a rebuild — installing mpv and
+    // restarting Aria is then enough to leave the browser audio engine.
+    if (IS_MAC && !fs.existsSync(vendored)) {
+      const systemMpv = findSystemMpvExecutable();
+      if (systemMpv) return systemMpv;
+    }
+
+    return vendored;
   }
 
   snapshot(extra = {}) {
@@ -190,9 +262,16 @@ class MpvAudioEngine {
       this.buffer = "";
       this.launchExclusive = requestedExclusive;
 
+      const executable = this.resolveExecutable();
+      // Windows ships a known mpv build; macOS/Linux may point at a system or
+      // community binary, so ask it which optional flags exist before spawning.
+      const supportedOptions = IS_WINDOWS
+        ? null
+        : (readSupportedMpvOptions(executable) ?? new Set());
+
       this.process = spawn(
-        this.resolveExecutable(),
-        buildMpvArguments(this.pipePath, requestedExclusive),
+        executable,
+        buildMpvArguments(this.pipePath, requestedExclusive, supportedOptions),
         {
           windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -460,7 +539,7 @@ class MpvAudioEngine {
         throw new Error("WASAPI exclusive mode was rejected by the selected output device.");
       }
     }
-    this.writeLog("native-audio.log", `WASAPI output: ${this.state.exclusive ? "exclusive" : "shared"} device=${this.state.deviceId}`);
+    this.writeLog("native-audio.log", `native output: ${this.state.exclusive ? "exclusive" : "shared"} device=${this.state.deviceId}`);
     if (typeof deviceId === "string") {
       this.state.deviceId = this.normalizeDeviceId(deviceId);
       await this.command("set_property", "audio-device", this.state.deviceId);

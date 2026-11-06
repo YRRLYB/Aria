@@ -14,9 +14,13 @@ import {
   availableQqLevels,
   clearQqCookie,
   getQqAccount,
+  getQqLikedTracks,
   getQqLyrics,
+  getQqPlaylistTracks,
+  getQqPlaylists,
   normalizeQqSong,
   parseQqCookie,
+  resetQqStreamStateForTests,
   resolveQqStreamMeta,
   saveQqCookie,
   searchQqTracks,
@@ -28,11 +32,28 @@ const searchSong = {
   interval: 269,
   singer: [{ mid: "0025NhlN2yWrP4", name: "周杰伦" }],
   album: { mid: "002eFUFm2XYZ7z", title: "叶惠美" },
+  pay: { pay_play: 1 },
   file: {
     media_mid: "MIDFILE001",
     size_128mp3: 4_200_000,
     size_320mp3: 10_800_000,
     size_flac: 32_000_000,
+    size_hires: "",
+  },
+};
+
+const freeSong = {
+  mid: "001xQmoR2e6asc",
+  name: "莉莉安",
+  interval: 254,
+  singer: [{ mid: "002lGKlY0PZd0V", name: "徐佳莹" }],
+  album: { mid: "003iV1vP3yLdDk", title: "我是歌手第四季" },
+  pay: { pay_play: 0 },
+  file: {
+    media_mid: "MIDFILE001",
+    size_128mp3: 4_200_000,
+    size_320mp3: 0,
+    size_flac: 0,
     size_hires: "",
   },
 };
@@ -47,6 +68,8 @@ const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
+  // 档位/付费标记/账号能力是模块级状态,每个用例从干净状态开始。
+  resetQqStreamStateForTests();
   mocks.readStore.mockResolvedValue({ qqCookie: null });
   mocks.updateStore.mockImplementation(async (update: (store: Record<string, unknown>) => Record<string, unknown>) =>
     update({ qqCookie: null }),
@@ -61,8 +84,8 @@ afterEach(() => {
 
 describe("qq cookie parsing", () => {
   it("extracts uin and key from both legacy and modern cookie names", () => {
-    expect(parseQqCookie("uin=o12345; qqmusic_key=Q_H_L_key1; other=x")).toEqual({ uin: "12345", key: "Q_H_L_key1" });
-    expect(parseQqCookie("qm_keyst=keyst2; uin=67890;")).toEqual({ uin: "67890", key: "keyst2" });
+    expect(parseQqCookie("uin=o12345; qqmusic_key=Q_H_L_key1; other=x")).toEqual({ uin: "12345", key: "Q_H_L_key1", loginType: 1 });
+    expect(parseQqCookie("qm_keyst=keyst2; uin=67890;")).toEqual({ uin: "67890", key: "keyst2", loginType: 1 });
   });
 
   it("rejects cookies without the required fields", () => {
@@ -106,67 +129,136 @@ describe("qq search mapping", () => {
     const track = normalizeQqSong({ mid: "x1", name: "歌", singer: [{ name: "A" }, { name: "B" }] });
     expect(track).toMatchObject({ id: "x1", quality: "320K", currentLevel: null, availableLevels: [] });
   });
+
+  it("estimates a display bitrate from the per-tier file size", () => {
+    const lossless = normalizeQqSong(searchSong);
+    // 32,000,000 bytes * 8 / 269s ~= 952k
+    expect(lossless).toMatchObject({ currentLevel: "lossless", quality: "FLAC", bitrate: 952_000 });
+
+    const standard = normalizeQqSong(freeSong);
+    // 4,200,000 bytes * 8 / 254s ~= 132k
+    expect(standard).toMatchObject({ currentLevel: "standard", quality: "128K", bitrate: 132_000 });
+  });
 });
 
 describe("qq stream resolution", () => {
-  it("picks the highest available tier at or below the request and prefixes the sip host", async () => {
-    // Populate the file-info cache through a search first.
-    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [searchSong] } } }));
-    await searchQqTracks("晴天", 1, 0);
+  it("never mixes paid-tier filenames into a free song's request and degrades to 128k", async () => {
+    // Populate the file-info cache (free song) through a search first.
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [freeSong] } } }));
+    await searchQqTracks("莉莉安", 1, 0);
 
     fetchMock.mockResolvedValueOnce(
       musicuResponse("vkey", {
-        midurlinfo: [
-          { filename: "F000MIDFILE001.flac", purl: "flacsegment", filesize: 32_000_000 },
-          { filename: "M800MIDFILE001.mp3", purl: "" },
-          { filename: "M500MIDFILE001.mp3", purl: "128segment" },
-        ],
+        midurlinfo: [{ filename: "M500MIDFILE001.mp3", purl: "128segment", filesize: 4_200_000 }],
         sip: ["http://ws.stream.qqmusic.qq.com/"],
       }),
     );
-    const meta = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "lossless" });
-    expect(meta.currentLevel).toBe("lossless");
-    expect(meta.url).toBe("http://ws.stream.qqmusic.qq.com/flacsegment");
+    const meta = await resolveQqStreamMeta("001xQmoR2e6asc", { level: "lossless", refresh: true });
+    // 免费歌即使请求无损也只发免费候选,拿到的就是 128k 明文。
+    expect(meta.currentLevel).toBe("standard");
+    expect(meta.quality).toBe("128K");
+    expect(meta.url).toBe("http://ws.stream.qqmusic.qq.com/128segment");
     expect(meta.headers).toMatchObject({ Referer: "https://y.qq.com/" });
     expect(meta.expiresAt).toBeGreaterThan(Date.now());
-    // One vkey call carries every candidate filename at once.
     const vkeyCall = fetchMock.mock.calls.at(-1)!;
     const body = JSON.parse((vkeyCall[1] as RequestInit).body as string) as {
       vkey: { param: { filename: string[] } };
     };
+    // 关键断言:请求里绝不允许出现付费档位文件名——混入会让免费账号整个请求被拒。
     expect(body.vkey.param.filename).toEqual([
-      "F000MIDFILE001.flac",
-      "M800MIDFILE001.mp3",
       "M500MIDFILE001.mp3",
+      "C400MIDFILE001.m4a",
     ]);
   });
 
-  it("falls back to a lower tier when the requested one has no url", async () => {
-    fetchMock.mockResolvedValueOnce(
-      musicuResponse("vkey", {
-        midurlinfo: [
-          { filename: "F000MIDFILE001.flac", purl: "" },
-          { filename: "M800MIDFILE001.mp3", purl: "320segment" },
-        ],
-        sip: ["http://ws.stream.qqmusic.qq.com/"],
-      }),
-    );
+  it("probes paid tiers separately for VIP songs and remembers the account capability", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [searchSong] } } }));
+    await searchQqTracks("晴天", 1, 0);
+
+    // 第一发:免费候选(对 VIP 歌必然空);第二发:付费探测命中 FLAC。
+    fetchMock
+      .mockResolvedValueOnce(
+        musicuResponse("vkey", {
+          midurlinfo: [
+            { filename: "M500MIDFILE001.mp3", purl: "" },
+            { filename: "C400MIDFILE001.m4a", purl: "" },
+          ],
+          sip: [],
+        }),
+      )
+      .mockResolvedValueOnce(
+        musicuResponse("vkey", {
+          midurlinfo: [{ filename: "F000MIDFILE001.flac", purl: "flacsegment", filesize: 32_000_000 }],
+          sip: ["http://ws.stream.qqmusic.qq.com/"],
+        }),
+      );
+    const meta = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "lossless", refresh: true });
+    expect(meta.currentLevel).toBe("lossless");
+    expect(meta.quality).toBe("FLAC");
+    expect(meta.url).toContain("flacsegment");
+
+    // 能力记住后,下一次 VIP 歌直接命中 20 分钟 purl 缓存,不再打接口。
+    fetchMock.mockClear();
+    const again = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "lossless" });
+    expect(again.url).toContain("flacsegment");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("marks the account incapable after a confirmed VIP song returns no paid url", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [searchSong] } } }));
+    await searchQqTracks("晴天", 1, 0);
+
+    // 免费候选空 + 付费探测也空 → 账号无 VIP,后续 VIP 歌不再打接口。
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("vkey", { midurlinfo: [], sip: [] }))
+      .mockResolvedValueOnce(musicuResponse("vkey", { midurlinfo: [], sip: [] }));
+    await expect(resolveQqStreamMeta("0039MnYb0qxYhV", { level: "lossless", refresh: true })).rejects.toMatchObject({
+      code: "UNAVAILABLE",
+    });
+
+    fetchMock.mockClear();
+    await expect(resolveQqStreamMeta("0039MnYb0qxYhV", { level: "lossless", refresh: true })).rejects.toMatchObject({
+      code: "UNAVAILABLE",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a lower paid tier when the requested one has no url for a capable account", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [searchSong] } } }));
+    await searchQqTracks("晴天", 1, 0);
+
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("vkey", { midurlinfo: [], sip: [] }))
+      .mockResolvedValueOnce(
+        musicuResponse("vkey", {
+          midurlinfo: [
+            { filename: "F000MIDFILE001.flac", purl: "" },
+            { filename: "M800MIDFILE001.mp3", purl: "320segment" },
+          ],
+          sip: ["http://ws.stream.qqmusic.qq.com/"],
+        }),
+      );
     const meta = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "lossless", refresh: true });
     expect(meta.currentLevel).toBe("exhigh");
     expect(meta.url).toContain("320segment");
   });
 
   it("caches purls and only re-resolves on refresh", async () => {
-    fetchMock.mockResolvedValueOnce(
-      musicuResponse("vkey", {
-        midurlinfo: [{ filename: "M800MIDFILE001.mp3", purl: "cachedsegment" }],
-        sip: ["http://ws.stream.qqmusic.qq.com/"],
-      }),
-    );
+    // capable 账号:首次探测命中后缓存,第二次不再打接口。
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [searchSong] } } }));
+    await searchQqTracks("晴天", 1, 0);
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("vkey", { midurlinfo: [], sip: [] }))
+      .mockResolvedValueOnce(
+        musicuResponse("vkey", {
+          midurlinfo: [{ filename: "M800MIDFILE001.mp3", purl: "cachedsegment" }],
+          sip: ["http://ws.stream.qqmusic.qq.com/"],
+        }),
+      );
     const first = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "exhigh", refresh: true });
     const second = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "exhigh" });
     expect(second.url).toBe(first.url);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // search + free probe + paid hit
 
     fetchMock.mockResolvedValueOnce(
       musicuResponse("vkey", {
@@ -176,19 +268,39 @@ describe("qq stream resolution", () => {
     );
     const refreshed = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "exhigh", refresh: true });
     expect(refreshed.url).toContain("newsegment");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("reports unavailability when no tier resolves", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [freeSong] } } }));
+    await searchQqTracks("莉莉安", 1, 0);
     fetchMock.mockResolvedValueOnce(
       musicuResponse("vkey", {
-        midurlinfo: [{ filename: "M500MIDFILE001.mp3", purl: "" }],
+        midurlinfo: [{ filename: "M500MIDFILE001.mp3", purl: "" }, { filename: "C400MIDFILE001.m4a", purl: "" }],
         sip: [],
       }),
     );
-    await expect(resolveQqStreamMeta("0039MnYb0qxYhV", { level: "standard", refresh: true })).rejects.toMatchObject({
+    await expect(resolveQqStreamMeta("001xQmoR2e6asc", { level: "standard", refresh: true })).rejects.toMatchObject({
       code: "UNAVAILABLE",
     });
+  });
+
+  it("falls back to the plaintext AAC tier and derives its bitrate from the file size", async () => {
+    // Populate the file-info cache (duration 269s) through a search first.
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [searchSong] } } }));
+    await searchQqTracks("晴天", 1, 0);
+
+    fetchMock.mockResolvedValueOnce(
+      musicuResponse("vkey", {
+        midurlinfo: [{ filename: "C400MIDFILE001.m4a", purl: "aacsegment", filesize: 4_304_000 }],
+        sip: ["http://ws.stream.qqmusic.qq.com/"],
+      }),
+    );
+    const meta = await resolveQqStreamMeta("0039MnYb0qxYhV", { level: "standard", refresh: true });
+    expect(meta.currentLevel).toBe("standard");
+    expect(meta.quality).toBe("AAC");
+    expect(meta.url).toContain("aacsegment");
+    // 4_304_000 bytes * 8 / 269s ~= 128k
+    expect(meta.bitrate).toBe(128_000);
   });
 });
 
@@ -208,6 +320,81 @@ describe("qq lyrics", () => {
   it("returns no lines when the song has no lyrics", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ lyric: "" })));
     expect(await getQqLyrics("0039MnYb0qxYhV")).toEqual([]);
+  });
+});
+
+describe("qq playlists and liked tracks", () => {
+  const profileResponse = () =>
+    new Response(JSON.stringify({
+      data: {
+        mymusic: [{ id: "8742739449", title: "我喜欢", type: 1 }],
+        mydiss: {
+          num: 1,
+          list: [{ dissid: 777001, diss_name: "通勤歌单", song_cnt: 12, picurl: "http://y.gtimg.cn/a.jpg" }],
+        },
+      },
+    }));
+
+  it("requires a cookie before reading playlists", async () => {
+    await expect(getQqPlaylists()).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+    await expect(getQqPlaylistTracks("123")).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+  });
+
+  it("lists 我喜欢 plus the profile playlists", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock.mockResolvedValueOnce(profileResponse());
+    const playlists = await getQqPlaylists();
+    expect(playlists).toHaveLength(2);
+    expect(playlists[0]).toMatchObject({ id: "8742739449", name: "我喜欢", owned: true });
+    expect(playlists[1]).toMatchObject({ id: "777001", name: "通勤歌单", trackCount: 12, coverUrl: "http://y.gtimg.cn/a.jpg" });
+  });
+
+  it("maps playlist songs through the shared track mapping", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 0,
+      cdlist: [{ dissname: "通勤歌单", songnum: 1, songlist: [searchSong] }],
+    })));
+    const tracks = await getQqPlaylistTracks("777001");
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toMatchObject({
+      id: "0039MnYb0qxYhV",
+      title: "晴天",
+      source: "qq",
+      streamUrl: "/api/sources/qq/tracks/0039MnYb0qxYhV/stream",
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("fcg_ucc_getcdinfo_byids_cp.fcg");
+    expect(String(url)).toContain("disstid=777001");
+    expect((init as RequestInit).headers).toMatchObject({ Cookie: "uin=o12345; qm_keyst=k1" });
+  });
+
+  it("chains the profile lookup into the liked playlist read", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(profileResponse())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, cdlist: [{ dissname: "我喜欢", songnum: 0, songlist: [] }] })));
+    const tracks = await getQqLikedTracks();
+    expect(tracks).toEqual([]);
+    expect(String(fetchMock.mock.calls[1][0])).toContain("disstid=8742739449");
+  });
+
+  it("falls back to the created-diss endpoint when the profile has no 我喜欢 entry", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { mymusic: [], mydiss: { num: 0, list: [] } } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { disslist: [{ dirid: 201, tid: 8742739449 }] } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, cdlist: [{ dissname: "我喜欢", songnum: 0, songlist: [] }] })));
+    expect(await getQqLikedTracks()).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[1][0])).toContain("fcg_user_created_diss");
+    expect(String(fetchMock.mock.calls[2][0])).toContain("disstid=8742739449");
+  });
+
+  it("maps an expired session on the playlist detail to AUTH_REQUIRED", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: 2001 })));
+    await expect(getQqPlaylistTracks("777001")).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
   });
 });
 

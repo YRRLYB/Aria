@@ -9,6 +9,8 @@ const defaultStore: AppStore = {
   neteaseCookie: null,
   neteaseAccount: null,
   qqCookie: null,
+  neteaseRealIp: null,
+  sources: {},
   lyricBindings: {},
   libraryAutoScanEnabled: true,
 };

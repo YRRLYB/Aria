@@ -7,6 +7,7 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 const { createLogger, serializeError } = require("./logger.cjs");
 const { MpvAudioEngine } = require("./mpvEngine.cjs");
+const { buildQqLoginCookie } = require("./qqLoginCookies.cjs");
 
 const logger = createLogger(app);
 const { writeLog } = logger;
@@ -20,6 +21,16 @@ try {
 } catch (error) {
   iconicThumbAddon = null;
   logger.writeLog("desktop.log", `iconic thumbnail addon unavailable: ${error?.message || error}`);
+}
+
+// Optional macOS addon owning MPNowPlayingInfoCenter / MPRemoteCommandCenter;
+// without it the Chromium media session still reaches Control Center.
+let nowPlayingAddon = null;
+try {
+  nowPlayingAddon = require("./native/aria-nowplaying/index.cjs");
+} catch (error) {
+  nowPlayingAddon = null;
+  logger.writeLog("desktop.log", `now playing addon unavailable: ${error?.message || error}`);
 }
 
 // Windows needs an app-provided iconic bitmap for the compact taskbar card.
@@ -102,7 +113,36 @@ if (!gotLock) {
 
 app.setName("Aria");
 app.setAppUserModelId("com.yrrlyb.aria");
-Menu.setApplicationMenu(null);
+// Windows/Linux render their own window chrome, so the app menu is dropped
+// entirely there. macOS needs the standard application menu or the Edit roles
+// (Cmd+C/V/X), Cmd+Q and the About panel all stop working.
+if (process.platform === "darwin") {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: app.name, submenu: [
+      { role: "about" },
+      { type: "separator" },
+      { role: "hide" },
+      { role: "hideOthers" },
+      { role: "unhide" },
+      { type: "separator" },
+      { role: "quit" },
+    ] },
+    { role: "editMenu" },
+    { label: "View", submenu: [
+      { role: "reload" },
+      { role: "toggleDevTools" },
+      { type: "separator" },
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      { role: "zoomOut" },
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ] },
+    { role: "windowMenu" },
+  ]));
+} else {
+  Menu.setApplicationMenu(null);
+}
 
 function ensureWindowsTaskbarPreviewPolicy() {
   if (process.platform !== "win32") return;
@@ -145,7 +185,7 @@ app.commandLine.appendSwitch("enable-features", "MediaSessionService");
 // own scoped network policy instead of changing this global default.
 app.commandLine.appendSwitch("no-proxy-server");
 // The app owns SMTC for both Chromium and mpv. Avoid a second Chromium card.
-if (iconicThumbAddon?.mediaSessionAvailable) {
+if (iconicThumbAddon?.mediaSessionAvailable || nowPlayingAddon?.available) {
   app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling");
 }
 
@@ -519,10 +559,13 @@ function syncTaskbarPlayback(reason = "state") {
   // Keep the native app identity stable for OOPZ/application-loopback. The
   // song title is published through the thumbnail tooltip and media session.
   mainWindow.setTitle("Aria");
-  mainWindow.setThumbnailToolTip(description);
   tray?.setToolTip(description);
 
   if (process.platform !== "win32") return;
+  // Windows-only APIs live strictly behind the platform guard — macOS has no
+  // setThumbnailToolTip and calling it aborts createWindow before loadFile
+  // (which rendered as a permanently white window on 0.6.0 macOS builds).
+  mainWindow.setThumbnailToolTip(description);
   const hasTrack = Boolean(taskbarPlayback.title);
   if (nativeIconicThumbnailEnabled && iconicThumbAddon?.available) {
     try {
@@ -645,14 +688,26 @@ async function createWindow() {
       backgroundThrottling: true,
     },
   });
-  mainWindow.removeMenu();
-  mainWindow.setMenuBarVisibility(false);
+  if (process.platform !== "darwin") {
+    // macOS keeps the application menu (traffic-light window + native roles);
+    // the other platforms draw their own chrome without a menu bar.
+    mainWindow.removeMenu();
+    mainWindow.setMenuBarVisibility(false);
+  }
   if (iconicThumbAddon?.mediaSessionAvailable) {
     try {
       mediaSessionReady = Boolean(iconicThumbAddon.attachMediaSession(mainWindow.getNativeWindowHandle(), sendPlaybackCommand));
       writeLog("desktop.log", `Windows media session attached: ${mediaSessionReady}`);
     } catch (error) {
       writeLog("desktop.log", `Windows media session failed: ${error?.stack || error}`);
+    }
+  }
+  if (process.platform === "darwin" && nowPlayingAddon?.available) {
+    try {
+      mediaSessionReady = Boolean(nowPlayingAddon.attach(sendPlaybackCommand));
+      writeLog("desktop.log", `macOS media session attached: ${mediaSessionReady}`);
+    } catch (error) {
+      writeLog("desktop.log", `macOS media session failed: ${error?.stack || error}`);
     }
   }
   if (process.platform === "win32" && typeof mainWindow.setAppDetails === "function") {
@@ -726,6 +781,7 @@ async function createWindow() {
   });
   mainWindow.on("closed", () => {
     iconicThumbAddon?.detachMediaSession?.();
+    nowPlayingAddon?.detach?.();
     mediaSessionReady = false;
     for (const timer of taskbarRetryTimers) clearTimeout(timer);
     taskbarRetryTimers.clear();
@@ -826,19 +882,9 @@ ipcMain.handle("aria:qq-login-window", async () => {
     };
     const readLoginCookie = async () => {
       const cookies = await loginSession.cookies.get({});
-      const byName = new Map(cookies.map((cookie) => [cookie.name, String(cookie.value ?? "")]));
-      const key = (byName.get("qm_keyst") || byName.get("qqmusic_key") || "").trim();
-      const uin = (byName.get("uin") || byName.get("p_uin") || "").trim().replace(/^o/i, "");
-      if (!key || !/^\d{4,}$/.test(uin)) return;
-      // 只带 uin + qm_keyst 时，QQ 的账号信息接口会判定未登录；把 qq.com
-      // 域下的登录 Cookie 原样一起带上，后端校验与播放才能通过与 VIP 相关分支。
-      const parts = cookies
-        .filter((cookie) => typeof cookie.domain === "string" && cookie.domain.includes("qq.com"))
-        .filter((cookie) => cookie.value !== undefined && cookie.value !== null && String(cookie.value) !== "")
-        .filter((cookie) => cookie.name !== "uin" && cookie.name !== "p_uin")
-        .map((cookie) => `${cookie.name}=${String(cookie.value)}`);
-      const cookieHeader = [`uin=o${uin}`, ...parts].join("; ");
-      writeLog("desktop.log", `qq login window: cookies captured (${parts.length + 1} entries)`);
+      const cookieHeader = buildQqLoginCookie(cookies);
+      if (!cookieHeader) return;
+      writeLog("desktop.log", "qq login window: credentials captured");
       finish({ ok: true, cookie: cookieHeader });
     };
     timer = setInterval(() => {
@@ -874,7 +920,7 @@ ipcMain.handle("aria:update-media-session", (_event, payload) => {
   const artwork = typeof payload?.artwork === "string" && payload.artwork.length < 1_400_000 &&
     payload.artwork.startsWith("data:image/png;base64,")
     ? Buffer.from(payload.artwork.slice("data:image/png;base64,".length), "base64") : Buffer.alloc(0);
-  return iconicThumbAddon.updateMediaSession({
+  const state = {
     title: typeof payload?.title === "string" ? payload.title.slice(0, 512) : "",
     artist: typeof payload?.artist === "string" ? payload.artist.slice(0, 512) : "",
     album: typeof payload?.album === "string" ? payload.album.slice(0, 512) : "",
@@ -882,7 +928,11 @@ ipcMain.handle("aria:update-media-session", (_event, payload) => {
     playing: Boolean(payload?.playing),
     canPrevious: Boolean(payload?.canPrevious),
     canNext: Boolean(payload?.canNext),
-  }, artwork);
+  };
+  if (process.platform === "darwin") {
+    return Boolean(nowPlayingAddon?.updateMediaSession?.(state, artwork));
+  }
+  return iconicThumbAddon.updateMediaSession(state, artwork);
 });
 
 ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {

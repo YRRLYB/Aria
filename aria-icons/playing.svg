@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">
+<style>
+@keyframes aria-eq{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
+.aria-eq{transform-box:fill-box;transform-origin:50% 50%;animation:aria-eq 1.1s ease-in-out infinite}
+.aria-eq:nth-of-type(2){animation-delay:-.4s}
+.aria-eq:nth-of-type(3){animation-delay:-.8s}
+@media (prefers-reduced-motion:reduce){.aria-eq{animation:none}}
+</style>
+<path class="aria-eq" d="M6 8.5V15.5"/>
+<path class="aria-eq" d="M12 5V19"/>
+<path class="aria-eq" d="M18 9.5V14.5"/>
+</svg>

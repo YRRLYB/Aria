@@ -42,7 +42,9 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   copyImageToClipboard: (payload) => ipcRenderer.invoke("aria:copy-image", payload || {}),
   log: (payload) => ipcRenderer.invoke("aria:log", payload),
   nativeAudio: {
-    supported: process.platform === "win32",
+    // The renderer refines this with isSupported(), which checks whether the
+    // platform mpv binary is actually present (vendor/mpv/<Aria.exe|mpv>).
+    supported: process.platform === "win32" || process.platform === "darwin",
     isSupported: () => ipcRenderer.invoke("aria:native-audio:supported"),
     listDevices: () => ipcRenderer.invoke("aria:native-audio:devices"),
     getState: () => ipcRenderer.invoke("aria:native-audio:state"),

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3.5 6H10.6M19.4 6H20.5M3.5 12H4.1M12.9 12H20.5M3.5 18H9.1M17.9 18H20.5"/>
+<circle cx="15" cy="6" r="2.25" stroke="none" style="fill:var(--aria-dot,currentColor)"/>
+<circle cx="8.5" cy="12" r="2.25" stroke="none" style="fill:var(--aria-dot,currentColor)"/>
+<circle cx="13.5" cy="18" r="2.25" stroke="none" style="fill:var(--aria-dot,currentColor)"/>
+</svg>
