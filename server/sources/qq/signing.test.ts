@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeAg1Request, decodeAg1Response, encodeAg1Request, encodeAg1Response, zzcSign } from "./signing";
+import { decodeAg1Request, decodeAg1Response, encodeAg1Request, encodeAg1RequestRaw, encodeAg1Response, zzcSign } from "./signing";
 
 describe("qq web signing", () => {
   it("matches the official zzc fixtures", () => {
@@ -24,9 +24,10 @@ describe("qq web signing", () => {
     const fixture = Buffer.from("UVKyyaPxYeBs+e6kkEeQpwwnsRmO4NI5JTdJvqrvU3w3elv4W1kcb8G35S4=", "base64");
     expect(decodeAg1Request(new Uint8Array(fixture))).toBe('{"hello":"ag1!"}');
     const text = JSON.stringify({ req_0: { module: "music.musicasset.PlaylistDetailWrite" } });
-    const encrypted = encodeAg1Request(text);
+    const encrypted = encodeAg1RequestRaw(text);
     expect(encrypted.length).toBe(12 + Buffer.byteLength(text) + 16);
     expect(decodeAg1Request(encrypted)).toBe(text);
-    expect(encrypted.equals(encodeAg1Request(text))).toBe(false);
+    expect(encrypted.equals(encodeAg1RequestRaw(text))).toBe(false);
+    expect(decodeAg1Request(encodeAg1Request(text))).toBe(text);
   });
 });

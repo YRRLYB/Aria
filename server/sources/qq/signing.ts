@@ -37,18 +37,27 @@ export function zzcSign(text: string): string {
 
 /**
  * ag-1 请求体：12 字节随机 IV + AES-128-GCM 密文 + 16 字节 authTag。
- * Node 的 GCM 输出与 WebCrypto 一致，拼在 IV 后直接作为二进制 body 发送。
+ * 官网和 qmweb-sign 都会把这段二进制再 base64 成文本塞进 `text/plain`
+ * body；直接发原始字节会被 musics.fcg 以 2001 拒掉。
  */
-export function encodeAg1Request(text: string): Buffer {
+export function encodeAg1RequestRaw(text: string): Buffer {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-128-gcm", AG1_REQUEST_KEY, iv);
   const encrypted = Buffer.concat([cipher.update(text, "utf-8"), cipher.final(), cipher.getAuthTag()]);
   return Buffer.concat([iv, encrypted]);
 }
 
+export function encodeAg1Request(text: string): string {
+  return encodeAg1RequestRaw(text).toString("base64");
+}
+
 /** 仅测试/诊断用：解开 ag-1 请求体，核对 IV、密文与 authTag 的拼接顺序。 */
-export function decodeAg1Request(data: ArrayBuffer | Uint8Array): string {
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+export function decodeAg1Request(data: string | ArrayBuffer | Uint8Array): string {
+  const bytes = typeof data === "string"
+    ? Buffer.from(data, "base64")
+    : data instanceof Uint8Array
+      ? data
+      : new Uint8Array(data);
   if (bytes.length < 12 + 16) throw new Error("ag-1 request body is too short");
   const iv = bytes.subarray(0, 12);
   const authTag = bytes.subarray(bytes.length - 16);

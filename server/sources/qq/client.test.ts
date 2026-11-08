@@ -632,7 +632,21 @@ describe("qq likes", () => {
       Cookie: "uin=o12345; qm_keyst=k1",
       "Content-Type": "text/plain",
     });
-    expect((writeInit as RequestInit).body).toBeInstanceOf(Uint8Array);
+    // musics.fcg 接收 base64 文本，不是原始加密字节；发错会被回 2001。
+    expect(typeof (writeInit as RequestInit).body).toBe("string");
+    expect((writeInit as RequestInit).body).toMatch(/^[A-Za-z0-9+/]+=*$/);
+  });
+
+  it("retries the write on the sh/sz node when the first host returns 2001", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("req_1", { track_info: { id: 260678, type: 0 } }))
+      .mockResolvedValueOnce(new Response(encodeAg1Response('{"code":2001,"req_0":{"code":2001}}')))
+      .mockResolvedValueOnce(new Response(encodeAg1Response('{"code":0,"req_0":{"code":0,"data":{"retCode":0}}}')));
+
+    await expect(setQqLike("003aAPj81VWrbL", true)).resolves.toEqual({ ok: true, liked: true });
+    expect(String(fetchMock.mock.calls[1][0])).toContain("u6.y.qq.com");
+    expect(String(fetchMock.mock.calls[2][0])).toContain("shu6.y.qq.com");
   });
 
   it("turns a business retCode into a real failure instead of a fake success", async () => {

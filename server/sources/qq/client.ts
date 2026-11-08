@@ -1000,57 +1000,72 @@ export async function setQqLike(trackId: string, liked: boolean): Promise<{ ok: 
     },
   };
   const bodyText = JSON.stringify(payload);
-  const encrypted = encodeAg1Request(bodyText);
-  const sign = zzcSign(bodyText);
-  const response = await fetch(
-    `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain",
-        Referer: REFERER,
-        "User-Agent": USER_AGENT,
-        Cookie: session.cookie,
+  // 官网网络层遇到 2001 会换 sh/sz 节点重试；写接口也有同样行为。
+  // 这不是登录失效，也不是“已成功”，而是节点/区域调度返回的临时码。
+  const hosts = ["u6.y.qq.com", "shu6.y.qq.com", "szu6.y.qq.com"];
+  let lastCode = 0;
+  let lastMessage = "";
+  for (let attempt = 0; attempt < hosts.length; attempt += 1) {
+    const encrypted = encodeAg1Request(bodyText);
+    const sign = zzcSign(bodyText);
+    const response = await fetch(
+      `https://${hosts[attempt]}/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          Referer: REFERER,
+          "User-Agent": USER_AGENT,
+          Cookie: session.cookie,
+        },
+        body: encrypted,
+        signal: AbortSignal.timeout(STREAM_RESOLVE_TIMEOUT_MS),
       },
-      body: new Uint8Array(encrypted),
-      signal: AbortSignal.timeout(STREAM_RESOLVE_TIMEOUT_MS),
-    },
-  );
-  const bytes = await response.arrayBuffer().catch(() => null);
-  if (!bytes) {
-    throw new SourceError("UPSTREAM_FAILED", "QQ音乐红心接口没有返回内容，请稍后再试", { source: "qq" });
-  }
-  let parsed: {
-    code?: number;
-    req_0?: { code?: number; msg?: string; message?: string; data?: { retCode?: number; msg?: string } };
-  } | null = null;
-  try {
-    parsed = JSON.parse(decodeAg1Response(bytes));
-  } catch {
-    throw new SourceError("UPSTREAM_FAILED", "QQ音乐红心响应解析失败，请稍后再试", { source: "qq" });
-  }
-  const section = parsed?.req_0;
-  // 逐层检查：外层 code、目标业务块 code、内层 data.retCode。只检查其中
-  // 一层曾把 80105 之类的失败误判成成功。
-  const resultCode = [parsed?.code, section?.code, section?.data?.retCode]
-    .map((value) => Number(value ?? 0))
-    .find((value) => Number.isFinite(value) && value !== 0) ?? 0;
-  if (!response.ok || resultCode !== 0) {
-    const message = String(section?.msg ?? section?.message ?? section?.data?.msg ?? "").trim();
+    );
+    const bytes = await response.arrayBuffer().catch(() => null);
+    if (!bytes) {
+      lastMessage = "QQ音乐红心接口没有返回内容";
+      lastCode = -1;
+      continue;
+    }
+    let parsed: {
+      code?: number;
+      req_0?: { code?: number; msg?: string; message?: string; data?: { retCode?: number; msg?: string } };
+    } | null = null;
+    try {
+      parsed = JSON.parse(decodeAg1Response(bytes));
+    } catch {
+      lastMessage = "QQ音乐红心响应解析失败";
+      lastCode = -1;
+      continue;
+    }
+    const section = parsed?.req_0;
+    // 逐层检查：外层 code、目标业务块 code、内层 data.retCode。只检查其中
+    // 一层曾把 80105 之类的失败误判成成功。
+    const resultCode = [parsed?.code, section?.code, section?.data?.retCode]
+      .map((value) => Number(value ?? 0))
+      .find((value) => Number.isFinite(value) && value !== 0) ?? 0;
+    if (response.ok && resultCode === 0) {
+      likedTracksCache = null;
+      playlistsCache = null;
+      return { ok: true, liked };
+    }
+    lastCode = resultCode;
+    lastMessage = String(section?.msg ?? section?.message ?? section?.data?.msg ?? "").trim();
     if ([301, 1000, 1001].includes(resultCode)) {
       throw new SourceError("AUTH_REQUIRED", "QQ 音乐登录已过期，请到设置重新扫码登录", { source: "qq" });
     }
-    throw new SourceError(
-      "UPSTREAM_FAILED",
-      message
-        ? `QQ音乐${liked ? "收藏" : "取消收藏"}失败：${message}`
-        : `QQ音乐${liked ? "收藏" : "取消收藏"}失败${resultCode ? `（代码 ${resultCode}）` : ""}`,
-      { source: "qq" },
-    );
+    // 2001 = 当前节点/区域忙，换下一个节点；其它业务错误直接返回。
+    if (resultCode !== 2001 || attempt === hosts.length - 1) break;
+    await sleep(250 + attempt * 250);
   }
-  likedTracksCache = null;
-  playlistsCache = null;
-  return { ok: true, liked };
+  throw new SourceError(
+    "UPSTREAM_FAILED",
+    lastMessage
+      ? `QQ音乐${liked ? "收藏" : "取消收藏"}失败：${lastMessage}`
+      : `QQ音乐${liked ? "收藏" : "取消收藏"}失败${lastCode ? `（代码 ${lastCode}）` : ""}；如持续出现 2001，请稍后再试`,
+    { source: "qq" },
+  );
 }
 
 // —— 歌手 / 专辑详情 ——
