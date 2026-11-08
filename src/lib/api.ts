@@ -247,6 +247,7 @@ export type ProviderStylePage = {
 export type ProviderPlaylist = {
   id: string;
   name: string;
+  source?: "netease" | "qq";
   trackCount: number;
   subscribed: boolean;
   ownerId?: string | null;
@@ -297,12 +298,19 @@ export type ProviderUser = {
 export type ProviderAlbum = {
   id: string;
   name: string;
+  source?: "netease" | "qq";
   artist: string;
   artistId: string | null;
   coverUrl: string | null;
   publishTime: number | null;
   trackCount: number | null;
   description?: string;
+};
+
+export type ProviderArtistDetail = {
+  artist: ProviderArtist;
+  description: string;
+  sections: Array<{ title: string; text: string }>;
 };
 
 export type NeteaseSearchMode = "tracks" | "artists" | "playlists" | "users" | "albums" | "lyrics";
@@ -629,6 +637,12 @@ export const api = {
       body: JSON.stringify({ liked }),
     });
   },
+  setQqLike(trackId: string, liked: boolean) {
+    return request<{ ok: boolean; liked: boolean }>(`/api/providers/qq/tracks/${encodeURIComponent(trackId)}/like`, {
+      method: "POST",
+      body: JSON.stringify({ liked }),
+    });
+  },
   getProviderPlaylists(providerId = "netease") {
     return request<{ playlists: ProviderPlaylist[] }>(`/api/providers/${providerId}/playlists`);
   },
@@ -744,11 +758,25 @@ export const api = {
     return request<{ album: ProviderAlbum; tracks: ProviderTrack[] }>(`/api/providers/netease/albums/${encodeURIComponent(albumId)}`);
   },
   getNeteaseArtistDetail(artistId: string) {
-    return request<{ artist: ProviderArtist; description: string; sections: Array<{ title: string; text: string }> }>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}`);
+    return request<ProviderArtistDetail>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}`);
   },
   getNeteaseArtistAlbums(artistId: string, limit = 30, offset = 0) {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     return request<{ albums: ProviderAlbum[]; more: boolean }>(`/api/providers/netease/artists/${encodeURIComponent(artistId)}/albums?${params}`);
+  },
+  getSourceArtistDetail(sourceId: string, artistId: string) {
+    return request<ProviderArtistDetail>(`/api/sources/${encodeURIComponent(sourceId)}/artists/${encodeURIComponent(artistId)}`);
+  },
+  getSourceArtistAlbums(sourceId: string, artistId: string, limit = 30, offset = 0) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return request<{ albums: ProviderAlbum[]; more: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/artists/${encodeURIComponent(artistId)}/albums?${params}`);
+  },
+  getSourceArtistTracks(sourceId: string, artistId: string, limit = 60, offset = 0) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return request<{ tracks: ProviderTrack[]; more: boolean }>(`/api/sources/${encodeURIComponent(sourceId)}/artists/${encodeURIComponent(artistId)}/tracks?${params}`);
+  },
+  getSourceAlbum(sourceId: string, albumId: string) {
+    return request<{ album: ProviderAlbum; tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/albums/${encodeURIComponent(albumId)}`);
   },
   lookupArtist(name: string) {
     const params = new URLSearchParams({ name });
@@ -791,9 +819,9 @@ export const api = {
       { method: "POST", body: JSON.stringify({ enabled }) },
     );
   },
-  searchSource(sourceId: string, query: string, mode: "tracks" | "artists" | "playlists" = "tracks", limit = 24, offset = 0) {
+  searchSource(sourceId: string, query: string, mode: "tracks" | "artists" | "playlists" | "albums" = "tracks", limit = 24, offset = 0) {
     const params = new URLSearchParams({ q: query, mode, limit: String(limit), offset: String(offset) });
-    return request<{ sourceId: string; tracks: ProviderTrack[]; artists: ProviderArtist[]; playlists: ProviderPlaylist[] }>(
+    return request<{ sourceId: string; tracks: ProviderTrack[]; artists: ProviderArtist[]; playlists: ProviderPlaylist[]; albums?: ProviderAlbum[] }>(
       `/api/sources/${encodeURIComponent(sourceId)}/search?${params}`,
     );
   },

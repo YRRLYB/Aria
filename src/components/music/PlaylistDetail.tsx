@@ -9,12 +9,14 @@ import { ArtworkImage } from "./ArtworkImage";
 import { CoverArt, EmptyState } from "./shared";
 import { usePlaylistActions } from "./PlaylistActions";
 
-export function PlaylistDetail({ playlist, tracks, loading, error, connected, playCounts, onBack, onRetry, onPickTrack, onUpdate, onUploadCover, onRemove, onReorder, onSubscribe, onDelete, onRequireLogin }: {
+export function PlaylistDetail({ playlist, tracks, loading, error, connected, showSubscribe = true, playCounts, onBack, onRetry, onPickTrack, onUpdate, onUploadCover, onRemove, onReorder, onSubscribe, onDelete, onRequireLogin }: {
   playlist: ProviderPlaylist;
   tracks: Track[];
   loading: boolean;
   error: string | null;
   connected: boolean;
+  /** QQ 歌单目前只读，不显示无法工作的“收藏歌单”。 */
+  showSubscribe?: boolean;
   playCounts: Record<string, number>;
   onBack: () => void;
   onRetry: () => void;
@@ -95,11 +97,11 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, pl
         {playlist.coverUrl && <ArtworkImage src={playlist.coverUrl} cacheSize={320} alt="歌单封面" className="size-full object-cover" />}
         {canEditDetails && <button className="absolute inset-x-0 bottom-0 flex justify-center gap-1 bg-black/45 py-2 text-xs text-white hover:bg-black/65" disabled={busy} onClick={() => fileRef.current?.click()}><ImagePlus className="size-3.5" />换封面</button>}
       </div>
-      <div className="min-w-0 flex-1"><h1 title={playlist.name} className="line-clamp-2 text-3xl font-semibold leading-snug">{playlist.name}</h1><p className="mt-2 text-xs text-neutral-500">{playlist.creatorName || (playlist.owned ? "我创建" : "网易云歌单")} · {loading ? playlist.trackCount : tracks.length} 首</p>{playlist.description && <p title={playlist.description} className="mt-2 line-clamp-2 text-sm leading-relaxed text-neutral-500">{playlist.description}</p>}
+      <div className="min-w-0 flex-1"><h1 title={playlist.name} className="line-clamp-2 text-3xl font-semibold leading-snug">{playlist.name}</h1><p className="mt-2 text-xs text-neutral-500">{playlist.creatorName || (playlist.owned ? "我创建" : playlist.source === "qq" ? "QQ 音乐歌单" : "网易云歌单")} · {loading ? playlist.trackCount : tracks.length} 首</p>{playlist.description && <p title={playlist.description} className="mt-2 line-clamp-2 text-sm leading-relaxed text-neutral-500">{playlist.description}</p>}
         <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" disabled={loading || !tracks.length} onClick={() => { const first = visibleTracks.find((track) => track.streamUrl); if (first) onPickTrack(first.id, visibleTracks); }}><Play />播放全部</Button>
           {canEditTracks && <Button size="sm" variant="glass" disabled={busy || loading} onClick={() => actions?.openAdd([], playlist.id)}><ListPlus />添加歌曲</Button>}
           {canEditDetails && <><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditing((value) => !value); setActionError(null); }}><Pencil />编辑歌单</Button><Button size="sm" variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700" disabled={busy} onClick={() => void deleteCurrentPlaylist()}><Trash2 />删除歌单</Button></>}
-          {!playlist.owned && <Button size="sm" variant="glass" disabled={busy || loading} onClick={() => connected ? void run(() => onSubscribe(!playlist.subscribed), playlist.subscribed ? "已取消收藏" : "已收藏歌单") : onRequireLogin()}><Heart className={playlist.subscribed ? "fill-violet-500 text-violet-500" : ""} />{playlist.subscribed ? "取消收藏" : "收藏歌单"}</Button>}
+          {!playlist.owned && showSubscribe && <Button size="sm" variant="glass" disabled={busy || loading} onClick={() => connected ? void run(() => onSubscribe(!playlist.subscribed), playlist.subscribed ? "已取消收藏" : "已收藏歌单") : onRequireLogin()}><Heart className={playlist.subscribed ? "fill-violet-500 text-violet-500" : ""} />{playlist.subscribed ? "取消收藏" : "收藏歌单"}</Button>}
         </div>
       </div>
     </div>

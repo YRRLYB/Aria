@@ -63,6 +63,12 @@ export function useAudioEngine(options: {
   const [normalizationError, setNormalizationError] = useState<string | null>(null);
   const [equalizerError, setEqualizerError] = useState<string | null>(null);
   const [normalizerReady, setNormalizerReady] = useState(false);
+  // 播放失败不能静默：以前 HTMLAudio/原生加载失败只会把 playing 置 false，
+  // 用户点击后看起来“没反应”。这里保留一条可展示的具体原因。
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  // WASAPI 模式下渲染器只旁路取样；标准档 URL 拿不到时改用当前请求档位，
+  // 否则原生音频在放、频谱却一直是空的。
+  const [analyserFallbackEnabled, setAnalyserFallbackEnabled] = useState(false);
 
   // Browser/System output must remain a Chromium media session. The two
   // WASAPI choices use mpv: Shared exposes Aria as an application-audio
@@ -86,6 +92,17 @@ export function useAudioEngine(options: {
     return url.href;
   }, [activeTrack, options.effectiveQualityLevel]);
 
+  const analyserLevel = useMemo(() => {
+    if (!nativePlaybackEnabled || analyserFallbackEnabled) return options.effectiveQualityLevel;
+    // 优先用这首歌真实存在的最低档；有些歌没有标准档，硬编码 standard
+    // 会让旁路 audio 无法加载，频谱就永远没有信号。
+    const levels = activeTrack.availableLevels ?? [];
+    for (const level of ["standard", "higher", "exhigh", "lossless", "hires", "jymaster"] as const) {
+      if (levels.includes(level)) return level;
+    }
+    return options.effectiveQualityLevel;
+  }, [activeTrack.availableLevels, analyserFallbackEnabled, nativePlaybackEnabled, options.effectiveQualityLevel]);
+
   const audioElementStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
@@ -93,13 +110,12 @@ export function useAudioEngine(options: {
 
     const url = new URL(resolvedUrl, window.location.href);
     if (activeTrack.source === "netease" || activeTrack.source === "qq") {
-      // Native mpv owns the audible lossless stream. The renderer copy is
-      // analyser-only, so use the smallest available stream to avoid doubling
-      // high-resolution downloads and decoder memory.
-      url.searchParams.set("level", nativePlaybackEnabled ? "standard" : options.effectiveQualityLevel);
+      // Native mpv owns the audible stream. The renderer copy is analyser-only,
+      // so use the smallest real stream to avoid doubling decoder memory.
+      url.searchParams.set("level", analyserLevel);
     }
     return url.href;
-  }, [activeTrack, options.effectiveQualityLevel, nativePlaybackEnabled]);
+  }, [activeTrack, analyserLevel]);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -149,6 +165,12 @@ export function useAudioEngine(options: {
     }
     previousStreamRef.current = { trackId: activeTrack.id, url: activeStreamUrl };
   }, [activeTrack.id, activeStreamUrl]);
+
+  useEffect(() => {
+    // 不在这里清 playbackError：播放失败后可能自动跳下一首，错误提示需要
+    // 留到用户看见（App 会在几秒后或下一次点歌时清掉）。
+    setAnalyserFallbackEnabled(false);
+  }, [activeTrack.id]);
 
   const syncNativeAudioState = useEffectEvent((state: NativeAudioState) => {
     if (state.kind === "superseded") return;
@@ -523,6 +545,7 @@ export function useAudioEngine(options: {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
         nativeLoadedUrlRef.current = null;
         setNativePlaybackFailed(true);
+        setPlaybackError(`${options.activeTrack.title} 无法加载到音频输出，请检查网络或稍后重试。`);
         options.setPlaying(() => false);
       });
     return () => {
@@ -648,6 +671,7 @@ export function useAudioEngine(options: {
     } catch {
       nativeLoadedUrlRef.current = null;
       setNativePlaybackFailed(true);
+      setPlaybackError(`${options.activeTrack.title} 无法重新加载，请检查网络或稍后重试。`);
       return false;
     }
   });
@@ -842,8 +866,28 @@ export function useAudioEngine(options: {
   }, []);
 
   function handleAudioError() {
-    if (nativePlaybackEnabled) return;
+    if (nativePlaybackEnabled) {
+      // 原生输出已经独立工作，渲染器旁路音频失败只影响频谱。先换当前
+      // 档位再试一次，不要停掉真正的播放。
+      if (!analyserFallbackEnabled) {
+        setAnalyserFallbackEnabled(true);
+        return;
+      }
+      setPlaybackError("频谱取样音频加载失败，歌曲本身可能仍在播放；切换歌曲后会重试。");
+      return;
+    }
     if (!activeStreamUrl || !options.playing) return;
+
+    const mediaError = audioRef.current?.error;
+    const reason =
+      mediaError?.code === 4
+        ? "音频地址无效或格式不受支持，可能受版权/会员限制"
+        : mediaError?.code === 3
+          ? "音频解码失败"
+          : mediaError?.code === 2
+            ? "音频加载失败，可能是音源限流或网络波动"
+            : "音频加载失败";
+    setPlaybackError(`${options.activeTrack.title} 播放失败：${reason}。`);
 
     const now = Date.now();
     const previous = audioErrorRef.current;
@@ -877,6 +921,8 @@ export function useAudioEngine(options: {
     seekNativeTrack,
     activeStreamUrl,
     audioElementStreamUrl,
+    playbackError,
+    setPlaybackError,
     handleAudioError,
     resetAudioError,
     normalizationError,

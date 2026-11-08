@@ -1,6 +1,18 @@
-﻿import { UserRound } from "lucide-react";
+﻿import { AriaIcon, type AriaIconName } from "@/components/icons/aria";
 import { navItems, type ViewId } from "@/data/music";
 import { cn } from "@/lib/utils";
+
+// 浮球里的每个图标都是独立 SVG（aria-icons/nav-*.svg），不再复用
+// lucide 的通用图标，避免“探索/每日推荐”这种入口撞图。
+const navIconNames: Partial<Record<ViewId, AriaIconName>> = {
+  player: "nav-player",
+  cloud: "nav-cloud",
+  artists: "nav-artists",
+  explore: "nav-explore",
+  daily: "nav-daily",
+  radar: "nav-radar",
+  stats: "nav-stats",
+};
 export function FloatingNav({
   activeView,
   open,
@@ -47,16 +59,13 @@ export function FloatingNav({
         onMouseLeave={onRequestClose}
         onClick={() => onOpenChange(!open)}
       >
-        <div
+        <AriaIcon
+          name="nav-orb"
           className={cn(
-            "grid size-7 grid-cols-2 gap-1 transition duration-200",
+            "size-7 text-neutral-950 transition duration-200",
             open && "rotate-45 scale-[0.85]",
           )}
-        >
-          {[0, 1, 2, 3].map((dot) => (
-            <span key={dot} className="rounded-full bg-neutral-950" />
-          ))}
-        </div>
+        />
       </button>
 
       <svg
@@ -92,7 +101,7 @@ export function FloatingNav({
       <div id="floating-nav-nodes" className="pointer-events-none absolute inset-0" aria-hidden={!open}>
         {nodes.map((item, index) => {
           const pos = nodePositions[index];
-          const Icon = item.icon;
+          const iconName = navIconNames[item.id] ?? "nav-player";
           const active = activeView === item.id;
 
           return (
@@ -117,16 +126,18 @@ export function FloatingNav({
               >
                 {item.id === "artists" ? (
                   <span className="relative flex size-8 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7bd9c7] via-[#f5f7ff] to-[#f0a0c9] text-neutral-950">
-                    <UserRound className="size-4" />
+                    <AriaIcon name={iconName} className="size-5" />
                   </span>
                 ) : (
-                  <Icon className="size-5" />
+                  <AriaIcon name={iconName} className="size-5" />
                 )}
                 <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-visible:opacity-100">
                   {item.label}
-                  {(item.id === "cloud" || item.id === "artists" || item.id === "explore") && (
+                  {item.id === "artists" ? (
+                    <span className="ml-1.5 text-white/55">多源</span>
+                  ) : (item.id === "cloud" || item.id === "explore") ? (
                     <span className="ml-1.5 text-white/55">网易云</span>
-                  )}
+                  ) : null}
                 </span>
               </button>
             </div>

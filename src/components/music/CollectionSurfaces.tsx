@@ -273,6 +273,7 @@ export function PlaylistSurface({
   onDeletePlaylist,
   local,
   qq,
+  initialSource = null,
 }: {
   playlists: ProviderPlaylist[];
   local: LocalPlaylistSurfaceProps;
@@ -304,10 +305,12 @@ export function PlaylistSurface({
     onClose: () => void;
     onPickTrack: (id: string, queue?: Track[]) => void;
   };
+  /** 从搜索/探索直接打开某个来源的歌单时强制初始标签。 */
+  initialSource?: "netease" | "local" | "qq" | null;
 }) {
   const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
   const [playlistSource, setPlaylistSource] = useState<"netease" | "local" | "qq">(() =>
-    qq.connected && !canCreatePlaylist ? "qq" : "netease",
+    initialSource ?? (qq.connected && !canCreatePlaylist ? "qq" : "netease"),
   );
   const playlistConnectionRef = useRef({ netease: canCreatePlaylist, qq: qq.connected });
   useEffect(() => {
@@ -360,7 +363,7 @@ export function PlaylistSurface({
   if (playlistSource === "qq") {
     if (qq.selectedPlaylist) {
       const selectedPlaylist = qq.selectedPlaylist;
-      return <PlaylistDetail key={selectedPlaylist.id} playlist={selectedPlaylist} tracks={qq.tracks} loading={qq.loading} error={qq.error} connected={false} playCounts={playCounts}
+      return <PlaylistDetail key={selectedPlaylist.id} playlist={selectedPlaylist} tracks={qq.tracks} loading={qq.loading} error={qq.error} connected={false} showSubscribe={false} playCounts={playCounts}
         onBack={qq.onClose} onRetry={() => qq.onOpen(selectedPlaylist)} onPickTrack={qq.onPickTrack}
         onUpdate={async () => {}} onUploadCover={async () => {}} onRemove={async () => {}} onReorder={async () => {}}
         onSubscribe={async () => {}} onDelete={async () => {}} onRequireLogin={onRequireLogin} />;

@@ -5,7 +5,7 @@ import { splitArtistNames } from "@/lib/playerPresentation";
 export type ArtistSummary = {
   id: string;
   name: string;
-  source: "local" | "netease" | "mixed";
+  source: "local" | "netease" | "qq" | "mixed";
   avatarUrl?: string | null;
   trackCount: number;
   albumCount?: number | null;
@@ -13,11 +13,16 @@ export type ArtistSummary = {
 };
 
 export function providerArtistToUiArtist(artist: ProviderArtist): ArtistSummary {
+  const source = artist.source === "qq" ? "qq" : artist.source === "netease" ? "netease" : "mixed";
   return {
     id: `${artist.source}:${artist.id}`,
     name: artist.name,
-    source: artist.source === "netease" ? "netease" : "mixed",
-    avatarUrl: artist.avatarUrl ? api.getNeteaseCoverUrl(artist.avatarUrl) : null,
+    source,
+    avatarUrl: artist.avatarUrl
+      ? source === "qq"
+        ? api.getSourceCoverUrl("qq", artist.avatarUrl)
+        : api.getNeteaseCoverUrl(artist.avatarUrl)
+      : null,
     trackCount: artist.trackCount ?? 0,
     albumCount: artist.albumCount ?? null,
     providerId: artist.id,
@@ -73,5 +78,6 @@ export function createLocalArtistSummaries(tracks: Track[]) {
 export function artistSourceLabel(source: ArtistSummary["source"]) {
   if (source === "local") return "本地";
   if (source === "netease") return "网易云";
+  if (source === "qq") return "QQ 音乐";
   return "混合";
 }

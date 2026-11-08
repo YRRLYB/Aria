@@ -1200,7 +1200,10 @@ export function OnboardingDialog({
           <div className="mt-5">
             <h2 className="text-xl font-semibold">连接你的播放源</h2>
             <p className="mt-2 text-sm text-neutral-500">
-              Aria 支持多个音源：网易云音乐提供每日推荐、私人漫游与歌单，QQ 音乐提供搜索与高音质在线播放。也可以稍后在设置或右上角完成。
+              Aria 支持多个音源：网易云音乐提供每日推荐、私人漫游与歌单，QQ 音乐提供搜索、播放、歌词、我喜欢、歌单读取和每日推荐。也可以稍后在设置或右上角完成。
+            </p>
+            <p className="mt-3 rounded-[1rem] border border-emerald-200/70 bg-emerald-50/70 px-4 py-3 text-xs leading-6 text-emerald-900/80">
+              QQ 音乐提示：建议用手机 QQ 扫码登录，登录后才能同步「我喜欢」和读取歌单；歌曲旁出现 VIP 表示整首收听需要绿钻，只有高音质受限的歌曲不会标 VIP。QQ 音乐歌单目前在 Aria 内只读，编辑请回到 QQ 音乐。
             </p>
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <NeteaseSourceCard embedded account={neteaseAccount} onAccountChange={onAccountChange} />
@@ -1705,7 +1708,7 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
       {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
       {!account?.connected && (
         <p className="mt-3 text-xs text-neutral-400">
-          绑定后即可搜索播放；部分音质需要 VIP Cookie。
+          绑定后可搜索、播放、读取歌单并双向同步「我喜欢」；VIP 歌需要绿钻账号才能整首播放，仅高音质受限不会影响普通播放。
         </p>
       )}
     </section>

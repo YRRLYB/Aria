@@ -5,5 +5,5 @@ export const qqManifest: SourceManifest = {
   name: "QQ音乐",
   shortName: "QQ",
   version: "1.0.0",
-  artworkHosts: ["gtimg.cn"],
+  artworkHosts: ["gtimg.cn", "qpic.y.qq.com"],
 };

@@ -1,9 +1,16 @@
 import type { MusicProvider } from "./musicProvider";
-import { getQqAccount, getQqLikedTracks, getQqPlaylistTracks, getQqPlaylists } from "../sources/qq/client";
+import {
+  getQqAccount,
+  getQqDailyRecommendTracks,
+  getQqLikedTracks,
+  getQqPlaylistTracks,
+  getQqPlaylists,
+  getQqRoamTracks,
+} from "../sources/qq/client";
 
 /**
- * QQ Music account layer (read-only): 我喜欢 plus the profile playlists.
- * Playlist writes stay netease-only until QQ documents a stable write API.
+ * QQ Music account layer: 我喜欢 reads/writes plus the profile playlists.
+ * Playlist editing stays read-only in Aria; only the 201 liked list is written.
  */
 export const qqProvider: MusicProvider = {
   id: "qq",
@@ -27,9 +34,17 @@ export const qqProvider: MusicProvider = {
     return getQqPlaylistTracks(playlistId);
   },
   async getDailyRecommendations() {
-    throw new Error("QQ 音乐暂不支持每日推荐");
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      tracks: await getQqDailyRecommendTracks(),
+      reason: "QQ 音乐官方榜单聚合",
+    };
   },
-  async getPrivateRoaming() {
-    throw new Error("QQ 音乐暂不支持私人漫游");
+  async getPrivateRoaming(limit = 30, options = {}) {
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      tracks: await getQqRoamTracks(limit, options.excludeIds ?? []),
+      reason: "从 QQ 音乐官方榜单里随机发现",
+    };
   },
 };

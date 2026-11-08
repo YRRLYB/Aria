@@ -206,6 +206,30 @@ button:disabled { cursor: default; }
 .home-activity-labels { display: flex; justify-content: space-between; gap: 8px; padding: 8px 3px 0; color: #a2a6bc; font-size: 9px; font-variant-numeric: tabular-nums; }
 .home-today-note { display: flex; align-items: flex-start; gap: 7px; margin: 22px 0 0; padding-top: 16px; border-top: 1px solid #e8e7f2; color: #a1a4b8; font-size: 10px; line-height: 1.6; }
 .home-today-note svg { width: 13px; height: 13px; flex: 0 0 auto; margin-top: 1px; color: #a996e5; }
+/* 根目录 meow.png 的线稿用 mask 上色：浅色主题是紫色渐变，深色主题
+   自动换成更亮的雾紫色，不需要为两套主题各存一张图。 */
+.home-character { display: flex; flex: 1 1 auto; align-items: flex-end; justify-content: flex-end; min-height: 86px; margin-top: 10px; pointer-events: none; }
+.home-character-art {
+  display: block;
+  height: 100%;
+  width: auto;
+  max-width: min(78%, 168px);
+  aspect-ratio: 914 / 991;
+  background: linear-gradient(160deg, #8d76d8 0%, #b9a5f1 55%, #e1d8ff 100%);
+  opacity: .88;
+  -webkit-mask-position: center bottom;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center bottom;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  filter: drop-shadow(0 12px 20px rgba(96, 78, 150, .16));
+  animation: home-character-float 7s ease-in-out infinite;
+}
+@keyframes home-character-float {
+  0%, 100% { transform: translateY(0) rotate(-.4deg); }
+  50% { transform: translateY(-5px) rotate(.5deg); }
+}
 
 .home-section { position: relative; min-width: 0; }
 .home-recent { padding: 0 6px; }
@@ -291,6 +315,7 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .app-nav-link, .home-song-play, .home-recent-track, .home-card-play { transition: none; }
   .home-dashboard::before { animation: none; }
+  .home-character-art { animation: none; }
 }
 
 /* Equalizer surfaces: base (light) values; night overrides live in dark.css. */

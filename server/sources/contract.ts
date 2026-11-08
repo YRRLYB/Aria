@@ -1,4 +1,4 @@
-import type { ProviderArtist, ProviderPlaylist, ProviderTrack } from "../providers/musicProvider";
+import type { ProviderAlbum, ProviderArtist, ProviderPlaylist, ProviderTrack } from "../providers/musicProvider";
 import type { LyricLine } from "../../src/lib/lyricTypes";
 import { HttpError } from "../utils/httpError";
 
@@ -52,7 +52,7 @@ export function levelsUpTo(level: AriaLevel | null | undefined): AriaLevel[] {
   return index < 0 ? [] : ARIA_LEVELS.slice(0, index + 1);
 }
 
-export type SourceSearchMode = "tracks" | "artists" | "playlists";
+export type SourceSearchMode = "tracks" | "artists" | "playlists" | "albums";
 
 export type SourceSearchQuery = {
   query: string;
@@ -65,6 +65,7 @@ export type SourceSearchPage = {
   tracks: ProviderTrack[];
   artists: ProviderArtist[];
   playlists: ProviderPlaylist[];
+  albums?: ProviderAlbum[];
 };
 
 export type SourceAccount = {
@@ -170,6 +171,16 @@ export type MusicSource = {
   ): Promise<SourceStreamMeta>;
   getLyrics?(trackId: string, signal?: AbortSignal): Promise<LyricLine[]>;
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
+  /** 收藏/取消收藏（QQ 红心等）；未实现的源不提供该入口。 */
+  setLike?(trackId: string, liked: boolean): Promise<{ ok: boolean; liked: boolean }>;
+  /** 歌手详情页（简介 + 基础资料）。 */
+  getArtistDetail?(artistId: string): Promise<{ artist: ProviderArtist; description: string; sections: Array<{ title: string; text: string }> }>;
+  /** 歌手专辑分页。 */
+  getArtistAlbums?(artistId: string, limit: number, offset: number): Promise<{ albums: ProviderAlbum[]; more: boolean }>;
+  /** 歌手曲目分页。 */
+  getArtistTracks?(artistId: string, limit: number, offset: number): Promise<{ tracks: ProviderTrack[]; more: boolean }>;
+  /** 专辑详情 + 曲目。 */
+  getAlbum?(albumId: string): Promise<{ album: ProviderAlbum; tracks: ProviderTrack[] }>;
   /** 每日推荐(源内聚实现;网易云走旧路由,这里服务于新源)。 */
   getDailyRecommendTracks?(signal?: AbortSignal): Promise<ProviderTrack[]>;
   /** 私人漫游:随机发现,excludeIds 为最近播放的 TrackKey。 */

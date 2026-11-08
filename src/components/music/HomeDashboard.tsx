@@ -4,6 +4,8 @@ import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatBitrate, parseDuration, qualityOptions } from "@/lib/playerPresentation";
 import type { Track, ViewId } from "@/data/music";
+// 根目录的 meow 线稿：用 CSS mask 上色，深浅主题切换时人物颜色会跟着变。
+import meowArtwork from "../../../meow.png";
 
 const DAY_MS = 86_400_000;
 
@@ -75,6 +77,15 @@ function TodayListening({ snapshot }: { snapshot: ListeningSnapshot }) {
         <div className="home-activity-labels" aria-hidden="true">{labels.map((label) => <span key={label}>{label}</span>)}</div>
       </div>
       <p className="home-today-note"><Clock3 aria-hidden="true" />{latest ? "按最近播放记录估算，重复播放会合并到歌曲记录。" : "播放一首歌后，这里会留下今天的聆听轨迹。"}</p>
+      <div className="home-character" aria-hidden="true">
+        <span
+          className="home-character-art"
+          style={{
+            WebkitMaskImage: `url("${meowArtwork}")`,
+            maskImage: `url("${meowArtwork}")`,
+          }}
+        />
+      </div>
     </aside>
   );
 }

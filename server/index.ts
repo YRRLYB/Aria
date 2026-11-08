@@ -43,7 +43,7 @@ const remoteCoverCache = new RemoteCoverCache({ directory: path.join(cacheDir, "
 // QQ covers use fixed-size CDN variants, so no resize parameter is appended.
 const qqCoverCache = new RemoteCoverCache({
   directory: path.join(cacheDir, "covers-qq"),
-  allowedHosts: ["gtimg.cn"],
+  allowedHosts: ["gtimg.cn", "qpic.y.qq.com"],
   sizing: null,
   errorPrefix: "QQ_COVER",
 });
@@ -392,8 +392,8 @@ app.get("/api/providers/netease/tracks/:trackId/stream", async (req, res, next) 
         level: z.enum(["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]).optional(),
       })
       .parse(req.query);
-    await proxyAudioStream(req, res, async () => {
-      const meta = await neteaseClient.getStreamMeta(req.params.trackId, query.level);
+    await proxyAudioStream(req, res, async (attempt) => {
+      const meta = await neteaseClient.getStreamMeta(req.params.trackId, query.level, attempt > 0);
       if (!meta.url) {
         throw new HttpError(404, NETEASE_NO_PLAYABLE_URL_MESSAGE, "NETEASE_URL_UNAVAILABLE");
       }
@@ -429,6 +429,21 @@ app.post("/api/providers/netease/tracks/:trackId/like", async (req, res, next) =
   try {
     const body = z.object({ liked: z.boolean() }).parse(req.body);
     res.json(await neteaseClient.setLike(req.params.trackId, body.liked));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Non-NetEase sources opt into likes through the source contract (QQ Music
+// writes to dirId 201 with its signed web channel).
+app.post("/api/providers/:providerId/tracks/:trackId/like", async (req, res, next) => {
+  try {
+    const body = z.object({ liked: z.boolean() }).parse(req.body);
+    const source = await getSource(req.params.providerId);
+    if (!source.setLike) {
+      throw new HttpError(400, `${source.manifest.name}暂不支持同步红心`, "SOURCE_LIKE_UNSUPPORTED");
+    }
+    res.json(await source.setLike(req.params.trackId, body.liked));
   } catch (error) {
     next(error);
   }

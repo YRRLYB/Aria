@@ -20,7 +20,7 @@ import { readStore } from "../store";
 import { HttpError } from "../utils/httpError";
 import { quantizeBitrate } from "../utils/bitrate";
 import { clearCache, remember } from "../utils/memoryCache";
-import { clearPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
+import { clearPersistent, getPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
 import { normalizeSongCreators, normalizeSongWiki } from "../utils/songEncyclopedia";
 import type { SongEncyclopedia } from "../../src/lib/songEncyclopedia";
 
@@ -165,6 +165,9 @@ const weekTtl = 7 * dayTtl;
 const qualityOrder = ["standard", "higher", "exhigh", "lossless", "hires", "jymaster"] as const;
 const maxLikedTracks = 2000;
 const maxPlaylistTracks = 5000;
+// 只对成功解析出的 URL 使用持久缓存；失败/空 URL 绝不能缓存 25 分钟，
+// 否则用户登录、网络恢复或频控解除后，点击同一首歌仍然“没反应”。
+const streamUrlPending = new Map<string, Promise<NeteaseStreamMeta>>();
 
 type QualityLevel = (typeof qualityOrder)[number];
 
@@ -801,17 +804,45 @@ export class NeteaseClient {
   }
 
   async getSongUrl(songId: string | number, level = "lossless") {
-    const { cookie, userId } = await this.requireSession();
-    const meta = await this.getSongUrlCached(songId, level as QualityLevel, cookie, userId);
+    const meta = await this.getStreamMeta(songId, level);
     return meta.url;
   }
 
-  async getStreamMeta(songId: string | number, level = "lossless") {
+  async getStreamMeta(songId: string | number, level = "lossless", refresh = false) {
     // Playback must not depend on a login: NetEase serves free tracks (and the
-    // best quality the anonymous session is allowed) without a cookie, and the
-    // URL endpoint already degrades lossless down to exhigh/standard by itself.
+    // best quality the anonymous session is allowed) without a cookie.
     const { cookie, userId } = await this.optionalSession();
-    return this.getSongUrlCached(songId, level as QualityLevel, cookie, userId);
+    const requested = (qualityOrder.includes(level as QualityLevel) ? level : "lossless") as QualityLevel;
+    const requestedIndex = qualityOrder.indexOf(requested);
+    const requestedMeta = await this.getSongUrlCached(songId, requested, cookie, userId, refresh);
+    if (requestedMeta.url) return requestedMeta;
+
+    // 某些歌曲没有请求档位（例如只有标准/较高），旧实现直接返回 null，
+    // 前端表现为“点了没反应”。按歌曲真实存在的低档位逐级回退；详情里
+    // 没有档位信息时才盲试所有更低档。
+    const knownLower = requestedMeta.availableLevels
+      .filter((level) => qualityOrder.indexOf(level) < requestedIndex)
+      .sort((left, right) => qualityOrder.indexOf(right) - qualityOrder.indexOf(left));
+    // 详情已明确“只有这些档位”时不再盲试；完全不知道档位时才逐级下探。
+    const candidates = requestedMeta.availableLevels.length
+      ? knownLower
+      : qualityOrder.slice(0, requestedIndex).slice().reverse();
+    let lastMeta: NeteaseStreamMeta = requestedMeta;
+    for (const candidate of candidates) {
+      if (neteaseUrlResolveCoolingDown()) break;
+      const meta = await this.getSongUrlCached(songId, candidate, cookie, userId);
+      if (meta.url) return meta;
+      lastMeta = meta;
+    }
+    return lastMeta ?? {
+      url: null,
+      bitrate: null,
+      sampleRate: null,
+      size: null,
+      quality: qualityFromLevel(requested),
+      currentLevel: null,
+      availableLevels: [],
+    };
   }
 
   async setLike(songId: string | number, liked: boolean) {
@@ -945,8 +976,27 @@ export class NeteaseClient {
     return rememberPersistent(`netease:lyrics:v3:${songId}`, weekTtl, () => fetchNeteaseLyrics(songId));
   }
 
-  private async getSongUrlCached(songId: string | number, level: QualityLevel, cookie: string, userId: string) {
-    return rememberPersistent(`netease:url:v3:${userId}:${songId}:${level}`, 25 * 60_000, async () => {
+  private async getSongUrlCached(
+    songId: string | number,
+    level: QualityLevel,
+    cookie: string,
+    userId: string,
+    refresh = false,
+  ): Promise<NeteaseStreamMeta> {
+    const key = `netease:url:v3:${userId}:${songId}:${level}`;
+    if (refresh) {
+      await clearPersistent(key);
+      streamUrlPending.delete(key);
+    } else {
+      const cached = await getPersistent<NeteaseStreamMeta>(key);
+      // 旧版本会把 url:null 也写进缓存；这里只接受真正可播放的旧条目。
+      if (cached?.url) return cached;
+    }
+    const pending = streamUrlPending.get(key);
+    if (pending) return pending;
+
+    let request: Promise<NeteaseStreamMeta>;
+    request = (async () => {
       // Private cloud uploads can have no entry in the public song catalogue.
       // Resolve their own metadata before asking the normal URL endpoint. The
       // cloud-disk fallback needs a real session, so an anonymous request keeps
@@ -973,7 +1023,7 @@ export class NeteaseClient {
         | undefined;
       const stream = data?.[0];
       const actualLevel = normalizeLevel(stream?.level) ?? (stream?.url ? level : null);
-      return {
+      const meta = {
         url: stream?.url ?? null,
         bitrate: normalizeBitrate(stream?.br),
         sampleRate: normalizeSampleRate(stream?.sr),
@@ -982,7 +1032,13 @@ export class NeteaseClient {
         currentLevel: actualLevel,
         availableLevels: uniqueLevels([...availableLevelsFromSong(song), ...(actualLevel ? [actualLevel] : [])]),
       } satisfies NeteaseStreamMeta;
+      if (meta.url) await setPersistent(key, 25 * 60_000, meta);
+      return meta;
+    })().finally(() => {
+      if (streamUrlPending.get(key) === request) streamUrlPending.delete(key);
     });
+    streamUrlPending.set(key, request);
+    return request;
   }
 
   private async getSongDetailCached(songId: string | number, cookie: string) {
@@ -1144,6 +1200,7 @@ function normalizePlaylist(playlist: NeteasePlaylist, currentUserId?: string): P
   return {
     id: String(playlist.id),
     name: playlist.name,
+    source: "netease",
     trackCount: playlist.trackCount ?? 0,
     subscribed: Boolean(playlist.subscribed),
     ownerId: ownerId == null ? null : String(ownerId),
@@ -1191,7 +1248,7 @@ function normalizeMatchedLyric(lyrics?: string[] | string): string | null {
 function normalizeAlbum(album: NeteaseAlbum): ProviderAlbum {
   const artists = album.artists?.length ? album.artists : album.artist ? [album.artist] : [];
   return {
-    id: String(album.id), name: album.name,
+    id: String(album.id), name: album.name, source: "netease",
     artist: artists.map((artist) => artist.name).filter(Boolean).join(" / ") || "Unknown Artist",
     artistId: (album.artist?.id ?? artists[0]?.id) != null ? String(album.artist?.id ?? artists[0]?.id) : null,
     coverUrl: album.picUrl ?? null, publishTime: album.publishTime ?? null,

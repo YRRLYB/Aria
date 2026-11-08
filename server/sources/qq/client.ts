@@ -1,4 +1,4 @@
-import type { ProviderPlaylist, ProviderTrack } from "../../providers/musicProvider";
+import type { ProviderAlbum, ProviderArtist, ProviderPlaylist, ProviderTrack } from "../../providers/musicProvider";
 import { readStore, updateStore } from "../../store";
 import { HttpError } from "../../utils/httpError";
 import { parseNeteaseLyrics } from "../../utils/lyricParser";
@@ -12,6 +12,7 @@ import {
   type AriaLevel,
   type SourceAccount,
 } from "../contract";
+import { decodeAg1Response, encodeAg1Request, zzcSign } from "./signing";
 
 /**
  * Hand-rolled QQ Music client: pure fetch against the web endpoints, no SDK
@@ -40,8 +41,10 @@ const PURL_CACHE_MAX = 500;
 type QqSinger = { mid?: string; name?: string };
 
 type QqSearchSong = {
+  id?: number | string;
   mid?: string;
   name?: string;
+  type?: number;
   interval?: number;
   singer?: QqSinger[];
   album?: { mid?: string; title?: string; name?: string };
@@ -56,6 +59,43 @@ type QqSearchSong = {
     size_96aac?: number | string;
     size_128aac?: number | string;
   };
+};
+
+type QqSingerSearchItem = {
+  singerID?: number;
+  singerMID?: string;
+  singerName?: string;
+  singerPic?: string;
+  songNum?: number;
+  albumNum?: number;
+};
+
+type QqAlbumSearchItem = {
+  albumID?: number;
+  albumMID?: string;
+  albumName?: string;
+  albumPic?: string;
+  singerName?: string;
+  singerMID?: string;
+  publicTime?: string;
+  song_count?: number;
+};
+
+type QqPlaylistSearchItem = {
+  dissid?: number | string;
+  dissname?: string;
+  song_count?: number;
+  imgurl?: string;
+  introduction?: string;
+  creator?: { name?: string };
+  listennum?: number;
+};
+
+type QqSearchBody = {
+  song?: { list?: QqSearchSong[] };
+  singer?: { list?: QqSingerSearchItem[] };
+  album?: { list?: QqAlbumSearchItem[] };
+  songlist?: { list?: QqPlaylistSearchItem[] };
 };
 
 type QqFileSpec = { formats: Array<{ prefix: string; extension: string; label: ProviderTrack["quality"] }>; bitrate: number | null };
@@ -143,13 +183,26 @@ export function parseQqCookie(cookie: string): QqSessionIdentity | null {
   return wxUin && wxKey ? { uin: wxUin, key: wxKey, loginType: 2 } : null;
 }
 
+type MusicuOptions = {
+  cookie?: string | null;
+  signal?: AbortSignal;
+  /** 默认用 requestKey；搜索模块要求用 module 名作为外层 key。 */
+  envelopeKey?: string;
+  /** 搜索模块不接受顶层 comm，只带 Cookie 头。 */
+  includeComm?: boolean;
+};
+
+type MusicuSection = { code?: number; msg?: string; message?: string; data?: unknown };
+
 async function musicu<T>(
   requestKey: string,
   moduleName: string,
   method: string,
   param: Record<string, unknown>,
-  options: { cookie?: string | null; signal?: AbortSignal } = {},
+  options: MusicuOptions = {},
 ): Promise<T> {
+  const identity = options.cookie ? parseQqCookie(options.cookie) : null;
+  const envelopeKey = options.envelopeKey ?? requestKey;
   const response = await fetch(`${MUSICU_URL}?format=json`, {
     method: "POST",
     headers: {
@@ -159,27 +212,44 @@ async function musicu<T>(
       ...(options.cookie ? { Cookie: options.cookie } : {}),
     },
     body: JSON.stringify({
-      ...(options.cookie && parseQqCookie(options.cookie) ? {
+      ...(options.includeComm !== false && identity ? {
         comm: {
           ct: 24, cv: 0,
-          uin: parseQqCookie(options.cookie)!.uin,
-          authst: parseQqCookie(options.cookie)!.key,
-          tmeLoginType: parseQqCookie(options.cookie)!.loginType === 2 ? 1 : 2,
+          uin: identity.uin,
+          authst: identity.key,
+          tmeLoginType: identity.loginType === 2 ? 1 : 2,
         },
       } : {}),
-      [requestKey]: { module: moduleName, method, param },
+      [envelopeKey]: { module: moduleName, method, param },
     }),
     signal: options.signal,
   });
   if (!response.ok) {
     throw new SourceError("UPSTREAM_FAILED", `QQ音乐接口请求失败 (${response.status})`, { source: "qq" });
   }
-  const payload = (await response.json()) as Record<string, { code?: number; data?: unknown } | undefined>;
-  const section = payload[requestKey];
-  if (!section || (section.code !== undefined && section.code !== 0)) {
-    throw new SourceError("UPSTREAM_FAILED", "QQ音乐接口返回异常", { source: "qq" });
+  const payload = (await response.json().catch(() => null)) as Record<string, MusicuSection | undefined> | null;
+  const section = payload?.[envelopeKey] ?? payload?.[requestKey];
+  const code = Number(section?.code ?? 0);
+  // QQ 搜索/账号模块在频控时返回 2001（业务块 code，HTTP 仍是 200）。
+  if (code === 2001) {
+    throw new SourceError("RATE_LIMITED", "QQ音乐提示操作过于频繁，请稍后再试", {
+      source: "qq",
+      retryAfterMs: 1_500,
+    });
+  }
+  if (!section || code !== 0) {
+    const message = String(section?.msg ?? section?.message ?? "").trim();
+    throw new SourceError(
+      "UPSTREAM_FAILED",
+      message ? `QQ音乐接口返回异常：${message}` : "QQ音乐接口返回异常",
+      { source: "qq" },
+    );
   }
   return section.data as T;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function optionalQqCookie(): Promise<{ cookie: string; parsed: QqSessionIdentity } | null> {
@@ -193,6 +263,19 @@ async function optionalQqCookie(): Promise<{ cookie: string; parsed: QqSessionId
 // Search results carry the file metadata needed to resolve streams later; the
 // data is tiny and bounded by the number of searched songs per session.
 const fileInfoCache = new Map<string, { mediaMid: string; availableLevels: AriaLevel[]; durationSeconds: number | null }>();
+// 红心写入需要数字 songId，而推荐/榜单路径只有 MID；搜索和歌单响应里顺手缓存。
+const songMetaCache = new Map<string, { songId: number; songType: number }>();
+// 客户端防抖：同一关键词/类型/页码在 20 秒内只打一次上游，避免连点“加载更多”触发 2001。
+const searchPageCache = new Map<string, { expiresAt: number; body: QqSearchBody }>();
+const searchPageCacheTtl = 20_000;
+const searchPageCacheMax = 160;
+// 每次切页面都探测一次 QQ 资料很容易撞上 2001；按 Cookie 缓存 30 秒，
+// 登录/退出时由 saveQqCookie/clearQqCookie 主动失效。
+let accountCache: { cookie: string; expiresAt: number; value: SourceAccount } | null = null;
+// 窗口重新聚焦时可能连续触发多次同步；短缓存既保持“刚点完红心”的新鲜度，
+// 又避免同一秒内反复打 QQ 个人主页。
+let likedTracksCache: { cookie: string; expiresAt: number; tracks: ProviderTrack[] } | null = null;
+let playlistsCache: { cookie: string; expiresAt: number; playlists: ProviderPlaylist[] } | null = null;
 
 /**
  * 歌曲 VIP 标记缓存(true=免费)。2026-11-06 实测:GetEVkey 请求里只要混入
@@ -208,6 +291,17 @@ let vipProbeState: "unknown" | "capable" | "incapable" = "unknown";
 function rememberFileInfo(song: QqSearchSong) {
   if (!song.mid) return;
   if (song.pay) payCache.set(song.mid, song.pay.pay_play === 0);
+  const numericId = Number(song.id);
+  if (Number.isSafeInteger(numericId) && numericId > 0) {
+    songMetaCache.set(song.mid, {
+      songId: numericId,
+      songType: Number.isSafeInteger(Number(song.type)) ? Math.max(0, Number(song.type)) : 0,
+    });
+    if (songMetaCache.size > 1000) {
+      const oldest = songMetaCache.keys().next().value;
+      if (oldest !== undefined) songMetaCache.delete(oldest);
+    }
+  }
   const availableLevels = availableQqLevels(song.file);
   if (!availableLevels.length && !song.file?.media_mid) return;
   fileInfoCache.set(song.mid, {
@@ -279,32 +373,139 @@ export function normalizeQqSong(song: QqSearchSong): ProviderTrack {
     sampleRate: null,
     currentLevel,
     availableLevels,
-    // pay_play === 0 才能匿名/免费播放；热门歌曲几乎全是 VIP 专属，
-    // 提前标出来让用户知道哪些点了会拿不到播放地址。
-    vip: song.pay?.pay_play !== 0,
+    // pay_play === 0 才能匿名/免费播放；缺失 pay 字段时不能默认当成 VIP，
+    // 否则免费歌曲也会被错误标成“需要会员”。这个标记只表示“整首收听需要
+    // 会员”，仅高音质受限（pay_down/pay_month）不参与。
+    vip: Number(song.pay?.pay_play ?? 0) > 0,
   };
 }
 
-export async function searchQqTracks(query: string, limit: number, offset: number): Promise<ProviderTrack[]> {
+/**
+ * QQ 的搜索类型：0 单曲、1 歌手、2 专辑、3 歌单。非单曲类型目前只返回
+ * 对应列表；搜索结果同样会间歇返回 2001，所以统一走这套退避 + 缓存。
+ */
+async function fetchQqSearchBody(
+  query: string,
+  searchType: 0 | 1 | 2 | 3,
+  limit: number,
+  offset: number,
+): Promise<QqSearchBody> {
   const safeQuery = query.trim().slice(0, 120);
-  if (!safeQuery) return [];
+  if (!safeQuery) return {};
+  const pageSize = Math.max(1, Math.min(50, limit));
+  const page = Math.floor(offset / pageSize) + 1;
+  const cacheKey = `${searchType}\u0000${safeQuery}\u0000${pageSize}\u0000${page}`;
+  const cached = searchPageCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.body;
+  if (cached) searchPageCache.delete(cacheKey);
+
   const cookie = (await optionalQqCookie())?.cookie;
-  const signal = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
-  const data = await musicu<{ body?: { song?: { list?: QqSearchSong[] } } }>(
-    "search",
-    "music.search.SearchCgiService",
-    "DoSearchForQQMusicDesktop",
-    {
-      search_type: 0,
-      query: safeQuery,
-      page_num: Math.floor(offset / Math.max(1, limit)) + 1,
-      num_per_page: Math.max(1, Math.min(50, limit)),
-    },
-    { cookie, signal },
-  );
-  const songs = data.body?.song?.list ?? [];
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const data = await musicu<{ body?: QqSearchBody }>(
+        "search",
+        "music.search.SearchCgiService",
+        "DoSearchForQQMusicDesktop",
+        {
+          search_type: searchType,
+          query: safeQuery,
+          page_num: page,
+          num_per_page: pageSize,
+        },
+        {
+          cookie,
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+          // 规范形状：外层 key 必须等于 module 名，且搜索结果不接受顶层 comm。
+          envelopeKey: "music.search.SearchCgiService",
+          includeComm: false,
+        },
+      );
+      const body = data.body ?? {};
+      searchPageCache.set(cacheKey, { expiresAt: Date.now() + searchPageCacheTtl, body });
+      if (searchPageCache.size > searchPageCacheMax) {
+        const oldest = searchPageCache.keys().next().value;
+        if (oldest !== undefined) searchPageCache.delete(oldest);
+      }
+      return body;
+    } catch (error) {
+      lastError = error;
+      const retryable = error instanceof SourceError && error.code === "RATE_LIMITED";
+      if (!retryable || attempt === 3) throw error;
+      await sleep(300 * 2 ** attempt);
+    }
+  }
+  throw lastError;
+}
+
+export async function searchQqTracks(query: string, limit: number, offset: number): Promise<ProviderTrack[]> {
+  const body = await fetchQqSearchBody(query, 0, limit, offset);
+  const songs = body.song?.list ?? [];
   songs.forEach(rememberFileInfo);
   return songs.map(normalizeQqSong).filter((track) => track.id);
+}
+
+export async function searchQqArtists(query: string, limit: number, offset: number): Promise<ProviderArtist[]> {
+  const body = await fetchQqSearchBody(query, 1, limit, offset);
+  return (body.singer?.list ?? []).flatMap((item) => {
+    const id = item.singerMID?.trim();
+    if (!id) return [];
+    return [{
+      id,
+      name: item.singerName ?? "未知歌手",
+      source: "qq",
+      avatarUrl: item.singerPic
+        ? httpsAvatar(item.singerPic)
+        : `https://y.gtimg.cn/music/photo_new/T001R300x300M000${id}.jpg`,
+      trackCount: Number(item.songNum) || null,
+      albumCount: Number(item.albumNum) || null,
+    } satisfies ProviderArtist];
+  });
+}
+
+function normalizeQqAlbum(item: QqAlbumSearchItem): ProviderAlbum | null {
+  const id = item.albumMID?.trim();
+  if (!id) return null;
+  const publishTime = item.publicTime ? Date.parse(item.publicTime) : Number.NaN;
+  return {
+    id,
+    name: item.albumName ?? "未知专辑",
+    source: "qq",
+    artist: item.singerName ?? "未知歌手",
+    artistId: item.singerMID ?? null,
+    coverUrl: item.albumPic
+      ? httpsAvatar(item.albumPic)
+      : `https://y.gtimg.cn/music/photo_new/T002R300x300M000${id}.jpg`,
+    publishTime: Number.isFinite(publishTime) ? publishTime : null,
+    trackCount: Number(item.song_count) || null,
+  };
+}
+
+export async function searchQqAlbums(query: string, limit: number, offset: number): Promise<ProviderAlbum[]> {
+  const body = await fetchQqSearchBody(query, 2, limit, offset);
+  return (body.album?.list ?? []).flatMap((item) => {
+    const album = normalizeQqAlbum(item);
+    return album ? [album] : [];
+  });
+}
+
+export async function searchQqPlaylists(query: string, limit: number, offset: number): Promise<ProviderPlaylist[]> {
+  const body = await fetchQqSearchBody(query, 3, limit, offset);
+  return (body.songlist?.list ?? []).flatMap((item) => {
+    if (item.dissid == null || !item.dissname) return [];
+    return [{
+      id: String(item.dissid),
+      name: item.dissname,
+      source: "qq",
+      trackCount: Number(item.song_count) || 0,
+      subscribed: false,
+      owned: false,
+      coverColor: "#31C27C",
+      coverUrl: item.imgurl ? httpsAvatar(item.imgurl) : null,
+      description: item.introduction ?? undefined,
+      creatorName: item.creator?.name ?? undefined,
+    } satisfies ProviderPlaylist];
+  });
 }
 
 type MidurlInfo = { purl?: string; filename?: string; filesize?: number | string; bitrate?: number | string };
@@ -631,18 +832,41 @@ async function fetchProfileHomepage(uin: string, cookie: string, signal: AbortSi
 export async function getQqAccount(): Promise<SourceAccount> {
   const session = await optionalQqCookie();
   if (!session) return disconnectedAccount();
+  const now = Date.now();
+  if (accountCache?.cookie === session.cookie && accountCache.expiresAt > now) {
+    return accountCache.value;
+  }
   const signal = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
+  let account: SourceAccount | null = null;
   try {
-    const fromAndroid = await fetchLoginUserInfo(session.parsed, session.cookie, signal);
-    if (fromAndroid) return fromAndroid;
+    account = await fetchLoginUserInfo(session.parsed, session.cookie, signal);
   } catch {
     // Fall through to the web-session probe.
   }
-  try {
-    return (await fetchProfileHomepage(session.parsed.uin, session.cookie, signal)) ?? disconnectedAccount();
-  } catch {
-    return disconnectedAccount();
+  if (!account) {
+    try {
+      account = await fetchProfileHomepage(session.parsed.uin, session.cookie, signal);
+    } catch {
+      account = null;
+    }
   }
+  const value = account ?? disconnectedAccount();
+  if (value.connected) {
+    accountCache = { cookie: session.cookie, expiresAt: now + 30_000, value };
+  }
+  return value;
+}
+
+function clearQqReadCaches() {
+  clearPurlCache();
+  payCache.clear();
+  vipProbeState = "unknown";
+  fileInfoCache.clear();
+  songMetaCache.clear();
+  searchPageCache.clear();
+  accountCache = null;
+  likedTracksCache = null;
+  playlistsCache = null;
 }
 
 export async function saveQqCookie(cookie: string): Promise<SourceAccount> {
@@ -655,29 +879,389 @@ export async function saveQqCookie(cookie: string): Promise<SourceAccount> {
     );
   }
   await updateStore((store) => ({ ...store, qqCookie: trimmed }));
-  clearPurlCache();
-  fileInfoCache.clear();
-  payCache.clear();
-  vipProbeState = "unknown";
+  clearQqReadCaches();
   return getQqAccount();
 }
 
 /** Sign out of QQ Music: drop the stored cookie and every cached URL. */
 export async function clearQqCookie(): Promise<SourceAccount> {
   await updateStore((store) => ({ ...store, qqCookie: null }));
-  clearPurlCache();
-  payCache.clear();
-  vipProbeState = "unknown";
-  fileInfoCache.clear();
+  clearQqReadCaches();
   return getQqAccount();
 }
 
 /** 仅测试用:重置会话级解析状态(账号能力探测、档位/付费标记缓存)。 */
 export function resetQqStreamStateForTests() {
-  vipProbeState = "unknown";
-  purlCache.clear();
-  payCache.clear();
-  fileInfoCache.clear();
+  clearQqReadCaches();
+}
+
+/** QQ 官网 g_tk：与 qqHash33(key) 相同，写接口 comm 里两个 token 都用它。 */
+function qqHash33(value: string): number {
+  let hash = 5381;
+  for (const char of value) {
+    hash = ((hash << 5) + hash + char.charCodeAt(0)) & 0x7fffffff;
+  }
+  return hash;
+}
+
+type QqSongDetail = {
+  track_info?: { id?: number | string; songid?: number | string; type?: number; songtype?: number };
+  info?: { id?: number | string; songid?: number | string; type?: number; songtype?: number };
+};
+
+/**
+ * 红心/歌单写入只接受数字 songId；搜索与歌单详情通常会带 id，榜单和旧缓存
+ * 只有 MID。这里按需补一次详情并缓存，避免每次点心都多打接口。
+ */
+async function resolveQqSongMeta(
+  session: { cookie: string; parsed: QqSessionIdentity },
+  songmid: string,
+): Promise<{ songId: number; songType: number }> {
+  const cached = songMetaCache.get(songmid);
+  if (cached) return cached;
+
+  const readMeta = (value: QqSongDetail | null | undefined) => {
+    const info = value?.track_info ?? value?.info;
+    const songId = Number(info?.id ?? info?.songid);
+    if (!Number.isSafeInteger(songId) || songId <= 0) return null;
+    const songType = Number(info?.type ?? info?.songtype ?? 0);
+    return {
+      songId,
+      songType: Number.isSafeInteger(songType) ? Math.max(0, songType) : 0,
+    };
+  };
+
+  const requests: Array<[string, string, Record<string, unknown>]> = [
+    ["req_1", "music.pf_song_detail_svr", { song_mid: songmid }],
+    ["req_2", "music.musicasset.song_info", { song_mid: songmid }],
+  ];
+  for (const [requestKey, moduleName, param] of requests) {
+    try {
+      const data = await musicu<QqSongDetail>(
+        requestKey,
+        moduleName,
+        moduleName === "music.pf_song_detail_svr" ? "get_song_detail_yqq" : "get_song_info_all",
+        param,
+        { cookie: session.cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+      );
+      const meta = readMeta(data);
+      if (meta) {
+        songMetaCache.set(songmid, meta);
+        return meta;
+      }
+    } catch {
+      // 第一个详情接口偶发不可用时继续尝试第二个。
+    }
+  }
+  throw new SourceError("UNAVAILABLE", "无法获取该歌曲的数字 ID，暂时不能同步红心", { source: "qq" });
+}
+
+/**
+ * 红心 / 取消红心：固定写入 dirId 201（我喜欢）。
+ * 官网写接口需要 zzc 签名 + ag-1 加密；任何一步失败都不回退明文，避免
+ * 产生“接口返回 0 但实际没写”的假成功。
+ */
+export async function setQqLike(trackId: string, liked: boolean): Promise<{ ok: boolean; liked: boolean }> {
+  const songmid = trackId.trim();
+  if (!songmid || /[/?#]/.test(songmid)) {
+    throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌曲 ID", { source: "qq" });
+  }
+  const session = await optionalQqCookie();
+  if (!session) {
+    throw new SourceError("AUTH_REQUIRED", "登录 QQ 音乐后才能同步我喜欢（设置 → 播放源）", { source: "qq" });
+  }
+  const { songId, songType } = await resolveQqSongMeta(session, songmid);
+  const identity = session.parsed;
+  const gtk = qqHash33(identity.key);
+  const payload = {
+    comm: {
+      ct: 24,
+      cv: 4747474,
+      platform: "yqq.json",
+      uin: identity.uin,
+      qq: identity.uin,
+      authst: identity.key,
+      tmeLoginType: identity.loginType === 2 ? 1 : 2,
+      g_tk: gtk,
+      g_tk_new_20200303: gtk,
+      format: "json",
+      inCharset: "utf-8",
+      outCharset: "utf-8",
+      notice: 0,
+      need_new_code: 1,
+    },
+    req_0: {
+      module: "music.musicasset.PlaylistDetailWrite",
+      method: liked ? "AddSonglist" : "DelSonglist",
+      param: {
+        dirId: 201,
+        v_songInfo: [{ songId, songType }],
+      },
+    },
+  };
+  const bodyText = JSON.stringify(payload);
+  const encrypted = encodeAg1Request(bodyText);
+  const sign = zzcSign(bodyText);
+  const response = await fetch(
+    `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        Referer: REFERER,
+        "User-Agent": USER_AGENT,
+        Cookie: session.cookie,
+      },
+      body: new Uint8Array(encrypted),
+      signal: AbortSignal.timeout(STREAM_RESOLVE_TIMEOUT_MS),
+    },
+  );
+  const bytes = await response.arrayBuffer().catch(() => null);
+  if (!bytes) {
+    throw new SourceError("UPSTREAM_FAILED", "QQ音乐红心接口没有返回内容，请稍后再试", { source: "qq" });
+  }
+  let parsed: {
+    code?: number;
+    req_0?: { code?: number; msg?: string; message?: string; data?: { retCode?: number; msg?: string } };
+  } | null = null;
+  try {
+    parsed = JSON.parse(decodeAg1Response(bytes));
+  } catch {
+    throw new SourceError("UPSTREAM_FAILED", "QQ音乐红心响应解析失败，请稍后再试", { source: "qq" });
+  }
+  const section = parsed?.req_0;
+  // 逐层检查：外层 code、目标业务块 code、内层 data.retCode。只检查其中
+  // 一层曾把 80105 之类的失败误判成成功。
+  const resultCode = [parsed?.code, section?.code, section?.data?.retCode]
+    .map((value) => Number(value ?? 0))
+    .find((value) => Number.isFinite(value) && value !== 0) ?? 0;
+  if (!response.ok || resultCode !== 0) {
+    const message = String(section?.msg ?? section?.message ?? section?.data?.msg ?? "").trim();
+    if ([301, 1000, 1001].includes(resultCode)) {
+      throw new SourceError("AUTH_REQUIRED", "QQ 音乐登录已过期，请到设置重新扫码登录", { source: "qq" });
+    }
+    throw new SourceError(
+      "UPSTREAM_FAILED",
+      message
+        ? `QQ音乐${liked ? "收藏" : "取消收藏"}失败：${message}`
+        : `QQ音乐${liked ? "收藏" : "取消收藏"}失败${resultCode ? `（代码 ${resultCode}）` : ""}`,
+      { source: "qq" },
+    );
+  }
+  likedTracksCache = null;
+  playlistsCache = null;
+  return { ok: true, liked };
+}
+
+// —— 歌手 / 专辑详情 ——
+
+type QqSingerDetailData = {
+  singer_info?: { mid?: string; name?: string };
+  singer_brief?: string;
+  total_song?: number;
+  total_album?: number;
+};
+
+type QqSingerSongData = {
+  totalNum?: number;
+  songList?: Array<{ songInfo?: QqSearchSong }>;
+};
+
+type QqSingerAlbumItem = {
+  albumMid?: string;
+  albumName?: string;
+  singerName?: string;
+  publishDate?: string;
+  totalNum?: number;
+};
+
+type QqSingerAlbumData = {
+  total?: number;
+  albumList?: QqSingerAlbumItem[];
+};
+
+type QqAlbumDetailData = {
+  basicInfo?: {
+    albumMid?: string;
+    albumName?: string;
+    publishDate?: string;
+    desc?: string;
+    albumID?: number;
+  };
+  singer?: {
+    singerList?: Array<{ mid?: string; name?: string }>;
+  };
+};
+
+type QqAlbumSongData = {
+  totalNum?: number;
+  songList?: Array<{ songInfo?: QqSearchSong }>;
+};
+
+function qqArtistAvatar(artistId: string): string {
+  return `https://y.gtimg.cn/music/photo_new/T001R300x300M000${artistId}.jpg`;
+}
+
+function qqAlbumCover(albumId: string): string {
+  return `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albumId}.jpg`;
+}
+
+export async function getQqArtistTracks(
+  artistId: string,
+  limit = 60,
+  offset = 0,
+): Promise<{ tracks: ProviderTrack[]; more: boolean }> {
+  const id = artistId.trim();
+  if (!/^[A-Za-z0-9]+$/.test(id)) {
+    throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌手 ID", { source: "qq" });
+  }
+  const cookie = (await optionalQqCookie())?.cookie;
+  const num = Math.max(1, Math.min(100, Math.floor(limit)));
+  const begin = Math.max(0, Math.floor(offset));
+  const data = await musicu<QqSingerSongData>(
+    "req_0",
+    "musichall.song_list_server",
+    "GetSingerSongList",
+    { singermid: id, order: 1, begin, num },
+    { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+  );
+  const songs = (data.songList ?? []).flatMap((item) => (item.songInfo ? [item.songInfo] : []));
+  songs.forEach(rememberFileInfo);
+  const tracks = songs.map(normalizeQqSong).filter((track) => track.id);
+  return { tracks, more: tracks.length > 0 && begin + num < Number(data.totalNum ?? 0) };
+}
+
+export async function getQqArtistAlbums(
+  artistId: string,
+  limit = 30,
+  offset = 0,
+): Promise<{ albums: ProviderAlbum[]; more: boolean }> {
+  const id = artistId.trim();
+  if (!/^[A-Za-z0-9]+$/.test(id)) {
+    throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌手 ID", { source: "qq" });
+  }
+  const cookie = (await optionalQqCookie())?.cookie;
+  const num = Math.max(1, Math.min(80, Math.floor(limit)));
+  const begin = Math.max(0, Math.floor(offset));
+  const data = await musicu<QqSingerAlbumData>(
+    "req_0",
+    "music.musichallAlbum.AlbumListServer",
+    "GetAlbumList",
+    { singermid: id, begin, num },
+    { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+  );
+  const total = Number(data.total ?? 0);
+  const albums = (data.albumList ?? []).flatMap((item) => {
+    const albumId = item.albumMid?.trim();
+    if (!albumId) return [];
+    const publishTime = item.publishDate ? Date.parse(item.publishDate) : Number.NaN;
+    return [{
+      id: albumId,
+      name: item.albumName ?? "未知专辑",
+      source: "qq",
+      artist: item.singerName ?? "未知歌手",
+      artistId: id,
+      coverUrl: qqAlbumCover(albumId),
+      publishTime: Number.isFinite(publishTime) ? publishTime : null,
+      trackCount: Number(item.totalNum) || null,
+    } satisfies ProviderAlbum];
+  });
+  return { albums, more: albums.length > 0 && begin + num < total };
+}
+
+export async function getQqArtistDetail(
+  artistId: string,
+): Promise<{ artist: ProviderArtist; description: string; sections: Array<{ title: string; text: string }> }> {
+  const id = artistId.trim();
+  if (!/^[A-Za-z0-9]+$/.test(id)) {
+    throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌手 ID", { source: "qq" });
+  }
+  const cookie = (await optionalQqCookie())?.cookie;
+  let detail: QqSingerDetailData | null = null;
+  try {
+    detail = await musicu<QqSingerDetailData>(
+      "req_0",
+      "music.web_singer_info_svr",
+      "get_singer_detail_info",
+      { singermid: id, number: 10 },
+      { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+    );
+  } catch {
+    // 部分账号/地区会返回 400；用曲目里的歌手名兜底，页面仍可打开。
+  }
+  let fallbackTrack: ProviderTrack | null = null;
+  if (!detail?.singer_info?.name) {
+    fallbackTrack = (await getQqArtistTracks(id, 1, 0).catch(() => ({ tracks: [], more: false }))).tracks[0] ?? null;
+  }
+  const name = detail?.singer_info?.name || fallbackTrack?.artist || "未知歌手";
+  const description = detail?.singer_brief?.trim() ?? "";
+  const artist: ProviderArtist = {
+    id,
+    name,
+    source: "qq",
+    avatarUrl: qqArtistAvatar(id),
+    trackCount: Number(detail?.total_song) || null,
+    albumCount: Number(detail?.total_album) || null,
+  };
+  return {
+    artist,
+    description,
+    sections: description ? [{ title: "艺人简介", text: description }] : [],
+  };
+}
+
+async function getQqAlbumTracks(albumId: string): Promise<{ tracks: ProviderTrack[]; total: number }> {
+  const cookie = (await optionalQqCookie())?.cookie;
+  const data = await musicu<QqAlbumSongData>(
+    "req_0",
+    "music.musichallAlbum.AlbumSongList",
+    "GetAlbumSongList",
+    { albumMid: albumId, begin: 0, num: 500 },
+    { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+  );
+  const songs = (data.songList ?? []).flatMap((item) => (item.songInfo ? [item.songInfo] : []));
+  songs.forEach(rememberFileInfo);
+  return {
+    tracks: songs.map(normalizeQqSong).filter((track) => track.id),
+    total: Number(data.totalNum ?? songs.length),
+  };
+}
+
+export async function getQqAlbum(
+  albumId: string,
+): Promise<{ album: ProviderAlbum; tracks: ProviderTrack[] }> {
+  const id = albumId.trim();
+  if (!/^[A-Za-z0-9]+$/.test(id)) {
+    throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐专辑 ID", { source: "qq" });
+  }
+  const cookie = (await optionalQqCookie())?.cookie;
+  const [detail, songs] = await Promise.all([
+    musicu<QqAlbumDetailData>(
+      "req_0",
+      "music.musichallAlbum.AlbumInfoServer",
+      "GetAlbumDetail",
+      { albumMId: id },
+      { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+    ),
+    getQqAlbumTracks(id),
+  ]);
+  const basic = detail.basicInfo ?? {};
+  const singers = detail.singer?.singerList ?? [];
+  const publishTime = basic.publishDate ? Date.parse(basic.publishDate) : Number.NaN;
+  return {
+    album: {
+      id,
+      name: basic.albumName ?? "未知专辑",
+      source: "qq",
+      artist: singers.map((singer) => singer.name).filter(Boolean).join(" / ") || "未知歌手",
+      artistId: singers[0]?.mid ?? null,
+      coverUrl: qqAlbumCover(id),
+      publishTime: Number.isFinite(publishTime) ? publishTime : null,
+      trackCount: songs.total || songs.tracks.length || null,
+      description: basic.desc ?? undefined,
+    },
+    tracks: songs.tracks,
+  };
 }
 
 // —— 推荐流(QQ 官方榜单聚合,作每日推荐/私人漫游) ——
@@ -784,13 +1368,115 @@ async function fetchToplistTracks(): Promise<ProviderTrack[]> {
   return tracks;
 }
 
-/** QQ 版"每日推荐":官方榜单聚合(每日更新,10 分钟缓存)。 */
+type QqRadarData = {
+  VecSongs?: Array<{ Track?: QqSearchSong }>;
+  HasMore?: boolean;
+};
+
+/** QQ 官方私人雷达：优先真实 GetRadarSong，失败时回落到榜单随机。 */
+async function fetchQqRadarTracks(limit: number, excludeIds: string[]): Promise<ProviderTrack[]> {
+  const cookie = (await optionalQqCookie())?.cookie;
+  const excluded = new Set(excludeIds.map((id) => id.replace(/^qq:/, "")));
+  const tracks: ProviderTrack[] = [];
+  const seen = new Set<string>();
+  for (let page = 1; page <= 4 && tracks.length < limit; page += 1) {
+    const data = await musicu<QqRadarData>(
+      "req_0",
+      "music.recommend.TrackRelationServer",
+      "GetRadarSong",
+      { Page: page },
+      { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+    );
+    const songs = (data.VecSongs ?? []).flatMap((item) => (item.Track ? [item.Track] : []));
+    if (!songs.length) break;
+    songs.forEach(rememberFileInfo);
+    for (const song of songs) {
+      const track = normalizeQqSong(song);
+      if (!track.id || seen.has(track.id) || excluded.has(track.id)) continue;
+      seen.add(track.id);
+      tracks.push(track);
+      if (tracks.length >= limit) break;
+    }
+    if (data.HasMore === false) break;
+  }
+  return tracks;
+}
+
+function findDailyDissId(value: unknown, seen = new Set<object>()): string | null {
+  if (!value || typeof value !== "object" || seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findDailyDissId(item, seen);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (Number(record.subtype) === 510) {
+    const miscellany = (record.miscellany ?? {}) as Record<string, unknown>;
+    const extra = (record.extra_info ?? {}) as Record<string, unknown>;
+    const candidates = [
+      record.id,
+      record.dissid,
+      record.tid,
+      miscellany.dissid,
+      miscellany.dissId,
+      miscellany.DissID,
+      miscellany.tid,
+      extra.dissid,
+    ];
+    for (const candidate of candidates) {
+      const id = String(candidate ?? "");
+      if (/^\d{3,}$/.test(id)) return id;
+    }
+  }
+  for (const item of Object.values(record)) {
+    const found = findDailyDissId(item, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * QQ 版“每日推荐”：优先账号的 RecommendFeed（subtype 510 动态歌单），
+ * 未登录/接口降级时回落到官方榜单聚合，保证页面永远有内容。
+ */
 export async function getQqDailyRecommendTracks(): Promise<ProviderTrack[]> {
+  const cached = recommendCache.get("daily");
+  if (cached && cached.expiresAt > Date.now()) return cached.tracks;
+  try {
+    const cookie = (await optionalQqCookie())?.cookie;
+    const feed = await musicu<Record<string, unknown>>(
+      "req_0",
+      "music.recommend.RecommendFeed",
+      "get_recommend_feed",
+      { direction: 0, page: 1, v_cache: [], v_uniq: [], s_num: 0 },
+      { cookie, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+    );
+    const dissId = findDailyDissId(feed);
+    if (dissId) {
+      const tracks = (await getQqPlaylistTracks(dissId)).slice(0, 30);
+      if (tracks.length) {
+        recommendCache.set("daily", { expiresAt: Date.now() + recommendCacheTtl, tracks });
+        return tracks;
+      }
+    }
+  } catch {
+    // 未登录账号会拿不到 subtype 510；继续用榜单兜底。
+  }
   return fetchToplistTracks();
 }
 
-/** QQ 版"私人漫游":榜单池随机 + 排除最近播放。 */
+/** QQ 版“私人漫游”：真实雷达优先，失败时榜单池随机 + 排除最近播放。 */
 export async function getQqRoamTracks(limit = 30, excludeIds: string[] = []): Promise<ProviderTrack[]> {
+  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+  try {
+    const radar = await fetchQqRadarTracks(safeLimit, excludeIds);
+    if (radar.length) return radar;
+  } catch {
+    // 雷达需要登录态；匿名用户继续使用榜单随机。
+  }
   const pool = await fetchToplistTracks();
   const excluded = new Set(excludeIds.map((id) => id.replace(/^qq:/, "")));
   const candidates = pool.filter((track) => !excluded.has(track.id));
@@ -799,7 +1485,7 @@ export async function getQqRoamTracks(limit = 30, excludeIds: string[] = []): Pr
     const swap = Math.floor(Math.random() * (index + 1));
     [shuffled[index], shuffled[swap]] = [shuffled[swap], shuffled[index]];
   }
-  return shuffled.slice(0, Math.max(1, Math.min(50, limit)));
+  return shuffled.slice(0, safeLimit);
 }
 
 // —— 用户歌单 / 我喜欢（只读） ——
@@ -899,6 +1585,9 @@ export async function getQqPlaylists(): Promise<ProviderPlaylist[]> {
   if (!session) {
     throw new SourceError("AUTH_REQUIRED", "登录 QQ 音乐后即可读取你的歌单（设置 → 播放源）", { source: "qq" });
   }
+  if (playlistsCache?.cookie === session.cookie && playlistsCache.expiresAt > Date.now()) {
+    return playlistsCache.playlists;
+  }
   const profile = await fetchProfileData(session);
   const playlists: ProviderPlaylist[] = [];
   const likedId = (profile.mymusic ?? []).find((entry) => entry.title === LIKED_PLAYLIST_TITLE && entry.id != null)?.id;
@@ -906,6 +1595,7 @@ export async function getQqPlaylists(): Promise<ProviderPlaylist[]> {
     playlists.push({
       id: String(likedId),
       name: LIKED_PLAYLIST_TITLE,
+      source: "qq",
       trackCount: 0,
       subscribed: false,
       owned: true,
@@ -920,6 +1610,7 @@ export async function getQqPlaylists(): Promise<ProviderPlaylist[]> {
     playlists.push({
       id: String(id),
       name,
+      source: "qq",
       trackCount: diss.song_cnt ?? diss.songcnt ?? 0,
       subscribed: false,
       owned: true,
@@ -927,15 +1618,76 @@ export async function getQqPlaylists(): Promise<ProviderPlaylist[]> {
       coverUrl: diss.picurl ?? diss.logo ?? null,
     });
   }
+  playlistsCache = { cookie: session.cookie, expiresAt: Date.now() + 20_000, playlists };
   return playlists;
 }
 
-/** Playlist songs; the shape matches search songs, so reuse the same mapping. */
+/**
+ * 歌单详情走的是旧版 `fcg_ucc_getcdinfo_byids_cp.fcg`，它的字段名和
+ * musicu 搜索完全不同（songmid/songname/albummid/strMediaMid/size128）。
+ * 这里先统一成 QqSearchSong，再复用 normalizeQqSong。
+ */
+type QqLegacySong = {
+  id?: number | string;
+  songid?: number | string;
+  mid?: string;
+  songmid?: string;
+  name?: string;
+  songname?: string;
+  type?: number;
+  songtype?: number;
+  interval?: number;
+  singer?: QqSinger[];
+  album?: { mid?: string; title?: string; name?: string };
+  albummid?: string;
+  albumname?: string;
+  strMediaMid?: string;
+  size128?: number | string;
+  size320?: number | string;
+  sizeflac?: number | string;
+  sizehires?: number | string;
+  size_48aac?: number | string;
+  size_96aac?: number | string;
+  size_128mp3?: number | string;
+  size_320mp3?: number | string;
+  size_flac?: number | string;
+  size_hires?: number | string;
+  file?: QqSearchSong["file"];
+  pay?: { pay_play?: number; payplay?: number };
+};
+
+function normalizeLegacyQqSong(song: QqLegacySong): QqSearchSong {
+  return {
+    id: song.id ?? song.songid,
+    mid: song.mid ?? song.songmid,
+    name: song.name ?? song.songname,
+    type: song.type ?? song.songtype,
+    interval: song.interval,
+    singer: song.singer,
+    album: {
+      mid: song.album?.mid ?? song.albummid,
+      title: song.album?.title ?? song.album?.name ?? song.albumname,
+      name: song.album?.name ?? song.albumname,
+    },
+    pay: song.pay
+      ? { pay_play: song.pay.pay_play ?? song.pay.payplay }
+      : undefined,
+    file: {
+      media_mid: song.file?.media_mid ?? song.strMediaMid,
+      size_128mp3: song.file?.size_128mp3 ?? song.size_128mp3 ?? song.size128,
+      size_320mp3: song.file?.size_320mp3 ?? song.size_320mp3 ?? song.size320,
+      size_flac: song.file?.size_flac ?? song.size_flac ?? song.sizeflac,
+      size_hires: song.file?.size_hires ?? song.size_hires ?? song.sizehires,
+      size_48aac: song.file?.size_48aac ?? song.size_48aac,
+      size_96aac: song.file?.size_96aac ?? song.size_96aac,
+    },
+  };
+}
+
+/** Playlist songs; old fcg rows are normalized into the search-song shape. */
 export async function getQqPlaylistTracks(disstid: string): Promise<ProviderTrack[]> {
+  // 公开歌单匿名也能读；只有“我喜欢”等私有目录才需要 Cookie。
   const session = await optionalQqCookie();
-  if (!session) {
-    throw new SourceError("AUTH_REQUIRED", "登录 QQ 音乐后即可读取你的歌单（设置 → 播放源）", { source: "qq" });
-  }
   const id = disstid.trim();
   if (!/^\d+$/.test(id)) {
     throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌单 ID", { source: "qq" });
@@ -955,7 +1707,7 @@ export async function getQqPlaylistTracks(disstid: string): Promise<ProviderTrac
     g_tk: "5381",
   });
   const response = await fetch(`${PLAYLIST_DETAIL_URL}?${params.toString()}`, {
-    headers: { Referer: REFERER, "User-Agent": USER_AGENT, Cookie: session.cookie },
+    headers: { Referer: REFERER, "User-Agent": USER_AGENT, Cookie: session?.cookie ?? "" },
     signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
   });
   if (!response.ok) {
@@ -967,14 +1719,21 @@ export async function getQqPlaylistTracks(disstid: string): Promise<ProviderTrac
   if (!payload || payload.code !== 0) {
     throw new SourceError("AUTH_REQUIRED", "QQ 音乐登录已过期，请到设置重新扫码登录", { source: "qq" });
   }
-  const songs = payload.cdlist?.[0]?.songlist ?? [];
-  songs.forEach(rememberFileInfo);
-  return songs.map(normalizeQqSong).filter((track) => track.id);
+  const songs = (payload.cdlist?.[0]?.songlist ?? []) as QqLegacySong[];
+  const normalizedSongs = songs.map(normalizeLegacyQqSong);
+  normalizedSongs.forEach(rememberFileInfo);
+  return normalizedSongs.map(normalizeQqSong).filter((track) => track.id);
 }
 
 /** The 我喜欢 playlist tracks; empty (not an error) when the playlist is absent. */
 export async function getQqLikedTracks(): Promise<ProviderTrack[]> {
+  const session = await optionalQqCookie();
+  if (!session) return [];
+  if (likedTracksCache?.cookie === session.cookie && likedTracksCache.expiresAt > Date.now()) {
+    return likedTracksCache.tracks;
+  }
   const likedId = await getQqLikedPlaylistId();
-  if (!likedId) return [];
-  return getQqPlaylistTracks(likedId);
+  const tracks = likedId ? await getQqPlaylistTracks(likedId) : [];
+  likedTracksCache = { cookie: session.cookie, expiresAt: Date.now() + 3_000, tracks };
+  return tracks;
 }

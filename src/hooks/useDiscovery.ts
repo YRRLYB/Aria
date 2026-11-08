@@ -64,9 +64,11 @@ export function useDiscovery(options: {
   const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchMore, setSearchMore] = useState(false);
+  const [searchQqMore, setSearchQqMore] = useState(false);
   const [searchRevision, setSearchRevision] = useState(0);
   const searchRequestRef = useRef(0);
   const searchOffsetRef = useRef(0);
+  const qqSearchOffsetRef = useRef(0);
   const searchLoadingRef = useRef(false);
   const [selectedArtist, setSelectedArtist] = useState<ArtistSummary | null>(
     null,
@@ -135,10 +137,12 @@ export function useDiscovery(options: {
     const text = options.query.trim();
     const requestId = ++searchRequestRef.current;
     searchOffsetRef.current = 0;
+    qqSearchOffsetRef.current = 0;
     setSearchError(null);
     setSearchQqError(null);
     setSearchTotal(0);
     setSearchMore(false);
+    setSearchQqMore(false);
     const normalizedText = text.toLowerCase();
     const localMatches =
       searchMode === "tracks" && text
@@ -173,17 +177,21 @@ export function useDiscovery(options: {
           options.onMergeNeteaseTracks((current) =>
             trimTrackCache([...current, ...remoteTracks]),
           );
+          const unique = <T extends { id: string }>(items: T[]) => [
+            ...new Map(items.map((item) => [item.id, item])).values(),
+          ];
           setSearchBundle((current) => ({
             localTracks: localMatches,
             neteaseTracks: remoteTracks,
             qqTracks: current.qqTracks,
             artists: mergeArtists([
+              ...current.artists,
               ...localArtists,
               ...result.artists.map(providerArtistToUiArtist),
             ]),
-            playlists: result.playlists,
-            users: result.users,
-            albums: result.albums,
+            playlists: unique([...current.playlists, ...result.playlists]),
+            users: unique([...current.users, ...result.users]),
+            albums: unique([...current.albums, ...result.albums]),
           }));
           const count =
             result.tracks.length +
@@ -203,26 +211,63 @@ export function useDiscovery(options: {
                 : "搜索暂时不可用，请重试。",
             );
         });
+      const qqSearchMode =
+        searchMode === "tracks" || searchMode === "artists" || searchMode === "playlists" || searchMode === "albums"
+          ? searchMode
+          : null;
       const qqSearch =
-        searchMode === "tracks" && sourceSwitches.qq !== false
+        qqSearchMode && sourceSwitches.qq !== false
           ? api
-              .searchSource("qq", text, "tracks", searchPageSize)
+              .searchSource("qq", text, qqSearchMode, searchPageSize)
               .then((result) => {
                 if (requestId !== searchRequestRef.current) return;
                 setSearchQqError(null);
-                const qqUiTracks = result.tracks.map((track, index) =>
-                  providerTrackToUiTrack(track, index),
-                );
-                // Search results must also reach the app-level track pools so
-                // choosing a QQ row resolves an active track (qq: ids are not
-                // in allTracks otherwise) and survives queue re-resolution.
-                options.onMergeQqTracks((current) =>
-                  trimTrackCache([...current, ...qqUiTracks]),
-                );
-                setSearchBundle((current) => ({
-                  ...current,
-                  qqTracks: qqUiTracks,
-                }));
+                const unique = <T extends { id: string }>(items: T[]) => [
+                  ...new Map(items.map((item) => [item.id, item])).values(),
+                ];
+                const itemCount =
+                  qqSearchMode === "artists"
+                    ? result.artists.length
+                    : qqSearchMode === "playlists"
+                      ? result.playlists.length
+                      : qqSearchMode === "albums"
+                        ? (result.albums ?? []).length
+                        : result.tracks.length;
+                qqSearchOffsetRef.current = searchPageSize;
+                setSearchQqMore(itemCount >= searchPageSize);
+                if (qqSearchMode === "tracks") {
+                  const qqUiTracks = result.tracks.map((track, index) =>
+                    providerTrackToUiTrack(track, index),
+                  );
+                  // Search results must also reach the app-level track pools so
+                  // choosing a QQ row resolves an active track (qq: ids are not
+                  // in allTracks otherwise) and survives queue re-resolution.
+                  options.onMergeQqTracks((current) =>
+                    trimTrackCache([...current, ...qqUiTracks]),
+                  );
+                  setSearchBundle((current) => ({
+                    ...current,
+                    qqTracks: qqUiTracks,
+                  }));
+                } else if (qqSearchMode === "artists") {
+                  setSearchBundle((current) => ({
+                    ...current,
+                    artists: mergeArtists([
+                      ...current.artists,
+                      ...result.artists.map(providerArtistToUiArtist),
+                    ]),
+                  }));
+                } else if (qqSearchMode === "playlists") {
+                  setSearchBundle((current) => ({
+                    ...current,
+                    playlists: unique([...current.playlists, ...result.playlists]),
+                  }));
+                } else {
+                  setSearchBundle((current) => ({
+                    ...current,
+                    albums: unique([...current.albums, ...(result.albums ?? [])]),
+                  }));
+                }
               })
               .catch((error) => {
                 if (requestId === searchRequestRef.current)
@@ -268,57 +313,140 @@ export function useDiscovery(options: {
   }, [options.query]);
 
   async function loadMoreSearch() {
-    if (!searchMore || searchLoadingRef.current) return;
+    // “加载更多”必须同时推进两个在线源。只翻网易云会让 QQ 搜索看起来
+    // 永远停在第一页——用户点多少次都看不到新歌。
+    const qqSearchMode =
+      searchMode === "tracks" || searchMode === "artists" || searchMode === "playlists" || searchMode === "albums"
+        ? searchMode
+        : null;
+    const shouldLoadNetease = searchMore;
+    const shouldLoadQq = Boolean(searchQqMore && qqSearchMode && sourceSwitches.qq !== false);
+    if ((!shouldLoadNetease && !shouldLoadQq) || searchLoadingRef.current) return;
+
     const requestId = searchRequestRef.current;
-    const offset = searchOffsetRef.current;
+    const neteaseOffset = searchOffsetRef.current;
+    const qqOffset = qqSearchOffsetRef.current;
     searchLoadingRef.current = true;
     setSearchLoading(true);
-    setSearchError(null);
+
+    const tasks: Array<Promise<void>> = [];
+
+    if (shouldLoadNetease) {
+      setSearchError(null);
+      tasks.push(
+        api
+          .searchNetease(
+            options.query.trim(),
+            searchMode,
+            searchPageSize,
+            neteaseOffset,
+          )
+          .then((result) => {
+            if (requestId !== searchRequestRef.current) return;
+            const remoteTracks = result.tracks.map((track, index) =>
+              providerTrackToUiTrack(track, index),
+            );
+            options.onMergeNeteaseTracks((current) =>
+              trimTrackCache([...current, ...remoteTracks]),
+            );
+            const unique = <T extends { id: string }>(items: T[]) => [
+              ...new Map(items.map((item) => [item.id, item])).values(),
+            ];
+            setSearchBundle((current) => ({
+              localTracks: current.localTracks,
+              neteaseTracks: mergeTracks([...current.neteaseTracks, ...remoteTracks]),
+              // QQ 分页结果由下面的任务单独追加，这里必须原样保留。
+              qqTracks: current.qqTracks,
+              artists: mergeArtists([
+                ...current.artists,
+                ...result.artists.map(providerArtistToUiArtist),
+              ]),
+              playlists: unique([...current.playlists, ...result.playlists]),
+              users: unique([...current.users, ...result.users]),
+              albums: unique([...current.albums, ...result.albums]),
+            }));
+            const next = neteaseOffset + searchPageSize;
+            const count =
+              result.tracks.length +
+              result.artists.length +
+              result.playlists.length +
+              result.users.length +
+              result.albums.length;
+            searchOffsetRef.current = next;
+            setSearchTotal(result.total);
+            setSearchMore(count > 0 && next < result.total);
+          })
+          .catch((error) => {
+            if (requestId === searchRequestRef.current)
+              setSearchError(
+                error instanceof Error ? error.message : "加载更多失败，请重试。",
+              );
+          }),
+      );
+    }
+
+    if (shouldLoadQq && qqSearchMode) {
+      setSearchQqError(null);
+      tasks.push(
+        api
+          .searchSource("qq", options.query.trim(), qqSearchMode, searchPageSize, qqOffset)
+          .then((result) => {
+            if (requestId !== searchRequestRef.current) return;
+            const unique = <T extends { id: string }>(items: T[]) => [
+              ...new Map(items.map((item) => [item.id, item])).values(),
+            ];
+            const itemCount =
+              qqSearchMode === "artists"
+                ? result.artists.length
+                : qqSearchMode === "playlists"
+                  ? result.playlists.length
+                  : qqSearchMode === "albums"
+                    ? (result.albums ?? []).length
+                    : result.tracks.length;
+            qqSearchOffsetRef.current = qqOffset + searchPageSize;
+            setSearchQqMore(itemCount >= searchPageSize);
+            if (qqSearchMode === "tracks") {
+              const qqUiTracks = result.tracks.map((track, index) =>
+                providerTrackToUiTrack(track, qqOffset + index),
+              );
+              options.onMergeQqTracks((current) =>
+                trimTrackCache([...current, ...qqUiTracks]),
+              );
+              setSearchBundle((current) => ({
+                ...current,
+                qqTracks: mergeTracks([...current.qqTracks, ...qqUiTracks]),
+              }));
+            } else if (qqSearchMode === "artists") {
+              setSearchBundle((current) => ({
+                ...current,
+                artists: mergeArtists([
+                  ...current.artists,
+                  ...result.artists.map(providerArtistToUiArtist),
+                ]),
+              }));
+            } else if (qqSearchMode === "playlists") {
+              setSearchBundle((current) => ({
+                ...current,
+                playlists: unique([...current.playlists, ...result.playlists]),
+              }));
+            } else {
+              setSearchBundle((current) => ({
+                ...current,
+                albums: unique([...current.albums, ...(result.albums ?? [])]),
+              }));
+            }
+          })
+          .catch((error) => {
+            if (requestId === searchRequestRef.current)
+              setSearchQqError(
+                error instanceof Error ? error.message : "QQ音乐加载更多失败，请重试。",
+              );
+          }),
+      );
+    }
+
     try {
-      const result = await api.searchNetease(
-        options.query.trim(),
-        searchMode,
-        searchPageSize,
-        offset,
-      );
-      if (requestId !== searchRequestRef.current) return;
-      const remoteTracks = result.tracks.map((track, index) =>
-        providerTrackToUiTrack(track, index),
-      );
-      options.onMergeNeteaseTracks((current) =>
-        trimTrackCache([...current, ...remoteTracks]),
-      );
-      const unique = <T extends { id: string }>(items: T[]) => [
-        ...new Map(items.map((item) => [item.id, item])).values(),
-      ];
-      setSearchBundle((current) => ({
-        localTracks: current.localTracks,
-        neteaseTracks: mergeTracks([...current.neteaseTracks, ...remoteTracks]),
-        // 分页只追加网易云结果，QQ 结果必须原样保留，否则加载更多会丢源。
-        qqTracks: current.qqTracks,
-        artists: mergeArtists([
-          ...current.artists,
-          ...result.artists.map(providerArtistToUiArtist),
-        ]),
-        playlists: unique([...current.playlists, ...result.playlists]),
-        users: unique([...current.users, ...result.users]),
-        albums: unique([...current.albums, ...result.albums]),
-      }));
-      const next = offset + searchPageSize;
-      const count =
-        result.tracks.length +
-        result.artists.length +
-        result.playlists.length +
-        result.users.length +
-        result.albums.length;
-      searchOffsetRef.current = next;
-      setSearchTotal(result.total);
-      setSearchMore(count > 0 && next < result.total);
-    } catch (error) {
-      if (requestId === searchRequestRef.current)
-        setSearchError(
-          error instanceof Error ? error.message : "加载更多失败，请重试。",
-        );
+      await Promise.allSettled(tasks);
     } finally {
       if (requestId === searchRequestRef.current) {
         setSearchLoading(false);
@@ -352,7 +480,8 @@ export function useDiscovery(options: {
 
     const providerId = selectedArtist.providerId;
     if (providerId) {
-      const requestKey = `tracks:${providerId}`;
+      const artistSource = selectedArtist.source === "qq" ? "qq" : "netease";
+      const requestKey = `tracks:${artistSource}:${providerId}`;
       if (
         !artistRemoteTracksCacheRef.current.has(artistId) &&
         !artistRequestRef.current.has(requestKey)
@@ -361,8 +490,9 @@ export function useDiscovery(options: {
         setArtistTracksError(null);
         artistRequestRef.current.add(requestKey);
         trimStringSet(artistRequestRef, memoryLimits.artistRequest);
-        api
-          .getNeteaseArtistTracks(providerId)
+        (artistSource === "qq"
+          ? api.getSourceArtistTracks("qq", providerId, 60, 0)
+          : api.getNeteaseArtistTracks(providerId))
           .then((result) => {
             // Cache and library merge run even when this effect run was
             // cleaned up: `allTracks` churns while the request is in flight,
@@ -381,9 +511,15 @@ export function useDiscovery(options: {
               if (oldest === undefined) break;
               artistRemoteTracksCacheRef.current.delete(oldest);
             }
-            options.onMergeNeteaseTracks((current) =>
-              trimTrackCache([...current, ...remoteTracks]),
-            );
+            if (artistSource === "qq") {
+              options.onMergeQqTracks((current) =>
+                trimTrackCache([...current, ...remoteTracks]),
+              );
+            } else {
+              options.onMergeNeteaseTracks((current) =>
+                trimTrackCache([...current, ...remoteTracks]),
+              );
+            }
             if (selectedArtistIdRef.current === artistId) {
               setArtistTracks(
                 mergeTracks([...remoteTracks, ...localArtistTracks]),
@@ -548,6 +684,7 @@ export function useDiscovery(options: {
     searchSuggestions,
     searchTotal,
     searchMore,
+    searchQqMore,
     loadMoreSearch,
     retrySearch: () => setSearchRevision((current) => current + 1),
     selectedArtist,
@@ -559,7 +696,7 @@ export function useDiscovery(options: {
       if (!selectedArtist) return;
       artistRequestRef.current.delete(
         selectedArtist.providerId
-          ? `tracks:${selectedArtist.providerId}`
+          ? `tracks:${selectedArtist.source === "qq" ? "qq" : "netease"}:${selectedArtist.providerId}`
           : `lookup:${selectedArtist.name.toLowerCase()}`,
       );
       artistRemoteTracksCacheRef.current.delete(selectedArtist.id);

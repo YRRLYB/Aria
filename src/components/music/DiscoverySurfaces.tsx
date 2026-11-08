@@ -48,6 +48,7 @@ export function SearchSurface({
   error = null,
   total = 0,
   more = false,
+  qqMore = false,
   onRetry = () => {},
   onLoadMore = () => {},
   onPickTrack,
@@ -72,6 +73,8 @@ export function SearchSurface({
   error?: string | null;
   total?: number;
   more?: boolean;
+  /** QQ 搜索没有 total，用“上一页是否满页”推断是否还有下一页。 */
+  qqMore?: boolean;
   onRetry?: () => void;
   onLoadMore?: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
@@ -90,6 +93,18 @@ export function SearchSurface({
     () => (sourceFilter === "all" ? tracks : tracks.filter((track) => track.source === sourceFilter)),
     [tracks, sourceFilter],
   );
+  // 本地没有分页；QQ 没有 total，只能按“是否满页”判断。切到“全部”时
+  // 任一源还有下一页就保留按钮，否则网易云翻完后 QQ 也会被一起藏掉。
+  const effectiveMore =
+    mode !== "tracks" && mode !== "lyrics"
+      ? more || qqMore
+      : sourceFilter === "local"
+        ? false
+        : sourceFilter === "qq"
+          ? qqMore
+          : sourceFilter === "netease"
+            ? more
+            : more || qqMore;
   const localQueue = useMemo(
     () => tracks.filter((track) => track.source === "local"),
     [tracks],
@@ -171,7 +186,7 @@ export function SearchSurface({
           {loading
             ? "搜索中…"
             : total
-              ? `已显示 ${count} 项 · 共 ${total} 项`
+              ? `已显示 ${count} 项 · 网易云共 ${total} 项`
               : `${count} 项结果`}
         </span>
       </div>
@@ -317,7 +332,7 @@ export function SearchSurface({
         )}
         <DiscoveryLoadMore
           loading={loading && Boolean(count)}
-          more={more}
+          more={effectiveMore}
           onLoadMore={onLoadMore}
         />
       </div>

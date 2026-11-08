@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import { api, type ProviderPlaylist } from "@/lib/api";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
@@ -114,6 +114,41 @@ export function useQqData({ connected, applyTrackUpdate }: {
     setPlaylistError(null);
   }
 
+  const likedIds = useMemo(
+    () => likedTracks.reduce<Record<string, true>>((result, track) => {
+      result[track.id] = true;
+      return result;
+    }, {}),
+    [likedTracks],
+  );
+
+  /**
+   * QQ 红心写入 + 乐观更新。失败时回滚并把错误抛给调用方，由界面提示
+   * “登录过期 / 操作频繁 / 需要会员”等原因，而不是假装点成功。
+   */
+  const toggleLike = useCallback(async (track: Track) => {
+    const providerId = track.providerId ?? track.id.replace(/^qq:/, "");
+    if (!providerId) throw new Error("缺少 QQ 音乐歌曲 ID");
+    const wasLiked = likedTracks.some((item) => item.id === track.id);
+    const nextLiked = !wasLiked;
+    const optimistic = { ...track, likedAt: nextLiked ? Date.now() : track.likedAt };
+    setLikedTracks((current) => (
+      nextLiked
+        ? [optimistic, ...current.filter((item) => item.id !== track.id)]
+        : current.filter((item) => item.id !== track.id)
+    ));
+    try {
+      await api.setQqLike(providerId, nextLiked);
+    } catch (error) {
+      setLikedTracks((current) => (
+        wasLiked
+          ? [track, ...current.filter((item) => item.id !== track.id)]
+          : current.filter((item) => item.id !== track.id)
+      ));
+      throw error;
+    }
+  }, [likedTracks]);
+
   // —— QQ 推荐流(官方榜单聚合) ——
 
   const loadDaily = useCallback(async () => {
@@ -149,7 +184,9 @@ export function useQqData({ connected, applyTrackUpdate }: {
 
   return {
     likedTracks,
+    likedIds,
     setLikedTracks,
+    toggleLike,
     playlists,
     selectedPlaylist,
     setSelectedPlaylist,

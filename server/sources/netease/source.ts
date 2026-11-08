@@ -19,14 +19,16 @@ export const neteaseSource: MusicSource = {
       page.artists = await neteaseClient.searchArtists(query, limit);
     } else if (mode === "playlists") {
       page.playlists = await neteaseClient.searchPlaylists(query, limit);
+    } else if (mode === "albums") {
+      page.albums = (await neteaseClient.search(query, "albums", limit, offset)).albums;
     } else {
       page.tracks = (await neteaseClient.search(query, "tracks", limit, offset)).tracks;
     }
     return page;
   },
 
-  async resolveStreamMeta(trackId, { level }): Promise<SourceStreamMeta> {
-    const meta = await neteaseClient.getStreamMeta(trackId, level ?? "lossless");
+  async resolveStreamMeta(trackId, { level, refresh }): Promise<SourceStreamMeta> {
+    const meta = await neteaseClient.getStreamMeta(trackId, level ?? "lossless", refresh);
     if (!meta.url) {
       throw new HttpError(404, NETEASE_NO_PLAYABLE_URL_MESSAGE, "NETEASE_URL_UNAVAILABLE");
     }

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+<rect x="9.35" y="4.3" width="5.3" height="9.2" rx="2.65"/>
+<path d="M6.9 11.4a5.1 5.1 0 0 0 10.2 0M12 16.5v3.2M9 19.7h6"/>
+<path d="m17.75 3.5.45 1.28 1.28.45-1.28.45-.45 1.28-.45-1.28-1.28-.45 1.28-.45Z" style="fill:var(--aria-dot,currentColor)" stroke="none"/>
+</svg>

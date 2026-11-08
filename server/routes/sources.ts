@@ -16,7 +16,7 @@ export type SourcesRouterOptions = {
 
 const searchQuery = z.object({
   q: z.string().trim().min(1).max(120),
-  mode: z.enum(["tracks", "artists", "playlists"]).default("tracks"),
+  mode: z.enum(["tracks", "artists", "playlists", "albums"]).default("tracks"),
   limit: z.coerce.number().int().min(1).max(50).default(24),
   offset: z.coerce.number().int().min(0).max(1000).default(0),
 });
@@ -77,6 +77,62 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
         offset: query.offset,
       });
       res.json({ sourceId: req.params.sourceId, ...page });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/artists/:artistId", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getArtistDetail) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持歌手详情`, { source: source.manifest.id });
+      }
+      res.json(await source.getArtistDetail(req.params.artistId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/artists/:artistId/albums", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getArtistAlbums) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持歌手专辑`, { source: source.manifest.id });
+      }
+      const query = z.object({
+        limit: z.coerce.number().int().min(1).max(80).default(30),
+        offset: z.coerce.number().int().min(0).max(10000).default(0),
+      }).parse(req.query);
+      res.json(await source.getArtistAlbums(req.params.artistId, query.limit, query.offset));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/artists/:artistId/tracks", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getArtistTracks) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持歌手曲目`, { source: source.manifest.id });
+      }
+      const query = z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(60),
+        offset: z.coerce.number().int().min(0).max(10000).default(0),
+      }).parse(req.query);
+      res.json(await source.getArtistTracks(req.params.artistId, query.limit, query.offset));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/albums/:albumId", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getAlbum) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持专辑详情`, { source: source.manifest.id });
+      }
+      res.json(await source.getAlbum(req.params.albumId));
     } catch (error) {
       next(error);
     }

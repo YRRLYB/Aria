@@ -16,7 +16,9 @@ vi.mock("../utils/persistentCache", () => ({
     if (mocks.persistent.has(key)) return mocks.persistent.get(key);
     const value = await loader(); mocks.persistent.set(key, value); return value;
   },
-  clearPersistent: vi.fn(), setPersistent: vi.fn(),
+  getPersistent: async (key: string) => (mocks.persistent.has(key) ? mocks.persistent.get(key) : null),
+  setPersistent: async (key: string, _ttl: number, value: unknown) => { mocks.persistent.set(key, value); },
+  clearPersistent: vi.fn(),
 }));
 
 import { NeteaseClient, normalizeCloudSong } from "./neteaseClient";
@@ -103,6 +105,33 @@ describe("NetEase cloud library", () => {
     expect((await client.getStreamMeta("901", "lossless")).url).toContain("account8");
     expect(mocks.url).toHaveBeenCalledTimes(2);
     expect(mocks.url.mock.calls[1][0].cookie).toBe("account8-cookie");
+  });
+
+  it("falls back to a lower quality tier instead of leaving playback empty", async () => {
+    mocks.songDetail.mockResolvedValue({
+      body: { songs: [{ ...upload.simpleSong, h: { br: 320000 }, sq: { br: 900000 } }] },
+    });
+    mocks.url.mockImplementation(async ({ level }: { level: string }) => (
+      level === "lossless"
+        ? { body: { code: 200, data: [{ url: null }] } }
+        : { body: { code: 200, data: [{ url: "https://music.126.net/fallback.mp3", level: "exhigh", br: 320000 }] } }
+    ));
+    expect(await client.getStreamMeta("901", "lossless")).toMatchObject({
+      url: "https://music.126.net/fallback.mp3",
+      currentLevel: "exhigh",
+      quality: "320K",
+    });
+    expect(mocks.url.mock.calls.map(([query]) => query.level)).toEqual(["lossless", "exhigh"]);
+  });
+
+  it("never caches a null stream URL, so a later retry can recover", async () => {
+    mocks.songDetail.mockResolvedValue({ body: { songs: [upload.simpleSong] } });
+    mocks.url.mockResolvedValue({ body: { code: 200, data: [{ url: null }] } });
+    expect((await client.getStreamMeta("901", "lossless")).url).toBeNull();
+    mocks.url.mockClear();
+    mocks.url.mockResolvedValue({ body: { code: 200, data: [{ url: "https://music.126.net/recovered.flac", level: "lossless" }] } });
+    expect((await client.getStreamMeta("901", "lossless")).url).toContain("recovered.flac");
+    expect(mocks.url).toHaveBeenCalledOnce();
   });
 
   it("retains a catalogue network failure instead of disguising it as a missing upload", async () => {

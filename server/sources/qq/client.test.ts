@@ -14,17 +14,28 @@ import {
   availableQqLevels,
   clearQqCookie,
   getQqAccount,
+  getQqAlbum,
+  getQqArtistAlbums,
+  getQqDailyRecommendTracks,
+  getQqArtistDetail,
+  getQqArtistTracks,
   getQqLikedTracks,
   getQqLyrics,
   getQqPlaylistTracks,
   getQqPlaylists,
+  getQqRoamTracks,
   normalizeQqSong,
   parseQqCookie,
   resetQqStreamStateForTests,
   resolveQqStreamMeta,
   saveQqCookie,
+  searchQqAlbums,
+  searchQqArtists,
+  searchQqPlaylists,
   searchQqTracks,
+  setQqLike,
 } from "./client";
+import { encodeAg1Response } from "./signing";
 
 const searchSong = {
   mid: "0039MnYb0qxYhV",
@@ -127,7 +138,14 @@ describe("qq search mapping", () => {
 
   it("keeps track mapping stable without file metadata", () => {
     const track = normalizeQqSong({ mid: "x1", name: "歌", singer: [{ name: "A" }, { name: "B" }] });
-    expect(track).toMatchObject({ id: "x1", quality: "320K", currentLevel: null, availableLevels: [] });
+    expect(track).toMatchObject({ id: "x1", quality: "320K", currentLevel: null, availableLevels: [], vip: false });
+  });
+
+  it("only flags VIP when pay_play says the whole song needs membership", () => {
+    // 缺失 pay 不是 VIP；pay_down/pay_month 只影响下载或高音质，也不能标 VIP。
+    expect(normalizeQqSong({ mid: "free", name: "免费", pay: { pay_play: 0 } }).vip).toBe(false);
+    expect(normalizeQqSong({ mid: "vip", name: "会员", pay: { pay_play: 1 } }).vip).toBe(true);
+    expect(normalizeQqSong({ mid: "unknown", name: "未知" }).vip).toBe(false);
   });
 
   it("estimates a display bitrate from the per-tier file size", () => {
@@ -138,6 +156,156 @@ describe("qq search mapping", () => {
     const standard = normalizeQqSong(freeSong);
     // 4,200,000 bytes * 8 / 254s ~= 132k
     expect(standard).toMatchObject({ currentLevel: "standard", quality: "128K", bitrate: 132_000 });
+  });
+});
+
+describe("qq multi-mode search and detail", () => {
+  it("maps artist, album and playlist search results with qq source markers", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("music.search.SearchCgiService", {
+      body: {
+        singer: {
+          list: [{ singerMID: "0025NhlN2yWrP4", singerName: "周杰伦", singerPic: "https://y.gtimg.cn/artist.jpg", songNum: 1234, albumNum: 40 }],
+        },
+      },
+    }));
+    await expect(searchQqArtists("周杰伦", 10, 0)).resolves.toMatchObject([{
+      id: "0025NhlN2yWrP4",
+      name: "周杰伦",
+      source: "qq",
+      avatarUrl: "https://y.gtimg.cn/artist.jpg",
+      trackCount: 1234,
+      albumCount: 40,
+    }]);
+
+    fetchMock.mockResolvedValueOnce(musicuResponse("music.search.SearchCgiService", {
+      body: {
+        album: {
+          list: [{
+            albumMID: "000MkMni1zB4iZ",
+            albumName: "叶惠美",
+            singerName: "周杰伦",
+            singerMID: "0025NhlN2yWrP4",
+            publicTime: "2003-07-31",
+            song_count: 11,
+          }],
+        },
+      },
+    }));
+    await expect(searchQqAlbums("叶惠美", 10, 0)).resolves.toMatchObject([{
+      id: "000MkMni1zB4iZ",
+      name: "叶惠美",
+      source: "qq",
+      artist: "周杰伦",
+      artistId: "0025NhlN2yWrP4",
+      trackCount: 11,
+    }]);
+
+    fetchMock.mockResolvedValueOnce(musicuResponse("music.search.SearchCgiService", {
+      body: {
+        songlist: {
+          list: [{
+            dissid: "7695177222",
+            dissname: "华语精选",
+            song_count: 244,
+            imgurl: "http://qpic.y.qq.com/cover.jpg",
+            introduction: "简介",
+            creator: { name: "莹火虫" },
+          }],
+        },
+      },
+    }));
+    await expect(searchQqPlaylists("华语", 10, 0)).resolves.toMatchObject([{
+      id: "7695177222",
+      name: "华语精选",
+      source: "qq",
+      trackCount: 244,
+      coverUrl: "https://qpic.y.qq.com/cover.jpg",
+      creatorName: "莹火虫",
+    }]);
+  });
+
+  it("loads artist detail, songs and albums from the QQ endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("req_0", {
+      singer_info: { mid: "0025NhlN2yWrP4", name: "周杰伦" },
+      singer_brief: "华语流行歌手",
+      total_song: 1234,
+      total_album: 40,
+    }));
+    await expect(getQqArtistDetail("0025NhlN2yWrP4")).resolves.toMatchObject({
+      artist: { id: "0025NhlN2yWrP4", name: "周杰伦", source: "qq", trackCount: 1234, albumCount: 40 },
+      description: "华语流行歌手",
+      sections: [{ title: "艺人简介", text: "华语流行歌手" }],
+    });
+
+    fetchMock.mockResolvedValueOnce(musicuResponse("req_0", {
+      totalNum: 1,
+      songList: [{ songInfo: searchSong }],
+    }));
+    await expect(getQqArtistTracks("0025NhlN2yWrP4", 20, 0)).resolves.toMatchObject({
+      tracks: [{ id: "0039MnYb0qxYhV", title: "晴天", source: "qq" }],
+      more: false,
+    });
+
+    fetchMock.mockResolvedValueOnce(musicuResponse("req_0", {
+      total: 1,
+      albumList: [{
+        albumMid: "000MkMni1zB4iZ",
+        albumName: "叶惠美",
+        singerName: "周杰伦",
+        publishDate: "2003-07-31",
+        totalNum: 11,
+      }],
+    }));
+    await expect(getQqArtistAlbums("0025NhlN2yWrP4", 20, 0)).resolves.toMatchObject({
+      albums: [{ id: "000MkMni1zB4iZ", name: "叶惠美", source: "qq", trackCount: 11 }],
+      more: false,
+    });
+  });
+
+  it("loads album detail and tracks", async () => {
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("req_0", {
+        basicInfo: { albumMid: "000MkMni1zB4iZ", albumName: "叶惠美", publishDate: "2003-07-31", desc: "专辑介绍" },
+        singer: { singerList: [{ mid: "0025NhlN2yWrP4", name: "周杰伦" }] },
+      }))
+      .mockResolvedValueOnce(musicuResponse("req_0", {
+        totalNum: 1,
+        songList: [{ songInfo: searchSong }],
+      }));
+    await expect(getQqAlbum("000MkMni1zB4iZ")).resolves.toMatchObject({
+      album: { id: "000MkMni1zB4iZ", name: "叶惠美", source: "qq", artist: "周杰伦", description: "专辑介绍", trackCount: 1 },
+      tracks: [{ id: "0039MnYb0qxYhV", source: "qq" }],
+    });
+  });
+
+  it("follows the subtype 510 daily playlist before falling back to toplists", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("req_0", {
+        v_shelf: [{ v_card: [{ subtype: 510, id: "88990011" }] }],
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        cdlist: [{ dissname: "每日30首", songnum: 1, songlist: [searchSong] }],
+      })));
+    await expect(getQqDailyRecommendTracks()).resolves.toMatchObject([{
+      id: "0039MnYb0qxYhV",
+      title: "晴天",
+      source: "qq",
+    }]);
+    expect(String(fetchMock.mock.calls[1][0])).toContain("disstid=88990011");
+  });
+
+  it("uses the official radar feed for roam when it returns songs", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("req_0", {
+      VecSongs: [{ Track: searchSong }],
+      HasMore: false,
+    }));
+    await expect(getQqRoamTracks(5, [])).resolves.toMatchObject([{
+      id: "0039MnYb0qxYhV",
+      title: "晴天",
+      source: "qq",
+    }]);
   });
 });
 
@@ -335,9 +503,20 @@ describe("qq playlists and liked tracks", () => {
       },
     }));
 
-  it("requires a cookie before reading playlists", async () => {
+  it("requires a cookie before reading the account playlist list", async () => {
     await expect(getQqPlaylists()).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
-    await expect(getQqPlaylistTracks("123")).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+  });
+
+  it("reads a public playlist anonymously", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 0,
+      cdlist: [{ dissname: "公开歌单", songnum: 1, songlist: [searchSong] }],
+    })));
+    await expect(getQqPlaylistTracks("7695177222")).resolves.toMatchObject([{
+      id: "0039MnYb0qxYhV",
+      source: "qq",
+    }]);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ Cookie: "" });
   });
 
   it("lists 我喜欢 plus the profile playlists", async () => {
@@ -369,6 +548,40 @@ describe("qq playlists and liked tracks", () => {
     expect((init as RequestInit).headers).toMatchObject({ Cookie: "uin=o12345; qm_keyst=k1" });
   });
 
+  it("normalizes the legacy fcg playlist song shape", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 0,
+      cdlist: [{
+        dissname: "公开歌单",
+        songnum: 1,
+        songlist: [{
+          songid: 560063927,
+          songmid: "001P6YOB0eXLlj",
+          songname: "第57次取消发送",
+          songtype: 0,
+          interval: 180,
+          singer: [{ mid: "003KKQQw1xxf8W", name: "菲菲公主" }],
+          albummid: "000KrDC019mc82",
+          albumname: "第57次取消发送",
+          strMediaMid: "0015C3UU0jn4ZU",
+          size128: 2_890_403,
+          size320: 7_225_538,
+          sizeflac: 37_103_475,
+          pay: { payplay: 1 },
+        }],
+      }],
+    })));
+    await expect(getQqPlaylistTracks("7695177222")).resolves.toMatchObject([{
+      id: "001P6YOB0eXLlj",
+      title: "第57次取消发送",
+      artist: "菲菲公主",
+      album: "第57次取消发送",
+      source: "qq",
+      currentLevel: "lossless",
+      vip: true,
+    }]);
+  });
+
   it("chains the profile lookup into the liked playlist read", async () => {
     mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
     fetchMock
@@ -395,6 +608,46 @@ describe("qq playlists and liked tracks", () => {
     mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: 2001 })));
     await expect(getQqPlaylistTracks("777001")).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+  });
+});
+
+describe("qq likes", () => {
+  it("resolves the numeric id, signs the 201 write and decrypts the response", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("req_1", { track_info: { id: 260678, type: 0 } }))
+      .mockResolvedValueOnce(new Response(encodeAg1Response('{"code":0,"req_0":{"code":0,"data":{"retCode":0}}}')));
+
+    await expect(setQqLike("003aAPj81VWrbL", true)).resolves.toEqual({ ok: true, liked: true });
+
+    const [detailUrl, detailInit] = fetchMock.mock.calls[0];
+    expect(String(detailUrl)).toContain("musicu.fcg");
+    expect(String((detailInit as RequestInit).body)).toContain("get_song_detail_yqq");
+    const [writeUrl, writeInit] = fetchMock.mock.calls[1];
+    expect(String(writeUrl)).toContain("u6.y.qq.com/cgi-bin/musics.fcg");
+    expect(String(writeUrl)).toContain("encoding=ag-1");
+    expect(String(writeUrl)).toContain("sign=zzc");
+    expect((writeInit as RequestInit).headers).toMatchObject({
+      Referer: "https://y.qq.com/",
+      Cookie: "uin=o12345; qm_keyst=k1",
+      "Content-Type": "text/plain",
+    });
+    expect((writeInit as RequestInit).body).toBeInstanceOf(Uint8Array);
+  });
+
+  it("turns a business retCode into a real failure instead of a fake success", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: "uin=o12345; qm_keyst=k1" });
+    fetchMock
+      .mockResolvedValueOnce(musicuResponse("req_1", { track_info: { id: 260678, type: 0 } }))
+      .mockResolvedValueOnce(new Response(encodeAg1Response('{"code":0,"req_0":{"code":80105,"data":{"retCode":0}}}')));
+
+    await expect(setQqLike("003aAPj81VWrbL", false)).rejects.toMatchObject({ code: "UPSTREAM_FAILED" });
+  });
+
+  it("requires a QQ login before writing", async () => {
+    mocks.readStore.mockResolvedValue({ qqCookie: null });
+    await expect(setQqLike("003aAPj81VWrbL", true)).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

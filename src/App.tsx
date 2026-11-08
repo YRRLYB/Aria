@@ -152,6 +152,9 @@ export default function App() {
   const [playQueueIds, setPlayQueueIds] = useState<string[]>(initialPlayerCache.playQueueIds ?? []);
   const [mediaArtwork, setMediaArtwork] = useState<{ trackId: string; coverUrl: string; data: string | null } | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
+  // 从搜索/探索直接打开歌单时，PlaylistSurface 需要知道初始看哪个来源。
+  const [playlistSourceIntent, setPlaylistSourceIntent] = useState<"netease" | "local" | "qq" | null>(null);
   // Non-NetEase sources live behind /api/sources/<id>/account; keep the QQ
   // snapshot in App so the header can show the login state everywhere.
   const [qqAccount, setQqAccount] = useState<SourceAccountSummary | null>(null);
@@ -294,6 +297,15 @@ export default function App() {
     applyThemeToDocument(theme, systemDark);
     writeCachedTheme(theme);
   }, [theme, systemDark]);
+
+  useEffect(() => {
+    if (!playbackNotice) return;
+    const timer = window.setTimeout(() => setPlaybackNotice(null), 6500);
+    return () => window.clearTimeout(timer);
+  }, [playbackNotice]);
+  useEffect(() => {
+    setPlaybackNotice(null);
+  }, [activeTrackId]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navCloseTimer = useRef<number | null>(null);
@@ -444,16 +456,22 @@ export default function App() {
     refreshQqAccount();
   }, [activeView]);
 
-  useEffect(() => {
-    const onFocus = () => refreshQqAccount();
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
   const qqData = useQqData({ connected: qqConnected, applyTrackUpdate });
   // Reload the QQ liked/playlists whenever the account connects (mount, login,
   // or re-login from settings); disconnect clears inside the hook.
   useEffect(() => {
     if (qqConnected) void qqData.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qqConnected]);
+  useEffect(() => {
+    const onFocus = () => {
+      refreshQqAccount();
+      // 手机端在 QQ 音乐里点了红心后，切回 Aria 时顺手刷新一次，
+      // 不必等到下一次进入「我喜欢」页面。
+      if (qqConnected) void qqData.refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qqConnected]);
   // 进入「我喜欢」时重新拉一次 QQ 收藏，手机端刚点过的红心不必重启应用。
@@ -713,6 +731,7 @@ export default function App() {
     searchSuggestions,
     searchTotal,
     searchMore,
+    searchQqMore,
     loadMoreSearch,
     retrySearch,
     selectedArtist,
@@ -740,7 +759,11 @@ export default function App() {
     selectedAlbum, setSelectedAlbum, albumDetail, albumTracks, albumLoading, albumError, retryAlbum,
     artistDetail, artistAlbums, artistDetailLoading, artistDetailError, artistAlbumsMore,
     loadMoreArtistAlbums, retryArtistDetail,
-  } = useDiscoveryDetails({ selectedArtist, onMergeNeteaseTracks: setNeteaseTracks });
+  } = useDiscoveryDetails({
+    selectedArtist,
+    onMergeNeteaseTracks: setNeteaseTracks,
+    onMergeQqTracks: setQqSearchTracks,
+  });
 
   useEffect(() => {
     setSelectedUser(null);
@@ -826,6 +849,8 @@ export default function App() {
     setSelectedSinkId,
     nativePlaybackEnabled,
     activeStreamUrl,
+    playbackError,
+    setPlaybackError,
     handleAudioError,
     resetAudioError,
     restartNativeTrack,
@@ -859,6 +884,12 @@ export default function App() {
     hasMultipleQueueTracks: (playQueueTracks.length || playbackTracks.length) > 1,
     getNextPreload,
   });
+
+  useEffect(() => {
+    if (!playbackError) return;
+    const timer = window.setTimeout(() => setPlaybackError(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [playbackError, setPlaybackError]);
 
   // React playback state is authoritative. mpv can keep an active decoder
   // while restoring a paused session, but that must not animate the spectrum.
@@ -1038,10 +1069,14 @@ export default function App() {
       allTracks.find((track) => track.id === trackId) ??
       playQueueTracks.find((track) => track.id === trackId) ??
       (cachedActiveTrackSnapshot?.id === trackId ? cachedActiveTrackSnapshot : null);
-    if (!targetTrack?.streamUrl) return;
+    if (!targetTrack?.streamUrl) {
+      setPlaybackNotice("这首歌暂时没有可播放地址，可能受版权、会员或音源限制。");
+      return;
+    }
 
     const playableIds = materializeQueueIds(queue.length ? queue : [targetTrack], trackId, shuffleEnabled);
     if (playableIds.length) setPlayQueueIds(playableIds);
+    setPlaybackError(null);
     pendingSeekRef.current = 0;
     setActiveTrackId(trackId);
     resetPlaybackTime();
@@ -1058,9 +1093,16 @@ export default function App() {
   }
 
   function toggleLikeTrack(trackId: string) {
-    const track = allTracks.find((item) => item.id === trackId);
+    const track = allTracks.find((item) => item.id === trackId) ??
+      (activeTrack.id === trackId ? activeTrack : undefined);
     if (track?.source === "netease") {
       toggleNeteaseLike(track);
+      return;
+    }
+    if (track?.source === "qq") {
+      void qqData.toggleLike(track).catch((error: unknown) => {
+        setPlaybackNotice(error instanceof Error ? error.message : "QQ 音乐红心同步失败，请稍后再试");
+      });
       return;
     }
     setLikedTrackIds((current) => {
@@ -1846,15 +1888,22 @@ export default function App() {
       .then((meta) => {
         if (cancelled) return;
         applyStreamMetaToTrack(activeTrack.id, meta, { authoritative: true });
+        if (!meta.url && playing) {
+          setPlaybackError("网易云没有返回可播放地址：可能受会员、版权或当前网络环境限制。");
+        }
       })
-      .catch(() => {
-        // Keep the previous metadata when the provider temporarily rejects the request.
+      .catch((error: unknown) => {
+        // 流地址解析失败时把服务端的真实原因（会员限制 / 频控 / 网络风险）
+        // 带到播放器，而不是让用户以为点了没反应。
+        if (!cancelled && playing) {
+          setPlaybackError(error instanceof Error ? error.message : "网易云播放地址解析失败，请稍后重试。");
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel]);
+  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel, playing, setPlaybackError]);
 
   useEffect(() => {
     if (!activeTrack.coverUrl) {
@@ -2025,7 +2074,7 @@ export default function App() {
           </div>
 
           <div className="app-nav-slot" style={noDragRegionStyle}>
-            <AppNavigation activeView={activeView} onPick={(id) => { setQuery(""); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; } setActiveView(id); }} />
+            <AppNavigation activeView={activeView} onPick={(id) => { setQuery(""); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); } setActiveView(id); }} />
           </div>
 
           <div
@@ -2203,11 +2252,17 @@ export default function App() {
               {selectedAlbum ? (
                 <AlbumDetailSurface album={albumDetail ?? selectedAlbum} tracks={albumTracks} loading={albumLoading} error={albumError}
                   onBack={() => setSelectedAlbum(null)} onRetry={retryAlbum} onPickTrack={chooseTrack}
-                  onPickArtist={(id, name) => { setSelectedAlbum(null); setSelectedArtist({ id: `netease:${id}`, providerId: id, name, source: "netease", trackCount: 0 }); setQuery(""); setActiveView("artists"); }} />
+                  onPickArtist={(id, name) => {
+                    const source = (albumDetail ?? selectedAlbum)?.source === "qq" ? "qq" : "netease";
+                    setSelectedAlbum(null);
+                    setSelectedArtist({ id: `${source}:${id}`, providerId: id, name, source, trackCount: 0 });
+                    setQuery("");
+                    setActiveView("artists");
+                  }} />
               ) : selectedUser ? (
                 <UserDetailSurface user={userDetail ?? selectedUser} playlists={userPlaylists} loading={userLoading} error={userError} more={userPlaylistsMore}
                   onBack={() => setSelectedUser(null)} onRetry={retryUser} onLoadMore={() => void loadMoreUserPlaylists()}
-                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { query, user: selectedUser }; void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); setSelectedUser(null); }} />
+                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { query, user: selectedUser }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); setSelectedUser(null); }} />
               ) : query.trim() ? (
                 <SearchSurface
                   query={query.trim()}
@@ -2225,6 +2280,7 @@ export default function App() {
                   error={searchError}
                   total={searchTotal}
                   more={searchMore}
+                  qqMore={searchQqMore}
                   onRetry={retrySearch}
                   onLoadMore={() => void loadMoreSearch()}
                   onPickUser={setSelectedUser}
@@ -2241,7 +2297,12 @@ export default function App() {
                   }}
                   onPickPlaylist={(playlist) => {
                     playlistReturnRef.current = { query, user: null };
-                    void openPlaylist(playlist);
+                    setPlaylistSourceIntent(playlist.source === "qq" ? "qq" : "netease");
+                    if (playlist.source === "qq") {
+                      void qqData.openPlaylist(playlist);
+                    } else {
+                      void openPlaylist(playlist);
+                    }
                     setActiveView("playlists");
                     setQuery("");
                   }}
@@ -2275,7 +2336,13 @@ export default function App() {
                   onPrevious={() => pickRelativeTrack(-1)}
                   onOpenImmersive={() => void openImmersiveView()}
                   onReplaceLocalArtwork={replaceLocalArtwork}
-                  liked={activeTrack.source === "netease" ? Boolean(neteaseLikedIds[activeTrack.id]) : Boolean(likedTrackIds[activeTrack.id])}
+                  liked={
+                    activeTrack.source === "netease"
+                      ? Boolean(neteaseLikedIds[activeTrack.id])
+                      : activeTrack.source === "qq"
+                        ? Boolean(qqData.likedIds[activeTrack.id])
+                        : Boolean(likedTrackIds[activeTrack.id])
+                  }
                   onToggleLike={() => toggleLikeTrack(activeTrack.id)}
                   volume={volume}
                   onVolumeChange={setVolume}
@@ -2414,9 +2481,18 @@ export default function App() {
                     loading: qqData.playlistLoading,
                     error: qqData.listError ?? qqData.playlistError,
                     onOpen: (playlist) => void qqData.openPlaylist(playlist),
-                    onClose: () => qqData.closePlaylist(),
+                    onClose: () => {
+                      qqData.closePlaylist();
+                      const origin = playlistReturnRef.current;
+                      playlistReturnRef.current = null;
+                      if (origin) {
+                        setQuery(origin.query);
+                        setSelectedUser(origin.user);
+                      }
+                    },
                     onPickTrack: chooseTrack,
                   }}
+                  initialSource={playlistSourceIntent}
                 />
               )}
               {activeView === "daily" && (
@@ -2480,7 +2556,7 @@ export default function App() {
                   onLoadDiscovery={() => void loadExploreDiscovery()}
                   onRetryDiscovery={() => void loadExploreDiscovery(true)}
                   onSearchHot={(value) => { setQuery(value); setSearchFocused(false); }}
-                  onOpenPlaylist={(playlist) => { playlistReturnRef.current = { query: "", user: null }; void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); }}
+                  onOpenPlaylist={(playlist) => { playlistReturnRef.current = { query: "", user: null }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); }}
                   onPickTrack={chooseTrack}
                   onTabChange={setExploreTab}
                 />
@@ -2532,7 +2608,7 @@ export default function App() {
                   onRemoveLibraryRoot={(root) => void removeLibraryFolder(root)}
                   onToggleLibraryAutoScan={(enabled) => void toggleLibraryAutoScan(enabled)}
                   trackCount={allTracks.length}
-                  likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length}
+                  likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length}
                   lyricProgress={lyricProgress}
                   volume={volume}
                   onVolumeChange={setVolume}
@@ -2695,7 +2771,7 @@ export default function App() {
             setSelectedUser(null);
             setSelectedAlbum(null);
             setQueueOpen(false);
-            if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; }
+            if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); }
             if (id === "settings" && activeView !== "settings") setSettingsReturnView(activeView);
             setActiveView(id);
             setNavOpen(false);
@@ -2703,6 +2779,15 @@ export default function App() {
         />}
 
       </div>
+      {(playbackNotice || playbackError) && (
+        <div
+          role="alert"
+          className="fixed bottom-6 left-1/2 z-[90] flex max-w-[min(92vw,34rem)] -translate-x-1/2 items-start gap-3 rounded-2xl bg-neutral-950/92 px-4 py-3 text-sm text-white shadow-[0_18px_50px_rgba(20,24,35,0.35)] backdrop-blur"
+        >
+          <span className="min-w-0 flex-1 leading-6">{playbackNotice ?? playbackError}</span>
+          <button type="button" className="shrink-0 rounded-full px-1 text-white/60 hover:text-white" aria-label="关闭提示" onClick={() => { setPlaybackNotice(null); setPlaybackError(null); }}>×</button>
+        </div>
+      )}
       {addPlaylistRequest && (addPlaylistRequest.tracks.every((track) => track.source === "local") ? (
         <AddToLocalPlaylistDialog
           tracks={addPlaylistRequest.tracks}

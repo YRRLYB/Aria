@@ -20,6 +20,15 @@ import lyricsSvg from "../../../aria-icons/lyrics.svg?raw";
 import immersiveSvg from "../../../aria-icons/immersive.svg?raw";
 import slidersSvg from "../../../aria-icons/sliders.svg?raw";
 import playingSvg from "../../../aria-icons/playing.svg?raw";
+// 左下角浮球：每个入口一套独立绘制的导航图标，不再和播放器按钮复用。
+import navPlayerSvg from "../../../aria-icons/nav-player.svg?raw";
+import navCloudSvg from "../../../aria-icons/nav-cloud.svg?raw";
+import navArtistsSvg from "../../../aria-icons/nav-artists.svg?raw";
+import navExploreSvg from "../../../aria-icons/nav-explore.svg?raw";
+import navDailySvg from "../../../aria-icons/nav-daily.svg?raw";
+import navRadarSvg from "../../../aria-icons/nav-radar.svg?raw";
+import navStatsSvg from "../../../aria-icons/nav-stats.svg?raw";
+import navOrbSvg from "../../../aria-icons/nav-orb.svg?raw";
 
 export type AriaIconName =
   | "play"
@@ -38,7 +47,15 @@ export type AriaIconName =
   | "lyrics"
   | "immersive"
   | "sliders"
-  | "playing";
+  | "playing"
+  | "nav-player"
+  | "nav-cloud"
+  | "nav-artists"
+  | "nav-explore"
+  | "nav-daily"
+  | "nav-radar"
+  | "nav-stats"
+  | "nav-orb";
 
 const ICONS: Record<AriaIconName, string> = {
   play: playSvg,
@@ -58,6 +75,14 @@ const ICONS: Record<AriaIconName, string> = {
   immersive: immersiveSvg,
   sliders: slidersSvg,
   playing: playingSvg,
+  "nav-player": navPlayerSvg,
+  "nav-cloud": navCloudSvg,
+  "nav-artists": navArtistsSvg,
+  "nav-explore": navExploreSvg,
+  "nav-daily": navDailySvg,
+  "nav-radar": navRadarSvg,
+  "nav-stats": navStatsSvg,
+  "nav-orb": navOrbSvg,
 };
 
 /** aria-icons 套件图标:去掉固定宽高,尺寸交给 className,颜色跟随 currentColor。 */

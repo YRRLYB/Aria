@@ -9,7 +9,9 @@ function isNeteaseArtworkSource(source: URL) {
 
 function isQqArtworkSource(source: URL) {
   return ["http:", "https:"].includes(source.protocol) && !source.username && !source.password && !source.port &&
-    (source.hostname === "gtimg.cn" || source.hostname.endsWith(".gtimg.cn"));
+    (source.hostname === "gtimg.cn" ||
+      source.hostname.endsWith(".gtimg.cn") ||
+      source.hostname === "qpic.y.qq.com");
 }
 
 // Keep NetEase artwork on Aria's persistent image cache, including raw URLs
@@ -51,6 +53,7 @@ function applyNeteaseCdnSize(source: URL, size: number) {
 
 function applyQqCdnSize(source: URL, size: number) {
   const pixels = Math.max(32, Math.min(1024, Math.round(size)));
+  source.protocol = "https:";
   if (/T\d{3}R\d+x\d+M000/.test(source.pathname)) {
     source.pathname = source.pathname.replace(/T(\d{3})R\d+x\d+M000/, `T$1R${pixels}x${pixels}M000`);
   }

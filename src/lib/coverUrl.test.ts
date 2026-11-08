@@ -22,6 +22,15 @@ it("routes remote covers and avatars through the persistent cache without double
   }
 });
 
+it("routes QQ playlist covers from qpic through the QQ cover cache", () => {
+  const source = "http://qpic.y.qq.com/music_cover/example/300?n=1";
+  const cached = cachedArtworkUrl(source, 160)!;
+  const url = new URL(cached, "http://localhost");
+  expect(url.pathname).toBe("/api/sources/qq/cover");
+  expect(url.searchParams.get("url")).toBe("https://qpic.y.qq.com/music_cover/example/300?n=1");
+  expect(directArtworkUrl(cached, 160)).toBe("https://qpic.y.qq.com/music_cover/example/300?n=1");
+});
+
 it("replaces thumbnail size while preserving the proxy source and authentication", () => {
   const source = "http://localhost/api/providers/netease/cover?url=https%3A%2F%2Fp1.music.126.net%2Fcover.jpg&token=test-token&size=300y300";
   const url = new URL(cachedArtworkUrl(source, 512)!);

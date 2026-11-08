@@ -204,6 +204,12 @@ html.dark {
   color: #b6a2e8;
 }
 
+.dark .home-character-art {
+  background: linear-gradient(160deg, #f4efff 0%, #cdbaff 52%, #9d82e8 100%);
+  opacity: .9;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, .3));
+}
+
 .dark .home-section-title-block::before {
   background: #9c7fe8;
 }

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
-import { api, type ProviderAlbum, type ProviderUser } from "@/lib/api";
+import { api, type ProviderAlbum, type ProviderArtistDetail, type ProviderUser } from "@/lib/api";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { trimTrackCache } from "@/lib/playerPresentation";
 
-type ArtistDetail = Awaited<ReturnType<typeof api.getNeteaseArtistDetail>>;
+type ArtistDetail = ProviderArtistDetail;
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "暂时无法加载，请重试。";
 const uniqueById = <T extends { id: string }>(items: T[]) => [
@@ -15,6 +15,7 @@ const uniqueById = <T extends { id: string }>(items: T[]) => [
 export function useDiscoveryDetails(options: {
   selectedArtist: ArtistSummary | null;
   onMergeNeteaseTracks: (updater: (current: Track[]) => Track[]) => void;
+  onMergeQqTracks: (updater: (current: Track[]) => Track[]) => void;
 }) {
   const [selectedUser, setSelectedUser] = useState<ProviderUser | null>(null);
   const [userDetail, setUserDetail] = useState<ProviderUser | null>(null);
@@ -126,8 +127,10 @@ export function useDiscoveryDetails(options: {
     setAlbumError(null);
     setAlbumLoading(Boolean(selectedAlbum));
     if (!selectedAlbum) return;
-    api
-      .getNeteaseAlbum(selectedAlbum.id)
+    const albumSource = selectedAlbum.source === "qq" ? "qq" : "netease";
+    (albumSource === "qq"
+      ? api.getSourceAlbum("qq", selectedAlbum.id)
+      : api.getNeteaseAlbum(selectedAlbum.id))
       .then((result) => {
         if (cancelled) return;
         const tracks = result.tracks.map((track, index) =>
@@ -135,9 +138,15 @@ export function useDiscoveryDetails(options: {
         );
         setAlbumDetail(result.album);
         setAlbumTracks(tracks);
-        options.onMergeNeteaseTracks((current) =>
-          trimTrackCache([...current, ...tracks]),
-        );
+        if (albumSource === "qq") {
+          options.onMergeQqTracks((current) =>
+            trimTrackCache([...current, ...tracks]),
+          );
+        } else {
+          options.onMergeNeteaseTracks((current) =>
+            trimTrackCache([...current, ...tracks]),
+          );
+        }
       })
       .catch((error) => {
         if (!cancelled) setAlbumError(errorText(error));
@@ -148,7 +157,7 @@ export function useDiscoveryDetails(options: {
     return () => {
       cancelled = true;
     };
-  }, [selectedAlbum?.id, albumRevision]);
+  }, [selectedAlbum?.id, selectedAlbum?.source, albumRevision]);
 
   useEffect(() => {
     const providerId = options.selectedArtist?.providerId;
@@ -162,9 +171,14 @@ export function useDiscoveryDetails(options: {
     artistLoadingRef.current = Boolean(providerId);
     setArtistDetailLoading(Boolean(providerId));
     if (!providerId) return;
+    const artistSource = options.selectedArtist?.source === "qq" ? "qq" : "netease";
     Promise.allSettled([
-      api.getNeteaseArtistDetail(providerId),
-      api.getNeteaseArtistAlbums(providerId, 30),
+      artistSource === "qq"
+        ? api.getSourceArtistDetail("qq", providerId)
+        : api.getNeteaseArtistDetail(providerId),
+      artistSource === "qq"
+        ? api.getSourceArtistAlbums("qq", providerId, 30, 0)
+        : api.getNeteaseArtistAlbums(providerId, 30),
     ]).then(([detail, albums]) => {
       if (requestId !== artistRequestRef.current) return;
       if (detail.status === "fulfilled") setArtistDetail(detail.value);
@@ -186,7 +200,7 @@ export function useDiscoveryDetails(options: {
     return () => {
       artistRequestRef.current += 1;
     };
-  }, [options.selectedArtist?.providerId, artistRevision]);
+  }, [options.selectedArtist?.providerId, options.selectedArtist?.source, artistRevision]);
 
   async function loadMoreArtistAlbums() {
     const providerId = options.selectedArtist?.providerId;
@@ -195,12 +209,11 @@ export function useDiscoveryDetails(options: {
     artistLoadingRef.current = true;
     setArtistDetailLoading(true);
     setArtistDetailError(null);
+    const artistSource = options.selectedArtist?.source === "qq" ? "qq" : "netease";
     try {
-      const result = await api.getNeteaseArtistAlbums(
-        providerId,
-        30,
-        artistOffsetRef.current,
-      );
+      const result = artistSource === "qq"
+        ? await api.getSourceArtistAlbums("qq", providerId, 30, artistOffsetRef.current)
+        : await api.getNeteaseArtistAlbums(providerId, 30, artistOffsetRef.current);
       if (requestId !== artistRequestRef.current) return;
       setArtistAlbums((current) => uniqueById([...current, ...result.albums]));
       artistOffsetRef.current += 30;

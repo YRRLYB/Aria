@@ -31,6 +31,7 @@ export type ProviderTrack = {
 export type ProviderPlaylist = {
   id: string;
   name: string;
+  source?: string;
   trackCount: number;
   subscribed: boolean;
   ownerId?: string | null;
@@ -81,6 +82,7 @@ export type ProviderUser = {
 export type ProviderAlbum = {
   id: string;
   name: string;
+  source?: string;
   artist: string;
   artistId: string | null;
   coverUrl: string | null;
