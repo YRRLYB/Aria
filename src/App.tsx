@@ -73,6 +73,7 @@ import {
   restoreTrackLyrics,
   selectPlaybackQuality,
   splitArtistNames,
+  trimTrackCache,
   writeCachedPlayerState,
   type AudioOutputMode,
   type CoverPalette,
@@ -633,6 +634,7 @@ export default function App() {
             trackCount: 0,
             albumCount: 0,
             providerId: null,
+            providerSource: null,
             albums: new Set<string>(),
             sources: new Set<Track["source"]>(),
           } satisfies ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> });
@@ -642,6 +644,7 @@ export default function App() {
         current.source = current.sources.size > 1 ? "mixed" : current.sources.has("netease") ? "netease" : "local";
         if (track.source === "netease" && track.artistIds?.[artistIndex]) {
           current.providerId = current.providerId ?? track.artistIds[artistIndex];
+          current.providerSource = current.providerSource ?? "netease";
         }
         artists.set(key, current);
       }
@@ -655,9 +658,12 @@ export default function App() {
   }, [allTracks, cachedQueueSnapshots, playQueueIds]);
   const requestedActiveTrack = playQueueTracks.find((track) => track.id === activeTrackId) ??
     allTracks.find((track) => track.id === activeTrackId);
+  const cachedActiveTrack = cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null;
   const resolvedActiveTrack =
+    (requestedActiveTrack?.streamUrl ? requestedActiveTrack : null) ??
+    (cachedActiveTrack?.streamUrl ? cachedActiveTrack : null) ??
     requestedActiveTrack ??
-    (cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null) ??
+    cachedActiveTrack ??
     (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
   // Queue snapshots intentionally omit lyric payloads. When a track is
   // restored after restart, reattach the hydrated active snapshot lyrics so
@@ -1085,6 +1091,14 @@ export default function App() {
     if (!targetTrack?.streamUrl) {
       setPlaybackNotice("这首歌暂时没有可播放地址，可能受版权、会员或音源限制。");
       return;
+    }
+    // A restored provider snapshot can contain the same track without a
+    // stream URL. Upsert the playable copy that the caller just resolved so
+    // queue materialization cannot drop the active song.
+    if (targetTrack.source === "netease") {
+      setNeteaseTracks((current) => trimTrackCache([...current, targetTrack]));
+    } else if (targetTrack.source === "qq") {
+      setQqSearchTracks((current) => trimTrackCache([...current, targetTrack]));
     }
 
     const playableIds = materializeQueueIds(queue.length ? queue : [targetTrack], trackId, shuffleEnabled);
@@ -2274,7 +2288,7 @@ export default function App() {
                   onPickArtist={(id, name) => {
                     const source = (albumDetail ?? selectedAlbum)?.source === "qq" ? "qq" : "netease";
                     setSelectedAlbum(null);
-                    setSelectedArtist({ id: `${source}:${id}`, providerId: id, name, source, trackCount: 0 });
+                    setSelectedArtist({ id: `${source}:${id}`, providerId: id, providerSource: source, name, source, trackCount: 0 });
                     setQuery("");
                     setActiveView("artists");
                   }} />

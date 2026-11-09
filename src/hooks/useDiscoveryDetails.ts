@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
+import { artistProviderSource } from "@/lib/artists";
 import { api, type ProviderAlbum, type ProviderArtistDetail, type ProviderUser } from "@/lib/api";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { trimTrackCache } from "@/lib/playerPresentation";
@@ -171,7 +172,9 @@ export function useDiscoveryDetails(options: {
     artistLoadingRef.current = Boolean(providerId);
     setArtistDetailLoading(Boolean(providerId));
     if (!providerId) return;
-    const artistSource = options.selectedArtist?.source === "qq" ? "qq" : "netease";
+    const artistSource = options.selectedArtist
+      ? artistProviderSource(options.selectedArtist)
+      : "netease";
     Promise.allSettled([
       artistSource === "qq"
         ? api.getSourceArtistDetail("qq", providerId)
@@ -200,7 +203,7 @@ export function useDiscoveryDetails(options: {
     return () => {
       artistRequestRef.current += 1;
     };
-  }, [options.selectedArtist?.providerId, options.selectedArtist?.source, artistRevision]);
+  }, [options.selectedArtist?.providerId, options.selectedArtist?.providerSource, options.selectedArtist?.source, artistRevision]);
 
   async function loadMoreArtistAlbums() {
     const providerId = options.selectedArtist?.providerId;
@@ -209,7 +212,9 @@ export function useDiscoveryDetails(options: {
     artistLoadingRef.current = true;
     setArtistDetailLoading(true);
     setArtistDetailError(null);
-    const artistSource = options.selectedArtist?.source === "qq" ? "qq" : "netease";
+    const artistSource = options.selectedArtist
+      ? artistProviderSource(options.selectedArtist)
+      : "netease";
     try {
       const result = artistSource === "qq"
         ? await api.getSourceArtistAlbums("qq", providerId, 30, artistOffsetRef.current)

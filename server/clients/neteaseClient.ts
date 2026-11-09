@@ -1281,23 +1281,37 @@ function checkedTrackIds(trackIds: string[], limit = 500) {
 }
 
 /** Older NCM modules wrap responses; validate both outer and inner codes. */
+function isNeteaseRateLimited(error: unknown): boolean {
+  const upstream = error as { body?: { code?: number; message?: string; msg?: string }; status?: number } | null;
+  const code = Number(upstream?.body?.code ?? upstream?.status ?? 0);
+  const text = String(upstream?.body?.message ?? upstream?.body?.msg ?? "");
+  return code === 405 || /操作频繁/.test(text);
+}
+
 async function callNetease(name: string, query: Record<string, unknown>): Promise<Record<string, unknown>> {
   const fn = (neteaseApi as unknown as Record<string, (query: Record<string, unknown>) => Promise<{ body?: Record<string, unknown> }>>)[name];
   if (!fn) throw new HttpError(501, "当前网易云接口不支持该功能", "NETEASE_API_UNAVAILABLE");
-  try {
-    const response = await fn(await withNeteaseIdentity(query));
-    let body = response.body ?? {};
-    if (body.body && typeof body.body === "object") body = body.body as Record<string, unknown>;
-    checkNeteaseBody(body);
-    // playlist_cover_update always wraps code=200, even for a rejected update.
-    if (body.data && typeof body.data === "object") checkNeteaseBody(body.data as Record<string, unknown>);
-    return body;
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
-    const upstream = error as { body?: Record<string, unknown>; message?: string } | null;
-    if (upstream?.body) checkNeteaseBody(upstream.body);
-    throw new HttpError(502, String(upstream?.body?.message ?? upstream?.body?.msg ?? upstream?.message ?? "网易云请求失败，请稍后重试"), "NETEASE_REQUEST_FAILED");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fn(await withNeteaseIdentity(query));
+      let body = response.body ?? {};
+      if (body.body && typeof body.body === "object") body = body.body as Record<string, unknown>;
+      checkNeteaseBody(body);
+      // playlist_cover_update always wraps code=200, even for a rejected update.
+      if (body.data && typeof body.data === "object") checkNeteaseBody(body.data as Record<string, unknown>);
+      return body;
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      if (attempt === 0 && isNeteaseRateLimited(error)) {
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        continue;
+      }
+      const upstream = error as { body?: Record<string, unknown>; message?: string } | null;
+      if (upstream?.body) checkNeteaseBody(upstream.body);
+      throw new HttpError(502, String(upstream?.body?.message ?? upstream?.body?.msg ?? upstream?.message ?? "网易云请求失败，请稍后重试"), "NETEASE_REQUEST_FAILED");
+    }
   }
+  throw new HttpError(502, "网易云请求失败，请稍后重试", "NETEASE_REQUEST_FAILED");
 }
 
 /**
@@ -1343,8 +1357,9 @@ async function retryOnNetworkError<T>(attempt: () => Promise<T>): Promise<T> {
       return await attempt();
     } catch (error) {
       const upstream = error as { body?: unknown };
-      if (upstream?.body || round >= 2) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 400 * (round + 1)));
+      const rateLimited = isNeteaseRateLimited(error);
+      if ((upstream?.body && !rateLimited) || round >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, rateLimited ? 1_200 * (round + 1) : 400 * (round + 1)));
     }
   }
 }
@@ -1352,8 +1367,8 @@ async function retryOnNetworkError<T>(attempt: () => Promise<T>): Promise<T> {
 function checkNeteaseBody(body: Record<string, unknown>) {
   if (body.code == null || Number(body.code) === 200) return;
   const code = Number(body.code);
-  const status = code === 301 || code === 401 ? 401 : code === 403 ? 403 : code === 404 ? 404 : 502;
-  const fallback = status === 401 ? "请重新登录网易云" : status === 403 ? "网易云拒绝了操作，请检查歌单权限或稍后重试" : "网易云暂时无法完成该请求";
+  const status = code === 301 || code === 401 ? 401 : code === 403 ? 403 : code === 404 ? 404 : code === 405 ? 429 : 502;
+  const fallback = status === 401 ? "请重新登录网易云" : status === 403 ? "网易云拒绝了操作，请检查歌单权限或稍后重试" : status === 429 ? "网易云请求过于频繁，请稍后再试" : "网易云暂时无法完成该请求";
   throw new HttpError(status, String(body.message ?? body.msg ?? fallback), "NETEASE_REQUEST_FAILED");
 }
 

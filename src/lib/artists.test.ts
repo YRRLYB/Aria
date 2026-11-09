@@ -27,6 +27,7 @@ describe("artists", () => {
       trackCount: 8,
       albumCount: 4,
       providerId: "1",
+      providerSource: "netease",
     } satisfies ArtistSummary;
 
     expect(mergeArtists([local, remote])).toEqual([
@@ -37,8 +38,49 @@ describe("artists", () => {
         trackCount: 8,
         albumCount: 4,
         providerId: "1",
+        providerSource: "netease",
       },
     ]);
+  });
+
+  it("remembers which provider a merged artist id belongs to", () => {
+    const local = {
+      id: "artist:aimer",
+      name: "Aimer",
+      source: "local",
+      avatarUrl: null,
+      trackCount: 40,
+      albumCount: 8,
+      providerId: null,
+      providerSource: null,
+    } satisfies ArtistSummary;
+    const qq = {
+      id: "qq:0039EKtl4ec7wv",
+      name: "Aimer",
+      source: "qq",
+      avatarUrl: null,
+      trackCount: 374,
+      albumCount: 82,
+      providerId: "0039EKtl4ec7wv",
+      providerSource: "qq",
+    } satisfies ArtistSummary;
+    const netease = {
+      id: "netease:16152",
+      name: "Aimer",
+      source: "netease",
+      avatarUrl: null,
+      trackCount: 50,
+      albumCount: 20,
+      providerId: "16152",
+      providerSource: "netease",
+    } satisfies ArtistSummary;
+
+    const [qqFirst] = mergeArtists([local, qq]);
+    expect(qqFirst).toMatchObject({ source: "mixed", providerId: qq.providerId, providerSource: "qq" });
+    // A later NetEase result upgrades the provider id so detail requests use
+    // the correct catalogue instead of calling NetEase with a QQ id.
+    const [upgraded] = mergeArtists([qqFirst, netease]);
+    expect(upgraded).toMatchObject({ providerId: netease.providerId, providerSource: "netease" });
   });
 
   it("creates local artist summaries from split artist names", () => {

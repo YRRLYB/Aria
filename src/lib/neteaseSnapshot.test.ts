@@ -60,7 +60,7 @@ describe("NetEase startup snapshot", () => {
       dailyTracks: [track("a")],
       roamTracks: [track("b")],
       likedTracks: [track("c")],
-      neteaseTracks: [track("d")],
+      neteaseTracks: [track("d", { streamUrl: "/api/providers/netease/tracks/d/stream" })],
       playlists: [playlist("p1")],
     }, storage)).toBe(true);
 
@@ -72,6 +72,7 @@ describe("NetEase startup snapshot", () => {
     expect(snapshot).toMatchObject({ version: 1, userId: "7" });
     expect(snapshot?.dailyTracks[0]).toMatchObject({ id: "a", source: "netease", lyrics: [] });
     expect(snapshot?.dailyTracks[0].waveform).toHaveLength(12);
+    expect(snapshot?.neteaseTracks[0].streamUrl).toBe("/api/providers/netease/tracks/d/stream");
     expect(snapshot?.playlists).toEqual([playlist("p1")]);
   });
 

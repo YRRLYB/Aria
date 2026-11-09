@@ -76,6 +76,28 @@ describe("playerPresentation", () => {
     expect(trimTrackCache([first, second, third], 2).map((track) => track.id)).toEqual(["b", "c"]);
   });
 
+  it("refreshes a cached track when a playable copy arrives later", () => {
+    const stale = {
+      id: "netease:42",
+      title: "Song",
+      artist: "Artist",
+      album: "Album",
+      duration: "03:00",
+      quality: "Lossless",
+      source: "netease",
+      cover: "#111",
+      accent: "#111",
+      waveform: [],
+      lyricStatus: "searchable",
+      lyrics: [],
+    } as Parameters<typeof trimTrackCache>[0][number];
+    const fresh = { ...stale, streamUrl: "/api/providers/netease/tracks/42/stream" };
+
+    expect(trimTrackCache([stale, fresh])[0].streamUrl).toBe(fresh.streamUrl);
+    // Never trade a playable cached copy for a metadata-only refresh.
+    expect(trimTrackCache([fresh, stale])[0].streamUrl).toBe(fresh.streamUrl);
+  });
+
   it("creates compact queue snapshots without losing playback metadata", () => {
     const track = {
       id: "netease:42",

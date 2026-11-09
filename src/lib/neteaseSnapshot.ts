@@ -53,6 +53,10 @@ function sanitizeTrack(value: unknown): Track | null {
     duration: typeof track.duration === "string" ? track.duration : "--:--",
     quality: track.quality ?? "320K",
     source: "netease",
+    // Stream routes are stable provider URLs. Dropping them here made the
+    // restored library shadow fresh search results with an unplayable copy
+    // of the same track id.
+    streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
     coverUrl: typeof track.coverUrl === "string" ? track.coverUrl : undefined,
     likedAt: typeof track.likedAt === "number" ? track.likedAt : null,
     bpm: typeof track.bpm === "number" ? track.bpm : null,

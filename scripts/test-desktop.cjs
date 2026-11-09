@@ -250,11 +250,20 @@ async function main() {
     }
     // Exercise native EOF without issuing a renderer "next" command.
     for (const repeat of [false, true]) {
+      await evaluate("window.ariaDesktop.showApp()");
       const player = { activeTrackId: tracks[0].id, activeTrackSnapshot: tracks[0], playQueueIds: tracks.map((track) => track.id), playQueueSnapshots: tracks, volume: 1, activeView: "home", repeatMode: repeat ? "one" : "all" };
       const settings = { outputMode: "shared", sinkId: "default", gaplessEnabled: !repeat, hifiEnabled: true, exclusiveMode: false };
       await evaluate(`localStorage.setItem('aria-player-state', ${JSON.stringify(JSON.stringify(player))}); localStorage.setItem('aria-audio-settings', ${JSON.stringify(JSON.stringify(settings))}); setTimeout(() => location.reload(), 100)`);
-      await delay(600); await card("SMTC Test One", "Paused");
+      await delay(600); await waitForRenderer();
+      await card("SMTC Test One", "Paused");
       await command("play"); await card("SMTC Test One", "Playing"); await delay(800);
+      // Reloads can take longer than the media card appears; wait for the
+      // native engine to load the track before seeking it directly.
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const state = await evaluate("window.ariaDesktop.nativeAudio.getState()");
+        if (state.active && state.trackId === "smtc-0") break;
+        await delay(250);
+      }
       await evaluate("window.ariaDesktop.nativeAudio.seek(116)");
       await delay(5500);
       await card(repeat ? "SMTC Test One" : "SMTC Test Two", "Playing");

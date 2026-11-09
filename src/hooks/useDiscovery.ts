@@ -3,6 +3,7 @@ import type { Track } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
 import type { ProviderAlbum, ProviderPlaylist, ProviderUser } from "@/lib/api";
 import {
+  artistProviderSource,
   createLocalArtistSummaries,
   mergeArtists,
   providerArtistToUiArtist,
@@ -480,7 +481,7 @@ export function useDiscovery(options: {
 
     const providerId = selectedArtist.providerId;
     if (providerId) {
-      const artistSource = selectedArtist.source === "qq" ? "qq" : "netease";
+      const artistSource = artistProviderSource(selectedArtist);
       const requestKey = `tracks:${artistSource}:${providerId}`;
       if (
         !artistRemoteTracksCacheRef.current.has(artistId) &&
@@ -566,6 +567,9 @@ export function useDiscovery(options: {
                 ...current,
                 avatarUrl: current.avatarUrl ?? remoteArtist.avatarUrl,
                 providerId: current.providerId ?? remoteArtist.providerId,
+                providerSource: current.providerId
+                  ? current.providerSource
+                  : remoteArtist.providerSource,
                 source:
                   current.source === "local" && remoteArtist.providerId
                     ? "mixed"
@@ -696,7 +700,7 @@ export function useDiscovery(options: {
       if (!selectedArtist) return;
       artistRequestRef.current.delete(
         selectedArtist.providerId
-          ? `tracks:${selectedArtist.source === "qq" ? "qq" : "netease"}:${selectedArtist.providerId}`
+          ? `tracks:${artistProviderSource(selectedArtist)}:${selectedArtist.providerId}`
           : `lookup:${selectedArtist.name.toLowerCase()}`,
       );
       artistRemoteTracksCacheRef.current.delete(selectedArtist.id);
