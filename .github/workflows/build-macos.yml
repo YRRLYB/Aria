@@ -56,7 +56,7 @@ jobs:
         run: npm run build:web && npm run build:server
 
       - name: Package DMG
-        run: npx electron-builder --config electron-builder.config.cjs --mac dmg --${{ matrix.arch }}
+        run: npx electron-builder --config electron-builder.config.cjs --publish never --mac dmg --${{ matrix.arch }}
 
       - name: Verify architecture
         run: |
