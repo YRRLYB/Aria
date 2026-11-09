@@ -18,7 +18,7 @@ const config = {
     "!dist/win-unpacked/**/*",
     "dist-server/**/*",
     "electron/**/*",
-    "!electron/native/aria-thumbnail/build/**/*",
+    "!electron/native/**/build/**/*",
     "vendor/**/*",
     "build/**/*",
     "package.json",
