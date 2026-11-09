@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.6.5",
+  "version": "0.6.6",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -14,12 +14,14 @@
     "build:web": "vite build",
     "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --external:sharp --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
     "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:web && npm run build:server",
-    "dist:beta": "npm run build:desktop && electron-builder --win nsis --x64",
-    "dist:mac": "npm run build:desktop && electron-builder --mac --x64 --arm64",
-    "dist:linux": "npm run build:desktop && electron-builder --linux --x64",
+    "dist:beta": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --win nsis --x64",
+    "dist:mac": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --mac --x64 --arm64",
+    "dist:linux": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --linux --x64",
     "test": "vitest run",
     "start:server": "node dist-server/index.cjs",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "dist:mac:x64": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --mac dmg --x64",
+    "dist:mac:arm64": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --mac dmg --arm64"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",
@@ -57,74 +59,5 @@
     "typescript": "~5.8.3",
     "vite": "^7.0.2",
     "vitest": "^4.1.10"
-  },
-  "build": {
-    "appId": "com.yrrlyb.aria",
-    "productName": "Aria",
-    "directories": {
-      "output": "release"
-    },
-    "electronDist": "node_modules/electron/dist",
-    "files": [
-      "dist/**/*",
-      "dist-server/**/*",
-      "electron/**/*",
-      "!electron/native/aria-thumbnail/build/**/*",
-      "vendor/**/*",
-      "build/**/*",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "dist-server/node_modules/**/*",
-      "vendor/mpv/**/*",
-      "electron/native/**/*.node"
-    ],
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "artifactName": "Aria-${version}-${arch}.${ext}",
-      "shortcutName": "Aria",
-      "uninstallDisplayName": "Aria"
-    },
-    "mac": {
-      "icon": "build/icon-1024.png",
-      "category": "public.app-category.music",
-      "darkModeSupport": true,
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "dmg": {
-      "artifactName": "Aria-${version}-${arch}.${ext}"
-    },
-    "linux": {
-      "icon": "build/icon-1024.png",
-      "category": "AudioVideo",
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    }
   }
 }

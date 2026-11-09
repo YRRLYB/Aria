@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 const { CdAudioRipper } = require("./cdAudioRipper.cjs");
+const { inspectMachO } = require("./macBinary.cjs");
 
 // OOPZ's Windows application-loopback API selects a process by executable
 // name (for example, `Aria.exe`).  The branded filename lets the native
@@ -133,6 +134,25 @@ function findSystemMpvExecutable() {
   return cachedSystemMpv || null;
 }
 
+const macBinaryArchCache = new Map();
+
+/** True when a Mach-O decoder contains a slice for the running Electron CPU. */
+function macBinaryMatchesHost(filePath) {
+  if (!IS_MAC) return true;
+  try {
+    const stats = fs.statSync(filePath);
+    const key = `${filePath}:${stats.size}:${stats.mtimeMs}`;
+    if (!macBinaryArchCache.has(key)) {
+      const info = inspectMachO(filePath);
+      const hostArch = process.arch === "arm64" ? "arm64" : "x64";
+      macBinaryArchCache.set(key, Boolean(info?.archs.includes(hostArch)));
+    }
+    return macBinaryArchCache.get(key);
+  } catch {
+    return false;
+  }
+}
+
 class MpvAudioEngine {
   constructor({ app, writeLog, sendEvent }) {
     this.app = app;
@@ -179,7 +199,13 @@ class MpvAudioEngine {
   }
 
   isSupported() {
-    return fs.existsSync(this.resolveExecutable());
+    const executable = this.resolveExecutable();
+    if (!fs.existsSync(executable)) return false;
+    // A packaged app can accidentally carry the other architecture's decoder.
+    // Check the Mach-O slices so the renderer falls back to Web Audio instead
+    // of offering native output that can never start.
+    if (IS_MAC && !macBinaryMatchesHost(executable)) return false;
+    return true;
   }
 
   resolveExecutable() {

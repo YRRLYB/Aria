@@ -2,6 +2,8 @@
 
 本文记录 Aria 从「Windows 专用」到「Windows + macOS（+ Linux 预览）」的改造范围，以及各平台的能力差异和打包步骤。
 
+> 0.6.6 起 macOS 改为按 x64 / arm64 分别构建，并逐架构校验 mpv、Now Playing 插件与 sharp。最新的双架构构建、CI 与签名说明见 `docs/macos-x64-arm64.md`。
+
 ## 1. 已适配
 
 | 位置 | 改动 | 说明 |
@@ -45,7 +47,7 @@ xattr -dr com.apple.quarantine /Applications/Aria.app
 Aria 有两套播放链路：Web Audio（默认，任何平台可用）和 mpv 原生引擎（低占用、共享/独占输出、EQ 标签链）。
 
 - 仓库里的 `vendor/mpv/Aria.exe` 是 Windows 版，由 `npm run ensure:mpv` 下载并改名。
-- macOS 上 `ensure:mpv` 会自动下载并解压 mpv：Intel + macOS 14（Sonoma）使用社区 All-in-One 构建（macOS 11+，带完整 dylib），Intel + macOS 15+ 使用官方 `macos-15-intel`，Apple Silicon 按 macOS 14 / 15 / 26 选择官方对应构建。二进制与 `lib/` 一起放到 `vendor/mpv/`，打包时通过 `asarUnpack` 原样落到 `Resources/app.asar.unpacked/vendor/mpv/`。
+- macOS 上 `ensure:mpv` 会按目标架构（`ARIA_MAC_TARGET_ARCH` / `npm_config_arch` / 宿主架构）准备 mpv：Intel 与 Apple Silicon 都使用 `eko5624/mpv-mac` `2026-11-09` 的固定构建（最低 macOS 11），下载后校验 SHA256 与 Mach-O 架构。`dist:mac` 的 `beforePack` 会为每个 DMG 重新选择对应架构；二进制与 `lib/` 一起放到 `vendor/mpv/`，打包时通过 `asarUnpack` 原样落到 `Resources/app.asar.unpacked/vendor/mpv/`。
 - 下载失败会自动回退到本机安装的 mpv（Homebrew / MacPorts / mpv.app / `PATH`），都没有时提示后跳过（不报错）。此时 `MpvAudioEngine.isSupported()` 为 `false`，前端自动回落到 Web Audio，功能不缺，只是少了原生输出与更低的内存占用。
 - 原生引擎启动前会执行一次 `mpv --list-options`，只传该二进制确实支持的参数（例如旧版 mac 构建没有 `--media-controls` / `--audio-set-media-role`）。此前把 Windows 参数原样传给 macOS mpv，会让 mpv 在创建 IPC socket 前直接退出，表现就是“mac 上 mpv 不能用”。现在已修复。
 - 想手动替换：把对应架构的 mpv 可执行文件和 `lib/` 放到 `vendor/mpv/`（可执行文件不要带扩展名，需 `chmod +x`），或直接 `brew install mpv`。渲染层在挂载时通过 `aria:native-audio:supported` 二次确认二进制存在性，再决定是否启用 mpv 输出模式。

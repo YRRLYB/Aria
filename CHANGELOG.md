@@ -1,5 +1,17 @@
 # 更新记录
 
+## 0.6.6（macOS Intel / Apple Silicon 双架构完善）
+
+- macOS 安装包改为按架构分别构建：`Aria-<version>-x64.dmg` 与 `Aria-<version>-arm64.dmg`；Electron 不再复用 Windows 的本地 distribution，由 electron-builder 按目标架构下载。
+- mpv 解码器在 Intel 与 Apple Silicon 上统一使用固定社区构建（`eko5624/mpv-mac` `2026-11-09`，最低 macOS 11），下载时校验 SHA256；`beforePack` 会为每个 DMG 准备对应架构的二进制与 libluajit，并在 `afterPack` 校验 Mach-O slice。
+- sharp/libvips 不再依赖构建机自身的可选依赖：每个架构从 npm 下载 `sharp-darwin-<arch>` 与 `sharp-libvips-darwin-<arch>`，校验 sha512 后放入 `dist-server/node_modules`；根目录 `node_modules` 不再进入安装包。
+- Now Playing 原生插件（`aria-nowplaying`）在 macOS 上同时构建 x64 与 arm64 并用 `lipo` 合并为 universal；打包最后阶段会检查 Electron、mpv、libluajit、Now Playing 与 sharp 的架构，任何一个不匹配都会终止出包。
+- 运行时也会读取 mpv 的 Mach-O 架构；如果安装包内混入另一 CPU 的解码器，自动回落到 Web Audio，而不是让播放按钮无反应。
+- macOS 最低系统版本明确为 12.0（Electron 43 的限制），mpv 本身兼容 macOS 11+。
+- 新增 `.github/workflows/build-macos.yml`：`macos-15-intel` 构建 x64、`macos-15` 构建 arm64，支持手动触发和 `v*` tag，两个 DMG 分别上传为 Actions artifact。
+- 构建配置迁移到 `electron-builder.config.cjs`；Windows 安装包继续使用本地 Electron distribution 并保持原行为，`npmRebuild` 关闭以缩短打包时间。
+- 回归：`npx tsc -b` 通过，44 个测试文件 / 277 项单测通过；Windows 开发态与安装包态桌面集成测试保持通过。
+
 ## 0.6.5（修复部分网易云歌曲无法播放 / 歌手曲目列表）
 
 - 修复部分网易云歌曲点击后没有声音：启动快照在恢复曲库时丢弃了 `streamUrl`，同 ID 的旧快照又覆盖了新搜索结果，导致队列解析时把歌曲判定为“不可播放”（如《爱我还是他》《Cherry Candy》《ninelie》）。现在保留稳定的流地址，并让新鲜的可播放副本覆盖仅含元数据的旧副本。

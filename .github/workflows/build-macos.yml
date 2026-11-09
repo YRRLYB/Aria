@@ -1,0 +1,61 @@
+name: Build macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Aria macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      # These workflows produce unsigned DMGs. If you configure an Apple
+      # Developer certificate, remove this line and pass CSC_LINK /
+      # CSC_KEY_PASSWORD plus the APPLE_* notarization secrets.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build DMG
+        run: npm run dist:mac:${{ matrix.arch }}
+
+      - name: Verify architecture
+        run: |
+          APP="release/mac/Aria.app"
+          lipo -archs "$APP/Contents/Resources/app.asar.unpacked/vendor/mpv/mpv"
+          lipo -archs "$APP/Contents/Resources/app.asar.unpacked/electron/native/aria-nowplaying/aria_nowplaying.node"
+          lipo -archs "$APP/Contents/Resources/app.asar.unpacked/dist-server/node_modules/@img/sharp-darwin-${{ matrix.arch }}/lib/sharp-darwin-${{ matrix.arch }}.node"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aria-macos-${{ matrix.arch }}
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 14
