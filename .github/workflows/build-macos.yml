@@ -60,7 +60,8 @@ jobs:
 
       - name: Verify architecture
         run: |
-          APP="release/mac/Aria.app"
+          APP="$(find release -maxdepth 2 -name Aria.app -type d | head -n 1)"
+          echo "Verifying $APP"
           lipo -archs "$APP/Contents/Resources/app.asar.unpacked/vendor/mpv/mpv"
           lipo -archs "$APP/Contents/Resources/app.asar.unpacked/electron/native/aria-nowplaying/aria_nowplaying.node"
           lipo -archs "$APP/Contents/Resources/app.asar.unpacked/dist-server/node_modules/@img/sharp-darwin-${{ matrix.arch }}/lib/sharp-darwin-${{ matrix.arch }}.node"
