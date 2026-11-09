@@ -133,9 +133,17 @@ function ensureMacNowPlayingForArch(rootDir, arch) {
   return buildUniversalMacNowPlaying(rootDir, { force: false });
 }
 
+/** Build only the running Mac's slice (used by the CI architecture matrix). */
+function buildMacNowPlayingForHost(rootDir, options = {}) {
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  buildAddon(rootDir, arch, options);
+  return installSingleArch(rootDir, arch);
+}
+
 module.exports = {
   ADDON_DIR,
   buildUniversalMacNowPlaying,
+  buildMacNowPlayingForHost,
   ensureMacNowPlayingForArch,
   cachedAddonPath,
   hasArch,

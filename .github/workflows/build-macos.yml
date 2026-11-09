@@ -26,6 +26,9 @@ jobs:
       # Developer certificate, remove this line and pass CSC_LINK /
       # CSC_KEY_PASSWORD plus the APPLE_* notarization secrets.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # Each matrix runner packages only its own CPU, so skip cross-compiling
+      # the other slice of the Now Playing addon.
+      ARIA_MAC_SINGLE_ARCH: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
