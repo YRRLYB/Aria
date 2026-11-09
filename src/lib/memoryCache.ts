@@ -8,9 +8,11 @@ export const memoryLimits = {
 } as const;
 
 export const warmupBatchLimits = {
-  neteaseTracks: 24,
-  neteaseMetadataPlaying: 4,
-  neteaseMetadataIdle: 8,
+  // 预取只是后台优化；网易云对播放地址解析有频控，宁可少预取也不能
+  // 让用户正在点的歌被 405/460 挡住。
+  neteaseTracks: 10,
+  neteaseMetadataPlaying: 2,
+  neteaseMetadataIdle: 4,
   localCovers: 12,
   // Keep eager image work small; visible rows already use native lazy loading.
   preloadedImages: 4,

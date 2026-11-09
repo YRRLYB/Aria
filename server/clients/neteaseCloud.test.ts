@@ -92,7 +92,7 @@ describe("NetEase cloud library", () => {
     mocks.detail.mockResolvedValue({ body: { code: 200, data: [upload] } });
     mocks.url.mockResolvedValue({ body: { code: 200, data: [{ url: "https://music.126.net/private.flac", br: 900000, sr: 44100, level: "lossless" }] } });
     expect(await client.getStreamMeta("901", "lossless")).toMatchObject({ url: "https://music.126.net/private.flac", quality: "Lossless", availableLevels: ["lossless"] });
-    expect(mocks.url).toHaveBeenCalledWith({ id: "901", level: "lossless", cookie: "test-cookie" });
+    expect(mocks.url).toHaveBeenCalledWith({ id: "901", level: "lossless", cookie: "test-cookie", crypto: "api" });
   });
 
   it("does not reuse a private stream URL across accounts", async () => {

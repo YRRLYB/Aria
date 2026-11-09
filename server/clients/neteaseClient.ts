@@ -168,6 +168,9 @@ const maxPlaylistTracks = 5000;
 // 只对成功解析出的 URL 使用持久缓存；失败/空 URL 绝不能缓存 25 分钟，
 // 否则用户登录、网络恢复或频控解除后，点击同一首歌仍然“没反应”。
 const streamUrlPending = new Map<string, Promise<NeteaseStreamMeta>>();
+// 用户主动播放/读取当前歌曲元数据后，后台预取要让路一段时间，避免把
+// 播放地址解析配额和频控窗口消耗在用户没点的歌上。
+let lastInteractiveStreamAt = 0;
 
 type QualityLevel = (typeof qualityOrder)[number];
 
@@ -811,6 +814,7 @@ export class NeteaseClient {
   async getStreamMeta(songId: string | number, level = "lossless", refresh = false) {
     // Playback must not depend on a login: NetEase serves free tracks (and the
     // best quality the anonymous session is allowed) without a cookie.
+    lastInteractiveStreamAt = Date.now();
     const { cookie, userId } = await this.optionalSession();
     const requested = (qualityOrder.includes(level as QualityLevel) ? level : "lossless") as QualityLevel;
     const requestedIndex = qualityOrder.indexOf(requested);
@@ -863,13 +867,17 @@ export class NeteaseClient {
       // 频控冷却期内预取直接让路：用户正在播的那一首不受影响，曲库预取别再火上浇油。
       return 0;
     }
+    // 最近 15 秒内有用户主动播放/读取元数据：把配额留给当前歌曲。
+    if (Date.now() - lastInteractiveStreamAt < 15_000) return 0;
     const { cookie, userId } = await this.optionalSession();
     const uniqueIds = Array.from(new Set(songIds.map(String).filter(Boolean))).slice(0, 160);
     let cached = 0;
-    await promisePool(uniqueIds, 2, async (songId) => {
+    // 单并发 + 间隔：预取只是后台优化，不能和用户正在点的歌曲抢带宽/触发风控。
+    await promisePool(uniqueIds, 1, async (songId) => {
       if (neteaseUrlResolveCoolingDown()) return;
       await Promise.allSettled([this.getLyricsCached(songId), this.getSongUrlCached(songId, level, cookie, userId)]);
       cached += 1;
+      await new Promise((resolve) => setTimeout(resolve, 180));
     });
     return cached;
   }
@@ -1005,10 +1013,14 @@ export class NeteaseClient {
         if (!(error instanceof HttpError && error.status === 404) || !cookie) throw error;
         return cloudSongToSong(await this.getCloudSongCached(String(songId), cookie, userId));
       });
+      // eapi 通道在部分网络会被网易云判为“环境异常”（-460），而同一账号
+      // 的 api 通道可以正常拿到标准/较高/极高/无损/Hi-Res 地址。播放地址
+      // 必须走 api；登录、搜索等仍保持各自默认通道。
       const response = await neteaseApi.song_url_v1(await withNeteaseIdentity({
         id: songId,
         level: level as never,
         cookie,
+        crypto: "api",
       })).catch((error: unknown) => {
         throw classifyNeteaseUrlError(error);
       });

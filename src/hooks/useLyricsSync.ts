@@ -18,6 +18,11 @@ export function useLyricsSync(options: {
   lyricBindingsRef.current = lyricBindings;
   const lyricSyncingRef = useRef<Set<string>>(new Set());
   const lyricEnrichmentRefreshRef = useRef<Set<string>>(new Set());
+  // 首曲恢复/冷启动时后端可能还没就绪，歌词请求会失败一次。以前失败后
+  // 没有重试，用户看到的就是“第一首歌没歌词”。这里对同一首歌最多重试 3 次。
+  const lyricRetryCountRef = useRef<Map<string, number>>(new Map());
+  const lyricRetryTimerRef = useRef<number | null>(null);
+  const [lyricRetryTick, setLyricRetryTick] = useState(0);
 
   function applyLyricsToTrack(trackId: string, lyrics: Track["lyrics"], candidateId?: string) {
     if (!lyrics.length) return;
@@ -31,26 +36,29 @@ export function useLyricsSync(options: {
     });
   }
 
-  async function syncLyricsForTrack(track: Track) {
+  async function syncLyricsForTrack(track: Track): Promise<boolean> {
     const providerId = track.providerId ?? (track.id.startsWith(`${track.source}:`) ? track.id.slice(track.source.length + 1) : undefined);
     if (track.source === "qq" && providerId) {
       const result = await api.getSourceLyrics("qq", providerId);
+      if (!result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics);
-      return;
+      return true;
     }
     if (track.source === "netease" && providerId) {
       const result = await api.getNeteaseLyrics(providerId);
+      if (!result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics);
-      return;
+      return true;
     }
 
     if (track.source === "local") {
       const binding = lyricBindingsRef.current[track.id];
       if (binding) {
         const result = await api.bindLyric(track.id, binding, binding);
-        if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return;
+        if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
+        if (!result.lyrics.length) return false;
         applyLyricsToTrack(track.id, result.lyrics);
-        return;
+        return true;
       }
       const candidates = await api.searchLyrics({
         title: track.title,
@@ -58,11 +66,14 @@ export function useLyricsSync(options: {
         album: track.album,
       });
       const best = selectAutomaticMetadataCandidate(track, candidates.candidates);
-      if (!best || lyricBindingsRef.current[track.id] !== binding) return;
+      if (!best || lyricBindingsRef.current[track.id] !== binding) return false;
       const result = await api.bindLyric(track.id, best.id, binding ?? null);
-      if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return;
+      if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
+      if (!result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics, best.id);
+      return true;
     }
+    return false;
   }
 
   useEffect(() => {
@@ -89,6 +100,27 @@ export function useLyricsSync(options: {
     });
   }, [options.localTracks, lyricBindings]);
 
+  function scheduleLyricRetry(trackId: string) {
+    const attempt = lyricRetryCountRef.current.get(trackId) ?? 0;
+    if (attempt >= 3) return;
+    if (lyricRetryTimerRef.current !== null) {
+      window.clearTimeout(lyricRetryTimerRef.current);
+      lyricRetryTimerRef.current = null;
+    }
+    const delay = [1_200, 3_000, 7_000][attempt] ?? 7_000;
+    lyricRetryTimerRef.current = window.setTimeout(() => {
+      lyricRetryTimerRef.current = null;
+      if (options.activeTrack.id !== trackId || hasSyncedLyrics(options.activeTrack)) return;
+      lyricRetryCountRef.current.set(trackId, attempt + 1);
+      setLyricRetryTick((value) => value + 1);
+    }, delay);
+  }
+
+  useEffect(() => () => {
+    if (lyricRetryTimerRef.current !== null) window.clearTimeout(lyricRetryTimerRef.current);
+    lyricRetryTimerRef.current = null;
+  }, []);
+
   const syncActiveTrackLyrics = useEffectEvent(() => {
     const activeTrack = options.activeTrack;
     const hasLyrics = hasSyncedLyrics(activeTrack);
@@ -109,9 +141,17 @@ export function useLyricsSync(options: {
     }
     lyricSyncingRef.current.add(activeTrack.id);
     syncLyricsForTrack(activeTrack)
+      .then((applied) => {
+        if (applied) {
+          lyricRetryCountRef.current.delete(activeTrack.id);
+          return;
+        }
+        if (options.activeTrack.id === activeTrack.id) scheduleLyricRetry(activeTrack.id);
+      })
       .catch(() => {
         // Keep the track searchable; the manual lyrics panel can retry.
         lyricEnrichmentRefreshRef.current.delete(activeTrack.id);
+        if (options.activeTrack.id === activeTrack.id) scheduleLyricRetry(activeTrack.id);
       })
       .finally(() => {
         lyricSyncingRef.current.delete(activeTrack.id);
@@ -120,7 +160,7 @@ export function useLyricsSync(options: {
 
   useEffect(() => {
     syncActiveTrackLyrics();
-  }, [syncActiveTrackLyrics, options.activeTrack.id, options.activeTrack.providerId, options.activeTrack.lyricStatus, options.activeTrack.lyrics, options.activeTrack.source, lyricBindings]);
+  }, [syncActiveTrackLyrics, options.activeTrack.id, options.activeTrack.providerId, options.activeTrack.lyricStatus, options.activeTrack.lyrics, options.activeTrack.source, lyricBindings, lyricRetryTick]);
 
   return {
     lyricBindings,

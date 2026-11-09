@@ -9,7 +9,6 @@ import {
   Languages,
   Maximize2,
   SlidersHorizontal,
-  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -526,7 +525,7 @@ export function ImmersivePlayerView({
             <p className="mt-1 text-sm text-white/62">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
           </div>
           <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
-            <X />
+            <AriaIcon name="close" className="size-5" />
           </Button>
         </div>
 

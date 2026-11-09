@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
-<rect x="4.2" y="4.2" width="6.1" height="6.1" rx="3.05" style="fill:var(--aria-dot,currentColor)"/>
-<rect x="13.7" y="7.1" width="6.1" height="6.1" rx="3.05" style="fill:var(--aria-dot,currentColor)" opacity=".55"/>
-<rect x="6.9" y="13.7" width="6.1" height="6.1" rx="3.05" style="fill:var(--aria-dot,currentColor)" opacity=".78"/>
-<rect x="15.4" y="16.6" width="4.6" height="4.6" rx="2.3" style="fill:var(--aria-dot,currentColor)" opacity=".32"/>
+<rect x="3.8" y="3.8" width="7" height="7" rx="3.5" style="fill:var(--aria-dot,currentColor)"/>
+<rect x="13.2" y="6.6" width="7" height="7" rx="3.5" style="fill:var(--aria-dot,currentColor)" opacity=".56"/>
+<rect x="6.6" y="13.2" width="7" height="7" rx="3.5" style="fill:var(--aria-dot,currentColor)" opacity=".8"/>
+<rect x="14.8" y="15.4" width="5.4" height="5.4" rx="2.7" style="fill:var(--aria-dot,currentColor)" opacity=".3"/>
 </svg>

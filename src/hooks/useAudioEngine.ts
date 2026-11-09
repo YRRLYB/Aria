@@ -867,13 +867,21 @@ export function useAudioEngine(options: {
 
   function handleAudioError() {
     if (nativePlaybackEnabled) {
+      const nativePlayingThisTrack =
+        Boolean(nativeAudioState?.active) && nativeAudioState?.trackId === options.activeTrack.id;
+      if (!nativePlayingThisTrack) {
+        // 原生输出还没有真正接管时，旁路 audio 的报错不能反过来停掉播放；
+        // 让 nativeAudio.load 继续走，真正的失败会由它自己的 catch 处理。
+        setPlaybackError(`${options.activeTrack.title} 播放失败：音频地址加载失败，请检查网络或重新登录音源。`);
+        return;
+      }
       // 原生输出已经独立工作，渲染器旁路音频失败只影响频谱。先换当前
       // 档位再试一次，不要停掉真正的播放。
       if (!analyserFallbackEnabled) {
         setAnalyserFallbackEnabled(true);
         return;
       }
-      setPlaybackError("频谱取样音频加载失败，歌曲本身可能仍在播放；切换歌曲后会重试。");
+      setPlaybackError("频谱取样音频加载失败，歌曲本身仍在播放；切换歌曲后会重试。");
       return;
     }
     if (!activeStreamUrl || !options.playing) return;

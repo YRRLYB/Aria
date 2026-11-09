@@ -20,6 +20,7 @@ import lyricsSvg from "../../../aria-icons/lyrics.svg?raw";
 import immersiveSvg from "../../../aria-icons/immersive.svg?raw";
 import slidersSvg from "../../../aria-icons/sliders.svg?raw";
 import playingSvg from "../../../aria-icons/playing.svg?raw";
+import closeSvg from "../../../aria-icons/close.svg?raw";
 // 左下角浮球：每个入口一套独立绘制的导航图标，不再和播放器按钮复用。
 import navPlayerSvg from "../../../aria-icons/nav-player.svg?raw";
 import navCloudSvg from "../../../aria-icons/nav-cloud.svg?raw";
@@ -48,6 +49,7 @@ export type AriaIconName =
   | "immersive"
   | "sliders"
   | "playing"
+  | "close"
   | "nav-player"
   | "nav-cloud"
   | "nav-artists"
@@ -75,6 +77,7 @@ const ICONS: Record<AriaIconName, string> = {
   immersive: immersiveSvg,
   sliders: slidersSvg,
   playing: playingSvg,
+  close: closeSvg,
   "nav-player": navPlayerSvg,
   "nav-cloud": navCloudSvg,
   "nav-artists": navArtistsSvg,

@@ -285,8 +285,26 @@ let playlistsCache: { cookie: string; expiresAt: number; playlists: ProviderPlay
  */
 const payCache = new Map<string, boolean>();
 
-/** 会话级账号能力探测:unknown → 探测后 capable / incapable。 */
+/**
+ * 会话级账号能力探测: unknown → capable / incapable。
+ * 必须带 TTL：一次 VIP 歌的空响应可能只是网络抖动/上游 2001，若永久记住
+ * “incapable”，之后所有付费歌都会被误判为播放地址不可用。
+ */
 let vipProbeState: "unknown" | "capable" | "incapable" = "unknown";
+let vipProbeExpiresAt = 0;
+
+function currentVipProbeState(): "unknown" | "capable" | "incapable" {
+  if (vipProbeState !== "unknown" && Date.now() >= vipProbeExpiresAt) {
+    vipProbeState = "unknown";
+    vipProbeExpiresAt = 0;
+  }
+  return vipProbeState;
+}
+
+function rememberVipProbe(state: "capable" | "incapable") {
+  vipProbeState = state;
+  vipProbeExpiresAt = Date.now() + (state === "capable" ? 10 * 60_000 : 45_000);
+}
 
 function rememberFileInfo(song: QqSearchSong) {
   if (!song.mid) return;
@@ -557,9 +575,11 @@ export async function resolveQqStreamMeta(
   const freeLevels: AriaLevel[] = ["standard"];
   const paidLevels = LEVEL_FALLBACK.filter((level) => level !== "standard" && levelsUpTo(requestLevel).includes(level));
   const knownVipSong = isFreeSong === false;
-  if (knownVipSong && vipProbeState === "incapable") {
-    // 已确认账号无 VIP:不再打接口,省下频控配额。
-    throw new SourceError("UNAVAILABLE", "该歌曲需要 QQ 音乐 VIP（绿钻）才能播放", { source: "qq" });
+  const probeState = currentVipProbeState();
+  if (knownVipSong && probeState === "incapable") {
+    // 已确认账号无 VIP:短时间内不再打接口，省下频控配额。45 秒后重新探测，
+    // 避免一次网络抖动把整个会话永久锁死。
+    throw new SourceError("UNAVAILABLE", "该歌曲需要 QQ 音乐 VIP（绿钻）才能播放；若账号已有会员，请稍后重试", { source: "qq" });
   }
 
   const fetchVkey = async (levels: AriaLevel[]) => {
@@ -622,7 +642,7 @@ export async function resolveQqStreamMeta(
     return null;
   };
 
-  const cachedLookupLevels = vipProbeState === "capable" && requestLevel !== "standard"
+  const cachedLookupLevels = probeState === "capable" && requestLevel !== "standard"
     ? [...paidLevels, ...freeLevels]
     : freeLevels;
   if (!options.refresh) {
@@ -636,14 +656,16 @@ export async function resolveQqStreamMeta(
   const unavailableError = () =>
     new SourceError(
       "UNAVAILABLE",
-      session
-        ? "该歌曲暂无可播放的音频链接：可能需要 QQ 音乐 VIP，或登录已过期（设置 → 播放源 重新登录）"
-        : "该歌曲暂无可播放的音频链接：QQ 音乐要求登录 Cookie，请到 设置 → 播放源 绑定",
+      !session
+        ? "该歌曲暂无可播放的音频链接：QQ 音乐要求登录 Cookie，请到 设置 → 播放源 绑定"
+        : knownVipSong
+          ? "该歌曲需要 QQ 音乐 VIP（绿钻）才能播放；若账号已有会员，请稍后再试或重新登录"
+          : "该歌曲暂无可播放的音频链接：可能需要 QQ 音乐 VIP，或登录已过期（设置 → 播放源 重新登录）",
       { source: "qq" },
     );
 
   // 已确认有 VIP 能力的账号:VIP 歌直接走付费档(单独请求,不与免费档混发)。
-  if (vipProbeState === "capable" && !isFreeSong) {
+  if (probeState === "capable" && !isFreeSong) {
     if (paidLevels.length) {
       const entry = collectEntry(paidLevels, await fetchVkey(paidLevels));
       if (entry) return toStreamMeta(entry, fileInfo);
@@ -662,11 +684,11 @@ export async function resolveQqStreamMeta(
   if ((knownVipSong || isFreeSong === undefined) && paidLevels.length) {
     const paidEntry = collectEntry(paidLevels, await fetchVkey(paidLevels));
     if (paidEntry) {
-      vipProbeState = "capable";
+      rememberVipProbe("capable");
       return toStreamMeta(paidEntry, fileInfo);
     }
     // 只有确认的 VIP 歌才能判定"账号无 VIP"(免费歌全空另有原因)。
-    if (knownVipSong) vipProbeState = "incapable";
+    if (knownVipSong) rememberVipProbe("incapable");
   }
   throw unavailableError();
 }
@@ -861,6 +883,7 @@ function clearQqReadCaches() {
   clearPurlCache();
   payCache.clear();
   vipProbeState = "unknown";
+  vipProbeExpiresAt = 0;
   fileInfoCache.clear();
   songMetaCache.clear();
   searchPageCache.clear();

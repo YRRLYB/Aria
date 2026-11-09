@@ -62,8 +62,8 @@ export function FloatingNav({
         <AriaIcon
           name="nav-orb"
           className={cn(
-            "size-7 text-neutral-950 transition duration-200",
-            open && "rotate-45 scale-[0.85]",
+            "size-9 text-neutral-950 transition duration-200",
+            open && "rotate-45 scale-[0.9]",
           )}
         />
       </button>
@@ -125,11 +125,11 @@ export function FloatingNav({
                 onClick={() => onPick(item.id)}
               >
                 {item.id === "artists" ? (
-                  <span className="relative flex size-8 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7bd9c7] via-[#f5f7ff] to-[#f0a0c9] text-neutral-950">
-                    <AriaIcon name={iconName} className="size-5" />
+                  <span className="relative flex size-10 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7bd9c7] via-[#f5f7ff] to-[#f0a0c9] text-neutral-950">
+                    <AriaIcon name={iconName} className="size-7" />
                   </span>
                 ) : (
-                  <AriaIcon name={iconName} className="size-5" />
+                  <AriaIcon name={iconName} className={cn("size-7", active && "size-[1.9rem]")} />
                 )}
                 <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-visible:opacity-100">
                   {item.label}

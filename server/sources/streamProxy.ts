@@ -73,5 +73,13 @@ export async function proxyAudioStream(
     res.end();
     return;
   }
-  await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>), res);
+  try {
+    await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>), res);
+  } catch (error) {
+    // Once headers are sent Express cannot turn this into a JSON error; doing
+    // so only logs ERR_HTTP_HEADERS_SENT and can leave the renderer with a
+    // half-open media request. Tear the response down instead.
+    if (!res.headersSent) throw error;
+    res.destroy(error instanceof Error ? error : undefined);
+  }
 }

@@ -590,9 +590,18 @@ export default function App() {
     }
   }, [activeView, exploreDiscovery, exploreDiscoveryLoading, exploreTab]);
 
+  const qqLibraryTracks = useMemo(
+    () => mergeTracks([
+      ...qqData.likedTracks,
+      ...qqData.playlistTracks,
+      ...qqData.dailyTracks,
+      ...qqData.roamTracks,
+    ]),
+    [qqData.likedTracks, qqData.playlistTracks, qqData.dailyTracks, qqData.roamTracks],
+  );
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
-    [localTracks, neteaseTracks, qqSearchTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...qqLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
+    [localTracks, neteaseTracks, qqSearchTracks, qqLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
   );
   const allTracksById = useMemo(() => {
     const map = new Map<string, Track>();
@@ -792,9 +801,9 @@ export default function App() {
       case "playlists":
         return playlistTracks;
       case "daily":
-        return dailyTracks;
+        return recommendSource === "qq" ? qqData.dailyTracks : dailyTracks;
       case "radar":
-        return roamTracks;
+        return recommendSource === "qq" ? qqData.roamTracks : roamTracks;
       case "explore":
         return mergeTracks([...exploreTracks, ...exploreRadioTracks]);
       case "cloud":
@@ -806,7 +815,7 @@ export default function App() {
       default:
         return [];
     }
-  }, [activeView, artistTracks, dailyTracks, exploreRadioTracks, exploreTracks, likedDisplayTracks, playHistory, playlistTracks, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
+  }, [activeView, artistTracks, dailyTracks, exploreRadioTracks, exploreTracks, likedDisplayTracks, playHistory, playlistTracks, qqData.dailyTracks, qqData.roamTracks, recommendSource, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
 
   const hasActiveTrack = activeTrack.id !== idleTrack.id;
 
@@ -1048,6 +1057,10 @@ export default function App() {
       dailyTracks,
       roamTracks,
       playlistTracks,
+      qqData.dailyTracks,
+      qqData.roamTracks,
+      qqData.playlistTracks,
+      qqData.likedTracks,
       localPlaylists.selectedTracks,
       cloudTracks,
       neteaseLikedDisplayTracks,
@@ -1129,7 +1142,13 @@ export default function App() {
     setRoamTracks(applyTo);
     setNeteaseLikedTracks(applyTo);
     setPlaylistTracks(applyTo);
+    qqData.setLikedTracks(applyTo);
+    qqData.setPlaylistTracks(applyTo);
+    qqData.setDailyTracks(applyTo);
+    qqData.setRoamTracks(applyTo);
     setCloudTracks(applyTo);
+    setExploreTracks(applyTo);
+    setExploreRadioTracks(applyTo);
     setCachedQueueSnapshots(applyTo);
     setCachedActiveTrackSnapshot((current) => current?.id === trackId ? updateTrack(current) : current);
     if (includeHistory) {
