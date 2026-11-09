@@ -47,7 +47,7 @@ function downloadFile(url, destination, redirects = 0) {
       reject(new Error(`Too many redirects while downloading ${url}`));
       return;
     }
-    https
+    const request = https
       .get(url, { headers: { "User-Agent": "Aria-mpv-bootstrap/1.0" } }, (response) => {
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           response.resume();
@@ -66,6 +66,7 @@ function downloadFile(url, destination, redirects = 0) {
         file.on("error", reject);
       })
       .on("error", reject);
+    request.setTimeout(90_000, () => request.destroy(new Error(`Timed out downloading ${url}`)));
   });
 }
 
@@ -192,7 +193,7 @@ async function downloadMacMpv({ arch, rootDir }) {
   const unpackPath = path.join(cacheDir, "unpacked");
   fs.rmSync(unpackPath, { recursive: true, force: true });
   fs.mkdirSync(unpackPath, { recursive: true });
-  execFileSync("/usr/bin/unzip", ["-q", "-o", archivePath, "-d", unpackPath], { stdio: "inherit" });
+  execFileSync("/usr/bin/unzip", ["-q", "-o", archivePath, "-d", unpackPath], { stdio: "inherit", timeout: 180_000 });
   const appDir = findEntry(unpackPath, "mpv.app", "dir");
   const binary = appDir
     ? path.join(appDir, "Contents", "MacOS", "mpv")

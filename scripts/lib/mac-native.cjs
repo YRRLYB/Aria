@@ -44,9 +44,10 @@ function runNodeGyp(rootDir, arch) {
   const result = spawnSync(
     process.execPath,
     [nodeGypEntry, "rebuild", "--directory", path.join(rootDir, ADDON_DIR), `--arch=${arch}`],
-    { cwd: rootDir, stdio: "inherit", env, shell: false },
+    { cwd: rootDir, stdio: "inherit", env, shell: false, timeout: 600_000, killSignal: "SIGTERM" },
   );
   if (result.error) throw result.error;
+  if (result.signal) throw new Error(`node-gyp timed out for ${arch} (${result.signal})`);
   if ((result.status ?? 1) !== 0) throw new Error(`node-gyp failed for ${arch} (exit ${result.status})`);
 
   const built = path.join(rootDir, ADDON_DIR, "build", "Release", `${ADDON_NAME}.node`);

@@ -13,7 +13,7 @@ function download(url, destination, redirects = 0) {
       reject(new Error(`Too many redirects while downloading ${url}`));
       return;
     }
-    https
+    const request = https
       .get(url, { headers: { "User-Agent": "Aria-sharp-bootstrap/1.0" } }, (response) => {
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           response.resume();
@@ -32,11 +32,15 @@ function download(url, destination, redirects = 0) {
         file.on("error", reject);
       })
       .on("error", reject);
+    request.setTimeout(90_000, () => request.destroy(new Error(`Timed out downloading ${url}`)));
   });
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url, { headers: { "User-Agent": "Aria-sharp-bootstrap/1.0" } });
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Aria-sharp-bootstrap/1.0" },
+    signal: AbortSignal.timeout(60_000),
+  });
   if (!response.ok) throw new Error(`Registry request failed (${response.status}): ${url}`);
   return response.json();
 }
@@ -68,7 +72,7 @@ async function ensurePackage({ rootDir, name, version, cacheRoot, targetDir }) {
   if (!fs.existsSync(path.join(unpackDir, "package", "package.json"))) {
     fs.rmSync(unpackDir, { recursive: true, force: true });
     fs.mkdirSync(unpackDir, { recursive: true });
-    execFileSync("/usr/bin/tar", ["-xzf", archivePath, "-C", unpackDir], { stdio: "inherit" });
+    execFileSync("/usr/bin/tar", ["-xzf", archivePath, "-C", unpackDir], { stdio: "inherit", timeout: 180_000 });
   }
   fs.rmSync(targetDir, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });

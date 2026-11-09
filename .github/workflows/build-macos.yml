@@ -21,6 +21,7 @@ jobs:
           - runner: macos-15
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     env:
       # These workflows produce unsigned DMGs. If you configure an Apple
       # Developer certificate, remove this line and pass CSC_LINK /
@@ -45,8 +46,17 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Build DMG
-        run: npm run dist:mac:${{ matrix.arch }}
+      - name: Prepare mpv
+        run: npm run ensure:mpv
+
+      - name: Build native addon
+        run: npm run build:native
+
+      - name: Build web and server
+        run: npm run build:web && npm run build:server
+
+      - name: Package DMG
+        run: npx electron-builder --config electron-builder.config.cjs --mac dmg --${{ matrix.arch }}
 
       - name: Verify architecture
         run: |
