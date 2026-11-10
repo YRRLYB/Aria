@@ -136,13 +136,21 @@ function setupUpdates(options = {}) {
     if (!supported || !autoUpdater) return state;
     if (checking) return checking;
     update({ status: "checking", error: null });
-    checking = autoUpdater.checkForUpdates()
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("检查更新超时，请稍后重试。")), 20_000);
+      timer.unref?.();
+    });
+    checking = Promise.race([autoUpdater.checkForUpdates(), timeout])
       .then(() => state)
       .catch((error) => {
         update({ status: "error", error: error instanceof Error ? error.message : String(error), checkedAt: Date.now() });
         return state;
       })
-      .finally(() => { checking = null; });
+      .finally(() => {
+        if (timer) clearTimeout(timer);
+        checking = null;
+      });
     if (manual) writeLog("update.log", "manual update check");
     return checking;
   }
