@@ -72,7 +72,10 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
   const accent = ["#c6796d", "#5aa894", "#8680b4", "#5e8ab8"][index % 4];
   // The id convention is "<source>:<externalId>" for every provider; NetEase
   // keys keep their historical format so snapshots restore unchanged.
-  const source: Track["source"] = track.source === "qq" ? "qq" : "netease";
+  const source: Track["source"] =
+    track.source === "qq" || track.source === "bilibili"
+      ? track.source
+      : "netease";
   const trackKey = `${source}:${track.id}`;
   const cachedLyrics = readCachedLyrics(trackKey);
 
@@ -89,10 +92,21 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     duration: formatDuration(track.duration),
     quality: normalizeQuality(track.quality),
     source,
-    streamUrl: track.streamUrl ? api.resolveUrl(track.streamUrl) : undefined,
+    streamUrl: track.streamUrl
+      ? api.resolveUrl(track.streamUrl)
+      : source === "bilibili"
+        ? api.getSourceStreamUrl("bilibili", track.id)
+        : undefined,
+    videoUrl: track.videoUrl
+      ? api.resolveUrl(track.videoUrl)
+      : source === "bilibili"
+        ? api.getSourceVideoUrl("bilibili", track.id)
+        : undefined,
+    hasVideo: track.hasVideo ?? source === "bilibili",
+    videoQuality: track.videoQuality ?? null,
     coverUrl: track.coverUrl
-      ? source === "qq"
-        ? api.getSourceCoverUrl("qq", track.coverUrl)
+      ? source === "qq" || source === "bilibili"
+        ? api.getSourceCoverUrl(source, track.coverUrl)
         : api.getNeteaseCoverUrl(track.coverUrl)
       : undefined,
     likedAt: track.likedAt ?? null,
@@ -107,7 +121,7 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     lyricStatus: cachedLyrics.length ? "linked" : "searchable",
     lyrics: cachedLyrics.length ? cachedLyrics : [
       { time: "00:00", text: "歌词等待同步" },
-      { time: "00:15", text: source === "qq" ? "QQ音乐歌词会在播放时自动获取" : "网易云歌曲已接入真实账号数据" },
+      { time: "00:15", text: source === "qq" ? "QQ音乐歌词会在播放时自动获取" : source === "bilibili" ? "B站视频字幕会在播放时自动获取" : "网易云歌曲已接入真实账号数据" },
       { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
     ],
   };

@@ -14,6 +14,12 @@ function isQqArtworkSource(source: URL) {
       source.hostname === "qpic.y.qq.com");
 }
 
+function isBilibiliArtworkSource(source: URL) {
+  return ["http:", "https:"].includes(source.protocol) && !source.username && !source.password && !source.port &&
+    (source.hostname === "hdslb.com" || source.hostname.endsWith(".hdslb.com") ||
+      source.hostname === "bilivideo.com" || source.hostname.endsWith(".bilivideo.com"));
+}
+
 // Keep NetEase artwork on Aria's persistent image cache, including raw URLs
 // restored from older snapshots. Sizes share the same keys across surfaces.
 export function cachedArtworkUrl(url: string | null | undefined, size = 320): string | undefined {
@@ -24,6 +30,9 @@ export function cachedArtworkUrl(url: string | null | undefined, size = 320): st
       // QQ covers encode their size in the path (T002R300x300M000...);
       // rewrite it before handing the URL to the QQ cover cache.
       return api.getSourceCoverUrl("qq", applyQqCdnSize(source, size).href);
+    }
+    if (isBilibiliArtworkSource(source)) {
+      return api.getSourceCoverUrl("bilibili", source.href);
     }
   } catch {
     return url;
@@ -81,9 +90,21 @@ export function directArtworkUrl(url: string | null | undefined, size = 320): st
       original.protocol = "https:";
       return applyQqCdnSize(original, size).href;
     }
+    if (source.pathname === "/api/sources/bilibili/cover") {
+      const upstream = source.searchParams.get("url");
+      if (!upstream) return undefined;
+      const original = new URL(upstream);
+      if (!isBilibiliArtworkSource(original)) return undefined;
+      original.protocol = "https:";
+      return original.href;
+    }
     if (isQqArtworkSource(source)) {
       source.protocol = "https:";
       return applyQqCdnSize(source, size).href;
+    }
+    if (isBilibiliArtworkSource(source)) {
+      source.protocol = "https:";
+      return source.href;
     }
     if (!isNeteaseArtworkSource(source)) return url;
     source.protocol = "https:";

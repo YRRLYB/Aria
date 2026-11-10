@@ -2,6 +2,7 @@ import type { MusicSource, SourceId, SourceManifest } from "./contract";
 import { SourceError } from "./contract";
 import { neteaseManifest } from "./netease/manifest";
 import { qqManifest } from "./qq/manifest";
+import { bilibiliManifest } from "./bilibili/manifest";
 import { readStore, updateStore } from "../store";
 import type { AppStore } from "../types";
 
@@ -13,11 +14,13 @@ import type { AppStore } from "../types";
 const manifests: Partial<Record<SourceId, SourceManifest>> = {
   netease: neteaseManifest,
   qq: qqManifest,
+  bilibili: bilibiliManifest,
 };
 
 const loaders: Partial<Record<SourceId, () => Promise<MusicSource>>> = {
   netease: () => import("./netease/source").then((module) => module.neteaseSource),
   qq: () => import("./qq/source").then((module) => module.qqSource),
+  bilibili: () => import("./bilibili/source").then((module) => module.bilibiliSource),
 };
 
 const instances = new Map<SourceId, MusicSource>();

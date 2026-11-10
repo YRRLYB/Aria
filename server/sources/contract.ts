@@ -54,6 +54,24 @@ export function levelsUpTo(level: AriaLevel | null | undefined): AriaLevel[] {
 
 export type SourceSearchMode = "tracks" | "artists" | "playlists" | "albums";
 
+export type SourceCapabilities = {
+  /** Search modes this source can answer. Unsupported modes return empty data. */
+  searchModes: SourceSearchMode[];
+  playback: boolean;
+  lyrics: boolean;
+  wordLyrics: boolean;
+  account: boolean;
+  liked: boolean;
+  playlistsRead: boolean;
+  playlistsWrite: boolean;
+  recommendations: boolean;
+  artistDetail: boolean;
+  albumDetail: boolean;
+  qualitySelection: boolean;
+  /** Muxed video stream in addition to the audio stream. */
+  videoPlayback: boolean;
+};
+
 export type SourceSearchQuery = {
   query: string;
   mode: SourceSearchMode;
@@ -102,6 +120,8 @@ export type SourceQrLoginCheck = {
 export type SourceStreamMeta = {
   url: string;
   headers?: Record<string, string>;
+  /** Upstream MIME type to expose when the CDN sends octet-stream. */
+  mimeType?: string | null;
   bitrate?: number | null;
   sampleRate?: number | null;
   size?: number | null;
@@ -112,6 +132,16 @@ export type SourceStreamMeta = {
   expiresAt?: number | null;
 };
 
+export type SourceVideoMeta = {
+  url: string;
+  headers?: Record<string, string>;
+  mimeType?: string | null;
+  quality?: string | null;
+  width?: number | null;
+  height?: number | null;
+  expiresAt?: number | null;
+};
+
 export type SourceManifest = {
   id: SourceId;
   name: string;
@@ -119,6 +149,7 @@ export type SourceManifest = {
   version: string;
   /** Hosts the source is allowed to proxy artwork from (suffix match). */
   artworkHosts: string[];
+  capabilities: SourceCapabilities;
 };
 
 export type SourceErrorCode =
@@ -169,6 +200,12 @@ export type MusicSource = {
     options: { level?: AriaLevel; refresh?: boolean },
     signal?: AbortSignal,
   ): Promise<SourceStreamMeta>;
+  /** Optional muxed video stream (Bilibili). Audio playback uses resolveStreamMeta. */
+  resolveVideoMeta?(
+    trackId: string,
+    options: { level?: AriaLevel; refresh?: boolean },
+    signal?: AbortSignal,
+  ): Promise<SourceVideoMeta>;
   getLyrics?(trackId: string, signal?: AbortSignal): Promise<LyricLine[]>;
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
   /** 收藏/取消收藏（QQ 红心等）；未实现的源不提供该入口。 */

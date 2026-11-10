@@ -39,17 +39,33 @@ export function LocalLogo({ className }: { className?: string }) {
   return <FolderSearch className={cn("size-4", className)} aria-hidden="true" />;
 }
 
-export type SourceToggleOption = "local" | "netease" | "qq";
+export function BilibiliLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={cn("size-4", className)} aria-hidden="true">
+      <rect x="2" y="5" width="20" height="15" rx="4" fill="#00A1D6" />
+      <path d="M7.2 3.2 10 6M16.8 3.2 14 6" stroke="#00A1D6" strokeWidth="2" strokeLinecap="round" />
+      <rect x="5.5" y="9" width="13" height="8" rx="2" fill="#fff" />
+      <circle cx="9" cy="12" r="1.1" fill="#00A1D6" />
+      <circle cx="15" cy="12" r="1.1" fill="#00A1D6" />
+      <path d="M9 14.4h6" stroke="#00A1D6" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
 
-const SOURCE_META: Record<SourceToggleOption, { label: string }> = {
+export type SourceToggleOption = "local" | "netease" | "qq";
+export type SourceLogoOption = SourceToggleOption | "bilibili";
+
+const SOURCE_META: Record<SourceLogoOption, { label: string }> = {
   local: { label: "本地" },
   netease: { label: "网易云" },
   qq: { label: "QQ 音乐" },
+  bilibili: { label: "B站" },
 };
 
-export function SourceLogo({ source, className }: { source: SourceToggleOption; className?: string }) {
+export function SourceLogo({ source, className }: { source: SourceLogoOption; className?: string }) {
   if (source === "netease") return <NeteaseLogo className={className} />;
   if (source === "qq") return <QqLogo className={className} />;
+  if (source === "bilibili") return <BilibiliLogo className={className} />;
   return <LocalLogo className={className} />;
 }
 

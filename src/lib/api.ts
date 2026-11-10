@@ -189,12 +189,29 @@ export type NeteaseQrCheck = {
   account: NeteaseAccountSummary | null;
 };
 
+export type SourceCapabilities = {
+  searchModes: Array<"tracks" | "artists" | "playlists" | "albums">;
+  playback: boolean;
+  lyrics: boolean;
+  wordLyrics: boolean;
+  account: boolean;
+  liked: boolean;
+  playlistsRead: boolean;
+  playlistsWrite: boolean;
+  recommendations: boolean;
+  artistDetail: boolean;
+  albumDetail: boolean;
+  qualitySelection: boolean;
+  videoPlayback: boolean;
+};
+
 export type SourceManifestInfo = {
   id: string;
   name: string;
   shortName: string;
   version: string;
   artworkHosts: string[];
+  capabilities: SourceCapabilities;
   /** False when the user switched this source off in settings. */
   enabled?: boolean;
   /** ms timestamp while the source is skipped after repeated upstream errors. */
@@ -220,6 +237,10 @@ export type ProviderTrack = {
   albumId?: string | null;
   artistIds?: string[];
   matchedLyric?: string | null;
+  /** Muxed video stream route (Bilibili); audio playback still uses streamUrl. */
+  videoUrl?: string | null;
+  hasVideo?: boolean;
+  videoQuality?: string | null;
   /** QQ 音乐等源的会员专属标记：true 表示无 VIP 账号大概率拿不到播放地址。 */
   vip?: boolean;
 };
@@ -836,6 +857,31 @@ export const api = {
     if (level) params.set("level", level);
     const suffix = params.size ? `?${params}` : "";
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/stream-meta${suffix}`);
+  },
+  getSourceStreamMeta(sourceId: string, trackId: string, level?: string) {
+    const params = new URLSearchParams();
+    if (level) params.set("level", level);
+    const suffix = params.size ? `?${params}` : "";
+    return request<{
+      url: string;
+      bitrate?: number | null;
+      sampleRate?: number | null;
+      quality?: ProviderTrack["quality"] | null;
+      currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
+      availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
+    }>(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/stream-meta${suffix}`);
+  },
+  getSourceVideoUrl(sourceId: string, trackId: string, level?: string) {
+    const params = new URLSearchParams();
+    if (level) params.set("level", level);
+    const suffix = params.size ? `?${params}` : "";
+    return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video${suffix}`);
+  },
+  getSourceVideoMetaUrl(sourceId: string, trackId: string, level?: string) {
+    const params = new URLSearchParams();
+    if (level) params.set("level", level);
+    const suffix = params.size ? `?${params}` : "";
+    return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video-meta${suffix}`);
   },
   getSourceLyrics(sourceId: string, trackId: string) {
     return request<{ lyrics: LyricLine[] }>(

@@ -7,6 +7,8 @@ export type UpstreamStream = {
   url: string;
   /** Upstream request headers (Referer/User-Agent/Cookie); never sent to the renderer. */
   headers?: Record<string, string>;
+  /** Override the upstream content type when a CDN serves octet-stream. */
+  mimeType?: string | null;
   bitrate?: number | null;
   sampleRate?: number | null;
   currentLevel?: string | null;
@@ -55,7 +57,13 @@ export async function proxyAudioStream(
   }
 
   res.status(upstream.status);
-  for (const header of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+  if (meta.mimeType) {
+    res.setHeader("content-type", meta.mimeType);
+  } else {
+    const contentType = upstream.headers.get("content-type");
+    if (contentType) res.setHeader("content-type", contentType);
+  }
+  for (const header of ["content-length", "content-range", "accept-ranges"]) {
     const value = upstream.headers.get(header);
     if (value) res.setHeader(header, value);
   }

@@ -44,6 +44,12 @@ export function useLyricsSync(options: {
       applyLyricsToTrack(track.id, result.lyrics);
       return true;
     }
+    if (track.source === "bilibili" && providerId) {
+      const result = await api.getSourceLyrics("bilibili", providerId);
+      if (!result.lyrics.length) return false;
+      applyLyricsToTrack(track.id, result.lyrics);
+      return true;
+    }
     if (track.source === "netease" && providerId) {
       const result = await api.getNeteaseLyrics(providerId);
       if (!result.lyrics.length) return false;

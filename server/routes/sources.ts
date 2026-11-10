@@ -168,6 +168,41 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
     }
   });
 
+  router.get("/:sourceId/tracks/:trackId/video-meta", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.resolveVideoMeta) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}不提供视频流`, { source: source.manifest.id });
+      }
+      const level = parseLevelQuery(req.query.level);
+      const meta = await source.resolveVideoMeta(req.params.trackId, { level });
+      const { headers, ...publicMeta } = meta;
+      void headers;
+      res.json(publicMeta);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/tracks/:trackId/video", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.resolveVideoMeta) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}不提供视频流`, { source: source.manifest.id });
+      }
+      const level = parseLevelQuery(req.query.level);
+      await proxyAudioStream(req, res, async (attempt) => {
+        const meta = await source.resolveVideoMeta!(req.params.trackId, {
+          level,
+          refresh: attempt > 0,
+        });
+        return meta;
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/:sourceId/tracks/:trackId/lyrics", async (req, res, next) => {
     try {
       const source = await getSource(req.params.sourceId);

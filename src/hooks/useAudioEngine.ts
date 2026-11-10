@@ -37,6 +37,7 @@ export function useAudioEngine(options: {
   audioOutputMode: AudioOutputMode;
   pageVisible: boolean;
   analyserEnabled: boolean;
+  videoMode: boolean;
   pendingSeekRef: { current: number };
   setPlaying: (updater: (playing: boolean) => boolean) => void;
   setDurationSeconds: (seconds: number) => void;
@@ -75,17 +76,19 @@ export function useAudioEngine(options: {
   // source for OOPZ, while Exclusive opens the endpoint outside the system
   // mixer. Audio CD playback always requires the native engine.
   const nativePlaybackRequested = Boolean(
-    nativeAudioSupported && (options.audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
+    nativeAudioSupported &&
+      (options.audioOutputMode !== "system" || activeTrack.requiresNativePlayback) &&
+      !options.videoMode,
   );
   // Do not silently send a failed WASAPI request back through Chromium. That
   // made the UI say "Exclusive" while Windows was still mixing the audio.
   const nativePlaybackEnabled = nativePlaybackRequested;
 
-  // Both online sources accept a ?level= override on their stream routes.
+  // Online sources accept a ?level= override on their stream routes.
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease" && activeTrack.source !== "qq") return resolvedUrl;
+    if (activeTrack.source !== "netease" && activeTrack.source !== "qq" && activeTrack.source !== "bilibili") return resolvedUrl;
 
     const url = new URL(resolvedUrl, window.location.href);
     url.searchParams.set("level", options.effectiveQualityLevel);
@@ -104,18 +107,19 @@ export function useAudioEngine(options: {
   }, [activeTrack.availableLevels, analyserFallbackEnabled, nativePlaybackEnabled, options.effectiveQualityLevel]);
 
   const audioElementStreamUrl = useMemo(() => {
+    if (options.videoMode) return null;
     if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease" && activeTrack.source !== "qq") return resolvedUrl;
+    if (activeTrack.source !== "netease" && activeTrack.source !== "qq" && activeTrack.source !== "bilibili") return resolvedUrl;
 
     const url = new URL(resolvedUrl, window.location.href);
-    if (activeTrack.source === "netease" || activeTrack.source === "qq") {
+    if (activeTrack.source === "netease" || activeTrack.source === "qq" || activeTrack.source === "bilibili") {
       // Native mpv owns the audible stream. The renderer copy is analyser-only,
       // so use the smallest real stream to avoid doubling decoder memory.
       url.searchParams.set("level", analyserLevel);
     }
     return url.href;
-  }, [activeTrack, analyserLevel]);
+  }, [activeTrack, analyserLevel, options.videoMode]);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);

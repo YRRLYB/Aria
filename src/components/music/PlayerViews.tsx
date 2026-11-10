@@ -9,6 +9,7 @@ import {
   Languages,
   Maximize2,
   SlidersHorizontal,
+  Video,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,8 @@ import { WordLyricText } from "./WordLyricText";
 import { getLyricStartTime } from "@/lib/lyricTiming";
 import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
+import { VideoStage } from "@/components/music/VideoStage";
+import type { VideoControl } from "@/hooks/useVideoPlayback";
 import type { Track } from "@/data/music";
 import { copyArtworkToClipboard } from "@/lib/clipboard";
 import {
@@ -49,6 +52,13 @@ export function PlayerSurface({
   onNext,
   onPrevious,
   onOpenImmersive,
+  videoMode,
+  onToggleVideoMode,
+  videoActive,
+  videoControlRef,
+  onVideoDuration,
+  onVideoEnded,
+  onVideoError,
   equalizerEnabled,
   onOpenEqualizer,
   onReplaceLocalArtwork,
@@ -82,6 +92,13 @@ export function PlayerSurface({
   onNext: () => void;
   onPrevious: () => void;
   onOpenImmersive: () => void;
+  videoMode: boolean;
+  onToggleVideoMode: () => void;
+  videoActive: boolean;
+  videoControlRef: { current: VideoControl | null };
+  onVideoDuration: (seconds: number) => void;
+  onVideoEnded: () => void;
+  onVideoError: (message: string) => void;
   equalizerEnabled: boolean;
   onOpenEqualizer: () => void;
   onReplaceLocalArtwork: (trackId: string, file: File) => Promise<void>;
@@ -107,7 +124,7 @@ export function PlayerSurface({
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
   const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
   const availableLevels = activeTrack.availableLevels ?? [];
-  const qualitySwitchableSource = activeTrack.source === "netease" || activeTrack.source === "qq";
+  const qualitySwitchableSource = activeTrack.source === "netease" || activeTrack.source === "qq" || activeTrack.source === "bilibili";
   const hasKnownQualityLevels = qualitySwitchableSource && availableLevels.length > 0;
   const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [songOptionsOpen, setSongOptionsOpen] = useState(false);
@@ -225,6 +242,18 @@ export function PlayerSurface({
                   <p className="mt-2 text-sm text-neutral-600">从本地音乐、网易云或 QQ 音乐选择一首歌开始。</p>
                 </div>
               </div>
+            ) : videoMode && activeTrack.videoUrl ? (
+              <VideoStage
+                track={activeTrack}
+                active={videoActive}
+                playing={playing}
+                volume={volume}
+                controlRef={videoControlRef}
+                onDuration={onVideoDuration}
+                onEnded={onVideoEnded}
+                onError={onVideoError}
+                className="size-full"
+              />
             ) : (
               <CoverArt
                 track={activeTrack}
@@ -313,6 +342,19 @@ export function PlayerSurface({
                   <AudioLines />
                   {equalizerEnabled && <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-violet-500" />}
                 </Button>
+                {activeTrack.videoUrl && (
+                  <Button
+                    variant="glass"
+                    size="sm"
+                    title={videoMode ? "切回封面与音频模式" : "观看视频（使用系统混音）"}
+                    aria-label={videoMode ? "切回封面与音频模式" : "观看视频"}
+                    aria-pressed={videoMode}
+                    className={cn("size-8 px-0", videoMode && "text-violet-700")}
+                    onClick={onToggleVideoMode}
+                  >
+                    <Video />
+                  </Button>
+                )}
                 <Button variant="glass" size="sm" title="打开沉浸视图" onClick={onOpenImmersive}>
                   <Maximize2 />
                   沉浸
@@ -480,6 +522,13 @@ export function ImmersivePlayerView({
   onNext,
   onPrevious,
   onSeek,
+  videoMode,
+  onToggleVideoMode,
+  videoControlRef,
+  onVideoDuration,
+  onVideoEnded,
+  onVideoError,
+  videoActive,
 }: {
   activeTrack: Track;
   palette: CoverPalette;
@@ -495,6 +544,13 @@ export function ImmersivePlayerView({
   onNext: () => void;
   onPrevious: () => void;
   onSeek: (time: number) => void;
+  videoMode: boolean;
+  onToggleVideoMode: () => void;
+  videoControlRef: { current: VideoControl | null };
+  onVideoDuration: (seconds: number) => void;
+  onVideoEnded: () => void;
+  onVideoError: (message: string) => void;
+  videoActive: boolean;
 }) {
   const currentTime = usePlaybackTime();
   const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
@@ -524,17 +580,48 @@ export function ImmersivePlayerView({
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/48">Immersive</p>
             <p className="mt-1 text-sm text-white/62">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
           </div>
-          <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
-            <AriaIcon name="close" className="size-5" />
-          </Button>
+          <div className="flex items-center gap-2">
+            {activeTrack.videoUrl && (
+              <Button
+                className={cn("bg-white/12 text-white hover:bg-white/20", videoMode && "bg-white text-neutral-950 hover:bg-white/90")}
+                size="sm"
+                aria-pressed={videoMode}
+                title={videoMode ? "切回封面与音频模式" : "观看视频"}
+                onClick={onToggleVideoMode}
+              >
+                <Video />
+                {videoMode ? "封面" : "视频"}
+              </Button>
+            )}
+            <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
+              <AriaIcon name="close" className="size-5" />
+            </Button>
+          </div>
         </div>
 
         <div className="immersive-content grid min-h-0 items-center gap-8 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)]">
           <div
-            className="immersive-artwork mx-auto aspect-square overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]"
+            className={cn(
+              "immersive-artwork mx-auto overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]",
+              videoMode && activeTrack.videoUrl ? "aspect-video w-full max-w-5xl bg-black" : "aspect-square",
+            )}
             data-taskbar-anchor="immersive"
           >
-            <CoverArt track={activeTrack} className="size-full" fit="cover" large />
+            {videoMode && activeTrack.videoUrl ? (
+              <VideoStage
+                track={activeTrack}
+                active={videoActive}
+                playing={playing}
+                volume={volume}
+                controlRef={videoControlRef}
+                onDuration={onVideoDuration}
+                onEnded={onVideoEnded}
+                onError={onVideoError}
+                className="size-full"
+              />
+            ) : (
+              <CoverArt track={activeTrack} className="size-full" fit="cover" large />
+            )}
           </div>
 
           <div className="player-detail-panel flex max-h-full min-h-0 min-w-0 flex-col overflow-hidden">

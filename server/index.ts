@@ -47,6 +47,12 @@ const qqCoverCache = new RemoteCoverCache({
   sizing: null,
   errorPrefix: "QQ_COVER",
 });
+const bilibiliCoverCache = new RemoteCoverCache({
+  directory: path.join(cacheDir, "covers-bilibili"),
+  allowedHosts: ["hdslb.com", "bilivideo.com"],
+  sizing: null,
+  errorPrefix: "BILIBILI_COVER",
+});
 
 // Cover responses are binary assets and can be several megabytes each. Keep
 // the on-disk cache bounded so repeated browsing cannot grow memory/disk use
@@ -54,6 +60,7 @@ const qqCoverCache = new RemoteCoverCache({
 const pruneRemoteCoverCache = () => {
   remoteCoverCache.prune();
   qqCoverCache.prune();
+  bilibiliCoverCache.prune();
 };
 void pruneRemoteCoverCache();
 const remoteCoverPruneTimer = setInterval(pruneRemoteCoverCache, 15 * 60_000);
@@ -99,7 +106,7 @@ app.use("/api/library", createLibraryRouter());
 app.use("/api/library/metadata", createLocalMetadataRouter());
 app.use(
   "/api/sources",
-  createSourcesRouter({ coverCaches: { netease: remoteCoverCache, qq: qqCoverCache } }),
+  createSourcesRouter({ coverCaches: { netease: remoteCoverCache, qq: qqCoverCache, bilibili: bilibiliCoverCache } }),
 );
 
 app.get("/api/settings", async (_req, res, next) => {

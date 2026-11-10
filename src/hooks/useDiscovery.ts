@@ -26,6 +26,7 @@ export type SearchBundle = {
   localTracks: Track[];
   neteaseTracks: Track[];
   qqTracks: Track[];
+  bilibiliTracks: Track[];
   artists: ArtistSummary[];
   playlists: ProviderPlaylist[];
   users: ProviderUser[];
@@ -38,6 +39,7 @@ const emptySearchBundle: SearchBundle = {
   localTracks: [],
   neteaseTracks: [],
   qqTracks: [],
+  bilibiliTracks: [],
   artists: [],
   playlists: [],
   users: [],
@@ -55,6 +57,7 @@ export function useDiscovery(options: {
   artistSummaries: ArtistSummary[];
   onMergeNeteaseTracks: (updater: (current: Track[]) => Track[]) => void;
   onMergeQqTracks: (updater: (current: Track[]) => Track[]) => void;
+  onMergeBilibiliTracks?: (updater: (current: Track[]) => Track[]) => void;
 }) {
   const [searchBundle, setSearchBundle] =
     useState<SearchBundle>(emptySearchBundle);
@@ -62,14 +65,17 @@ export function useDiscovery(options: {
   const [searchMode, setSearchMode] = useState<DiscoverySearchMode>("tracks");
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchQqError, setSearchQqError] = useState<string | null>(null);
+  const [searchBilibiliError, setSearchBilibiliError] = useState<string | null>(null);
   const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchMore, setSearchMore] = useState(false);
   const [searchQqMore, setSearchQqMore] = useState(false);
+  const [searchBilibiliMore, setSearchBilibiliMore] = useState(false);
   const [searchRevision, setSearchRevision] = useState(0);
   const searchRequestRef = useRef(0);
   const searchOffsetRef = useRef(0);
   const qqSearchOffsetRef = useRef(0);
+  const bilibiliSearchOffsetRef = useRef(0);
   const searchLoadingRef = useRef(false);
   const [selectedArtist, setSelectedArtist] = useState<ArtistSummary | null>(
     null,
@@ -139,11 +145,14 @@ export function useDiscovery(options: {
     const requestId = ++searchRequestRef.current;
     searchOffsetRef.current = 0;
     qqSearchOffsetRef.current = 0;
+    bilibiliSearchOffsetRef.current = 0;
     setSearchError(null);
     setSearchQqError(null);
+    setSearchBilibiliError(null);
     setSearchTotal(0);
     setSearchMore(false);
     setSearchQqMore(false);
+    setSearchBilibiliMore(false);
     const normalizedText = text.toLowerCase();
     const localMatches =
       searchMode === "tracks" && text
@@ -159,8 +168,7 @@ export function useDiscovery(options: {
       ...emptySearchBundle,
       localTracks: localMatches,
       artists: localArtists,
-    });
-    setSearchLoading(Boolean(text));
+    });    setSearchLoading(Boolean(text));
     searchLoadingRef.current = Boolean(text);
     if (!text) return;
 
@@ -185,6 +193,7 @@ export function useDiscovery(options: {
             localTracks: localMatches,
             neteaseTracks: remoteTracks,
             qqTracks: current.qqTracks,
+            bilibiliTracks: current.bilibiliTracks,
             artists: mergeArtists([
               ...current.artists,
               ...localArtists,
@@ -279,7 +288,34 @@ export function useDiscovery(options: {
                   );
               })
           : Promise.resolve();
-      Promise.allSettled([neteaseSearch, qqSearch]).finally(() => {
+      const bilibiliSearch =
+        searchMode === "tracks" && sourceSwitches.bilibili !== false
+          ? api
+              .searchSource("bilibili", text, "tracks", searchPageSize)
+              .then((result) => {
+                if (requestId !== searchRequestRef.current) return;
+                setSearchBilibiliError(null);
+                const uiTracks = result.tracks.map((track, index) =>
+                  providerTrackToUiTrack(track, index),
+                );
+                bilibiliSearchOffsetRef.current = searchPageSize;
+                setSearchBilibiliMore(result.tracks.length >= searchPageSize);
+                options.onMergeBilibiliTracks?.((current) =>
+                  trimTrackCache([...current, ...uiTracks]),
+                );
+                setSearchBundle((current) => ({
+                  ...current,
+                  bilibiliTracks: uiTracks,
+                }));
+              })
+              .catch((error) => {
+                if (requestId === searchRequestRef.current)
+                  setSearchBilibiliError(
+                    error instanceof Error ? error.message : "B站搜索暂不可用。",
+                  );
+              })
+          : Promise.resolve();
+      Promise.allSettled([neteaseSearch, qqSearch, bilibiliSearch]).finally(() => {
         if (requestId === searchRequestRef.current) {
           setSearchLoading(false);
           searchLoadingRef.current = false;
@@ -290,7 +326,7 @@ export function useDiscovery(options: {
       window.clearTimeout(timer);
       searchRequestRef.current += 1;
     };
-  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision, sourceSwitches.qq, sourceSwitches.netease]);
+  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision, sourceSwitches.qq, sourceSwitches.netease, sourceSwitches.bilibili]);
 
   useEffect(() => {
     const text = options.query.trim();
@@ -322,11 +358,15 @@ export function useDiscovery(options: {
         : null;
     const shouldLoadNetease = searchMore;
     const shouldLoadQq = Boolean(searchQqMore && qqSearchMode && sourceSwitches.qq !== false);
-    if ((!shouldLoadNetease && !shouldLoadQq) || searchLoadingRef.current) return;
+    const shouldLoadBilibili = Boolean(
+      searchMode === "tracks" && searchBilibiliMore && sourceSwitches.bilibili !== false,
+    );
+    if ((!shouldLoadNetease && !shouldLoadQq && !shouldLoadBilibili) || searchLoadingRef.current) return;
 
     const requestId = searchRequestRef.current;
     const neteaseOffset = searchOffsetRef.current;
     const qqOffset = qqSearchOffsetRef.current;
+    const bilibiliOffset = bilibiliSearchOffsetRef.current;
     searchLoadingRef.current = true;
     setSearchLoading(true);
 
@@ -356,8 +396,9 @@ export function useDiscovery(options: {
             setSearchBundle((current) => ({
               localTracks: current.localTracks,
               neteaseTracks: mergeTracks([...current.neteaseTracks, ...remoteTracks]),
-              // QQ 分页结果由下面的任务单独追加，这里必须原样保留。
+              // QQ / B站分页结果由下面的任务单独追加，这里必须原样保留。
               qqTracks: current.qqTracks,
+              bilibiliTracks: current.bilibiliTracks,
               artists: mergeArtists([
                 ...current.artists,
                 ...result.artists.map(providerArtistToUiArtist),
@@ -441,6 +482,35 @@ export function useDiscovery(options: {
             if (requestId === searchRequestRef.current)
               setSearchQqError(
                 error instanceof Error ? error.message : "QQ音乐加载更多失败，请重试。",
+              );
+          }),
+      );
+    }
+
+    if (shouldLoadBilibili) {
+      setSearchBilibiliError(null);
+      tasks.push(
+        api
+          .searchSource("bilibili", options.query.trim(), "tracks", searchPageSize, bilibiliOffset)
+          .then((result) => {
+            if (requestId !== searchRequestRef.current) return;
+            const tracks = result.tracks.map((track, index) =>
+              providerTrackToUiTrack(track, bilibiliOffset + index),
+            );
+            bilibiliSearchOffsetRef.current = bilibiliOffset + searchPageSize;
+            setSearchBilibiliMore(result.tracks.length >= searchPageSize);
+            options.onMergeBilibiliTracks?.((current) =>
+              trimTrackCache([...current, ...tracks]),
+            );
+            setSearchBundle((current) => ({
+              ...current,
+              bilibiliTracks: mergeTracks([...current.bilibiliTracks, ...tracks]),
+            }));
+          })
+          .catch((error) => {
+            if (requestId === searchRequestRef.current)
+              setSearchBilibiliError(
+                error instanceof Error ? error.message : "B站加载更多失败，请重试。",
               );
           }),
       );
@@ -685,10 +755,12 @@ export function useDiscovery(options: {
     setSearchMode,
     searchError,
     searchQqError,
+    searchBilibiliError,
     searchSuggestions,
     searchTotal,
     searchMore,
     searchQqMore,
+    searchBilibiliMore,
     loadMoreSearch,
     retrySearch: () => setSearchRevision((current) => current + 1),
     selectedArtist,

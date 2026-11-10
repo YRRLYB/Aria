@@ -24,12 +24,29 @@ vi.mock("../sources/registry", () => ({
   setSourceEnabled: mocks.setEnabled,
 }));
 
+const sourceCapabilities = {
+  searchModes: ["tracks", "artists", "playlists", "albums"] as const,
+  playback: true,
+  lyrics: true,
+  wordLyrics: false,
+  account: true,
+  liked: true,
+  playlistsRead: true,
+  playlistsWrite: false,
+  recommendations: true,
+  artistDetail: true,
+  albumDetail: true,
+  qualitySelection: true,
+  videoPlayback: false,
+};
+
 const qqManifest: SourceManifest = {
   id: "qq",
   name: "QQ音乐",
   shortName: "QQ",
   version: "1.0.0",
   artworkHosts: ["gtimg.cn"],
+  capabilities: { ...sourceCapabilities, searchModes: [...sourceCapabilities.searchModes] },
 };
 
 const neteaseManifest: SourceManifest = {
@@ -38,6 +55,7 @@ const neteaseManifest: SourceManifest = {
   shortName: "网易云",
   version: "1.0.0",
   artworkHosts: ["music.126.net"],
+  capabilities: { ...sourceCapabilities, searchModes: [...sourceCapabilities.searchModes] },
 };
 
 const fakeTrack = {

@@ -5,4 +5,5 @@ export const sourceLabel: Record<Track["source"], string> = {
   cloud: "云盘",
   netease: "网易云",
   qq: "QQ音乐",
+  bilibili: "B站",
 };

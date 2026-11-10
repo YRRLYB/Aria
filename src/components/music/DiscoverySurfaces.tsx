@@ -37,7 +37,9 @@ export function SearchSurface({
   localTracks,
   neteaseTracks,
   qqTracks = [],
+  bilibiliTracks = [],
   qqError = null,
+  bilibiliError = null,
   artists,
   playlists,
   users = [],
@@ -49,6 +51,7 @@ export function SearchSurface({
   total = 0,
   more = false,
   qqMore = false,
+  bilibiliMore = false,
   onRetry = () => {},
   onLoadMore = () => {},
   onPickTrack,
@@ -62,7 +65,9 @@ export function SearchSurface({
   localTracks: Track[];
   neteaseTracks: Track[];
   qqTracks?: Track[];
+  bilibiliTracks?: Track[];
   qqError?: string | null;
+  bilibiliError?: string | null;
   artists: ArtistSummary[];
   playlists: ProviderPlaylist[];
   users?: ProviderUser[];
@@ -75,6 +80,7 @@ export function SearchSurface({
   more?: boolean;
   /** QQ 搜索没有 total，用“上一页是否满页”推断是否还有下一页。 */
   qqMore?: boolean;
+  bilibiliMore?: boolean;
   onRetry?: () => void;
   onLoadMore?: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
@@ -84,11 +90,11 @@ export function SearchSurface({
   onPickAlbum?: (album: ProviderAlbum) => void;
 }) {
   const tracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks]),
-    [localTracks, neteaseTracks, qqTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks, ...bilibiliTracks]),
+    [localTracks, neteaseTracks, qqTracks, bilibiliTracks],
   );
   // 融合但不同时铺开：来源芯片切到单一源时，只显示该源的结果。
-  const [sourceFilter, setSourceFilter] = useState<"all" | SourceToggleOption>("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | SourceToggleOption | "bilibili">("all");
   const filteredTracks = useMemo(
     () => (sourceFilter === "all" ? tracks : tracks.filter((track) => track.source === sourceFilter)),
     [tracks, sourceFilter],
@@ -102,9 +108,11 @@ export function SearchSurface({
         ? false
         : sourceFilter === "qq"
           ? qqMore
-          : sourceFilter === "netease"
-            ? more
-            : more || qqMore;
+          : sourceFilter === "bilibili"
+            ? bilibiliMore
+            : sourceFilter === "netease"
+              ? more
+              : more || qqMore || bilibiliMore;
   const localQueue = useMemo(
     () => tracks.filter((track) => track.source === "local"),
     [tracks],
@@ -115,6 +123,10 @@ export function SearchSurface({
   );
   const qqQueue = useMemo(
     () => tracks.filter((track) => track.source === "qq"),
+    [tracks],
+  );
+  const bilibiliQueue = useMemo(
+    () => tracks.filter((track) => track.source === "bilibili"),
     [tracks],
   );
   const descriptions = {
@@ -197,6 +209,7 @@ export function SearchSurface({
               ["all", "全部", null],
               ["netease", "网易云", "netease"],
               ["qq", "QQ 音乐", "qq"],
+              ["bilibili", "B站", "bilibili"],
               ["local", "本地", "local"],
             ] as const
           ).map(([value, label, logo]) => {
@@ -231,6 +244,11 @@ export function SearchSurface({
             QQ音乐：{qqError}
           </p>
         )}
+        {mode === "tracks" && bilibiliError && sourceFilter !== "bilibili" && (
+          <p className="mb-3 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-700">
+            B站：{bilibiliError}
+          </p>
+        )}
         {(mode === "tracks" || mode === "lyrics") && (
           <div className="grid gap-2">
             {filteredTracks.map((track) => (
@@ -242,7 +260,9 @@ export function SearchSurface({
                     ? localQueue
                     : track.source === "qq"
                       ? qqQueue
-                      : neteaseQueue
+                      : track.source === "bilibili"
+                        ? bilibiliQueue
+                        : neteaseQueue
                 }
                 onPickTrack={onPickTrack}
                 showMatchedLyric={mode === "lyrics"}

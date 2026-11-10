@@ -70,6 +70,14 @@ export function selectPlaybackQuality(
     }
     return originalPreference;
   }
+  if (track && track.source === "bilibili") {
+    const levels = track.availableLevels ?? [];
+    if (!settings.hifiEnabled) return originalPreference;
+    const reachable = [...qualityOptions]
+      .map((option) => option.value)
+      .filter((level) => level !== "jymaster" && (!levels.length || levels.includes(level)));
+    return reachable.at(-1) ?? "exhigh";
+  }
   if (track && track.source !== "netease") return originalPreference;
   const available = track?.availableLevels ?? [];
   if (settings.masterQualityEnabled && (!available.length || available.includes("jymaster"))) return "jymaster";
@@ -176,6 +184,9 @@ export function createCachedQueueSnapshots(
     quality: track.quality,
     source: track.source,
     streamUrl: track.streamUrl,
+    videoUrl: track.videoUrl,
+    hasVideo: track.hasVideo,
+    videoQuality: track.videoQuality ?? null,
     coverUrl: track.coverUrl?.startsWith("data:") ? undefined : track.coverUrl,
     trackNumber: track.trackNumber ?? null,
     discNumber: track.discNumber ?? null,
@@ -224,8 +235,11 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
       track.quality === "臻品" || track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K" || track.quality === "128K" || track.quality === "AAC"
         ? track.quality
         : "320K",
-    source: track.source === "netease" || track.source === "cloud" || track.source === "qq" || track.source === "local" ? track.source : "local",
+    source: track.source === "netease" || track.source === "cloud" || track.source === "qq" || track.source === "bilibili" || track.source === "local" ? track.source : "local",
     streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
+    videoUrl: typeof track.videoUrl === "string" ? track.videoUrl : undefined,
+    hasVideo: track.hasVideo === true,
+    videoQuality: typeof track.videoQuality === "string" ? track.videoQuality : null,
     coverUrl: readCachedArtworkOverride(track.id) ?? (typeof track.coverUrl === "string" ? track.coverUrl : undefined),
     trackNumber: typeof track.trackNumber === "number" ? track.trackNumber : null,
     discNumber: typeof track.discNumber === "number" ? track.discNumber : null,

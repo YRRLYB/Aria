@@ -27,8 +27,12 @@ export type Track = {
   albumArtist?: string | null;
   duration: string;
   quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K" | "128K" | "AAC";
-  source: "local" | "cloud" | "netease" | "qq";
+  source: "local" | "cloud" | "netease" | "qq" | "bilibili";
   streamUrl?: string;
+  /** Muxed video proxy route; only present for video-capable sources (Bilibili). */
+  videoUrl?: string;
+  hasVideo?: boolean;
+  videoQuality?: string | null;
   coverUrl?: string;
   trackNumber?: number | null;
   discNumber?: number | null;

@@ -26,6 +26,7 @@ import ariaIconUrl from "../build/icon.png";
 import { type Track, type ViewId } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
+import type { VideoControl } from "@/hooks/useVideoPlayback";
 import { useCloudLibrary } from "@/hooks/useCloudLibrary";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useDiscoveryDetails } from "@/hooks/useDiscoveryDetails";
@@ -80,7 +81,7 @@ import {
   type PlayerSideView,
   type QualityLevel,
 } from "@/lib/playerPresentation";
-import { commitPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
+import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
 import { matchesShortcut, readKeyboardShortcuts, writeKeyboardShortcuts, type KeyboardShortcuts } from "@/lib/keyboardShortcuts";
 import { sourceLabel } from "@/lib/trackLabels";
@@ -139,6 +140,8 @@ export default function App() {
     initialPlayerCache.activeTrackId ?? cachedActiveTrackSnapshot?.id ?? idleTrack.id,
   );
   const [playing, setPlaying] = useState(false);
+  const [videoMode, setVideoMode] = useState(false);
+  const videoControlRef = useRef<VideoControl | null>(null);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [shuffleEnabled, setShuffleEnabled] = useState(initialPlayerCache.shuffleEnabled ?? false);
@@ -391,6 +394,7 @@ export default function App() {
   // QQ search results live in their own pool: choosing a search row must
   // resolve the qq: id through allTracks/queues like every other source.
   const [qqSearchTracks, setQqSearchTracks] = useState<Track[]>([]);
+  const [bilibiliSearchTracks, setBilibiliSearchTracks] = useState<Track[]>([]);
   const [libraryWatchState, setLibraryWatchState] = useState<ApiLibraryWatchState | null>(null);
 
   const {
@@ -601,8 +605,8 @@ export default function App() {
     [qqData.likedTracks, qqData.playlistTracks, qqData.dailyTracks, qqData.roamTracks],
   );
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...qqLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
-    [localTracks, neteaseTracks, qqSearchTracks, qqLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
+    [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
   );
   const allTracksById = useMemo(() => {
     const map = new Map<string, Track>();
@@ -622,6 +626,9 @@ export default function App() {
   const artistSummaries = useMemo(() => {
     const artists = new Map<string, ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> }>();
     for (const track of allTracks) {
+      // Bilibili has no artist catalogue yet; keeping its UP names out of the
+      // artist summaries avoids sending them through NetEase/QQ lookups.
+      if (track.source === "bilibili") continue;
       for (const [artistIndex, artistName] of splitArtistNames(track.artist).entries()) {
         const key = artistName.toLowerCase();
         const current =
@@ -679,12 +686,39 @@ export default function App() {
     [resolvedActiveTrack, cachedActiveTrackSnapshot, activeTrackId],
   );
   activeTrackRef.current = activeTrack;
+  useEffect(() => {
+    if (!activeTrack.videoUrl) setVideoMode(false);
+  }, [activeTrack.id, activeTrack.videoUrl]);
+  useEffect(() => {
+    if (videoMode && activeView !== "player") setVideoMode(false);
+  }, [activeView, videoMode]);
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
   const effectiveQualityLevel = useMemo(
     () => selectPlaybackQuality(activeTrack, { hifiEnabled, masterQualityEnabled, qualityLevel }),
     [activeTrack.availableLevels, activeTrack.source, hifiEnabled, masterQualityEnabled, qualityLevel],
   );
+  useEffect(() => {
+    if (activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
+    let cancelled = false;
+    api
+      .getSourceStreamMeta("bilibili", activeTrack.providerId, effectiveQualityLevel)
+      .then((meta) => {
+        if (cancelled || !meta.bitrate) return;
+        updateTrackRef.current(activeTrack.id, (track) => ({
+          ...track,
+          bitrate: meta.bitrate ?? track.bitrate,
+          sampleRate: meta.sampleRate ?? track.sampleRate,
+          currentLevel: meta.currentLevel ?? track.currentLevel,
+          availableLevels: meta.availableLevels ?? track.availableLevels,
+          quality: meta.quality ?? track.quality,
+        }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel]);
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -743,10 +777,12 @@ export default function App() {
     setSearchMode,
     searchError,
     searchQqError,
+    searchBilibiliError,
     searchSuggestions,
     searchTotal,
     searchMore,
     searchQqMore,
+    searchBilibiliMore,
     loadMoreSearch,
     retrySearch,
     selectedArtist,
@@ -766,6 +802,7 @@ export default function App() {
     artistSummaries,
     onMergeNeteaseTracks: setNeteaseTracks,
     onMergeQqTracks: setQqSearchTracks,
+    onMergeBilibiliTracks: setBilibiliSearchTracks,
   });
 
   const {
@@ -888,6 +925,7 @@ export default function App() {
     audioOutputMode,
     pageVisible,
     analyserEnabled: pageVisible && (activeView === "player" || immersiveOpen),
+    videoMode,
     pendingSeekRef,
     setPlaying,
     setDurationSeconds,
@@ -1027,6 +1065,11 @@ export default function App() {
   }
 
   function seekTo(nextTime: number) {
+    if (videoMode && videoControlRef.current) {
+      videoControlRef.current.seek(nextTime);
+      if (!playing) setPlaying(true);
+      return;
+    }
     if (nativePlaybackEnabled) {
       void seekNativeTrack(nextTime);
       if (!playing) setPlaying(true);
@@ -1037,6 +1080,14 @@ export default function App() {
     audioRef.current.currentTime = nextTime;
     commitPlaybackTime(nextTime, true);
     if (!playing) setPlaying(true);
+  }
+
+  function toggleVideoMode() {
+    if (!activeTrack.videoUrl) return;
+    commitActiveVideoTime();
+    if (videoMode) pauseActiveVideo();
+    pendingSeekRef.current = getPlaybackTime();
+    setVideoMode((value) => !value);
   }
 
   function togglePlayback() {
@@ -1067,6 +1118,7 @@ export default function App() {
       qqData.roamTracks,
       qqData.playlistTracks,
       qqData.likedTracks,
+      bilibiliSearchTracks,
       localPlaylists.selectedTracks,
       cloudTracks,
       neteaseLikedDisplayTracks,
@@ -1152,6 +1204,7 @@ export default function App() {
     setLocalTracks(applyTo);
     setNeteaseTracks(applyTo);
     setQqSearchTracks(applyTo);
+    setBilibiliSearchTracks(applyTo);
     setDailyTracks(applyTo);
     setRoamTracks(applyTo);
     setNeteaseLikedTracks(applyTo);
@@ -1574,7 +1627,18 @@ export default function App() {
     };
   }, [activeTrack.accent, activeTrack.artist, activeTrack.coverUrl, activeTrack.id, activeTrack.title, hasActiveTrack, playing]);
 
+  function commitActiveVideoTime() {
+    const video = videoMode ? videoControlRef.current?.element : null;
+    if (video && Number.isFinite(video.currentTime)) commitPlaybackTime(video.currentTime, true);
+  }
+
+  function pauseActiveVideo() {
+    if (videoMode) videoControlRef.current?.element.pause();
+  }
+
   async function openImmersiveView() {
+    commitActiveVideoTime();
+    pauseActiveVideo();
     setImmersiveOpen(true);
     if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
     try {
@@ -1586,6 +1650,8 @@ export default function App() {
   }
 
   async function closeImmersiveView() {
+    commitActiveVideoTime();
+    pauseActiveVideo();
     setImmersiveOpen(false);
     if (!immersiveFullscreenRef.current || !document.fullscreenElement || !document.exitFullscreen) return;
     immersiveFullscreenRef.current = false;
@@ -2303,7 +2369,9 @@ export default function App() {
                   localTracks={searchBundle.localTracks}
                   neteaseTracks={searchBundle.neteaseTracks}
                   qqTracks={searchBundle.qqTracks}
+                  bilibiliTracks={searchBundle.bilibiliTracks}
                   qqError={searchQqError}
+                  bilibiliError={searchBilibiliError}
                   artists={searchBundle.artists}
                   playlists={searchBundle.playlists}
                   users={searchBundle.users}
@@ -2314,6 +2382,7 @@ export default function App() {
                   total={searchTotal}
                   more={searchMore}
                   qqMore={searchQqMore}
+                  bilibiliMore={searchBilibiliMore}
                   onRetry={retrySearch}
                   onLoadMore={() => void loadMoreSearch()}
                   onPickUser={setSelectedUser}
@@ -2368,6 +2437,16 @@ export default function App() {
                   onNext={() => pickRelativeTrack(1)}
                   onPrevious={() => pickRelativeTrack(-1)}
                   onOpenImmersive={() => void openImmersiveView()}
+                  videoMode={videoMode}
+                  onToggleVideoMode={toggleVideoMode}
+                  videoActive={videoMode && !immersiveOpen}
+                  videoControlRef={videoControlRef}
+                  onVideoDuration={setDurationSeconds}
+                  onVideoEnded={handleTrackEnded}
+                  onVideoError={(message) => {
+                    setPlaybackError(message);
+                    setVideoMode(false);
+                  }}
                   onReplaceLocalArtwork={replaceLocalArtwork}
                   liked={
                     activeTrack.source === "netease"
@@ -2749,6 +2828,16 @@ export default function App() {
               onPrevious={() => pickRelativeTrack(-1)}
               onSeek={seekTo}
               visualizerActive={pageVisible}
+              videoMode={videoMode}
+              onToggleVideoMode={toggleVideoMode}
+              videoControlRef={videoControlRef}
+              onVideoDuration={setDurationSeconds}
+              onVideoEnded={handleTrackEnded}
+              onVideoError={(message) => {
+                setPlaybackError(message);
+                setVideoMode(false);
+              }}
+              videoActive={immersiveOpen}
             />
           )}
         </AnimatePresence>

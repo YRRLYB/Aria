@@ -24,6 +24,10 @@ export type ProviderTrack = {
   albumId?: string | null;
   artistIds?: string[];
   matchedLyric?: string | null;
+  /** Muxed video stream route (Bilibili); audio playback still uses streamUrl. */
+  videoUrl?: string | null;
+  hasVideo?: boolean;
+  videoQuality?: string | null;
   /** QQ 音乐等源的会员专属标记：true 表示无 VIP 账号大概率拿不到播放地址。 */
   vip?: boolean;
 };
