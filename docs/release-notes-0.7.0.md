@@ -10,3 +10,9 @@
 - 回归：45 个测试文件 / 282 项单测通过，Windows 开发态与安装包态桌面集成测试通过。
 
 安装包 SHA256 见下方 Release 资产。
+
+- Windows：`Aria-0.7.0-x64.exe` — `263F2FA9BBC64F3FE548BFBC506A469F5B5D43E3BF10E26FDC2914B4BE23F6F8`
+- macOS Intel：`Aria-0.7.0-x64.dmg` — `1B3F2EFC55821812117A78DD2C2BD60DC9F32A2C2A937DA93A37EEBDDDD9F3D9`
+- macOS Apple Silicon：`Aria-0.7.0-arm64.dmg` — `B8D4B1CEA8A61AE1DDC6C83AAB2FEA8C20DE9529E34C395F1CBA4FFD22CA5288`
+- Windows 自动更新：请同时保留 Release 中的 `latest.yml` 与 `Aria-0.7.0-x64.exe.blockmap`；后续版本发布时更新这两个文件即可。
+- macOS 未签名版本暂不启用自动更新；首次打开需右键 → 打开，或执行 `xattr -dr com.apple.quarantine /Applications/Aria.app`。

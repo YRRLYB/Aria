@@ -32,4 +32,21 @@
 
 ## 安装包
 
-待最终构建后更新。
+### Windows
+
+- 文件：`release/Aria-0.7.0-x64.exe`
+- 大小：140,749,281 bytes（约 134.23 MiB）
+- SHA256：`263F2FA9BBC64F3FE548BFBC506A469F5B5D43E3BF10E26FDC2914B4BE23F6F8`
+- 自动更新元数据：`release/latest.yml`（含 exe sha512/大小）与 `Aria-0.7.0-x64.exe.blockmap`
+
+### macOS
+
+由 GitHub Actions `Build macOS DMG` 生成（运行 `42764917002`，两个 job 均通过）：
+
+- `Aria-0.7.0-x64.dmg`（Intel）
+  - 大小：196,279,382 bytes（约 187.19 MiB）
+  - SHA256：`1B3F2EFC55821812117A78DD2C2BD60DC9F32A2C2A937DA93A37EEBDDDD9F3D9`
+- `Aria-0.7.0-arm64.dmg`（Apple Silicon）
+  - 大小：187,490,473 bytes（约 178.81 MiB）
+  - SHA256：`B8D4B1CEA8A61AE1DDC6C83AAB2FEA8C20DE9529E34C395F1CBA4FFD22CA5288`
+- 默认未签名；首次打开需右键 → 打开，或 `xattr -dr com.apple.quarantine /Applications/Aria.app`
