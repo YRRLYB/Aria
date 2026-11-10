@@ -8,6 +8,9 @@ import {
   ImagePlus,
   Languages,
   Maximize2,
+  Minimize2,
+  Pause,
+  Play,
   SlidersHorizontal,
   Video,
 } from "lucide-react";
@@ -38,6 +41,243 @@ import { sourceLabel } from "@/lib/trackLabels";
 import { usePlaybackTime } from "@/lib/playbackClock";
 import { cn } from "@/lib/utils";
 const SongEncyclopediaDialog = lazy(() => import("./SongEncyclopediaDialog"));
+function VideoPlaybackChrome({
+  activeTrack,
+  playing,
+  volume,
+  onVolumeChange,
+  videoActive,
+  videoControlRef,
+  onVideoDuration,
+  onVideoEnded,
+  onVideoError,
+  onSeek,
+  durationSeconds,
+  shuffleEnabled,
+  repeatMode,
+  onTogglePlay,
+  onToggleShuffle,
+  onCycleRepeatMode,
+  onNext,
+  onPrevious,
+  liked,
+  onToggleLike,
+}: {
+  activeTrack: Track;
+  playing: boolean;
+  volume: number;
+  onVolumeChange: (volume: number) => void;
+  videoActive: boolean;
+  videoControlRef: { current: VideoControl | null };
+  onVideoDuration: (seconds: number) => void;
+  onVideoEnded: () => void;
+  onVideoError: (message: string) => void;
+  onSeek: (time: number) => void;
+  durationSeconds: number;
+  shuffleEnabled: boolean;
+  repeatMode: "all" | "one";
+  onTogglePlay: () => void;
+  onToggleShuffle: () => void;
+  onCycleRepeatMode: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+  liked: boolean;
+  onToggleLike: () => void;
+}) {
+  const currentTime = usePlaybackTime();
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const duration = durationSeconds > 0 ? durationSeconds : parseDuration(activeTrack.duration);
+  const progress = duration > 0 ? Math.min(1, Math.max(0, currentTime / duration)) : 0;
+
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement === stageRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await stageRef.current?.requestFullscreen();
+    } catch {
+      // Browsers can reject fullscreen when the click is no longer a user gesture.
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 flex-col">
+      <div
+        ref={stageRef}
+        data-taskbar-anchor="player-cover"
+        className="group relative aspect-video w-full overflow-hidden rounded-[1.4rem] bg-black shadow-[0_24px_70px_rgba(16,18,28,0.28)]"
+      >
+        <VideoStage
+          track={activeTrack}
+          active={videoActive}
+          playing={playing}
+          volume={volume}
+          controlRef={videoControlRef}
+          onDuration={onVideoDuration}
+          onEnded={onVideoEnded}
+          onError={onVideoError}
+          className="size-full"
+        />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-black/10" />
+        <div className="absolute left-3 top-3 flex flex-wrap gap-2">
+          <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/90 backdrop-blur">
+            B站
+          </span>
+          <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/80 backdrop-blur">
+            {activeTrack.videoQuality ?? "视频"}
+          </span>
+        </div>
+        {!playing && (
+          <button
+            type="button"
+            className="absolute inset-0 flex items-center justify-center bg-black/10 text-white transition hover:bg-black/20"
+            aria-label="播放视频"
+            onClick={onTogglePlay}
+          >
+            <span className="flex size-16 items-center justify-center rounded-full bg-white/20 backdrop-blur transition hover:scale-105 hover:bg-white/30">
+              <Play className="ml-1 size-7 fill-current" />
+            </span>
+          </button>
+        )}
+        <div className="absolute inset-x-0 bottom-0 p-3">
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-black/45 px-3 py-2 text-white backdrop-blur-md">
+            <button type="button" className="flex size-8 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
+              {playing ? <Pause className="size-4 fill-current" /> : <Play className="ml-0.5 size-4 fill-current" />}
+            </button>
+            <span className="shrink-0 text-[11px] tabular-nums text-white/80">
+              {currentTime > 0 ? formatDuration(currentTime) : "0:00"} / {formatDuration(duration)}
+            </span>
+            <input
+              aria-label="视频进度"
+              type="range"
+              min="0"
+              max={duration > 0 ? duration : 1}
+              step="0.1"
+              value={Math.min(currentTime, duration || currentTime)}
+              onChange={(event) => onSeek(Number(event.target.value))}
+              className="player-range min-w-24 flex-1"
+              style={
+                {
+                  "--range-color": "#ffffff",
+                  "--range-value": progress,
+                } as CSSProperties
+              }
+            />
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15"
+              aria-label={volume > 0 ? "静音" : "取消静音"}
+              onClick={() => onVolumeChange(volume > 0 ? 0 : 72)}
+            >
+              <AriaIcon name={ariaVolumeIcon(volume, false)} className="size-4" />
+            </button>
+            <input
+              aria-label="视频音量"
+              type="range"
+              min="0"
+              max="100"
+              value={volume}
+              onChange={(event) => onVolumeChange(Number(event.target.value))}
+              className="player-range hidden w-20 sm:block"
+              style={
+                {
+                  "--range-color": "#ffffff",
+                  "--range-value": Math.min(1, Math.max(0, volume / 100)),
+                } as CSSProperties
+              }
+            />
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15"
+              aria-label={fullscreen ? "退出全屏" : "全屏"}
+              title={fullscreen ? "退出全屏" : "全屏"}
+              onClick={() => void toggleFullscreen()}
+            >
+              {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-neutral-700">
+        <Button
+          className={cn("player-control-button", shuffleEnabled && "is-active")}
+          variant="ghost"
+          size="icon"
+          aria-label="随机播放"
+          aria-pressed={shuffleEnabled}
+          title="随机播放"
+          onClick={onToggleShuffle}
+        >
+          <AriaIcon name="shuffle" className="size-5" />
+        </Button>
+        <Button className="player-control-button" variant="ghost" size="icon" aria-label="上一首" title="上一首" onClick={onPrevious}>
+          <AriaIcon name="prev" className="size-5" />
+        </Button>
+        <Button
+          className="player-play-button text-white"
+          size="iconLg"
+          aria-label={playing ? "暂停" : "播放"}
+          title={playing ? "暂停" : "播放"}
+          onClick={onTogglePlay}
+        >
+          {playing ? <Pause className="size-6 fill-current" /> : <Play className="ml-0.5 size-6 fill-current" />}
+        </Button>
+        <Button className="player-control-button" variant="ghost" size="icon" aria-label="下一首" title="下一首" onClick={onNext}>
+          <AriaIcon name="next" className="size-5" />
+        </Button>
+        <Button
+          className={cn("player-control-button", repeatMode === "one" && "is-active")}
+          variant="ghost"
+          size="icon"
+          aria-label="循环播放"
+          aria-pressed={repeatMode === "one"}
+          title="循环播放"
+          onClick={onCycleRepeatMode}
+        >
+          <AriaIcon name={repeatMode === "one" ? "repeat-one" : "repeat"} className="size-5" />
+        </Button>
+        <Button
+          className={cn("player-control-button", liked && "is-liked")}
+          variant="ghost"
+          size="icon"
+          aria-label={liked ? "取消喜欢" : "喜欢"}
+          aria-pressed={liked}
+          title={liked ? "取消喜欢" : "喜欢"}
+          onClick={onToggleLike}
+        >
+          <AriaIcon name={liked ? "heart-fill" : "heart"} className="size-5" />
+        </Button>
+      </div>
+
+      <div className="player-volume mt-3 flex items-center gap-3 px-1">
+        <AriaIcon name={ariaVolumeIcon(volume, false)} className="player-volume-icon size-5" />
+        <input
+          aria-label="音量"
+          type="range"
+          min="0"
+          max="100"
+          value={volume}
+          onChange={(event) => onVolumeChange(Number(event.target.value))}
+          className="player-range min-w-0 w-full"
+          style={
+            {
+              "--range-color": "var(--track-accent)",
+              "--range-value": Math.min(1, Math.max(0, volume / 100)),
+            } as CSSProperties
+          }
+        />
+        <span className="player-volume-value text-xs font-medium leading-none text-neutral-500">{volume}</span>
+      </div>
+    </div>
+  );
+}
+
 export function PlayerSurface({
   activeTrack,
   palette,
@@ -166,6 +406,93 @@ export function PlayerSurface({
   async function handleArtworkFile(file: File | undefined) {
     if (!file || !canReplaceArtwork) return;
     await onReplaceLocalArtwork(activeTrack.id, file);
+  }
+
+  if (videoMode && activeTrack.videoUrl) {
+    return (
+      <div
+        className="player-surface relative overflow-hidden rounded-[1.5rem] border border-white/55 p-5 shadow-[0_22px_70px_rgba(47,55,76,0.12)] sm:p-6"
+        style={{
+          ["--track-accent" as string]: palette.primary,
+          background: `linear-gradient(135deg, ${themePrimary}, var(--player-sheen) 42%, ${themeSecondary})`,
+        }}
+      >
+        <div
+          className="pointer-events-none absolute inset-0 opacity-70"
+          style={{
+            background: `radial-gradient(circle at 24% 18%, ${palette.primary}38, transparent 24rem), radial-gradient(circle at 82% 82%, ${palette.secondary}28, transparent 18rem)`,
+          }}
+        />
+        <div className="relative flex min-h-[620px] flex-col">
+          <header className="flex flex-wrap items-center gap-3">
+            <CoverArt track={activeTrack} className="size-14 shrink-0 rounded-[0.9rem]" fit="cover" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
+                {sourceLabel[activeTrack.source]} · 视频播放
+              </p>
+              <h1 className="mt-1 truncate text-xl font-semibold text-neutral-950" title={activeTrack.title}>
+                <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+              </h1>
+              <p className="mt-1 truncate text-sm text-neutral-500">
+                <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+                <span className="text-neutral-400"> · {activeTrack.album}</span>
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="glass"
+                size="sm"
+                title="切回封面与高音质音频模式"
+                aria-label="切回封面与高音质音频模式"
+                onClick={onToggleVideoMode}
+              >
+                <Video />
+                封面
+              </Button>
+              <Button variant="glass" size="sm" title="打开沉浸视图" onClick={onOpenImmersive}>
+                <Maximize2 />
+                沉浸
+              </Button>
+            </div>
+          </header>
+
+          <div className="mt-4 min-h-0 flex-1">
+            <VideoPlaybackChrome
+              activeTrack={activeTrack}
+              playing={playing}
+              volume={volume}
+              onVolumeChange={onVolumeChange}
+              videoActive={videoActive}
+              videoControlRef={videoControlRef}
+              onVideoDuration={onVideoDuration}
+              onVideoEnded={onVideoEnded}
+              onVideoError={onVideoError}
+              onSeek={onSeek}
+              durationSeconds={durationSeconds}
+              shuffleEnabled={shuffleEnabled}
+              repeatMode={repeatMode}
+              onTogglePlay={onTogglePlay}
+              onToggleShuffle={onToggleShuffle}
+              onCycleRepeatMode={onCycleRepeatMode}
+              onNext={onNext}
+              onPrevious={onPrevious}
+              liked={liked}
+              onToggleLike={onToggleLike}
+            />
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.1rem] border border-white/55 bg-white/38 px-4 py-3">
+            <p className="text-xs leading-5 text-neutral-500">
+              视频模式使用系统混音，不经过 mpv 独占输出或均衡器；切回封面后恢复高音质音频链路。
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <Badge>视频 {activeTrack.videoQuality ?? "自动"}</Badge>
+              <Badge>{sourceLabel[activeTrack.source]}</Badge>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -498,6 +825,11 @@ export function PlayerSurface({
                   </div>
                 </div>
               </div>
+              {activeTrack.source === "bilibili" && (
+                <p className="mt-2 text-xs leading-5 text-neutral-400">
+                  B站无损 / Hi-Res 与部分高画质需要大会员；登录后这里会显示账号实际可用的档位。
+                </p>
+              )}
             </div>
           </div>
 
@@ -599,7 +931,10 @@ export function ImmersivePlayerView({
           </div>
         </div>
 
-        <div className="immersive-content grid min-h-0 items-center gap-8 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)]">
+        <div className={cn(
+          "immersive-content grid min-h-0 items-center gap-8",
+          videoMode ? "lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]" : "lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)]",
+        )}>
           <div
             className={cn(
               "immersive-artwork mx-auto overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]",

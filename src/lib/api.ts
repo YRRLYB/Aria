@@ -905,6 +905,19 @@ export const api = {
     const suffix = params.size ? `?${params}` : "";
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video-meta${suffix}`);
   },
+  getSourceVideoMeta(sourceId: string, trackId: string, level?: string) {
+    const params = new URLSearchParams();
+    if (level) params.set("level", level);
+    const suffix = params.size ? `?${params}` : "";
+    return request<{
+      url: string;
+      mimeType?: string | null;
+      quality?: string | null;
+      width?: number | null;
+      height?: number | null;
+      expiresAt?: number | null;
+    }>(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video-meta${suffix}`);
+  },
   getSourceLyrics(sourceId: string, trackId: string) {
     return request<{ lyrics: LyricLine[] }>(
       `/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/lyrics`,

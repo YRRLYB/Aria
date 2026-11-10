@@ -411,6 +411,30 @@ export function useAudioEngine(options: {
     options.playing,
   ]);
 
+  // The browser audio lane stays mounted while video mode is active. A seek in
+  // the video overlay only moves the video element, so consume the shared
+  // pending position when switching back to cover/audio mode.
+  useEffect(() => {
+    if (nativePlaybackEnabled || options.videoMode) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const applyPendingSeek = () => {
+      const target = options.pendingSeekRef.current;
+      if (!target || target <= 0 || audio.readyState < 1) return;
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : target;
+      try {
+        audio.currentTime = Math.min(target, duration);
+      } catch {
+        return;
+      }
+      options.pendingSeekRef.current = 0;
+      commitPlaybackTime(target, true);
+    };
+    applyPendingSeek();
+    audio.addEventListener("loadedmetadata", applyPendingSeek);
+    return () => audio.removeEventListener("loadedmetadata", applyPendingSeek);
+  }, [audioElementStreamUrl, nativePlaybackEnabled, options.activeTrack.id, options.videoMode]);
+
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativeAudio?.supported) return;

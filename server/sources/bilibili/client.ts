@@ -9,6 +9,7 @@ import type {
 } from "../contract";
 import { SourceError } from "../contract";
 import type { LyricLine } from "../../../src/lib/lyricTypes";
+import { createHash } from "node:crypto";
 import { readStore, updateStore } from "../../store";
 import { HttpError } from "../../utils/httpError";
 import QRCode from "qrcode";
@@ -29,6 +30,8 @@ type BiliAudio = {
   codecs?: string;
   mimeType?: string;
   mime_type?: string;
+  /** Special DASH buckets: FLAC (Hi-Res) / Dolby Atmos. */
+  kind?: "flac" | "dolby";
 };
 
 type BiliPlayData = {
@@ -38,6 +41,8 @@ type BiliPlayData = {
   accept_description?: string[];
   dash?: {
     audio?: BiliAudio[];
+    dolby?: { type?: number; audio?: BiliAudio | null };
+    flac?: { display?: boolean; audio?: BiliAudio | null };
     video?: Array<{ id?: number; baseUrl?: string; base_url?: string; width?: number; height?: number }>;
   };
   durl?: Array<{ url?: string; backup_url?: string[]; size?: number; length?: number }>;
@@ -131,12 +136,14 @@ const QR_SESSION_TTL_MS = 180_000;
 const MAX_QR_SESSIONS = 16;
 const FAV_PAGE_SIZE = 20;
 const FAV_MAX_PAGES = 25;
+const ARIA_FAV_FOLDER_TITLE = "Aria";
 
 type BiliNavData = {
   isLogin?: boolean;
   mid?: number;
   uname?: string;
   face?: string;
+  wbi_img?: { img_url?: string; sub_url?: string };
 };
 
 type BiliFavFolder = {
@@ -174,7 +181,49 @@ type BiliQrSession = {
 let authCookieCache: { value: string; at: number } | null = null;
 let accountCache: { cookie: string; at: number; value: SourceAccount } | null = null;
 let likedCache: { cookie: string; at: number; tracks: ProviderTrack[] } | null = null;
+let ariaFolderCache: { cookie: string; at: number; folder: BiliFavFolder | null } | null = null;
+let ariaFolderCreatePromise: Promise<BiliFavFolder | null> | null = null;
+let wbiKeysCache: { imgKey: string; subKey: string; at: number } | null = null;
 const qrSessions = new Map<string, BiliQrSession>();
+
+const WBI_KEYS_TTL_MS = 6 * 60 * 60_000;
+const WBI_MIXIN_TAB = [
+  46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+  27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+  37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+  22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+];
+
+function extractWbiKey(url: string | undefined) {
+  if (!url) return "";
+  const filename = url.slice(url.lastIndexOf("/") + 1);
+  return filename.slice(0, filename.lastIndexOf("."));
+}
+
+function rememberWbiKeys(nav: BiliNavData | null) {
+  const imgKey = extractWbiKey(nav?.wbi_img?.img_url);
+  const subKey = extractWbiKey(nav?.wbi_img?.sub_url);
+  if (imgKey && subKey) wbiKeysCache = { imgKey, subKey, at: Date.now() };
+}
+
+function getMixinKey(imgKey: string, subKey: string) {
+  const raw = imgKey + subKey;
+  return WBI_MIXIN_TAB.map((index) => raw[index] ?? "").join("").slice(0, 32);
+}
+
+/** Sign an API query with Bilibili's WBI scheme (used by the web player). */
+function signWbiQuery(params: Record<string, string>, imgKey: string, subKey: string) {
+  const all: Record<string, string> = { ...params, wts: String(Math.floor(Date.now() / 1000)) };
+  const query = Object.keys(all)
+    .sort()
+    .map((key) => {
+      const value = all[key].replace(/[!'()*]/g, "");
+      return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    })
+    .join("&");
+  const wRid = createHash("md5").update(query + getMixinKey(imgKey, subKey)).digest("hex");
+  return `${query}&w_rid=${wRid}`;
+}
 
 function parseCookiePairs(header: string | null | undefined): Map<string, string> {
   const pairs = new Map<string, string>();
@@ -238,6 +287,7 @@ async function fetchBilibiliNav(cookie: string, signal?: AbortSignal): Promise<B
       signal: abortSignal(signal),
     });
     const body = (await response.json()) as { code?: number; data?: BiliNavData };
+    if (body?.data) rememberWbiKeys(body.data);
     return body?.data ?? null;
   } catch {
     return null;
@@ -303,6 +353,8 @@ function clearBilibiliAuthCaches() {
   authCookieCache = null;
   accountCache = null;
   likedCache = null;
+  ariaFolderCache = null;
+  ariaFolderCreatePromise = null;
 }
 
 export async function saveBilibiliCookie(cookie: string): Promise<SourceAccount> {
@@ -469,13 +521,69 @@ export async function checkBilibiliQrLogin(key: string): Promise<SourceQrLoginCh
   }
 }
 
-async function getBilibiliDefaultFavFolder(mid: string, signal?: AbortSignal): Promise<BiliFavFolder | null> {
+async function listBilibiliFavFolders(mid: string, signal?: AbortSignal): Promise<BiliFavFolder[]> {
   const data = await biliAuthJson<{ list?: BiliFavFolder[] } | BiliFavFolder[]>(
     `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${encodeURIComponent(mid)}`,
     { signal },
   );
-  const folders = Array.isArray(data) ? data : data?.list ?? [];
-  return folders.find((folder) => folder.title === "默认收藏夹") ?? folders[0] ?? null;
+  return Array.isArray(data) ? data : data?.list ?? [];
+}
+
+function isAriaFavFolder(folder: BiliFavFolder) {
+  return folder.title.trim().toLowerCase() === ARIA_FAV_FOLDER_TITLE.toLowerCase();
+}
+
+async function findBilibiliAriaFolder(mid: string, signal?: AbortSignal): Promise<BiliFavFolder | null> {
+  const auth = await readAuthCookie();
+  if (ariaFolderCache?.cookie === auth && Date.now() - ariaFolderCache.at < LIKED_CACHE_MS) {
+    return ariaFolderCache.folder;
+  }
+  const folders = await listBilibiliFavFolders(mid, signal);
+  const folder = folders.find(isAriaFavFolder) ?? null;
+  ariaFolderCache = { cookie: auth, at: Date.now(), folder };
+  return folder;
+}
+
+async function ensureBilibiliAriaFolder(mid: string, signal?: AbortSignal): Promise<BiliFavFolder> {
+  const existing = await findBilibiliAriaFolder(mid, signal);
+  if (existing) return existing;
+  if (ariaFolderCreatePromise) {
+    const created = await ariaFolderCreatePromise;
+    if (created) return created;
+  }
+  ariaFolderCreatePromise = (async () => {
+    const auth = await readAuthCookie();
+    const csrf = parseCookiePairs(auth).get("bili_jct");
+    if (!csrf) {
+      throw new SourceError("AUTH_REQUIRED", "B站登录信息缺少 bili_jct，请重新登录", { source: "bilibili" });
+    }
+    const data = await biliAuthJson<{ id?: number; fid?: number; title?: string } | null>(
+      "https://api.bilibili.com/x/v3/fav/folder/add",
+      {
+        method: "POST",
+        body: new URLSearchParams({ title: ARIA_FAV_FOLDER_TITLE, privacy: "1", csrf }),
+        signal,
+      },
+    );
+    const id = Number(data?.id ?? data?.fid);
+    if (Number.isFinite(id) && id > 0) {
+      const folder = { id, title: ARIA_FAV_FOLDER_TITLE, media_count: 0 } satisfies BiliFavFolder;
+      ariaFolderCache = { cookie: auth, at: Date.now(), folder };
+      return folder;
+    }
+    // Some API responses omit the new folder id; re-list once to find it.
+    const folders = await listBilibiliFavFolders(mid, signal);
+    const folder = folders.find(isAriaFavFolder) ?? null;
+    ariaFolderCache = { cookie: auth, at: Date.now(), folder };
+    return folder;
+  })().finally(() => {
+    ariaFolderCreatePromise = null;
+  });
+  const created = await ariaFolderCreatePromise;
+  if (!created) {
+    throw new SourceError("UPSTREAM_FAILED", "B站收藏夹「Aria」创建失败，请稍后重试", { source: "bilibili" });
+  }
+  return created;
 }
 
 async function fetchBilibiliFavPage(mediaId: number, page: number): Promise<BiliFavPage> {
@@ -526,7 +634,7 @@ export async function getBilibiliLikedTracks(): Promise<ProviderTrack[]> {
   if (!account.connected || !account.userId) {
     throw new SourceError("AUTH_REQUIRED", "B站登录已过期，请重新登录", { source: "bilibili" });
   }
-  const folder = await getBilibiliDefaultFavFolder(account.userId);
+  const folder = await findBilibiliAriaFolder(account.userId);
   if (!folder) {
     likedCache = { cookie: auth, at: Date.now(), tracks: [] };
     return [];
@@ -537,7 +645,7 @@ export async function getBilibiliLikedTracks(): Promise<ProviderTrack[]> {
   let page = 1;
   let hasMore = true;
   while (hasMore && page <= FAV_MAX_PAGES) {
-    // Five pages in flight keeps a large default folder responsive without
+    // Five pages in flight keeps a large Aria folder responsive without
     // hammering Bilibili hard enough to trigger its risk-control responses.
     const batchSize = Math.min(5, FAV_MAX_PAGES - page + 1);
     const pages = await Promise.all(
@@ -576,9 +684,12 @@ export async function setBilibiliLike(trackId: string, liked: boolean): Promise<
   if (!view.aid) {
     throw new SourceError("UNAVAILABLE", "无法解析B站视频的 avid", { source: "bilibili" });
   }
-  const folder = await getBilibiliDefaultFavFolder(account.userId);
+  const folder = liked
+    ? await ensureBilibiliAriaFolder(account.userId)
+    : await findBilibiliAriaFolder(account.userId);
   if (!folder) {
-    throw new SourceError("UNAVAILABLE", "请先在B站创建收藏夹", { source: "bilibili" });
+    // Removing a video that was never in the Aria folder is already a no-op.
+    return { ok: true, liked: false };
   }
   const body = new URLSearchParams({
     rid: String(view.aid),
@@ -753,6 +864,7 @@ function audioBaseUrl(audio: BiliAudio) {
 }
 
 function audioMime(audio: BiliAudio) {
+  if (audio.kind === "flac" || /flac/i.test(audio.codecs ?? "")) return "audio/flac";
   const mime = audio.mimeType ?? audio.mime_type;
   if (mime) return mime;
   return "audio/mp4";
@@ -763,19 +875,27 @@ function requestedLevel(level: AriaLevel | undefined) {
   return level;
 }
 
+function audioMatchesEntry(audio: BiliAudio, entry: (typeof AUDIO_LEVELS)[number]) {
+  if (audio.id === entry.id) return true;
+  if (entry.level === "hires" && audio.kind === "flac") return true;
+  if (entry.level === "lossless" && audio.kind === "dolby") return true;
+  return false;
+}
+
 function chooseAudio(audios: BiliAudio[], level: AriaLevel | undefined) {
   const requested = requestedLevel(level);
   const requestedIndex = AUDIO_LEVELS.findIndex((entry) => entry.level === requested);
-  const present = AUDIO_LEVELS.filter((entry) => audios.some((audio) => audio.id === entry.id));
+  const present = AUDIO_LEVELS.filter((entry) => audios.some((audio) => audioMatchesEntry(audio, entry)));
   if (!present.length) return null;
+  const find = (entry: (typeof AUDIO_LEVELS)[number]) => audios.find((audio) => audioMatchesEntry(audio, entry))!;
   const exact = present.find((entry) => entry.level === requested);
-  if (exact) return { entry: exact, audio: audios.find((audio) => audio.id === exact.id)! };
+  if (exact) return { entry: exact, audio: find(exact) };
   // Graceful degradation: prefer the highest format at or below the request,
   // then the lowest available format above it.
   const ordered = [...present].sort((left, right) => AUDIO_LEVELS.indexOf(left) - AUDIO_LEVELS.indexOf(right));
   const lower = requestedIndex < 0 ? [] : ordered.filter((entry) => AUDIO_LEVELS.indexOf(entry) <= requestedIndex);
   const entry = lower.at(-1) ?? ordered[0];
-  return { entry, audio: audios.find((audio) => audio.id === entry.id)! };
+  return { entry, audio: find(entry) };
 }
 
 async function playurl(
@@ -783,9 +903,10 @@ async function playurl(
   fnval: number,
   level: AriaLevel | undefined,
   signal?: AbortSignal,
+  qnOverride?: number,
 ) {
   const view = await getBilibiliView(trackId, signal);
-  const requestedQn = level === "hires" || level === "lossless" ? 80 : 64;
+  const requestedQn = qnOverride ?? (level === "standard" ? 64 : 120);
   const data = await biliJson<BiliPlayData>(
     `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(view.bvid)}&cid=${view.cid}&fnval=${fnval}&fnver=0&fourk=1&qn=${requestedQn}`,
     signal,
@@ -798,8 +919,12 @@ export async function resolveBilibiliStreamMeta(
   options: { level?: AriaLevel; refresh?: boolean },
   signal?: AbortSignal,
 ): Promise<SourceStreamMeta> {
-  const { view, data } = await playurl(trackId, 16, options.level, signal);
-  const audios = data?.dash?.audio ?? [];
+  const { data } = await playurl(trackId, 4048, options.level, signal);
+  const audios: BiliAudio[] = [...(data?.dash?.audio ?? [])];
+  const flacAudio = data?.dash?.flac?.audio;
+  if (flacAudio) audios.push({ ...flacAudio, id: flacAudio.id || 30251, kind: "flac" });
+  const dolbyAudio = data?.dash?.dolby?.audio;
+  if (dolbyAudio) audios.push({ ...dolbyAudio, id: dolbyAudio.id || 30250, kind: "dolby" });
   const chosen = chooseAudio(audios, options.level);
   const durl = data?.durl?.[0]?.url;
   const url = chosen ? audioBaseUrl(chosen.audio) : durl;
@@ -807,7 +932,7 @@ export async function resolveBilibiliStreamMeta(
     throw new SourceError("UNAVAILABLE", "B站没有返回可播放的音轨", { source: "bilibili" });
   }
   const availableLevels = AUDIO_LEVELS
-    .filter((entry) => audios.some((audio) => audio.id === entry.id))
+    .filter((entry) => audios.some((audio) => audioMatchesEntry(audio, entry)))
     .map((entry) => entry.level);
   return {
     url: url.startsWith("//") ? `https:${url}` : url,
@@ -831,7 +956,7 @@ export async function resolveBilibiliVideoMeta(
   options: { level?: AriaLevel },
   signal?: AbortSignal,
 ): Promise<SourceVideoMeta> {
-  const { data } = await playurl(trackId, 0, "hires", signal);
+  const { data } = await playurl(trackId, 0, "hires", signal, 120);
   const durl = data?.durl?.[0];
   const url = durl?.url;
   if (!url) {
@@ -855,6 +980,55 @@ export async function resolveBilibiliVideoMeta(
   };
 }
 
+type BiliSubtitle = {
+  lan?: string;
+  lan_doc?: string;
+  subtitle_url?: string;
+};
+
+async function getBilibiliWbiKeys(signal?: AbortSignal) {
+  if (wbiKeysCache && Date.now() - wbiKeysCache.at < WBI_KEYS_TTL_MS) return wbiKeysCache;
+  const cookie = await requestCookie();
+  const nav = await fetchBilibiliNav(cookie, signal);
+  rememberWbiKeys(nav);
+  return wbiKeysCache;
+}
+
+async function getBilibiliSubtitles(view: BiliViewData, signal?: AbortSignal): Promise<BiliSubtitle[]> {
+  const params = new URLSearchParams({
+    bvid: view.bvid,
+    cid: String(view.cid),
+  });
+  if (view.aid) params.set("aid", String(view.aid));
+  try {
+    const legacy = await biliJson<{ subtitle?: { subtitles?: BiliSubtitle[] } }>(
+      `https://api.bilibili.com/x/player/v2?${params}`,
+      signal,
+    );
+    const subtitles = legacy?.subtitle?.subtitles ?? [];
+    if (subtitles.length) return subtitles;
+  } catch {
+    // Fall through to the signed endpoint used by the web player.
+  }
+
+  const keys = await getBilibiliWbiKeys(signal);
+  if (!keys) return [];
+  const queryParams: Record<string, string> = {
+    bvid: view.bvid,
+    cid: String(view.cid),
+  };
+  if (view.aid) queryParams.aid = String(view.aid);
+  try {
+    const signed = await biliJson<{ subtitle?: { subtitles?: BiliSubtitle[] } }>(
+      `https://api.bilibili.com/x/player/wbi/v2?${signWbiQuery(queryParams, keys.imgKey, keys.subKey)}`,
+      signal,
+    );
+    return signed?.subtitle?.subtitles ?? [];
+  } catch {
+    return [];
+  }
+}
+
 function formatLyricTime(seconds: number) {
   const whole = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(whole / 60)).padStart(2, "0")}:${String(whole % 60).padStart(2, "0")}`;
@@ -863,19 +1037,7 @@ function formatLyricTime(seconds: number) {
 export async function getBilibiliLyrics(trackId: string, signal?: AbortSignal): Promise<LyricLine[]> {
   try {
     const view = await getBilibiliView(trackId, signal);
-    const data = await biliJson<{
-      subtitle?: {
-        subtitles?: Array<{
-          lan?: string;
-          lan_doc?: string;
-          subtitle_url?: string;
-        }>;
-      };
-    }>(
-      `https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(view.bvid)}&cid=${view.cid}`,
-      signal,
-    );
-    const subtitles = data?.subtitle?.subtitles ?? [];
+    const subtitles = await getBilibiliSubtitles(view, signal);
     const preferred = subtitles.find((item) => /zh|ai-zh/i.test(item.lan ?? "")) ?? subtitles[0];
     if (!preferred?.subtitle_url) return [];
     const url = preferred.subtitle_url.startsWith("//")
@@ -911,5 +1073,8 @@ export function resetBilibiliStateForTests() {
   authCookieCache = null;
   accountCache = null;
   likedCache = null;
+  ariaFolderCache = null;
+  ariaFolderCreatePromise = null;
+  wbiKeysCache = null;
   qrSessions.clear();
 }

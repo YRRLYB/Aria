@@ -69,6 +69,7 @@ import { AddToLocalPlaylistDialog } from "@/components/music/LocalPlaylistSurfac
 import {
   extractDominantColors,
   createCachedQueueSnapshots,
+  hasSyncedLyrics,
   mergeTracks,
   readCachedAudioSettings,
   readCachedPlayerState,
@@ -745,6 +746,27 @@ export default function App() {
       cancelled = true;
     };
   }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel]);
+  // Resolve the muxed video quality lazily when video mode opens. The video
+  // proxy resolves its own URL; this only fills the badge/menu with the
+  // quality Bilibili actually granted (360P anonymous, 1080P after login).
+  useEffect(() => {
+    if (!videoMode || activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
+    let cancelled = false;
+    api
+      .getSourceVideoMeta("bilibili", activeTrack.providerId)
+      .then((meta) => {
+        if (cancelled || !meta.quality) return;
+        updateTrackRef.current(activeTrack.id, (track) => ({
+          ...track,
+          videoQuality: meta.quality ?? track.videoQuality,
+          hasVideo: true,
+        }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, videoMode]);
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -790,11 +812,24 @@ export default function App() {
   );
   const localSearchSignature = useMemo(() => getTrackSearchSignature(localTracks), [localTracks]);
 
-  const { lyricBindings, setLyricBindings, applyLyricsToTrack } = useLyricsSync({
+  const { lyricBindings, setLyricBindings, applyLyricsToTrack, syncLyricsForTrack, lyricSyncingRef } = useLyricsSync({
     applyTrackUpdate,
     activeTrack,
     localTracks,
   });
+
+  // Signing in unlocks Bilibili AI/CC subtitles. Retry the active video once
+  // when the account becomes connected instead of waiting for a track change.
+  useEffect(() => {
+    if (!bilibiliConnected || activeTrack.source !== "bilibili") return;
+    if (hasSyncedLyrics(activeTrack) || lyricSyncingRef.current.has(activeTrack.id)) return;
+    lyricSyncingRef.current.add(activeTrack.id);
+    void syncLyricsForTrack(activeTrack)
+      .catch(() => undefined)
+      .finally(() => lyricSyncingRef.current.delete(activeTrack.id));
+    // Regular track changes are already handled by useLyricsSync.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bilibiliConnected]);
 
   const {
     searchBundle,
@@ -2911,7 +2946,7 @@ export default function App() {
           />
         )}
 
-        {!immersiveOpen && !onboardingOpen && <FloatingNav
+        {!immersiveOpen && !onboardingOpen && !(activeView === "player" && videoMode) && <FloatingNav
           activeView={activeView}
           open={navOpen}
           raised={false}

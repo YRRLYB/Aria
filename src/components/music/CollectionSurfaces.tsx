@@ -175,11 +175,11 @@ export function LikedSurface({
       subtitle: bilibiliConnected
         ? bilibiliError
           ? "B站收藏读取失败"
-          : `B站默认收藏夹已同步 ${bilibiliTracks.length} 首`
-        : "扫码登录后读取默认收藏夹",
+          : `B站「Aria」收藏夹已同步 ${bilibiliTracks.length} 首`
+        : "扫码登录后读取「Aria」收藏夹",
       emptyText: bilibiliConnected
-        ? bilibiliError ?? "B站默认收藏夹暂无视频；在播放页点亮红心会加入默认收藏夹。"
-        : "登录B站后即可同步默认收藏夹。",
+        ? bilibiliError ?? "B站「Aria」收藏夹暂无视频；在播放页点亮红心会自动创建并加入。"
+        : "登录B站后即可同步「Aria」收藏夹。",
       tracks: bilibiliTracks,
     },
   };

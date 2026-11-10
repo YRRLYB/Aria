@@ -220,6 +220,7 @@ function SidebarLyrics({
   const currentTime = usePlaybackTime();
   const activeLyricIndex = getActiveLyricIndex(track.lyrics, currentTime);
   const lines = track.lyrics;
+  const showPlaceholderLyrics = !(track.source === "bilibili" && track.lyricStatus !== "linked");
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const manualScrollUntilRef = useRef(0);
 
@@ -242,6 +243,11 @@ function SidebarLyrics({
           <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
         </p>
       </div>
+      {track.source === "bilibili" && track.lyricStatus !== "linked" && (
+        <p className="relative z-10 mb-3 rounded-xl bg-sky-50 px-3 py-2 text-[11px] leading-5 text-sky-700">
+          还没有读取到 CC 字幕。该视频需要自带 CC/AI 字幕；登录B站后会重新尝试。
+        </p>
+      )}
       <div
         className="no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
         onWheel={holdManualScroll}
@@ -249,7 +255,7 @@ function SidebarLyrics({
         onPointerDown={holdManualScroll}
       >
         <div className="h-12 shrink-0" />
-        {track.lyrics.map((line, index) => {
+        {showPlaceholderLyrics && track.lyrics.map((line, index) => {
           const active = index === activeLyricIndex;
           return (
             <button

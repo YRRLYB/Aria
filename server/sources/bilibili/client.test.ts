@@ -153,6 +153,61 @@ describe("Bilibili client", () => {
     });
   });
 
+  it("exposes Bilibili FLAC and Dolby tracks for Big Members", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }))
+      .mockImplementation(async () => jsonResponse({
+        code: 0,
+        data: {
+          quality: 80,
+          accept_quality: [80, 64, 32, 16],
+          accept_description: ["高清 1080P", "高清 720P", "清晰 480P", "流畅 360P"],
+          dash: {
+            audio: [
+              { id: 30216, baseUrl: "https://cdn.test/audio-64.m4s", bandwidth: 64_000 },
+              { id: 30280, baseUrl: "https://cdn.test/audio-192.m4s", bandwidth: 320_000 },
+            ],
+            flac: {
+              display: true,
+              audio: {
+                id: 30251,
+                baseUrl: "https://cdn.test/audio-hires.flac",
+                bandwidth: 900_000,
+                codecs: "fLaC",
+              },
+            },
+            dolby: {
+              type: 1,
+              audio: {
+                id: 30250,
+                baseUrl: "https://cdn.test/audio-dolby.mp4",
+                bandwidth: 448_000,
+              },
+            },
+          },
+        },
+      }));
+
+    const hires = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "hires" });
+    expect(hires).toMatchObject({
+      url: "https://cdn.test/audio-hires.flac",
+      mimeType: "audio/flac",
+      currentLevel: "hires",
+      bitrate: 900_000,
+    });
+    expect(hires.availableLevels).toEqual(expect.arrayContaining(["lossless", "hires", "exhigh", "standard"]));
+
+    const dolby = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "lossless" });
+    expect(dolby).toMatchObject({
+      url: "https://cdn.test/audio-dolby.mp4",
+      currentLevel: "lossless",
+    });
+  });
+
   it("maps Bilibili CC subtitles to lyric lines", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response("<html></html>", {
@@ -251,7 +306,7 @@ describe("Bilibili client", () => {
     expect(stored.bilibiliCookie).toContain("bili_jct=test-csrf");
   });
 
-  it("adds and removes a video from the default favourite folder", async () => {
+  it("adds and removes a video in the Aria favourite folder", async () => {
     storeMocks.readStore.mockResolvedValue({
       bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
     });
@@ -270,7 +325,11 @@ describe("Bilibili client", () => {
       }))
       .mockResolvedValueOnce(jsonResponse({
         code: 0,
-        data: { list: [{ id: 123, title: "默认收藏夹", media_count: 1 }] },
+        data: { list: [] },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { id: 123, title: "Aria" },
       }))
       .mockResolvedValueOnce(jsonResponse({ code: 0, data: {} }));
 
@@ -285,9 +344,12 @@ describe("Bilibili client", () => {
     expect(body).toContain("add_media_ids=123");
     expect(body).toContain("csrf=test-csrf");
     expect(body).not.toContain("del_media_ids=123");
+    const folderAddCall = fetchMock.mock.calls.find(([url]) => String(url).includes("fav/folder/add"));
+    expect(folderAddCall).toBeTruthy();
+    expect(String((folderAddCall?.[1] as RequestInit | undefined)?.body)).toContain("title=Aria");
   });
 
-  it("maps the default favourite folder into liked tracks", async () => {
+  it("maps the Aria favourite folder into liked tracks", async () => {
     storeMocks.readStore.mockResolvedValue({
       bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
     });
@@ -302,7 +364,7 @@ describe("Bilibili client", () => {
       }))
       .mockResolvedValueOnce(jsonResponse({
         code: 0,
-        data: { list: [{ id: 123, title: "默认收藏夹", media_count: 2 }] },
+        data: { list: [{ id: 123, title: "Aria", media_count: 2 }] },
       }))
       .mockResolvedValueOnce(jsonResponse({
         code: 0,
@@ -334,7 +396,7 @@ describe("Bilibili client", () => {
       id: "BV1xx411c7mD",
       title: "收藏视频",
       artist: "收藏UP",
-      album: "B站 · 默认收藏夹",
+      album: "B站 · Aria",
       duration: 100,
       source: "bilibili",
       likedAt: 1_700_000_000_000,

@@ -1365,7 +1365,7 @@ export function OnboardingDialog({
               QQ 音乐提示：建议用手机 QQ 扫码登录，登录后才能同步「我喜欢」和读取歌单；歌曲旁出现 VIP 表示整首收听需要绿钻，只有高音质受限的歌曲不会标 VIP。QQ 音乐歌单目前在 Aria 内只读，编辑请回到 QQ 音乐。
             </p>
             <p className="mt-3 rounded-[1rem] border border-sky-200/70 bg-sky-50/70 px-4 py-3 text-xs leading-6 text-sky-900/80">
-              B站提示：扫码登录后可同步「默认收藏夹」，播放页红心会加入或移出该收藏夹；登录状态下视频清晰度更高。匿名搜索与播放无需登录。
+              B站提示：扫码登录后可同步「Aria」收藏夹；播放页红心会在第一次使用时自动创建该收藏夹，之后加入或移出。登录状态下视频清晰度更高。匿名搜索与播放无需登录。
             </p>
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <NeteaseSourceCard embedded account={neteaseAccount} onAccountChange={onAccountChange} />
@@ -1891,7 +1891,7 @@ function BilibiliSourceCard({ onAccountChange }: { onAccountChange?: () => void 
   const [showInput, setShowInput] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [loginStatus, setLoginStatus] = useState("扫码登录后可同步默认收藏夹，登录状态下视频清晰度更高。");
+  const [loginStatus, setLoginStatus] = useState("扫码登录后可同步「Aria」收藏夹，登录状态下视频清晰度更高。");
   const [qrLogin, setQrLogin] = useState<{ key: string; image: string } | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
 
@@ -2087,7 +2087,7 @@ function BilibiliSourceCard({ onAccountChange }: { onAccountChange?: () => void 
       {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
       {!account?.connected && (
         <p className="mt-3 text-xs text-neutral-400">
-          登录后，「我喜欢」会出现 B站默认收藏夹；播放页的红心会加入或移出该收藏夹。匿名播放仍可用，但视频通常只有 360P。
+          登录后，「我喜欢」会出现 B站「Aria」收藏夹；第一次点红心会自动创建这个收藏夹。匿名播放仍可用，但视频通常只有 360P。
         </p>
       )}
     </section>
