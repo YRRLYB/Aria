@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, session } = require("electron");
 
 // Update state is intentionally small and serializable: the renderer only
 // needs a status line, version, progress and an error message.
@@ -20,6 +20,68 @@ let writeLog = () => {};
 let autoUpdater = null;
 let checking = null;
 let autoCheckTimer = null;
+let updaterProxyMode = null;
+
+const UPDATER_SESSION_PARTITION = "electron-updater";
+const UPDATER_PROBE_URL = "https://api.github.com/repos/YRRLYB/Aria/releases/latest";
+
+function getUpdaterSession() {
+  return session.fromPartition(UPDATER_SESSION_PARTITION, { cache: false });
+}
+
+async function probeUpdaterNetwork(updaterSession) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await updaterSession.fetch(UPDATER_PROBE_URL, {
+      headers: { "User-Agent": "Aria-Update", Accept: "application/vnd.github+json" },
+      signal: controller.signal,
+    });
+    try {
+      await response.body?.cancel();
+    } catch {
+      // The probe only needs the status line; a broken body is fine.
+    }
+    // Any HTTP response proves the route reaches GitHub. The real update check
+    // still reports server-side errors with a useful message.
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The renderer session runs direct (music APIs are domestic), but GitHub may
+ * only be reachable through the user's system proxy. The updater owns a
+ * separate Electron session, so probe once and keep whichever route works.
+ */
+async function ensureUpdaterNetwork() {
+  if (updaterProxyMode) return updaterProxyMode;
+  const updaterSession = getUpdaterSession();
+  try {
+    await updaterSession.setProxy({ mode: "system" });
+    if (await probeUpdaterNetwork(updaterSession)) {
+      updaterProxyMode = "system";
+      writeLog("update.log", "updater network: system proxy");
+      return updaterProxyMode;
+    }
+    writeLog("update.log", "updater network: system proxy unreachable, trying direct");
+    await updaterSession.setProxy({ mode: "direct" });
+    if (await probeUpdaterNetwork(updaterSession)) {
+      updaterProxyMode = "direct";
+      writeLog("update.log", "updater network: direct");
+      return updaterProxyMode;
+    }
+    writeLog("update.log", "updater network: neither system proxy nor direct reached GitHub");
+    await updaterSession.setProxy({ mode: "system" });
+    return "system";
+  } catch (error) {
+    writeLog("update.log", `updater network setup failed: ${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+}
 
 function broadcast() {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -147,22 +209,25 @@ function setupUpdates(options = {}) {
     if (!supported || !autoUpdater) return state;
     if (checking) return checking;
     update({ status: "checking", error: null });
-    let timer = null;
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("检查更新超时，请稍后重试。")), 20_000);
-      timer.unref?.();
-    });
-    checking = Promise.race([autoUpdater.checkForUpdates(), timeout])
-      .then(() => state)
-      .catch((error) => {
+    if (manual) writeLog("update.log", "manual update check");
+    checking = (async () => {
+      await ensureUpdaterNetwork();
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("检查更新超时，请稍后重试。")), 45_000);
+        timer.unref?.();
+      });
+      try {
+        await Promise.race([autoUpdater.checkForUpdates(), timeout]);
+        return state;
+      } catch (error) {
         update({ status: "error", error: friendlyUpdateError(error), checkedAt: Date.now() });
         return state;
-      })
-      .finally(() => {
+      } finally {
         if (timer) clearTimeout(timer);
         checking = null;
-      });
-    if (manual) writeLog("update.log", "manual update check");
+      }
+    })();
     return checking;
   }
 

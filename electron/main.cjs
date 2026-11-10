@@ -187,11 +187,11 @@ function ensureWindowsTaskbarPreviewPolicy() {
 // overlay / lock screen (SMTC) on Windows.
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=256 --expose-gc");
 app.commandLine.appendSwitch("enable-features", "MediaSessionService");
-// Aria is a mainland-first NetEase client. Never attach the renderer to a
-// Windows/Chromium forward proxy: a stale system proxy made artwork and the
-// first library refresh appear frozen. Future providers can opt into their
-// own scoped network policy instead of changing this global default.
-app.commandLine.appendSwitch("no-proxy-server");
+// Aria is a mainland-first NetEase client. The app session is switched to
+// direct network once Electron is ready (configureDirectNetwork), because a
+// stale system proxy made artwork and the first library refresh appear frozen.
+// This is scoped per session instead of a global --no-proxy-server switch so
+// the updater can still use the user's proxy to reach GitHub.
 // The app owns SMTC for both Chromium and mpv. Avoid a second Chromium card.
 if (iconicThumbAddon?.mediaSessionAvailable || nowPlayingAddon?.available) {
   app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling");
