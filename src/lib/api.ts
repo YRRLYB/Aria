@@ -617,6 +617,7 @@ export const api = {
     return request<{
       hasNeteaseCookie: boolean;
       hasQqCookie?: boolean;
+      hasBilibiliCookie?: boolean;
       neteaseAccount: NeteaseAccountSummary;
       /** Opt-in mainland egress IP used for NetEase's 460 mitigation. */
       neteaseRealIp?: string | null;
@@ -912,6 +913,42 @@ export const api = {
   getSourceAccount(sourceId: string) {
     return request<{ account: SourceAccountSummary }>(
       `/api/sources/${encodeURIComponent(sourceId)}/account`,
+    );
+  },
+  getSourceLikedTracks(sourceId: string) {
+    return request<{ tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/liked`);
+  },
+  saveSourceCookie(sourceId: string, cookie: string) {
+    return request<{ ok: boolean; account: SourceAccountSummary }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/cookie`,
+      { method: "POST", body: JSON.stringify({ cookie }) },
+    );
+  },
+  clearSourceCookie(sourceId: string) {
+    return request<{ ok: boolean; account: SourceAccountSummary }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/cookie`,
+      { method: "DELETE" },
+    );
+  },
+  startSourceQrLogin(sourceId: string) {
+    return request<{ key: string; qrImage: string; expiresIn: number }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/qr/start`,
+      { method: "POST" },
+    );
+  },
+  checkSourceQrLogin(sourceId: string, key: string) {
+    const params = new URLSearchParams({ key });
+    return request<{
+      code: number;
+      status: "waiting" | "scanned" | "expired" | "success";
+      message: string;
+      account: SourceAccountSummary | null;
+    }>(`/api/sources/${encodeURIComponent(sourceId)}/qr/check?${params}`);
+  },
+  setSourceLike(sourceId: string, trackId: string, liked: boolean) {
+    return request<{ ok: boolean; liked: boolean }>(
+      `/api/providers/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/like`,
+      { method: "POST", body: JSON.stringify({ liked }) },
     );
   },
   getSourceDailyTracks(sourceId: string) {

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  checkBilibiliQrLogin,
+  getBilibiliAccount,
+  getBilibiliLikedTracks,
   getBilibiliLyrics,
   parseBilibiliDuration,
   parseBilibiliTrackId,
@@ -7,7 +10,19 @@ import {
   resolveBilibiliStreamMeta,
   resolveBilibiliVideoMeta,
   searchBilibiliTracks,
+  setBilibiliLike,
+  startBilibiliQrLogin,
 } from "./client";
+
+const storeMocks = vi.hoisted(() => ({
+  readStore: vi.fn(),
+  updateStore: vi.fn(),
+}));
+
+vi.mock("../../store", () => ({
+  readStore: storeMocks.readStore,
+  updateStore: storeMocks.updateStore,
+}));
 
 const fetchMock = vi.fn<typeof fetch>();
 
@@ -32,6 +47,10 @@ describe("Bilibili client", () => {
   beforeEach(() => {
     resetBilibiliStateForTests();
     fetchMock.mockReset();
+    storeMocks.readStore.mockReset();
+    storeMocks.updateStore.mockReset();
+    storeMocks.readStore.mockResolvedValue({ bilibiliCookie: null });
+    storeMocks.updateStore.mockResolvedValue({});
     vi.stubGlobal("fetch", fetchMock);
   });
 
@@ -163,5 +182,169 @@ describe("Bilibili client", () => {
       { time: "00:01", startTime: 1.25, text: "第一句", timingVersion: 1 },
       { time: "00:03", startTime: 3.5, text: "第二句", timingVersion: 1 },
     ]);
+  });
+
+  it("starts a QR session and reports the waiting state", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          url: "https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=abc",
+          qrcode_key: "qr-key",
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { code: 86101, message: "未扫码" },
+      }));
+
+    const started = await startBilibiliQrLogin();
+    expect(started.key).toBe("qr-key");
+    expect(started.qrImage.startsWith("data:image/png;base64,")).toBe(true);
+    expect(started.expiresIn).toBe(180);
+
+    const check = await checkBilibiliQrLogin(started.key);
+    expect(check).toMatchObject({ code: 86101, status: "waiting", account: null });
+  });
+
+  it("stores the login cookie and account after QR confirmation", async () => {
+    const pollHeaders = new Headers();
+    pollHeaders.append("set-cookie", "SESSDATA=test-sess; Path=/; Domain=.bilibili.com");
+    pollHeaders.append("set-cookie", "bili_jct=test-csrf; Path=/; Domain=.bilibili.com");
+    pollHeaders.append("set-cookie", "DedeUserID=42; Path=/; Domain=.bilibili.com");
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          url: "https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=abc",
+          qrcode_key: "qr-key",
+        },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        data: { code: 0, message: "登录成功" },
+      }), { status: 200, headers: pollHeaders }))
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { isLogin: true, mid: 42, uname: "测试用户", face: "//i0.hdslb.com/face.jpg" },
+      }));
+
+    const started = await startBilibiliQrLogin();
+    const check = await checkBilibiliQrLogin(started.key);
+    expect(check).toMatchObject({
+      code: 0,
+      status: "success",
+      account: {
+        connected: true,
+        nickname: "测试用户",
+        userId: "42",
+        avatarUrl: "https://i0.hdslb.com/face.jpg",
+      },
+    });
+    expect(storeMocks.updateStore).toHaveBeenCalled();
+    const stored = storeMocks.updateStore.mock.calls[0][0]({}) as { bilibiliCookie: string };
+    expect(stored.bilibiliCookie).toContain("SESSDATA=test-sess");
+    expect(stored.bilibiliCookie).toContain("bili_jct=test-csrf");
+  });
+
+  it("adds and removes a video from the default favourite folder", async () => {
+    storeMocks.readStore.mockResolvedValue({
+      bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
+    });
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { isLogin: true, mid: 42, uname: "测试用户", face: "//i0.hdslb.com/face.jpg" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { ...viewData, aid: 12345 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { list: [{ id: 123, title: "默认收藏夹", media_count: 1 }] },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: {} }));
+
+    const result = await setBilibiliLike("BV1xx411c7mD", true);
+    expect(result).toEqual({ ok: true, liked: true });
+    const dealCall = fetchMock.mock.calls.find(([url]) => String(url).includes("fav/resource/deal"));
+    expect(dealCall).toBeTruthy();
+    const init = dealCall?.[1] as RequestInit | undefined;
+    expect(init?.method).toBe("POST");
+    const body = String(init?.body);
+    expect(body).toContain("rid=12345");
+    expect(body).toContain("add_media_ids=123");
+    expect(body).toContain("csrf=test-csrf");
+    expect(body).not.toContain("del_media_ids=123");
+  });
+
+  it("maps the default favourite folder into liked tracks", async () => {
+    storeMocks.readStore.mockResolvedValue({
+      bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
+    });
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { isLogin: true, mid: 42, uname: "测试用户", face: "//i0.hdslb.com/face.jpg" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { list: [{ id: 123, title: "默认收藏夹", media_count: 2 }] },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          medias: [
+            {
+              type: 2,
+              attr: 0,
+              bvid: "BV1xx411c7mD",
+              title: "收藏视频",
+              cover: "//i0.hdslb.com/fav.jpg",
+              duration: 100,
+              fav_time: 1_700_000_000,
+              upper: { name: "收藏UP" },
+            },
+            { type: 2, attr: 1, bvid: "BV1deleted" },
+          ],
+          has_more: false,
+        },
+      }))
+      .mockImplementation(async () => jsonResponse({ code: 0, data: { medias: [], has_more: false } }));
+
+    const account = await getBilibiliAccount();
+    expect(account).toMatchObject({ connected: true, nickname: "测试用户", userId: "42" });
+
+    const tracks = await getBilibiliLikedTracks();
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toMatchObject({
+      id: "BV1xx411c7mD",
+      title: "收藏视频",
+      artist: "收藏UP",
+      album: "B站 · 默认收藏夹",
+      duration: 100,
+      source: "bilibili",
+      likedAt: 1_700_000_000_000,
+      hasVideo: true,
+      coverUrl: "https://i0.hdslb.com/fav.jpg",
+    });
+    const folderCall = fetchMock.mock.calls.find(([url]) => String(url).includes("fav/folder/created/list-all"));
+    expect(String(folderCall?.[0])).toContain("up_mid=42");
+    const resourceCall = fetchMock.mock.calls.find(([url]) => String(url).includes("fav/resource/list"));
+    const headers = (resourceCall?.[1] as RequestInit | undefined)?.headers as Record<string, string> | undefined;
+    expect(headers?.Cookie).toContain("SESSDATA=test-sess");
   });
 });

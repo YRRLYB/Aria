@@ -215,6 +215,68 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
     }
   });
 
+  router.get("/:sourceId/liked", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getLikedTracks) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持同步收藏`, { source: source.manifest.id });
+      }
+      res.json({ tracks: await source.getLikedTracks() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sourceId/cookie", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.saveCookie) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持 Cookie 登录`, { source: source.manifest.id });
+      }
+      const body = z.object({ cookie: z.string().trim().min(1).max(20_000) }).parse(req.body);
+      res.json({ ok: true, account: await source.saveCookie(body.cookie) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/:sourceId/cookie", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.clearCookie) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持退出登录`, { source: source.manifest.id });
+      }
+      res.json({ ok: true, account: await source.clearCookie() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sourceId/qr/start", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.startQrLogin) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持扫码登录`, { source: source.manifest.id });
+      }
+      res.json(await source.startQrLogin());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/qr/check", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.checkQrLogin) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持扫码登录`, { source: source.manifest.id });
+      }
+      const query = z.object({ key: z.string().min(1).max(256) }).parse(req.query);
+      res.json(await source.checkQrLogin(query.key));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/:sourceId/account", async (req, res, next) => {
     try {
       const source = await getSource(req.params.sourceId);

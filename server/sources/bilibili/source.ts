@@ -1,13 +1,20 @@
 import type { MusicSource, SourceSearchPage } from "../contract";
 import {
+  checkBilibiliQrLogin,
+  clearBilibiliCookie,
+  getBilibiliAccount,
+  getBilibiliLikedTracks,
   getBilibiliLyrics,
   resolveBilibiliStreamMeta,
   resolveBilibiliVideoMeta,
+  saveBilibiliCookie,
   searchBilibiliTracks,
+  setBilibiliLike,
+  startBilibiliQrLogin,
 } from "./client";
 import { bilibiliManifest } from "./manifest";
 
-/** Bilibili source: anonymous video search, DASH audio and optional CC subtitles. */
+/** Bilibili source: anonymous search, DASH audio and optional CC subtitles. */
 export const bilibiliSource: MusicSource = {
   manifest: bilibiliManifest,
 
@@ -36,5 +43,33 @@ export const bilibiliSource: MusicSource = {
 
   getLyrics(trackId, signal) {
     return getBilibiliLyrics(trackId, signal);
+  },
+
+  getAccount(signal) {
+    return getBilibiliAccount(signal);
+  },
+
+  getLikedTracks() {
+    return getBilibiliLikedTracks();
+  },
+
+  setLike(trackId, liked) {
+    return setBilibiliLike(trackId, liked);
+  },
+
+  saveCookie(cookie) {
+    return saveBilibiliCookie(cookie);
+  },
+
+  clearCookie() {
+    return clearBilibiliCookie();
+  },
+
+  startQrLogin() {
+    return startBilibiliQrLogin();
+  },
+
+  checkQrLogin(key) {
+    return checkBilibiliQrLogin(key);
   },
 };

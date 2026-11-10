@@ -117,6 +117,7 @@ app.get("/api/settings", async (_req, res, next) => {
       // A stored cookie whose account probe reports disconnected means the
       // session expired — the settings card distinguishes this from signed-out.
       hasQqCookie: Boolean(store.qqCookie),
+      hasBilibiliCookie: Boolean(store.bilibiliCookie),
       // Never block the first renderer paint on a provider round trip. The
       // account endpoint below validates the cookie in the background.
       neteaseAccount: await peekNeteaseAccountSummary(),

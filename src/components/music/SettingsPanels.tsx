@@ -488,6 +488,8 @@ export function SettingsPanel({
 
           <QqSourceCard onAccountChange={onSourceAccountChange} />
 
+          <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
+
           <SourceEnableCard />
 
           <UpdateCard />
@@ -904,7 +906,7 @@ export function AccountPanel({
       {/* 两张卡片始终标明来源：头像只代表当前登录用户，logo + 名称才说明是哪个平台。 */}
       <div className="mt-3 space-y-2">
         {sourceAccounts.map((source) => {
-          const logo = source.id === "qq" ? "qq" : "netease";
+          const logo = source.id === "qq" ? "qq" : source.id === "bilibili" ? "bilibili" : "netease";
           return (
             <div
               key={source.id}
@@ -940,7 +942,7 @@ export function AccountPanel({
       </div>
 
       <p className="mt-4 rounded-[1rem] bg-neutral-950/[0.03] p-3 text-xs leading-relaxed text-neutral-500">
-        网易云音乐与 QQ 音乐的扫码、Cookie 登录和退出都在「设置 → 播放源」里完成。
+        网易云音乐、QQ 音乐与 B站的扫码、Cookie 登录和退出都在「设置 → 播放源」里完成。
       </p>
       {onManageSources && (
         <Button className="mt-3 w-full" size="sm" onClick={onManageSources}>
@@ -1244,6 +1246,7 @@ export function OnboardingDialog({
   onAccountChange,
   onSourceAccountChange,
   qqAccount = null,
+  bilibiliAccount = null,
   onComplete,
 }: {
   neteaseAccount: NeteaseAccountSummary | null;
@@ -1257,10 +1260,12 @@ export function OnboardingDialog({
   localMusicInfo: { path: string; count: number } | null;
   scanProgress: { phase: string; processed: number; total: number; status: string; error?: string | null } | null;
   onAccountChange: (account: NeteaseAccountSummary) => void;
-  /** Refresh callback fired after the QQ source account changes. */
+  /** Refresh callback fired after an online source account changes. */
   onSourceAccountChange?: () => void;
   /** QQ Music account, shown in the summary step. */
   qqAccount?: SourceAccountSummary | null;
+  /** Bilibili account, shown in the summary step. */
+  bilibiliAccount?: SourceAccountSummary | null;
   onComplete: () => void;
 }) {
   const [step, setStep] = useState(0);
@@ -1302,7 +1307,7 @@ export function OnboardingDialog({
           <div className="mt-8 grid gap-5 sm:grid-cols-[1.1fr_0.9fr] sm:items-center">
             <div>
               <h2 className="text-3xl font-semibold leading-tight">你的音乐，<br />从这里开始。</h2>
-              <p className="mt-4 text-sm leading-6 text-neutral-500">Aria 把本地音乐、网易云与 QQ 音乐两个在线音源，以及高音质播放集中在一个安静的工作台里。</p>
+              <p className="mt-4 text-sm leading-6 text-neutral-500">Aria 把本地音乐、网易云、QQ 音乐与 B站三个在线音源，以及高音质播放集中在一个安静的工作台里。</p>
             </div>
             <div className="rounded-[1.25rem] bg-neutral-950 p-5 text-white shadow-lg">
               <p className="text-xs uppercase tracking-[0.2em] text-white/55">Ready when you are</p>
@@ -1310,6 +1315,7 @@ export function OnboardingDialog({
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />本地无损音乐</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />网易云音乐</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />QQ 音乐</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />B站视频与音频</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />{window.ariaDesktop?.platform === "darwin" ? "系统媒体控制" : "任务栏快捷控制"}</p>
               </div>
             </div>
@@ -1353,15 +1359,21 @@ export function OnboardingDialog({
           <div className="mt-5">
             <h2 className="text-xl font-semibold">连接你的播放源</h2>
             <p className="mt-2 text-sm text-neutral-500">
-              Aria 支持多个音源：网易云音乐提供每日推荐、私人漫游与歌单，QQ 音乐提供搜索、播放、歌词、我喜欢、歌单读取和每日推荐。也可以稍后在设置或右上角完成。
+              Aria 支持多个音源：网易云音乐提供每日推荐、私人漫游与歌单，QQ 音乐提供搜索、播放、歌词、我喜欢、歌单读取和每日推荐，B站提供视频/音频双模式与收藏同步。也可以稍后在设置或右上角完成。
             </p>
             <p className="mt-3 rounded-[1rem] border border-emerald-200/70 bg-emerald-50/70 px-4 py-3 text-xs leading-6 text-emerald-900/80">
               QQ 音乐提示：建议用手机 QQ 扫码登录，登录后才能同步「我喜欢」和读取歌单；歌曲旁出现 VIP 表示整首收听需要绿钻，只有高音质受限的歌曲不会标 VIP。QQ 音乐歌单目前在 Aria 内只读，编辑请回到 QQ 音乐。
+            </p>
+            <p className="mt-3 rounded-[1rem] border border-sky-200/70 bg-sky-50/70 px-4 py-3 text-xs leading-6 text-sky-900/80">
+              B站提示：扫码登录后可同步「默认收藏夹」，播放页红心会加入或移出该收藏夹；登录状态下视频清晰度更高。匿名搜索与播放无需登录。
             </p>
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <NeteaseSourceCard embedded account={neteaseAccount} onAccountChange={onAccountChange} />
               <div className="overflow-hidden rounded-[1.25rem] bg-white/55 p-1">
                 <QqSourceCard onAccountChange={onSourceAccountChange} />
+              </div>
+              <div className="overflow-hidden rounded-[1.25rem] bg-white/55 p-1 lg:col-span-2">
+                <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
               </div>
             </div>
           </div>
@@ -1397,7 +1409,10 @@ export function OnboardingDialog({
               {qqAccount?.connected && (
                 <p className="flex items-center gap-2 text-sm text-neutral-600"><CheckCircle2 className="size-4 text-emerald-600" />QQ 音乐：{qqAccount.nickname ?? "已登录"}</p>
               )}
-              {!neteaseAccount?.connected && !qqAccount?.connected && (
+              {bilibiliAccount?.connected && (
+                <p className="flex items-center gap-2 text-sm text-neutral-600"><CheckCircle2 className="size-4 text-emerald-600" />B站：{bilibiliAccount.nickname ?? "已登录"}</p>
+              )}
+              {!neteaseAccount?.connected && !qqAccount?.connected && !bilibiliAccount?.connected && (
                 <p className="text-sm text-neutral-500">还没有登录在线音源，随时可以在右上角或设置里连接。</p>
               )}
             </div>
@@ -1868,12 +1883,223 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
   );
 }
 
+/** Bilibili source row: QR/cookie login + live account state from /api/sources/bilibili. */
+function BilibiliSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
+  const [account, setAccount] = useState<SourceAccountSummary | null>(null);
+  const [hasStoredCookie, setHasStoredCookie] = useState(false);
+  const [cookie, setCookie] = useState("");
+  const [showInput, setShowInput] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [loginStatus, setLoginStatus] = useState("扫码登录后可同步默认收藏夹，登录状态下视频清晰度更高。");
+  const [qrLogin, setQrLogin] = useState<{ key: string; image: string } | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    api
+      .getSourceAccount("bilibili")
+      .then((result) => {
+        if (mounted) setAccount(result.account);
+      })
+      .catch(() => {
+        if (mounted) setMessage("后端未连接");
+      });
+    api
+      .getSettings()
+      .then((settings) => {
+        if (mounted) setHasStoredCookie(Boolean(settings.hasBilibiliCookie));
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  async function startQrLogin() {
+    setQrLoading(true);
+    setMessage(null);
+    try {
+      const started = await api.startSourceQrLogin("bilibili");
+      setQrLogin({ key: started.key, image: started.qrImage });
+      setLoginStatus("请用哔哩哔哩手机客户端扫描二维码，并在手机上确认登录。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "二维码获取失败，请稍后重试");
+    } finally {
+      setQrLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!qrLogin) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void api
+        .checkSourceQrLogin("bilibili", qrLogin.key)
+        .then((result) => {
+          if (cancelled) return;
+          if (result.status === "scanned") {
+            setLoginStatus("已扫码，请在手机上确认登录。");
+            return;
+          }
+          if (result.status === "waiting") return;
+          window.clearInterval(timer);
+          setQrLogin(null);
+          if (result.status === "success" && result.account) {
+            setAccount(result.account);
+            setHasStoredCookie(true);
+            onAccountChange?.();
+            setLoginStatus("登录成功，B站收藏已同步。");
+            setMessage(`已登录：${result.account.nickname ?? "B站账号"}`);
+          } else {
+            setLoginStatus(result.message);
+            setMessage(result.status === "expired" ? "二维码已失效，请重新获取" : result.message);
+          }
+        })
+        .catch(() => {
+          // Transient poll failures are expected while the QR is pending.
+        });
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [qrLogin]);
+
+  async function saveCookie() {
+    if (!cookie.trim()) {
+      setMessage("请先粘贴 Cookie");
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.saveSourceCookie("bilibili", cookie.trim());
+      setAccount(result.account);
+      setHasStoredCookie(true);
+      onAccountChange?.();
+      setCookie("");
+      setShowInput(false);
+      setMessage(result.account.connected ? "B站 Cookie 已保存并登录" : "Cookie 已保存，但登录状态未确认");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存失败，请确认后端正在运行");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function logout() {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.clearSourceCookie("bilibili");
+      setAccount(result.account);
+      setHasStoredCookie(false);
+      onAccountChange?.();
+      setQrLogin(null);
+      setLoginStatus("已退出B站，可随时重新扫码登录。");
+      setMessage("已退出B站账号");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "退出失败，请稍后重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
+          <h3 className="mt-1 truncate text-base font-semibold">播放源 · 哔哩哔哩</h3>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge>{account?.connected ? "已登录" : hasStoredCookie ? "登录已过期" : "未登录"}</Badge>
+          <SourceToggle sourceId="bilibili" />
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3">
+        <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
+          {account?.avatarUrl ? (
+            <ArtworkImage src={account.avatarUrl} cacheSize={320} alt="" draggable={false} className="size-full object-cover" />
+          ) : (
+            <SourceLogo source="bilibili" className="size-10" />
+          )}
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">{account?.connected ? account.nickname ?? "已登录" : "扫码登录"}</p>
+          <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{loginStatus}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void startQrLogin()} disabled={qrLoading || saving}>
+              <QrCode />
+              {qrLoading ? "生成中" : qrLogin ? "重新获取二维码" : "扫码登录"}
+            </Button>
+            <Button size="sm" variant="subtle" onClick={() => setShowInput((value) => !value)}>
+              <Cookie />
+              Cookie 备用绑定
+            </Button>
+            {account?.connected && (
+              <Button size="sm" variant="subtle" onClick={() => void logout()} disabled={saving}>
+                <LogOut />
+                退出登录
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+      {qrLogin && (
+        <div className="mt-3 flex items-center gap-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+          <img
+            src={qrLogin.image}
+            alt="B站登录二维码"
+            width={132}
+            height={132}
+            className="size-[132px] rounded-[0.9rem] bg-white object-contain shadow-inner"
+          />
+          <div className="min-w-0 text-xs leading-relaxed text-neutral-500">
+            <p className="font-medium text-neutral-600">哔哩哔哩手机客户端扫码</p>
+            <p className="mt-1">扫码后需要在手机上点「确认登录」，二维码约 3 分钟有效。</p>
+            <p className="mt-1 text-neutral-400">二维码由本机服务端生成与轮询，不会上传到第三方。</p>
+          </div>
+        </div>
+      )}
+      {showInput && (
+        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+          <label className="text-xs font-medium text-neutral-500" htmlFor="bilibili-cookie">
+            B站 Cookie
+          </label>
+          <textarea
+            id="bilibili-cookie"
+            value={cookie}
+            onChange={(event) => setCookie(event.target.value)}
+            rows={4}
+            placeholder="SESSDATA=...; bili_jct=...; DedeUserID=..."
+            className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+          />
+          <div className="mt-3 flex justify-end">
+            <Button size="sm" onClick={() => void saveCookie()} disabled={saving}>
+              <Cookie />
+              {saving ? "保存中" : "保存 Cookie"}
+            </Button>
+          </div>
+        </div>
+      )}
+      {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
+      {!account?.connected && (
+        <p className="mt-3 text-xs text-neutral-400">
+          登录后，「我喜欢」会出现 B站默认收藏夹；播放页的红心会加入或移出该收藏夹。匿名播放仍可用，但视频通常只有 360P。
+        </p>
+      )}
+    </section>
+  );
+}
+
 /**
  * Per-source switch. Turning a source off keeps its login state but stops
  * Aria from sending it any search/stream request, which is the fastest way to
  * silence an upstream outage without restarting the app.
  */
-function SourceToggle({ sourceId }: { sourceId: "netease" | "qq" }) {
+function SourceToggle({ sourceId }: { sourceId: "netease" | "qq" | "bilibili" }) {
   const [enabled, setEnabled] = useState(true);
   const [pending, setPending] = useState(false);
 

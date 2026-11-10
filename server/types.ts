@@ -53,6 +53,8 @@ export type AppStore = {
   neteaseAccount: StoredNeteaseAccount | null;
   /** Raw QQ Music cookie header; parsed for uin + qqmusic_key/qm_keyst. */
   qqCookie?: string | null;
+  /** Raw Bilibili cookie header (SESSDATA/bili_jct/DedeUserID). */
+  bilibiliCookie?: string | null;
   /**
    * Mainland egress IP the NetEase client should claim. Only needed when the
    * machine's real exit IP makes NetEase answer 460/"环境异常" (overseas or

@@ -35,6 +35,7 @@ import { useLocalPlaylists } from "@/hooks/useLocalPlaylists";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
 import { useQqData } from "@/hooks/useQqData";
+import { useBilibiliData } from "@/hooks/useBilibiliData";
 import {
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
@@ -162,6 +163,7 @@ export default function App() {
   // Non-NetEase sources live behind /api/sources/<id>/account; keep the QQ
   // snapshot in App so the header can show the login state everywhere.
   const [qqAccount, setQqAccount] = useState<SourceAccountSummary | null>(null);
+  const [bilibiliAccount, setBilibiliAccount] = useState<SourceAccountSummary | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(() => {
     try {
       const completed = window.localStorage.getItem("aria-onboarding-complete") === "1";
@@ -447,20 +449,29 @@ export default function App() {
 
   const neteaseConnected = Boolean(neteaseAccount?.connected);
   const qqConnected = Boolean(qqAccount?.connected);
-  // The header shows a single account chip; NetEase wins when both are signed in.
-  const primaryAccount = neteaseConnected ? neteaseAccount : qqConnected ? qqAccount : null;
+  const bilibiliConnected = Boolean(bilibiliAccount?.connected);
+  // The header shows a single account chip; NetEase wins when multiple sources are signed in.
+  const primaryAccount = neteaseConnected ? neteaseAccount : qqConnected ? qqAccount : bilibiliConnected ? bilibiliAccount : null;
   const refreshQqAccount = useEffectEvent(() => {
     api
       .getSourceAccount("qq")
       .then(({ account }) => setQqAccount(account))
       .catch(() => undefined);
   });
+  const refreshBilibiliAccount = useEffectEvent(() => {
+    api
+      .getSourceAccount("bilibili")
+      .then(({ account }) => setBilibiliAccount(account))
+      .catch(() => undefined);
+  });
 
   useEffect(() => {
     refreshQqAccount();
+    refreshBilibiliAccount();
   }, [activeView]);
 
   const qqData = useQqData({ connected: qqConnected, applyTrackUpdate });
+  const bilibiliData = useBilibiliData({ connected: bilibiliConnected });
   // Reload the QQ liked/playlists whenever the account connects (mount, login,
   // or re-login from settings); disconnect clears inside the hook.
   useEffect(() => {
@@ -468,21 +479,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qqConnected]);
   useEffect(() => {
+    if (bilibiliConnected) void bilibiliData.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bilibiliConnected]);
+  useEffect(() => {
     const onFocus = () => {
       refreshQqAccount();
-      // 手机端在 QQ 音乐里点了红心后，切回 Aria 时顺手刷新一次，
+      refreshBilibiliAccount();
+      // 手机端在在线音源里点了红心后，切回 Aria 时顺手刷新一次，
       // 不必等到下一次进入「我喜欢」页面。
       if (qqConnected) void qqData.refresh();
+      if (bilibiliConnected) void bilibiliData.refresh();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qqConnected]);
-  // 进入「我喜欢」时重新拉一次 QQ 收藏，手机端刚点过的红心不必重启应用。
+  }, [qqConnected, bilibiliConnected]);
+  // 进入「我喜欢」时重新拉一次在线收藏，手机端刚点过的红心不必重启应用。
   useEffect(() => {
-    if (activeView === "liked" && qqConnected) void qqData.refresh();
+    if (activeView !== "liked") return;
+    if (qqConnected) void qqData.refresh();
+    if (bilibiliConnected) void bilibiliData.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, qqConnected]);
+  }, [activeView, qqConnected, bilibiliConnected]);
   // 推荐视图的来源切换:每日推荐/私人漫游都支持网易云与 QQ 两套数据。
   const [recommendSource, setRecommendSource] = useState<"netease" | "qq">("netease");
   const recentQqRoamExcludes = () =>
@@ -603,9 +622,10 @@ export default function App() {
     ]),
     [qqData.likedTracks, qqData.playlistTracks, qqData.dailyTracks, qqData.roamTracks],
   );
+  const bilibiliLibraryTracks = bilibiliData.likedTracks;
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
-    [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...bilibiliLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
+    [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, bilibiliLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
   );
   // Mixed playlists resolve live tracks first, then compact remote snapshots.
   const localPlaylists = useLocalPlaylists(allTracks);
@@ -1190,6 +1210,12 @@ export default function App() {
       });
       return;
     }
+    if (track?.source === "bilibili") {
+      void bilibiliData.toggleLike(track).catch((error: unknown) => {
+        setPlaybackNotice(error instanceof Error ? error.message : "B站收藏同步失败，请稍后再试");
+      });
+      return;
+    }
     setLikedTrackIds((current) => {
       if (current[trackId]) {
         const next = { ...current };
@@ -1219,6 +1245,7 @@ export default function App() {
     qqData.setPlaylistTracks(applyTo);
     qqData.setDailyTracks(applyTo);
     qqData.setRoamTracks(applyTo);
+    bilibiliData.setLikedTracks(applyTo);
     setCloudTracks(applyTo);
     setExploreTracks(applyTo);
     setExploreRadioTracks(applyTo);
@@ -2291,6 +2318,13 @@ export default function App() {
                       nickname: qqAccount?.nickname ?? null,
                       avatarUrl: qqAccount?.avatarUrl ?? null,
                     },
+                    {
+                      id: "bilibili",
+                      label: "哔哩哔哩",
+                      connected: bilibiliConnected,
+                      nickname: bilibiliAccount?.nickname ?? null,
+                      avatarUrl: bilibiliAccount?.avatarUrl ?? null,
+                    },
                   ]}
                   onManageSources={() => {
                     setAccountOpen(false);
@@ -2459,7 +2493,9 @@ export default function App() {
                       ? Boolean(neteaseLikedIds[activeTrack.id])
                       : activeTrack.source === "qq"
                         ? Boolean(qqData.likedIds[activeTrack.id])
-                        : Boolean(likedTrackIds[activeTrack.id])
+                        : activeTrack.source === "bilibili"
+                          ? Boolean(bilibiliData.likedIds[activeTrack.id])
+                          : Boolean(likedTrackIds[activeTrack.id])
                   }
                   onToggleLike={() => toggleLikeTrack(activeTrack.id)}
                   volume={volume}
@@ -2537,12 +2573,16 @@ export default function App() {
                   localTracks={localLikedTracks}
                   neteaseTracks={neteaseLikedDisplayTracks}
                   qqTracks={qqData.likedTracks}
+                  bilibiliTracks={bilibiliData.likedTracks}
                   neteaseConnected={neteaseConnected}
                   qqConnected={qqConnected}
-                  refreshing={qqData.listLoading}
+                  bilibiliConnected={bilibiliConnected}
+                  bilibiliError={bilibiliData.listError}
+                  refreshing={qqData.listLoading || bilibiliData.listLoading}
                   onRefresh={(source) => {
                     if (source === "netease" || source === "all") void refreshNeteaseData();
                     if (source === "qq" || source === "all") void qqData.refresh();
+                    if (source === "bilibili" || source === "all") void bilibiliData.refresh();
                   }}
                   onPickTrack={chooseTrack}
                 />
@@ -2726,7 +2766,7 @@ export default function App() {
                   onRemoveLibraryRoot={(root) => void removeLibraryFolder(root)}
                   onToggleLibraryAutoScan={(enabled) => void toggleLibraryAutoScan(enabled)}
                   trackCount={allTracks.length}
-                  likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length}
+                  likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length + bilibiliData.likedTracks.length}
                   lyricProgress={lyricProgress}
                   volume={volume}
                   onVolumeChange={setVolume}
@@ -2751,7 +2791,7 @@ export default function App() {
                   onKeyboardShortcutsChange={setKeyboardShortcuts}
                   theme={theme}
                   onThemeChange={setTheme}
-                  onSourceAccountChange={() => { refreshQqAccount(); void qqData.refresh(); }}
+                  onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
                   onNeteaseAccountChange={(account) => {
                     setNeteaseAccount(account);
                     if (account.connected) void refreshNeteaseData();
@@ -2848,29 +2888,28 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <AnimatePresence>
-          {onboardingOpen && (
-            <OnboardingDialog
-              neteaseAccount={neteaseAccount}
-              hifiEnabled={hifiEnabled}
-              onHifiEnabledChange={handleHifiEnabledChange}
-              backgroundEnabled={backgroundEnabled}
-              onBackgroundEnabledChange={setBackgroundEnabled}
-              gaplessEnabled={gaplessEnabled}
-              onGaplessEnabledChange={setGaplessEnabled}
-              onAddLocalMusic={() => void chooseLocalFolder()}
-              localMusicInfo={onboardingLocalInfo ?? (localTracks.length ? { path: folderName, count: localTracks.length } : null)}
-              scanProgress={libraryScanProgress}
-              onAccountChange={(account) => {
-                setNeteaseAccount(account);
-                if (account.connected) void refreshNeteaseData();
-              }}
-              onSourceAccountChange={() => { refreshQqAccount(); void qqData.refresh(); }}
-              qqAccount={qqAccount}
-              onComplete={() => setOnboardingOpen(false)}
-            />
-          )}
-        </AnimatePresence>
+        {onboardingOpen && (
+          <OnboardingDialog
+            neteaseAccount={neteaseAccount}
+            hifiEnabled={hifiEnabled}
+            onHifiEnabledChange={handleHifiEnabledChange}
+            backgroundEnabled={backgroundEnabled}
+            onBackgroundEnabledChange={setBackgroundEnabled}
+            gaplessEnabled={gaplessEnabled}
+            onGaplessEnabledChange={setGaplessEnabled}
+            onAddLocalMusic={() => void chooseLocalFolder()}
+            localMusicInfo={onboardingLocalInfo ?? (localTracks.length ? { path: folderName, count: localTracks.length } : null)}
+            scanProgress={libraryScanProgress}
+            onAccountChange={(account) => {
+              setNeteaseAccount(account);
+              if (account.connected) void refreshNeteaseData();
+            }}
+            onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
+            qqAccount={qqAccount}
+            bilibiliAccount={bilibiliAccount}
+            onComplete={() => setOnboardingOpen(false)}
+          />
+        )}
 
         {!immersiveOpen && !onboardingOpen && <FloatingNav
           activeView={activeView}

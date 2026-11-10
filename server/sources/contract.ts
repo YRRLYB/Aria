@@ -208,7 +208,9 @@ export type MusicSource = {
   ): Promise<SourceVideoMeta>;
   getLyrics?(trackId: string, signal?: AbortSignal): Promise<LyricLine[]>;
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
-  /** 收藏/取消收藏（QQ 红心等）；未实现的源不提供该入口。 */
+  /** Account-owned favourites/liked tracks, when the source can read them. */
+  getLikedTracks?(): Promise<ProviderTrack[]>;
+  /** 收藏/取消收藏（QQ 红心、B站默认收藏夹等）；未实现的源不提供该入口。 */
   setLike?(trackId: string, liked: boolean): Promise<{ ok: boolean; liked: boolean }>;
   /** 歌手详情页（简介 + 基础资料）。 */
   getArtistDetail?(artistId: string): Promise<{ artist: ProviderArtist; description: string; sections: Array<{ title: string; text: string }> }>;
@@ -222,7 +224,7 @@ export type MusicSource = {
   getDailyRecommendTracks?(signal?: AbortSignal): Promise<ProviderTrack[]>;
   /** 私人漫游:随机发现,excludeIds 为最近播放的 TrackKey。 */
   getRoamTracks?(limit: number, excludeIds: string[], signal?: AbortSignal): Promise<ProviderTrack[]>;
-  saveCookie?(cookie: string): Promise<unknown>;
+  saveCookie?(cookie: string): Promise<SourceAccount>;
   clearCookie?(): Promise<SourceAccount>;
   startQrLogin?(): Promise<SourceQrLoginStart>;
   checkQrLogin?(key: string): Promise<SourceQrLoginCheck>;

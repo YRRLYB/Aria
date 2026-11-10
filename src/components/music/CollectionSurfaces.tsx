@@ -15,6 +15,8 @@ import { AddToPlaylistButton } from "./PlaylistActions";
 import { LocalPlaylistSurface, type LocalPlaylistSurfaceProps } from "./LocalPlaylistSurfaces";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
+type LikedSource = "all" | SourceToggleOption | "bilibili";
+
 export function CollectionSurface({
   title,
   subtitle,
@@ -102,8 +104,11 @@ export function LikedSurface({
   localTracks,
   neteaseTracks,
   qqTracks,
+  bilibiliTracks,
   neteaseConnected,
   qqConnected,
+  bilibiliConnected,
+  bilibiliError = null,
   refreshing = false,
   onRefresh,
   onPickTrack,
@@ -111,30 +116,33 @@ export function LikedSurface({
   localTracks: Track[];
   neteaseTracks: Track[];
   qqTracks: Track[];
+  bilibiliTracks: Track[];
   neteaseConnected: boolean;
   qqConnected: boolean;
+  bilibiliConnected: boolean;
+  bilibiliError?: string | null;
   refreshing?: boolean;
-  onRefresh?: (source: "all" | SourceToggleOption) => void;
+  onRefresh?: (source: LikedSource) => void;
   onPickTrack: (id: string) => void;
 }) {
   // 全部来源聚合是默认视图；来源按钮仍可单独查看。
-  const [likedSource, setLikedSource] = useState<"all" | SourceToggleOption>("all");
-  const connectionRef = useRef({ neteaseConnected, qqConnected });
+  const [likedSource, setLikedSource] = useState<LikedSource>("all");
+  const connectionRef = useRef({ neteaseConnected, qqConnected, bilibiliConnected });
   useEffect(() => {
     const previous = connectionRef.current;
     if (!previous.qqConnected && qqConnected && !neteaseConnected && likedSource === "netease") setLikedSource("qq");
     if (!previous.neteaseConnected && neteaseConnected && !qqConnected && likedSource === "qq") setLikedSource("netease");
-    connectionRef.current = { neteaseConnected, qqConnected };
-  }, [neteaseConnected, qqConnected, likedSource]);
+    connectionRef.current = { neteaseConnected, qqConnected, bilibiliConnected };
+  }, [neteaseConnected, qqConnected, bilibiliConnected, likedSource]);
 
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks]),
-    [localTracks, neteaseTracks, qqTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks, ...bilibiliTracks]),
+    [localTracks, neteaseTracks, qqTracks, bilibiliTracks],
   );
-  const columns: Record<"all" | SourceToggleOption, { title: string; subtitle: string; emptyText: string; tracks: Track[] }> = {
+  const columns: Record<LikedSource, { title: string; subtitle: string; emptyText: string; tracks: Track[] }> = {
     all: {
       title: "全部喜欢",
-      subtitle: `本地、网易云与 QQ 音乐共 ${allTracks.length} 首`,
+      subtitle: `本地、网易云、QQ 音乐与 B站共 ${allTracks.length} 首`,
       emptyText: "还没有红心歌曲；在播放页点亮红心后会出现在这里。",
       tracks: allTracks,
     },
@@ -162,6 +170,18 @@ export function LikedSurface({
         : "登录 QQ 音乐后即可同步红心歌曲。",
       tracks: qqTracks,
     },
+    bilibili: {
+      title: "B站收藏",
+      subtitle: bilibiliConnected
+        ? bilibiliError
+          ? "B站收藏读取失败"
+          : `B站默认收藏夹已同步 ${bilibiliTracks.length} 首`
+        : "扫码登录后读取默认收藏夹",
+      emptyText: bilibiliConnected
+        ? bilibiliError ?? "B站默认收藏夹暂无视频；在播放页点亮红心会加入默认收藏夹。"
+        : "登录B站后即可同步默认收藏夹。",
+      tracks: bilibiliTracks,
+    },
   };
   const active = columns[likedSource];
 
@@ -177,7 +197,7 @@ export function LikedSurface({
           variant="glass"
           onClick={() => onRefresh?.(likedSource)}
           disabled={likedSource === "local" || refreshing}
-          title={likedSource === "local" ? "本地红心由播放页维护" : likedSource === "all" ? "同时同步网易云与 QQ 音乐" : "重新同步当前音源的喜欢列表"}
+          title={likedSource === "local" ? "本地红心由播放页维护" : likedSource === "all" ? "同时同步网易云、QQ 音乐与 B站" : "重新同步当前音源的喜欢列表"}
         >
           <RefreshCw className={cn(refreshing && "animate-spin")} />
           {refreshing ? "同步中…" : "同步红心"}
@@ -191,6 +211,7 @@ export function LikedSurface({
             ["local", "本地", localTracks.length, "local"],
             ["netease", "网易云", neteaseTracks.length, "netease"],
             ["qq", "QQ 音乐", qqTracks.length, "qq"],
+            ["bilibili", "B站", bilibiliTracks.length, "bilibili"],
           ] as const
         ).map(([source, label, count, logo]) => {
           const activeSource = likedSource === source;
@@ -213,6 +234,12 @@ export function LikedSurface({
           );
         })}
       </div>
+
+      {bilibiliConnected && bilibiliError && (likedSource === "all" || likedSource === "bilibili") && (
+        <p role="alert" className="mt-3 shrink-0 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-700">
+          B站：{bilibiliError}
+        </p>
+      )}
 
       <div className="mt-5 grid min-h-0 flex-1">
         <LikedColumn title={active.title} subtitle={active.subtitle} emptyText={active.emptyText} tracks={active.tracks} onPickTrack={onPickTrack} />

@@ -130,7 +130,7 @@ export function SearchSurface({
     [tracks],
   );
   const descriptions = {
-    tracks: "本地、网易云与 QQ 音乐一起搜，点来源图标切换查看。",
+    tracks: "本地、网易云、QQ 音乐与 B站一起搜，点来源图标切换查看。",
     artists: "浏览歌手作品、专辑与简介。",
     playlists: "浏览公开歌单并播放完整曲目。",
     users: "搜索网易云用户，查看他们的公开歌单。",
