@@ -41,6 +41,17 @@ function releaseNotesText(info) {
   return null;
 }
 
+function friendlyUpdateError(error) {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/latest\.yml/i.test(raw) || /404/.test(raw)) {
+    return "当前发布还没有生成更新清单（latest.yml），请稍后再试。";
+  }
+  if (/timeout|timed out|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|network/i.test(raw)) {
+    return "检查更新超时，请检查网络后重试。";
+  }
+  return raw.slice(0, 600);
+}
+
 function setupUpdates(options = {}) {
   writeLog = options.writeLog ?? (() => {});
   const macAutoUpdate = process.env.ARIA_MAC_AUTO_UPDATE === "1";
@@ -67,7 +78,7 @@ function setupUpdates(options = {}) {
     try {
       await autoUpdater.downloadUpdate();
     } catch (error) {
-      update({ status: "error", error: error instanceof Error ? error.message : String(error) });
+      update({ status: "error", error: friendlyUpdateError(error) });
     }
     return state;
   });
@@ -86,7 +97,7 @@ function setupUpdates(options = {}) {
   try {
     ({ autoUpdater } = require("electron-updater"));
   } catch (error) {
-    update({ status: "error", error: `更新模块不可用：${error instanceof Error ? error.message : error}` });
+    update({ status: "error", error: `更新模块不可用：${friendlyUpdateError(error)}` });
     return state;
   }
 
@@ -128,7 +139,7 @@ function setupUpdates(options = {}) {
   }));
   autoUpdater.on("error", (error) => update({
     status: "error",
-    error: error instanceof Error ? error.message : String(error),
+    error: friendlyUpdateError(error),
     checkedAt: Date.now(),
   }));
 
@@ -144,7 +155,7 @@ function setupUpdates(options = {}) {
     checking = Promise.race([autoUpdater.checkForUpdates(), timeout])
       .then(() => state)
       .catch((error) => {
-        update({ status: "error", error: error instanceof Error ? error.message : String(error), checkedAt: Date.now() });
+        update({ status: "error", error: friendlyUpdateError(error), checkedAt: Date.now() });
         return state;
       })
       .finally(() => {

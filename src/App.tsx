@@ -691,7 +691,12 @@ export default function App() {
     if (!activeTrack.videoUrl) setVideoMode(false);
   }, [activeTrack.id, activeTrack.videoUrl]);
   useEffect(() => {
-    if (videoMode && (activeView !== "player" || Boolean(query.trim()))) setVideoMode(false);
+    if (videoMode && (activeView !== "player" || Boolean(query.trim()))) {
+      commitActiveVideoTime();
+      pauseActiveVideo();
+      pendingSeekRef.current = getPlaybackTime();
+      setVideoMode(false);
+    }
   }, [activeView, query, videoMode]);
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
