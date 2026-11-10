@@ -4,10 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
-import { formatAudioDetail } from "@/lib/playerPresentation";
+import { formatAudioDetail, mergeTracks } from "@/lib/playerPresentation";
+import { sourceLabel } from "@/lib/trackLabels";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
-import { SourceToggle, type SourceToggleOption } from "./SourceLogos";
+import { SourceLogo, SourceToggle, type SourceToggleOption } from "./SourceLogos";
 import { ArtworkImage } from "./ArtworkImage";
 import { PlaylistDetail } from "./PlaylistDetail";
 import { AddToPlaylistButton } from "./PlaylistActions";
@@ -113,24 +114,30 @@ export function LikedSurface({
   neteaseConnected: boolean;
   qqConnected: boolean;
   refreshing?: boolean;
-  onRefresh?: (source: SourceToggleOption) => void;
+  onRefresh?: (source: "all" | SourceToggleOption) => void;
   onPickTrack: (id: string) => void;
 }) {
-  // 融合但不同时铺开：点来源图标切换查看，一次只显示一个来源的收藏。
-  // 只登录了 QQ 时默认展示 QQ 我喜欢，避免用户以为"没有同步"却停在
-  // 空的网易云栏。两边都登录时仍默认网易云，保留原有习惯。
-  const [likedSource, setLikedSource] = useState<SourceToggleOption>(() =>
-    qqConnected && !neteaseConnected ? "qq" : "netease",
-  );
+  // 全部来源聚合是默认视图；来源按钮仍可单独查看。
+  const [likedSource, setLikedSource] = useState<"all" | SourceToggleOption>("all");
   const connectionRef = useRef({ neteaseConnected, qqConnected });
   useEffect(() => {
     const previous = connectionRef.current;
-    if (!previous.qqConnected && qqConnected && !neteaseConnected) setLikedSource("qq");
-    if (!previous.neteaseConnected && neteaseConnected && !qqConnected) setLikedSource("netease");
+    if (!previous.qqConnected && qqConnected && !neteaseConnected && likedSource === "netease") setLikedSource("qq");
+    if (!previous.neteaseConnected && neteaseConnected && !qqConnected && likedSource === "qq") setLikedSource("netease");
     connectionRef.current = { neteaseConnected, qqConnected };
-  }, [neteaseConnected, qqConnected]);
+  }, [neteaseConnected, qqConnected, likedSource]);
 
-  const columns: Record<SourceToggleOption, { title: string; subtitle: string; emptyText: string; tracks: Track[] }> = {
+  const allTracks = useMemo(
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks]),
+    [localTracks, neteaseTracks, qqTracks],
+  );
+  const columns: Record<"all" | SourceToggleOption, { title: string; subtitle: string; emptyText: string; tracks: Track[] }> = {
+    all: {
+      title: "全部喜欢",
+      subtitle: `本地、网易云与 QQ 音乐共 ${allTracks.length} 首`,
+      emptyText: "还没有红心歌曲；在播放页点亮红心后会出现在这里。",
+      tracks: allTracks,
+    },
     local: {
       title: "本地我喜欢",
       subtitle: "来自本地音乐库的红心歌曲",
@@ -164,26 +171,47 @@ export function LikedSurface({
         <div>
           <Badge>Favorite</Badge>
           <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">我喜欢</h1>
-          <p className="mt-3 text-neutral-500">本地红心与在线收藏分开收纳，点来源图标切换查看。</p>
+          <p className="mt-3 text-neutral-500">全部来源聚合在一起，也可以按来源单独查看。</p>
         </div>
         <Button
           variant="glass"
           onClick={() => onRefresh?.(likedSource)}
           disabled={likedSource === "local" || refreshing}
-          title={likedSource === "local" ? "本地红心由播放页维护" : "重新同步当前音源的喜欢列表"}
+          title={likedSource === "local" ? "本地红心由播放页维护" : likedSource === "all" ? "同时同步网易云与 QQ 音乐" : "重新同步当前音源的喜欢列表"}
         >
           <RefreshCw className={cn(refreshing && "animate-spin")} />
           {refreshing ? "同步中…" : "同步红心"}
         </Button>
       </div>
 
-      <div className="mt-6 shrink-0">
-        <SourceToggle
-          value={likedSource}
-          onChange={setLikedSource}
-          options={["local", "netease", "qq"]}
-          ariaLabel="收藏来源"
-        />
+      <div className="mt-6 flex shrink-0 flex-wrap items-center gap-2">
+        {(
+          [
+            ["all", "全部", allTracks.length, null],
+            ["local", "本地", localTracks.length, "local"],
+            ["netease", "网易云", neteaseTracks.length, "netease"],
+            ["qq", "QQ 音乐", qqTracks.length, "qq"],
+          ] as const
+        ).map(([source, label, count, logo]) => {
+          const activeSource = likedSource === source;
+          return (
+            <button
+              key={source}
+              type="button"
+              aria-pressed={activeSource}
+              onClick={() => setLikedSource(source)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                activeSource
+                  ? "border-neutral-950 bg-neutral-950 text-white"
+                  : "border-white/70 bg-white/60 text-neutral-500 hover:bg-white",
+              )}
+            >
+              {logo && <SourceLogo source={logo} className="size-3.5" />}
+              {label} {count}
+            </button>
+          );
+        })}
       </div>
 
       <div className="mt-5 grid min-h-0 flex-1">
@@ -236,6 +264,7 @@ function LikedColumn({
                   </p>
                   <p className="truncate text-xs text-neutral-500">
                     <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                    <span className="text-neutral-400"> · {sourceLabel[track.source]}</span>
                   </p>
                 </div>
                 <Badge className="hidden sm:inline-flex">{formatAudioDetail(track)}</Badge>

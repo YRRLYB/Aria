@@ -1,5 +1,16 @@
 # 更新记录
 
+## 0.7.0（B站音源 / 视频模式 / 混合歌单 / 自动更新）
+
+- 新增 B站（哔哩哔哩）第三音源：匿名搜索、视频详情、DASH 音轨与 CC 字幕歌词；TrackKey 使用 `bilibili:<bvid>`，支持多 P 视频的首个 cid。
+- 新增“视频 / 封面”双模式：B站视频可在播放页和沉浸页直接播放 muxed MP4，切回封面时自动回到高音质音频流；普通播放仍可通过 mpv/WASAPI 输出。
+- 播放源能力系统：manifest 增加 `capabilities`，界面按能力显示搜索类型、歌词、视频、账号、喜欢等入口；设置页新增播放源启用/禁用开关。
+- Aria 歌单支持混合来源：本地歌单可加入网易云、QQ 音乐和 B站歌曲，远程曲目保存紧凑快照，重启后仍可播放；歌单入口统一为“Aria 歌单”。
+- “我喜欢”新增“全部”聚合视图，默认展示本地 + 网易云 + QQ 音乐收藏，并保留单来源筛选；行内显示来源徽章。
+- 接入 electron-updater（GitHub Releases）：设置页新增“版本与更新”，支持检查、下载进度和重启安装；Windows 安装包生成 latest.yml 与 blockmap，macOS 生成 zip/更新元数据。
+- macOS 无 Developer ID 证书时自动更新关闭并提示手动下载；签名/公证配置保留，配置 Apple 证书后可开启。
+- 回归：`npx tsc -b` 通过；45 个测试文件 / 282 项单测通过。
+
 ## 0.6.6（macOS Intel / Apple Silicon 双架构完善）
 
 - macOS 安装包改为按架构分别构建：`Aria-<version>-x64.dmg` 与 `Aria-<version>-arm64.dmg`；Electron 不再复用 Windows 的本地 distribution，由 electron-builder 按目标架构下载。

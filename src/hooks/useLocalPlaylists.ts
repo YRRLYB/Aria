@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import type { Track } from "@/data/music";
 import {
   createLocalPlaylist,
+  createPlaylistTrackSnapshots,
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
   writeLocalPlaylists,
   type LocalPlaylist,
 } from "@/lib/localPlaylists";
 
-export function useLocalPlaylists(localTracks: Track[]) {
+export function useLocalPlaylists(tracks: Track[]) {
   const [playlists, setPlaylists] = useState<LocalPlaylist[]>(readLocalPlaylists);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [storageError, setStorageError] = useState(false);
@@ -22,12 +23,17 @@ export function useLocalPlaylists(localTracks: Track[]) {
     [playlists, selectedId],
   );
   const selectedTracks = useMemo(
-    () => resolveLocalPlaylistTracks(selectedPlaylist, localTracks),
-    [localTracks, selectedPlaylist],
+    () => resolveLocalPlaylistTracks(selectedPlaylist, tracks),
+    [tracks, selectedPlaylist],
   );
 
-  function create(name: string, tracks: Track[] = []) {
-    const playlist = createLocalPlaylist(name, tracks.map((track) => track.id));
+  function create(name: string, initialTracks: Track[] = []) {
+    const playlist = createLocalPlaylist(
+      name,
+      initialTracks.map((track) => track.id),
+      Date.now(),
+      createPlaylistTrackSnapshots(initialTracks),
+    );
     setPlaylists((current) => [playlist, ...current]);
     return playlist;
   }
@@ -40,23 +46,37 @@ export function useLocalPlaylists(localTracks: Track[]) {
       : playlist));
   }
 
-  function addTracks(id: string, tracks: Track[]) {
-    const ids = tracks.filter((track) => track.source === "local").map((track) => track.id);
-    if (!ids.length) return;
+  function addTracks(id: string, tracksToAdd: Track[]) {
+    if (!tracksToAdd.length) return;
+    const snapshots = createPlaylistTrackSnapshots(tracksToAdd);
     setPlaylists((current) => current.map((playlist) => playlist.id === id
-      ? { ...playlist, trackIds: [...new Set([...playlist.trackIds, ...ids])], updatedAt: Date.now() }
+      ? {
+          ...playlist,
+          trackIds: [...new Set([...playlist.trackIds, ...tracksToAdd.map((track) => track.id)])],
+          trackSnapshots: { ...(playlist.trackSnapshots ?? {}), ...snapshots },
+          updatedAt: Date.now(),
+        }
       : playlist));
   }
 
-  function removeTracks(id: string, tracks: Track[]) {
-    const ids = new Set(tracks.map((track) => track.id));
-    setPlaylists((current) => current.map((playlist) => playlist.id === id
-      ? { ...playlist, trackIds: playlist.trackIds.filter((trackId) => !ids.has(trackId)), updatedAt: Date.now() }
-      : playlist));
+  function removeTracks(id: string, tracksToRemove: Track[]) {
+    const ids = new Set(tracksToRemove.map((track) => track.id));
+    setPlaylists((current) => current.map((playlist) => {
+      if (playlist.id !== id) return playlist;
+      const trackSnapshots = playlist.trackSnapshots
+        ? Object.fromEntries(Object.entries(playlist.trackSnapshots).filter(([trackId]) => !ids.has(trackId)))
+        : undefined;
+      return {
+        ...playlist,
+        trackIds: playlist.trackIds.filter((trackId) => !ids.has(trackId)),
+        ...(trackSnapshots && Object.keys(trackSnapshots).length ? { trackSnapshots } : { trackSnapshots: undefined }),
+        updatedAt: Date.now(),
+      };
+    }));
   }
 
-  function reorder(id: string, tracks: Track[]) {
-    const positions = new Map(tracks.map((track, index) => [track.id, index]));
+  function reorder(id: string, orderedTracks: Track[]) {
+    const positions = new Map(orderedTracks.map((track, index) => [track.id, index]));
     setPlaylists((current) => current.map((playlist) => playlist.id === id
       ? {
           ...playlist,

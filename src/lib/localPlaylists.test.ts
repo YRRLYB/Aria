@@ -3,6 +3,7 @@ import type { Track } from "@/data/music";
 import {
   LOCAL_PLAYLISTS_STORAGE_KEY,
   createLocalPlaylist,
+  createPlaylistTrackSnapshots,
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
   sanitizeLocalPlaylists,
@@ -51,5 +52,33 @@ describe("local playlists", () => {
     const playlist = createLocalPlaylist("顺序", ["b", "missing", "a"]);
     expect(resolveLocalPlaylistTracks(playlist, tracks).map((track) => track.id)).toEqual(["b", "a"]);
     expect(resolveLocalPlaylistTracks(null, tracks)).toEqual([]);
+  });
+
+  it("keeps compact remote snapshots so mixed playlists survive a restart", () => {
+    const remote = {
+      id: "qq:0039MnYb0qxYhV",
+      title: "晴天",
+      artist: "周杰伦",
+      album: "叶惠美",
+      duration: "04:29",
+      quality: "FLAC",
+      source: "qq",
+      streamUrl: "/api/sources/qq/tracks/0039MnYb0qxYhV/stream",
+      coverUrl: "data:image/jpeg;base64,large",
+      cover: "#111",
+      accent: "#222",
+      waveform: [1, 2, 3],
+      lyrics: [{ time: "00:01", text: "长歌词" }],
+      lyricStatus: "linked",
+    } as Track;
+    const snapshots = createPlaylistTrackSnapshots([remote]);
+    expect(snapshots[remote.id].streamUrl).toBe(remote.streamUrl);
+    expect(snapshots[remote.id].coverUrl).toBeUndefined();
+    expect(snapshots[remote.id].lyrics).toEqual([]);
+
+    const playlist = createLocalPlaylist("混合", [remote.id], 10, snapshots);
+    const resolved = resolveLocalPlaylistTracks(playlist, []);
+    expect(resolved.map((track) => track.id)).toEqual([remote.id]);
+    expect(resolved[0].streamUrl).toBe(remote.streamUrl);
   });
 });

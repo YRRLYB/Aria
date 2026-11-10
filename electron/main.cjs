@@ -8,6 +8,14 @@ const zlib = require("node:zlib");
 const { createLogger, serializeError } = require("./logger.cjs");
 const { MpvAudioEngine } = require("./mpvEngine.cjs");
 const { buildQqLoginCookie } = require("./qqLoginCookies.cjs");
+// The packaged build carries a bundled electron-updater; development can use
+// the readable source module and the root node_modules dependency.
+let setupUpdates;
+try {
+  ({ setupUpdates } = require("./updater.bundle.cjs"));
+} catch {
+  ({ setupUpdates } = require("./updater.cjs"));
+}
 
 const logger = createLogger(app);
 const { writeLog } = logger;
@@ -1092,6 +1100,7 @@ app.whenReady().then(async () => {
   // Registry/shell maintenance is not part of the first paint path.
   setImmediate(ensureWindowsTaskbarPreviewPolicy);
   await configureDirectNetwork();
+  setupUpdates({ writeLog });
   await createWindow();
   syncGlobalShortcuts(globalShortcutConfig);
 });

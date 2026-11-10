@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.6.6",
+  "version": "0.7.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -13,7 +13,7 @@
     "build:native": "node scripts/build-native.cjs",
     "build:web": "vite build",
     "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --external:sharp --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
-    "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:web && npm run build:server",
+    "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:updater && npm run build:web && npm run build:server",
     "dist:beta": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --win nsis --x64",
     "dist:mac": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --mac --x64 --arm64",
     "dist:linux": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --linux --x64",
@@ -21,7 +21,8 @@
     "start:server": "node dist-server/index.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "dist:mac:x64": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --mac dmg --x64",
-    "dist:mac:arm64": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --mac dmg --arm64"
+    "dist:mac:arm64": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --mac dmg --arm64",
+    "build:updater": "node scripts/build-updater.cjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",
@@ -29,6 +30,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
+    "electron-updater": "^6.8.11",
     "express": "^5.2.1",
     "framer-motion": "^12.23.0",
     "lucide-react": "^0.468.0",

@@ -390,7 +390,6 @@ export default function App() {
     onScanProgress: setLibraryScanProgress,
   });
 
-  const localPlaylists = useLocalPlaylists(localTracks);
   // QQ search results live in their own pool: choosing a search row must
   // resolve the qq: id through allTracks/queues like every other source.
   const [qqSearchTracks, setQqSearchTracks] = useState<Track[]>([]);
@@ -608,6 +607,8 @@ export default function App() {
     () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
     [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
   );
+  // Mixed playlists resolve live tracks first, then compact remote snapshots.
+  const localPlaylists = useLocalPlaylists(allTracks);
   const allTracksById = useMemo(() => {
     const map = new Map<string, Track>();
     for (const track of allTracks) map.set(track.id, track);
@@ -690,8 +691,8 @@ export default function App() {
     if (!activeTrack.videoUrl) setVideoMode(false);
   }, [activeTrack.id, activeTrack.videoUrl]);
   useEffect(() => {
-    if (videoMode && activeView !== "player") setVideoMode(false);
-  }, [activeView, videoMode]);
+    if (videoMode && (activeView !== "player" || Boolean(query.trim()))) setVideoMode(false);
+  }, [activeView, query, videoMode]);
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
   const effectiveQualityLevel = useMemo(
@@ -2535,8 +2536,8 @@ export default function App() {
                   qqConnected={qqConnected}
                   refreshing={qqData.listLoading}
                   onRefresh={(source) => {
-                    if (source === "netease") void refreshNeteaseData();
-                    else if (source === "qq") void qqData.refresh();
+                    if (source === "netease" || source === "all") void refreshNeteaseData();
+                    if (source === "qq" || source === "all") void qqData.refresh();
                   }}
                   onPickTrack={chooseTrack}
                 />
@@ -2552,7 +2553,7 @@ export default function App() {
                   playlists={providerPlaylists}
                   local={{
                     playlists: localPlaylists.playlists,
-                    allTracks: localTracks,
+                    allTracks,
                     selectedPlaylist: localPlaylists.selectedPlaylist,
                     selectedTracks: localPlaylists.selectedTracks,
                     storageError: localPlaylists.storageError,
@@ -2922,9 +2923,22 @@ export default function App() {
           }}
         />
       ) : (
-        <AddToPlaylistDialog initialTracks={addPlaylistRequest.tracks} initialPlaylistId={addPlaylistRequest.playlistId} playlists={providerPlaylists} connected={neteaseConnected}
-          onClose={() => setAddPlaylistRequest(null)} onRequireLogin={() => { setAddPlaylistRequest(null); setAccountOpen(true); }}
-          onAdd={(id, tracks) => editPlaylistTracks(id, tracks, "add")} onCreate={(name, isPrivate) => createPlaylist(name, isPrivate, false)} />
+        <AddToPlaylistDialog
+          initialTracks={addPlaylistRequest.tracks}
+          initialPlaylistId={addPlaylistRequest.playlistId}
+          playlists={providerPlaylists}
+          localPlaylists={localPlaylists.playlists}
+          connected={neteaseConnected}
+          onClose={() => setAddPlaylistRequest(null)}
+          onRequireLogin={() => { setAddPlaylistRequest(null); setAccountOpen(true); }}
+          onAdd={(id, tracks) => editPlaylistTracks(id, tracks, "add")}
+          onCreate={(name, isPrivate) => createPlaylist(name, isPrivate, false)}
+          onAddLocal={(id, tracks) => {
+            localPlaylists.addTracks(id, tracks);
+            if (addPlaylistRequest.playlistId === id) localPlaylists.setSelectedId(id);
+          }}
+          onCreateLocal={(name, tracks) => localPlaylists.create(name, tracks)}
+        />
       ))}
     </main>
     </PlaylistActionsProvider>

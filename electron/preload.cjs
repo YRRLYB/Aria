@@ -38,6 +38,17 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     : undefined,
   clearTaskbarIconicThumb: nativeIconicThumbnailEnabled ? () => ipcRenderer.invoke("aria:clear-iconic-thumbnail") : undefined,
   getTaskbarIconicStats: nativeIconicThumbnailEnabled ? () => ipcRenderer.invoke("aria:iconic-stats") : undefined,
+  updates: {
+    getState: () => ipcRenderer.invoke("aria:update:state"),
+    check: () => ipcRenderer.invoke("aria:update:check"),
+    download: () => ipcRenderer.invoke("aria:update:download"),
+    install: () => ipcRenderer.invoke("aria:update:install"),
+    onState: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on("aria:update-state", handler);
+      return () => ipcRenderer.removeListener("aria:update-state", handler);
+    },
+  },
   configureGlobalShortcuts: (payload) => ipcRenderer.invoke("aria:configure-global-shortcuts", payload || {}),
   copyImageToClipboard: (payload) => ipcRenderer.invoke("aria:copy-image", payload || {}),
   log: (payload) => ipcRenderer.invoke("aria:log", payload),

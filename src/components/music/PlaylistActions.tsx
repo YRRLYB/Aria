@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ListPlus, LoaderCircle, Search, X } from "lucide-react";
 import type { Track } from "@/data/music";
+import type { LocalPlaylist } from "@/lib/localPlaylists";
 import { api, type ProviderPlaylist } from "@/lib/api";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { Button } from "@/components/ui/button";
@@ -16,22 +17,25 @@ export function usePlaylistActions() { return useContext(PlaylistActionsContext)
 
 export function AddToPlaylistButton({ track, compact = true }: { track: Track; compact?: boolean }) {
   const actions = usePlaylistActions();
-  if (!actions || (track.source !== "netease" && track.source !== "local")) return null;
-  return <Button type="button" variant="ghost" size={compact ? "icon" : "sm"} aria-label={`将 ${track.title} 加入${track.source === "local" ? "本地" : ""}歌单`} title={track.source === "local" ? "加入本地歌单" : "加入歌单"} onClick={(event) => {
+  if (!actions) return null;
+  return <Button type="button" variant="ghost" size={compact ? "icon" : "sm"} aria-label={`将 ${track.title} 加入歌单`} title="加入歌单" onClick={(event) => {
     event.stopPropagation();
     actions.openAdd([track]);
   }}><ListPlus />{!compact && "加入歌单"}</Button>;
 }
 
-export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlists, connected, onClose, onRequireLogin, onAdd, onCreate }: {
+export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlists, localPlaylists = [], connected, onClose, onRequireLogin, onAdd, onCreate, onAddLocal, onCreateLocal }: {
   initialTracks: Track[];
   initialPlaylistId?: string;
   playlists: ProviderPlaylist[];
+  localPlaylists?: LocalPlaylist[];
   connected: boolean;
   onClose: () => void;
   onRequireLogin: () => void;
   onAdd: (playlistId: string, tracks: Track[]) => Promise<void>;
   onCreate: (name: string, isPrivate: boolean) => Promise<ProviderPlaylist>;
+  onAddLocal?: (playlistId: string, tracks: Track[]) => void;
+  onCreateLocal?: (name: string, tracks?: Track[]) => LocalPlaylist;
 }) {
   const ownedPlaylists = playlists.filter((playlist) => playlist.owned === true);
   const [playlistId, setPlaylistId] = useState(initialPlaylistId ?? ownedPlaylists[0]?.id ?? "");
@@ -43,9 +47,13 @@ export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlist
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [localPlaylistId, setLocalPlaylistId] = useState(localPlaylists[0]?.id ?? "");
+  const [newLocalName, setNewLocalName] = useState("");
+  const [localCreateOpen, setLocalCreateOpen] = useState(false);
   const busyRef = useRef(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const selectedIds = new Set(selected.map((track) => track.id));
+  const canUseRemotePlaylist = initialTracks.length === 0 || initialTracks.some((track) => track.source === "netease");
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -87,10 +95,53 @@ export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlist
     finally { busyRef.current = false; setSaving(false); }
   }
 
+  function submitLocal() {
+    if (!initialTracks.length || !onAddLocal || busyRef.current) return;
+    if (localCreateOpen) {
+      if (!newLocalName.trim() || !onCreateLocal) return;
+      const created = onCreateLocal(newLocalName.trim(), initialTracks);
+      onAddLocal(created.id, initialTracks);
+      onClose();
+      return;
+    }
+    if (!localPlaylistId) return;
+    onAddLocal(localPlaylistId, initialTracks);
+    onClose();
+  }
+
   return <dialog ref={dialogRef} aria-labelledby="add-playlist-title" onCancel={(event) => { event.preventDefault(); if (!busyRef.current) onClose(); }} className="fixed inset-0 m-auto flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-black/25 p-8 backdrop-blur-sm backdrop:bg-transparent" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="add-playlist-title" className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-white/70 bg-[#faf9fd] p-6 shadow-2xl">
       <div className="flex items-center justify-between gap-4"><h2 id="add-playlist-title" className="text-xl font-semibold">加入歌单</h2><Button variant="ghost" size="icon" disabled={saving} aria-label="关闭加入歌单" onClick={onClose}><X /></Button></div>
-      {!connected ? <div className="mt-6"><EmptyState text="登录网易云后，可以将歌曲加入自己的歌单。" /><Button className="mt-4" onClick={onRequireLogin}>前往登录</Button></div> : <>
+      {initialTracks.length > 0 && onAddLocal && (
+        <section className="mt-4 rounded-2xl border border-violet-100 bg-white/70 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold">Aria 歌单（保存在本机）</p>
+              <p className="mt-1 text-xs text-neutral-500">可混合本地、网易云、QQ 音乐和 B站歌曲，重启后仍可播放。</p>
+            </div>
+            <Button size="sm" variant="glass" disabled={saving} onClick={() => setLocalCreateOpen((value) => !value)}>
+              {localCreateOpen ? "取消新建" : "新建"}
+            </Button>
+          </div>
+          {localCreateOpen ? (
+            <form className="mt-3 flex gap-2" onSubmit={(event) => { event.preventDefault(); submitLocal(); }}>
+              <input autoFocus maxLength={80} value={newLocalName} onChange={(event) => setNewLocalName(event.target.value)} placeholder="新歌单名称" aria-label="新 Aria 歌单名称" className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm outline-none" />
+              <Button type="submit" size="sm" disabled={!newLocalName.trim() || !onCreateLocal}>新建并加入</Button>
+            </form>
+          ) : (
+            <div className="mt-3 flex gap-2">
+              <select value={localPlaylistId} onChange={(event) => setLocalPlaylistId(event.target.value)} aria-label="目标 Aria 歌单" className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm">
+                {!localPlaylists.length && <option value="">还没有 Aria 歌单</option>}
+                {localPlaylists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.name}（{playlist.trackIds.length} 首）</option>)}
+              </select>
+              <Button size="sm" disabled={!localPlaylistId} onClick={submitLocal}>加入</Button>
+            </div>
+          )}
+        </section>
+      )}
+      {!canUseRemotePlaylist ? (
+        <p className="mt-4 rounded-2xl bg-white/60 px-4 py-3 text-xs text-neutral-500">该来源不能写入网易云歌单，请使用上方的 Aria 歌单。</p>
+      ) : !connected ? <div className="mt-6"><EmptyState text="登录网易云后，可以将歌曲加入自己的云端歌单。" /><Button className="mt-4" onClick={onRequireLogin}>前往登录</Button></div> : <>
         <label className="mt-4 text-sm font-medium" htmlFor="target-playlist">目标歌单</label>
         <div className="mt-2 flex gap-2"><select id="target-playlist" value={playlistId} onChange={(event) => { setPlaylistId(event.target.value); setCreateOpen(false); }} disabled={saving || createOpen} className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm">
           {!ownedPlaylists.length && <option value="">暂无可编辑歌单</option>}

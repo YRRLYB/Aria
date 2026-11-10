@@ -31,6 +31,14 @@ const config = {
   ],
   beforePack: "./scripts/before-pack.cjs",
   afterPack: "./scripts/after-pack.cjs",
+  publish: [
+    {
+      provider: "github",
+      owner: "YRRLYB",
+      repo: "Aria",
+      releaseType: "release",
+    },
+  ],
   win: {
     icon: "build/icon.ico",
     target: [
@@ -57,6 +65,10 @@ const config = {
     target: [
       {
         target: "dmg",
+        arch: ["x64", "arm64"],
+      },
+      {
+        target: "zip",
         arch: ["x64", "arm64"],
       },
     ],

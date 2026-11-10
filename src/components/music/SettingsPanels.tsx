@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, FolderPlus, FolderSearch, Globe, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, Download, FolderPlus, FolderSearch, Globe, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
 import QRCode from "qrcode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
-import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary } from "@/lib/api";
-import { SourceLogo } from "@/components/music/SourceLogos";
+import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary, type SourceManifestInfo, type UpdateState } from "@/lib/api";
+import { SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import type { AudioOutputMode } from "@/lib/playerPresentation";
 import { ariaThemeOptions, type AriaTheme } from "@/lib/theme";
@@ -22,6 +22,154 @@ import {
 } from "@/lib/keyboardShortcuts";
 import { cn } from "@/lib/utils";
 import { ArtworkImage } from "./ArtworkImage";
+
+function SourceEnableCard() {
+  const [sources, setSources] = useState<SourceManifestInfo[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.listSources()
+      .then((result) => { if (alive) setSources(result.sources); })
+      .catch((reason: unknown) => { if (alive) setError(reason instanceof Error ? reason.message : "读取播放源失败"); });
+    return () => { alive = false; };
+  }, []);
+
+  async function toggle(source: SourceManifestInfo, enabled: boolean) {
+    setSources((current) => current.map((item) => item.id === source.id ? { ...item, enabled } : item));
+    try {
+      const result = await api.setSourceEnabled(source.id, enabled);
+      setSources(result.sources);
+      setError(null);
+    } catch (reason) {
+      setSources((current) => current.map((item) => item.id === source.id ? { ...item, enabled: source.enabled } : item));
+      setError(reason instanceof Error ? reason.message : "切换播放源失败");
+    }
+  }
+
+  return (
+    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
+        <h3 className="mt-1 text-base font-semibold">播放源启用</h3>
+        <p className="mt-1 text-xs text-neutral-500">关闭的源不会出现在搜索里，也不会发起网络请求。</p>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        {sources.map((source) => {
+          const enabled = source.enabled !== false;
+          const labels = [
+            source.capabilities.playback ? "播放" : null,
+            source.capabilities.lyrics ? "歌词" : null,
+            source.capabilities.videoPlayback ? "视频" : null,
+            source.capabilities.account ? "账号" : null,
+          ].filter(Boolean).join(" · ");
+          return (
+            <div key={source.id} className="flex items-center gap-3 rounded-xl border border-white/70 bg-white/70 p-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">
+                <SourceLogo source={source.id as SourceLogoOption} className="size-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">{source.name}</p>
+                <p className="truncate text-[11px] text-neutral-500">{labels || "基础播放"}{source.unavailableUntil ? " · 暂时不可用" : ""}</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-label={`切换 ${source.name}`}
+                aria-checked={enabled}
+                onClick={() => void toggle(source, !enabled)}
+                className={cn("relative h-6 w-11 shrink-0 rounded-full bg-neutral-200 transition", enabled && "bg-neutral-950")}
+              >
+                <span className={cn("absolute left-0.5 top-0.5 size-5 rounded-full bg-white shadow-sm transition", enabled && "translate-x-5")} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {error && <p role="alert" className="mt-3 text-xs text-rose-500">{error}</p>}
+    </section>
+  );
+}
+
+function UpdateCard() {
+  const [state, setState] = useState<UpdateState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const updates = window.ariaDesktop?.updates;
+    if (!updates) return;
+    let alive = true;
+    updates.getState().then((next) => { if (alive) setState(next); }).catch(() => undefined);
+    const dispose = updates.onState((next) => { if (alive) setState(next); });
+    return () => { alive = false; dispose?.(); };
+  }, []);
+
+  async function run(action: () => Promise<UpdateState | boolean>) {
+    setBusy(true);
+    try {
+      const next = await action();
+      if (next && typeof next === "object") setState(next);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!window.ariaDesktop?.updates) {
+    return (
+      <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Update</p>
+        <h3 className="mt-1 text-base font-semibold">版本与更新</h3>
+        <p className="mt-2 text-sm text-neutral-500">当前是浏览器模式；桌面安装包支持检查更新。</p>
+      </section>
+    );
+  }
+
+  const statusText = (() => {
+    if (!state) return "正在读取更新状态…";
+    if (state.status === "checking") return "正在检查更新…";
+    if (state.status === "available") return `发现新版本 ${state.availableVersion ?? ""}`;
+    if (state.status === "downloading") return `正在下载${state.percent != null ? ` ${Math.round(state.percent)}%` : "…"}`;
+    if (state.status === "downloaded") return "更新已下载，重启 Aria 后安装。";
+    if (state.status === "up-to-date") return "已经是最新版本。";
+    if (state.status === "error") return state.error ?? "检查更新失败";
+    if (state.status === "unsupported") return state.reason ?? "当前平台不支持自动更新";
+    return "尚未检查更新";
+  })();
+
+  return (
+    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Update</p>
+          <h3 className="mt-1 text-base font-semibold">版本与更新</h3>
+          <p className="mt-1 text-sm text-neutral-500">当前版本 {state?.currentVersion ?? "—"} · {statusText}</p>
+          {state?.releaseNotes && <p className="mt-2 max-h-24 overflow-y-auto whitespace-pre-line rounded-xl bg-white/70 p-3 text-xs text-neutral-500">{state.releaseNotes}</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="glass" disabled={busy || !state?.supported || state.status === "downloading"} onClick={() => void run(() => window.ariaDesktop!.updates!.check())}>
+            <RefreshCw className={cn((busy || state?.status === "checking") && "animate-spin")} />
+            检查更新
+          </Button>
+          {state?.status === "available" && (
+            <Button size="sm" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.download())}>
+              <Download />下载 {state.availableVersion}
+            </Button>
+          )}
+          {state?.status === "downloaded" && (
+            <Button size="sm" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.install())}>
+              重启并安装
+            </Button>
+          )}
+        </div>
+      </div>
+      {state?.status === "downloading" && (
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200">
+          <div className="h-full rounded-full bg-neutral-950 transition-all" style={{ width: `${Math.max(0, Math.min(100, state.percent ?? 0))}%` }} />
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPanel({
   backgroundEnabled,
   onBackgroundEnabledChange,
@@ -338,6 +486,10 @@ export function SettingsPanel({
           <NeteaseSourceCard account={neteaseAccount} onAccountChange={onNeteaseAccountChange} />
 
           <QqSourceCard onAccountChange={onSourceAccountChange} />
+
+          <SourceEnableCard />
+
+          <UpdateCard />
 
           <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between gap-3">

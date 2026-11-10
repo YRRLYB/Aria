@@ -93,6 +93,13 @@ declare global {
       setTaskbarIconicLive?: (pixels: Uint8ClampedArray, width: number, height: number) => Promise<boolean>;
       clearTaskbarIconicThumb?: () => Promise<boolean>;
       getTaskbarIconicStats?: () => Promise<Record<string, number | boolean> | null>;
+      updates?: {
+        getState: () => Promise<UpdateState>;
+        check: () => Promise<UpdateState>;
+        download: () => Promise<UpdateState>;
+        install: () => Promise<boolean>;
+        onState: (callback: (state: UpdateState) => void) => () => void;
+      };
       configureGlobalShortcuts?: (payload: Record<"toggle" | "previous" | "next" | "show", string>) => Promise<unknown>;
       copyImageToClipboard?: (payload: { url?: string; dataUrl?: string }) => Promise<boolean>;
       log?: (payload: {
@@ -117,6 +124,20 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+export type UpdateState = {
+  supported: boolean;
+  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "up-to-date" | "error" | "unsupported";
+  currentVersion: string;
+  availableVersion: string | null;
+  releaseName: string | null;
+  releaseNotes: string | null;
+  percent: number | null;
+  bytesPerSecond: number | null;
+  error: string | null;
+  checkedAt: number | null;
+  reason: string | null;
+};
 
 export type ApiScannedTrack = {
   id: string;
