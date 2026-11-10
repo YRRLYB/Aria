@@ -39,6 +39,7 @@ function SourceEnableCard() {
     try {
       const result = await api.setSourceEnabled(source.id, enabled);
       setSources(result.sources);
+      window.dispatchEvent(new Event("aria-sources-changed"));
       setError(null);
     } catch (reason) {
       setSources((current) => current.map((item) => item.id === source.id ? { ...item, enabled: source.enabled } : item));

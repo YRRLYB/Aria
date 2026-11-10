@@ -118,17 +118,22 @@ export function useDiscovery(options: {
   const [sourceSwitches, setSourceSwitches] = useState<Record<string, boolean>>({});
   useEffect(() => {
     let alive = true;
-    void api
-      .listSources()
-      .then((result) => {
-        if (!alive) return;
-        const next: Record<string, boolean> = {};
-        for (const source of result.sources) next[source.id] = source.enabled !== false;
-        setSourceSwitches(next);
-      })
-      .catch(() => undefined);
+    const loadSources = () => {
+      void api
+        .listSources()
+        .then((result) => {
+          if (!alive) return;
+          const next: Record<string, boolean> = {};
+          for (const source of result.sources) next[source.id] = source.enabled !== false;
+          setSourceSwitches(next);
+        })
+        .catch(() => undefined);
+    };
+    loadSources();
+    window.addEventListener("aria-sources-changed", loadSources);
     return () => {
       alive = false;
+      window.removeEventListener("aria-sources-changed", loadSources);
     };
   }, []);
 
