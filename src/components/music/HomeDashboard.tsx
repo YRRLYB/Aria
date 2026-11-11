@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { ArrowRight, CalendarDays, Clock3, Disc3, Headphones, Music2, Pause, Play } from "lucide-react";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
@@ -105,6 +105,15 @@ function heatmapLevel(count: number) {
 function ListeningHeatmap({ snapshot }: { snapshot: ListeningSnapshot }) {
   const gridStart = snapshot.activityGrid[0]?.date ?? Date.now();
   const startLabel = new Date(gridStart).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+  const dragRef = useRef<{ x: number; left: number } | null>(null);
+  const endDrag = (element: HTMLDivElement, pointerId: number) => {
+    dragRef.current = null;
+    try {
+      if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    } catch {
+      // The pointer may already be gone (touch cancel); nothing else to do.
+    }
+  };
   return (
     <section className="mt-4 rounded-[1rem] border border-white/60 bg-white/42 p-3" aria-labelledby="home-heatmap-title">
       <div className="flex flex-wrap items-end justify-between gap-2">
@@ -114,7 +123,26 @@ function ListeningHeatmap({ snapshot }: { snapshot: ListeningSnapshot }) {
         </div>
         <span className="text-[10px] text-neutral-400">{snapshot.activityTotal} 次播放</span>
       </div>
-      <div className="mt-2 overflow-x-auto pb-0.5">
+      <div
+        className="no-scrollbar mt-2 cursor-grab touch-pan-y select-none overflow-x-auto pb-0.5 active:cursor-grabbing"
+        onPointerDown={(event) => {
+          if (event.pointerType === "mouse" && event.button !== 0) return;
+          dragRef.current = { x: event.clientX, left: event.currentTarget.scrollLeft };
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // Synthetic/expired pointers can reject capture; dragging still
+            // works while the pointer stays over the grid.
+          }
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag) return;
+          event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
+        }}
+        onPointerUp={(event) => endDrag(event.currentTarget, event.pointerId)}
+        onPointerCancel={(event) => endDrag(event.currentTarget, event.pointerId)}
+      >
         <div className="grid w-max grid-flow-col grid-rows-7 gap-[2px]" aria-label="最近 26 周聆听活动">
           {snapshot.activityGrid.map((day) => {
             const level = heatmapLevel(day.count);
