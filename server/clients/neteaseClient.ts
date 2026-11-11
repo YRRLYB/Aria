@@ -1293,7 +1293,7 @@ async function callNetease(name: string, query: Record<string, unknown>): Promis
   if (!fn) throw new HttpError(501, "当前网易云接口不支持该功能", "NETEASE_API_UNAVAILABLE");
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const response = await fn(await withNeteaseIdentity(query));
+      const response = await withNeteaseTimeout(fn(await withNeteaseIdentity(query)));
       let body = response.body ?? {};
       if (body.body && typeof body.body === "object") body = body.body as Record<string, unknown>;
       checkNeteaseBody(body);
@@ -1312,6 +1312,17 @@ async function callNetease(name: string, query: Record<string, unknown>): Promis
     }
   }
   throw new HttpError(502, "网易云请求失败，请稍后重试", "NETEASE_REQUEST_FAILED");
+}
+
+function withNeteaseTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new HttpError(504, "网易云响应超时，请稍后重试", "NETEASE_TIMEOUT")), 10_000);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 /**

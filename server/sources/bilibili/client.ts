@@ -165,7 +165,7 @@ type BiliFavMedia = {
 };
 
 type BiliFavPage = {
-  info?: { media_count?: number };
+  info?: { media_count?: number; title?: string };
   medias?: BiliFavMedia[] | null;
   has_more?: boolean;
 };
@@ -184,6 +184,9 @@ let likedCache: { cookie: string; at: number; tracks: ProviderTrack[] } | null =
 let ariaFolderCache: { cookie: string; at: number; folder: BiliFavFolder | null } | null = null;
 let ariaFolderCreatePromise: Promise<BiliFavFolder | null> | null = null;
 let wbiKeysCache: { imgKey: string; subKey: string; at: number } | null = null;
+const streamMetaCache = new Map<string, { at: number; meta: SourceStreamMeta }>();
+const videoMetaCache = new Map<string, { at: number; meta: SourceVideoMeta }>();
+const MEDIA_META_CACHE_MS = 10 * 60_000;
 const qrSessions = new Map<string, BiliQrSession>();
 
 const WBI_KEYS_TTL_MS = 6 * 60 * 60_000;
@@ -355,6 +358,8 @@ function clearBilibiliAuthCaches() {
   likedCache = null;
   ariaFolderCache = null;
   ariaFolderCreatePromise = null;
+  streamMetaCache.clear();
+  videoMetaCache.clear();
 }
 
 export async function saveBilibiliCookie(cookie: string): Promise<SourceAccount> {
@@ -620,6 +625,145 @@ function mapBilibiliFavMedia(media: BiliFavMedia, folderTitle: string): Provider
     bpm: null,
     likedAt: media.fav_time ? media.fav_time * 1000 : null,
   };
+}
+
+function mapBilibiliViewToTrack(view: BiliViewData): ProviderTrack {
+  return {
+    id: view.bvid,
+    title: view.title,
+    artist: view.owner?.name ?? "B站 UP 主",
+    album: view.typename ? `B站 · ${view.typename}` : "B站视频",
+    duration: view.duration ?? 0,
+    quality: "320K",
+    source: "bilibili",
+    streamUrl: `/api/sources/bilibili/tracks/${encodeURIComponent(view.bvid)}/stream`,
+    videoUrl: `/api/sources/bilibili/tracks/${encodeURIComponent(view.bvid)}/video`,
+    hasVideo: true,
+    videoQuality: null,
+    coverUrl: view.pic,
+    bitrate: null,
+    sampleRate: null,
+    currentLevel: null,
+    availableLevels: ["standard", "higher", "exhigh", "lossless", "hires"],
+    vip: false,
+    bpm: null,
+    likedAt: null,
+  };
+}
+
+async function fetchBilibiliPublicFavPage(mediaId: number, page: number): Promise<BiliFavPage> {
+  return biliJson<BiliFavPage>(
+    `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${mediaId}&pn=${page}&ps=${FAV_PAGE_SIZE}&platform=web`,
+  );
+}
+
+function bilibiliBvidFromText(text: string) {
+  return text.match(/BV[0-9A-Za-z]{10,}/)?.[0] ?? null;
+}
+
+function bilibiliFavIdFromText(text: string) {
+  return text.match(/[?&](?:fid|media_id)=(\d+)/i)?.[1]
+    ?? text.match(/\/ml(\d+)(?:[/?#]|$)/i)?.[1]
+    ?? null;
+}
+
+/**
+ * Resolve a pasted Bilibili video/favourite-folder link. Short b23.tv links
+ * are followed once; folder links may come from space/favlist or medialist.
+ */
+export async function resolveBilibiliLink(input: string): Promise<{
+  kind: "video" | "folder";
+  title?: string;
+  tracks: ProviderTrack[];
+}> {
+  const text = input.trim();
+  let bvid = bilibiliBvidFromText(text);
+
+  if (!bvid) {
+    let target = text;
+    if (!/^https?:\/\//i.test(target)) {
+      throw new SourceError("UNAVAILABLE", "无法识别B站链接，请粘贴视频或收藏夹链接", { source: "bilibili" });
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(target);
+    } catch {
+      throw new SourceError("UNAVAILABLE", "B站链接格式不正确", { source: "bilibili" });
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host !== "b23.tv" && !host.endsWith(".b23.tv")) {
+      const favId = bilibiliFavIdFromText(text);
+      if (!favId) {
+        throw new SourceError("UNAVAILABLE", "无法识别B站链接，请粘贴视频或收藏夹链接", { source: "bilibili" });
+      }
+    } else {
+      try {
+        const response = await fetch(parsed.href, {
+          redirect: "follow",
+          headers: {
+            "User-Agent": BILIBILI_UA,
+            Referer: BILIBILI_REFERER,
+          },
+          signal: abortSignal(),
+        });
+        const finalUrl = response.url;
+        bvid = bilibiliBvidFromText(finalUrl);
+        if (!bvid) {
+          const finalFav = bilibiliFavIdFromText(finalUrl);
+          if (finalFav) return await loadBilibiliFavFolder(Number(finalFav));
+          const html = await response.text();
+          bvid = bilibiliBvidFromText(html);
+          if (!bvid) {
+            const favId = bilibiliFavIdFromText(html);
+            if (favId) {
+              return await loadBilibiliFavFolder(Number(favId));
+            }
+          }
+        }
+      } catch {
+        // Fall through to the folder parser/error below.
+      }
+    }
+  }
+
+  if (bvid) {
+    const view = await getBilibiliView(bvid);
+    return { kind: "video", title: view.title, tracks: [mapBilibiliViewToTrack(view)] };
+  }
+
+  const fid = bilibiliFavIdFromText(text);
+  if (fid) {
+    return await loadBilibiliFavFolder(Number(fid));
+  }
+  throw new SourceError("UNAVAILABLE", "无法识别B站链接，请粘贴视频或收藏夹链接", { source: "bilibili" });
+}
+
+async function loadBilibiliFavFolder(mediaId: number): Promise<{
+  kind: "folder";
+  title?: string;
+  tracks: ProviderTrack[];
+}> {
+  const tracks: ProviderTrack[] = [];
+  const seen = new Set<string>();
+  let folderTitle = "";
+  let page = 1;
+  let hasMore = true;
+  while (hasMore && page <= 10) {
+    const data = await fetchBilibiliPublicFavPage(mediaId, page);
+    folderTitle = folderTitle || String(data?.info?.title ?? "").trim();
+    for (const media of data?.medias ?? []) {
+      const track = mapBilibiliFavMedia(media, folderTitle);
+      if (!track || seen.has(track.id)) continue;
+      seen.add(track.id);
+      tracks.push(track);
+    }
+    hasMore = data?.has_more === true;
+    page += 1;
+  }
+  if (!tracks.length) {
+    throw new SourceError("UNAVAILABLE", "该B站收藏夹为空、不可见，或需要登录后访问", { source: "bilibili" });
+  }
+  return { kind: "folder", title: folderTitle || `B站收藏夹 ${mediaId}`, tracks };
 }
 
 export async function getBilibiliLikedTracks(): Promise<ProviderTrack[]> {
@@ -919,6 +1063,11 @@ export async function resolveBilibiliStreamMeta(
   options: { level?: AriaLevel; refresh?: boolean },
   signal?: AbortSignal,
 ): Promise<SourceStreamMeta> {
+  const cacheKey = `${trackId}:${options.level ?? "auto"}`;
+  const cached = streamMetaCache.get(cacheKey);
+  if (!options.refresh && cached && Date.now() - cached.at < MEDIA_META_CACHE_MS) {
+    return cached.meta;
+  }
   const { data } = await playurl(trackId, 4048, options.level, signal);
   const audios: BiliAudio[] = [...(data?.dash?.audio ?? [])];
   const flacAudio = data?.dash?.flac?.audio;
@@ -934,7 +1083,7 @@ export async function resolveBilibiliStreamMeta(
   const availableLevels = AUDIO_LEVELS
     .filter((entry) => audios.some((audio) => audioMatchesEntry(audio, entry)))
     .map((entry) => entry.level);
-  return {
+  const meta: SourceStreamMeta = {
     url: url.startsWith("//") ? `https:${url}` : url,
     headers: {
       "User-Agent": BILIBILI_UA,
@@ -949,14 +1098,25 @@ export async function resolveBilibiliStreamMeta(
     availableLevels: availableLevels.length ? availableLevels : ["standard", "higher", "exhigh"],
     expiresAt: Date.now() + STREAM_URL_TTL_MS,
   };
+  streamMetaCache.set(cacheKey, { at: Date.now(), meta });
+  if (streamMetaCache.size > 240) {
+    const oldest = streamMetaCache.keys().next().value;
+    if (oldest) streamMetaCache.delete(oldest);
+  }
+  return meta;
 }
 
 export async function resolveBilibiliVideoMeta(
   trackId: string,
-  options: { level?: AriaLevel },
+  options: { level?: AriaLevel; qn?: number; refresh?: boolean },
   signal?: AbortSignal,
 ): Promise<SourceVideoMeta> {
-  const { data } = await playurl(trackId, 0, "hires", signal, 120);
+  const cacheKey = `${trackId}:${options.qn ?? "auto"}`;
+  const cachedVideo = videoMetaCache.get(cacheKey);
+  if (!options.refresh && cachedVideo && Date.now() - cachedVideo.at < MEDIA_META_CACHE_MS) {
+    return cachedVideo.meta;
+  }
+  const { data } = await playurl(trackId, 0, "hires", signal, options.qn ?? 120);
   const durl = data?.durl?.[0];
   const url = durl?.url;
   if (!url) {
@@ -967,7 +1127,11 @@ export async function resolveBilibiliVideoMeta(
     qualityIndex >= 0
       ? data?.accept_description?.[qualityIndex]
       : data?.accept_description?.[0] ?? "360P";
-  return {
+  const availableQualities = (data?.accept_quality ?? []).map((id, index) => ({
+    id,
+    label: data?.accept_description?.[index] ?? `${id}P`,
+  }));
+  const meta: SourceVideoMeta = {
     url: url.startsWith("//") ? `https:${url}` : url,
     headers: {
       "User-Agent": BILIBILI_UA,
@@ -976,8 +1140,16 @@ export async function resolveBilibiliVideoMeta(
     },
     mimeType: "video/mp4",
     quality: quality ?? "360P",
+    qualityId: data?.quality ?? null,
+    availableQualities,
     expiresAt: Date.now() + STREAM_URL_TTL_MS,
   };
+  videoMetaCache.set(cacheKey, { at: Date.now(), meta });
+  if (videoMetaCache.size > 120) {
+    const oldest = videoMetaCache.keys().next().value;
+    if (oldest) videoMetaCache.delete(oldest);
+  }
+  return meta;
 }
 
 type BiliSubtitle = {
@@ -995,6 +1167,29 @@ async function getBilibiliWbiKeys(signal?: AbortSignal) {
 }
 
 async function getBilibiliSubtitles(view: BiliViewData, signal?: AbortSignal): Promise<BiliSubtitle[]> {
+  // The signed web-player endpoint is authoritative. The legacy endpoint can
+  // return a personalised "ai-zh" track belonging to another video when the
+  // account is logged in, so only use its manual subtitles as a fallback.
+  const keys = await getBilibiliWbiKeys(signal);
+  if (keys) {
+    const queryParams: Record<string, string> = {
+      bvid: view.bvid,
+      cid: String(view.cid),
+    };
+    if (view.aid) queryParams.aid = String(view.aid);
+    try {
+      const signed = await biliJson<{ subtitle?: { subtitles?: BiliSubtitle[] } }>(
+        `https://api.bilibili.com/x/player/wbi/v2?${signWbiQuery(queryParams, keys.imgKey, keys.subKey)}`,
+        signal,
+      );
+      const subtitles = signed?.subtitle?.subtitles ?? [];
+      const manual = subtitles.filter((item) => !/^ai-/i.test(item.lan ?? ""));
+      if (manual.length) return manual;
+    } catch {
+      // Fall back to the legacy endpoint below.
+    }
+  }
+
   const params = new URLSearchParams({
     bvid: view.bvid,
     cid: String(view.cid),
@@ -1006,24 +1201,7 @@ async function getBilibiliSubtitles(view: BiliViewData, signal?: AbortSignal): P
       signal,
     );
     const subtitles = legacy?.subtitle?.subtitles ?? [];
-    if (subtitles.length) return subtitles;
-  } catch {
-    // Fall through to the signed endpoint used by the web player.
-  }
-
-  const keys = await getBilibiliWbiKeys(signal);
-  if (!keys) return [];
-  const queryParams: Record<string, string> = {
-    bvid: view.bvid,
-    cid: String(view.cid),
-  };
-  if (view.aid) queryParams.aid = String(view.aid);
-  try {
-    const signed = await biliJson<{ subtitle?: { subtitles?: BiliSubtitle[] } }>(
-      `https://api.bilibili.com/x/player/wbi/v2?${signWbiQuery(queryParams, keys.imgKey, keys.subKey)}`,
-      signal,
-    );
-    return signed?.subtitle?.subtitles ?? [];
+    return subtitles.filter((item) => !/^ai-/i.test(item.lan ?? ""));
   } catch {
     return [];
   }
@@ -1076,5 +1254,7 @@ export function resetBilibiliStateForTests() {
   ariaFolderCache = null;
   ariaFolderCreatePromise = null;
   wbiKeysCache = null;
+  streamMetaCache.clear();
+  videoMetaCache.clear();
   qrSessions.clear();
 }

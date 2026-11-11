@@ -175,7 +175,8 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
         throw new SourceError("UNSUPPORTED", `${source.manifest.name}不提供视频流`, { source: source.manifest.id });
       }
       const level = parseLevelQuery(req.query.level);
-      const meta = await source.resolveVideoMeta(req.params.trackId, { level });
+      const qn = parseQnQuery(req.query.qn);
+      const meta = await source.resolveVideoMeta(req.params.trackId, { level, qn });
       const { headers, ...publicMeta } = meta;
       void headers;
       res.json(publicMeta);
@@ -191,9 +192,11 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
         throw new SourceError("UNSUPPORTED", `${source.manifest.name}不提供视频流`, { source: source.manifest.id });
       }
       const level = parseLevelQuery(req.query.level);
+      const qn = parseQnQuery(req.query.qn);
       await proxyAudioStream(req, res, async (attempt) => {
         const meta = await source.resolveVideoMeta!(req.params.trackId, {
           level,
+          qn,
           refresh: attempt > 0,
         });
         return meta;
@@ -222,6 +225,19 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
         throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持同步收藏`, { source: source.manifest.id });
       }
       res.json({ tracks: await source.getLikedTracks() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sourceId/resolve-link", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.resolveLink) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持链接导入`, { source: source.manifest.id });
+      }
+      const body = z.object({ url: z.string().trim().min(3).max(2_000) }).parse(req.body);
+      res.json(await source.resolveLink(body.url));
     } catch (error) {
       next(error);
     }
@@ -339,4 +355,13 @@ function parseLevelQuery(value: unknown): AriaLevel | undefined {
     throw new SourceError("UNSUPPORTED", `无效的音质档位: ${String(value)}`);
   }
   return value;
+}
+
+function parseQnQuery(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const qn = Number(value);
+  if (!Number.isInteger(qn) || qn < 1 || qn > 120) {
+    throw new SourceError("UNSUPPORTED", `无效的视频画质: ${String(value)}`);
+  }
+  return qn;
 }

@@ -235,10 +235,16 @@ function readDynamics(timeData: Float32Array) {
 
 function getFallbackFloor(fallback: number[], band: number, now: number) {
   const source = fallback.length ? fallback[band % fallback.length] ?? 34 : 34 + ((band * 17) % 38);
-  const slowPhase = Math.sin(now / 620 + band * 0.37) * 0.5 + 0.5;
-  const fastPhase = Math.sin(now / 190 + band * 0.91) * 0.5 + 0.5;
-  const shaped = Math.pow(clamp(source / 100, 0.08, 0.95), 0.82);
-  return clamp(shaped * 0.11 + slowPhase * 0.04 + fastPhase * 0.018, 0.035, 0.18);
+  const variation = pseudoRandom(band + 11);
+  const slowPhase = Math.sin(now / 620 + band * 0.37 + variation * 2.4) * 0.5 + 0.5;
+  const fastPhase = Math.sin(now / 190 + band * 0.91 + variation * 3.7) * 0.5 + 0.5;
+  const shaped = Math.pow(clamp((source / 100) * (0.7 + variation * 0.62), 0.08, 0.95), 0.82);
+  return clamp(shaped * 0.26 + slowPhase * 0.055 + fastPhase * 0.024, 0.04, 0.36);
+}
+
+function pseudoRandom(seed: number) {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return value - Math.floor(value);
 }
 
 // The player surface is mounted and unmounted while the audio graph keeps

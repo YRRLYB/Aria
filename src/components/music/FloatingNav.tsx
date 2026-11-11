@@ -50,8 +50,8 @@ export function FloatingNav({
       }}
     >
       <button
-        className="pointer-events-auto absolute z-30 flex size-16 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_18px_50px_rgba(47,55,76,0.16)]"
-        style={{ left: center.x - 32, top: center.y - 32 }}
+        className="pointer-events-auto absolute z-30 flex size-[4.5rem] items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_18px_50px_rgba(47,55,76,0.16)]"
+        style={{ left: center.x - 36, top: center.y - 36 }}
         aria-label="副导航"
         aria-expanded={open}
         aria-controls="floating-nav-nodes"

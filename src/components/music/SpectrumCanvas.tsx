@@ -1,7 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { AudioOutputMode, CoverPalette } from "@/lib/playerPresentation";
 import { colorWithAlpha } from "@/lib/playerPresentation";
-import { getSpectrumEngine } from "@/lib/spectrumEngine";
+import { getSpectrumEngine, spectrumBandCount } from "@/lib/spectrumEngine";
 
 type SpectrumInputs = {
   analyserRef: { current: AnalyserNode | null };
@@ -30,10 +30,23 @@ export function SpectrumCanvas({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastPaintAtRef = useRef(0);
+  // The stored waveform is a short 12-point sketch. Repeating it every 12 bars
+  // made whole sections of the visualizer rise and fall in lockstep; expand it
+  // to one deterministic value per band so the idle/fallback spectrum looks
+  // musical instead of like a single moving block.
+  const expandedFallback = useMemo(() => {
+    const source = fallback.length ? fallback : [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52];
+    return Array.from({ length: spectrumBandCount }, (_, index) => {
+      const base = source[index % source.length] ?? 34;
+      const noise = pseudoRandom(index + 1);
+      const neighbor = source[(index + 5) % source.length] ?? base;
+      return Math.max(7, Math.min(96, base * (0.52 + noise * 0.86) + neighbor * 0.12));
+    });
+  }, [fallback]);
   // Latest inputs are kept in a ref so the animation loop keeps running across
   // palette/track changes instead of being torn down and restarted every time.
-  const inputsRef = useRef<SpectrumInputs>({ analyserRef, fallback, outputMode, outputVolume, palette });
-  inputsRef.current = { analyserRef, fallback, outputMode, outputVolume, palette };
+  const inputsRef = useRef<SpectrumInputs>({ analyserRef, fallback: expandedFallback, outputMode, outputVolume, palette });
+  inputsRef.current = { analyserRef, fallback: expandedFallback, outputMode, outputVolume, palette };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -56,7 +69,7 @@ export function SpectrumCanvas({
     const draw = () => {
       const inputs = inputsRef.current;
       const now = performance.now();
-      if (now - lastPaintAtRef.current < 33) {
+      if (now - lastPaintAtRef.current < 40) {
         schedule();
         return;
       }
@@ -287,6 +300,11 @@ function hexToRgb(hex: string) {
 
 function rgbToHex(red: number, green: number, blue: number) {
   return `#${[red, green, blue].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function pseudoRandom(seed: number) {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return value - Math.floor(value);
 }
 
 function clamp(value: number, min: number, max: number) {

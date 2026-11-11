@@ -9,6 +9,7 @@ import {
   Languages,
   Maximize2,
   Minimize2,
+  Image as ImageIcon,
   Pause,
   Play,
   SlidersHorizontal,
@@ -48,6 +49,10 @@ function VideoPlaybackChrome({
   onVolumeChange,
   videoActive,
   videoControlRef,
+  videoUrl,
+  videoQualities,
+  videoQualityId,
+  onVideoQualityChange,
   onVideoDuration,
   onVideoEnded,
   onVideoError,
@@ -69,6 +74,10 @@ function VideoPlaybackChrome({
   onVolumeChange: (volume: number) => void;
   videoActive: boolean;
   videoControlRef: { current: VideoControl | null };
+  videoUrl?: string;
+  videoQualities: Array<{ id: number; label: string }>;
+  videoQualityId: number | null;
+  onVideoQualityChange?: (qn: number | null) => void;
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
   onVideoError: (message: string) => void;
@@ -106,14 +115,16 @@ function VideoPlaybackChrome({
   }
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex w-full min-h-0 flex-col">
       <div
         ref={stageRef}
         data-taskbar-anchor="player-cover"
-        className="group relative aspect-video w-full overflow-hidden rounded-[1.4rem] bg-black shadow-[0_24px_70px_rgba(16,18,28,0.28)]"
+        className="group relative mx-auto aspect-video w-full overflow-hidden rounded-[1.4rem] bg-black shadow-[0_24px_70px_rgba(16,18,28,0.28)]"
+        style={{ maxWidth: "calc((100dvh - 19rem) * 16 / 9)" }}
       >
         <VideoStage
           track={activeTrack}
+          src={videoUrl}
           active={videoActive}
           playing={playing}
           volume={volume}
@@ -132,6 +143,19 @@ function VideoPlaybackChrome({
             {activeTrack.videoQuality ?? "视频"}
           </span>
         </div>
+        {videoQualities.length > 0 && onVideoQualityChange && (
+          <select
+            aria-label="视频画质"
+            value={videoQualityId ?? ""}
+            onChange={(event) => onVideoQualityChange(event.target.value ? Number(event.target.value) : null)}
+            className="absolute right-3 top-3 rounded-full border border-white/20 bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white outline-none backdrop-blur"
+          >
+            <option value="">自动</option>
+            {videoQualities.map((quality) => (
+              <option key={quality.id} value={quality.id}>{quality.label}</option>
+            ))}
+          </select>
+        )}
         {!playing && (
           <button
             type="button"
@@ -254,26 +278,6 @@ function VideoPlaybackChrome({
           <AriaIcon name={liked ? "heart-fill" : "heart"} className="size-5" />
         </Button>
       </div>
-
-      <div className="player-volume mt-3 flex items-center gap-3 px-1">
-        <AriaIcon name={ariaVolumeIcon(volume, false)} className="player-volume-icon size-5" />
-        <input
-          aria-label="音量"
-          type="range"
-          min="0"
-          max="100"
-          value={volume}
-          onChange={(event) => onVolumeChange(Number(event.target.value))}
-          className="player-range min-w-0 w-full"
-          style={
-            {
-              "--range-color": "var(--track-accent)",
-              "--range-value": Math.min(1, Math.max(0, volume / 100)),
-            } as CSSProperties
-          }
-        />
-        <span className="player-volume-value text-xs font-medium leading-none text-neutral-500">{volume}</span>
-      </div>
     </div>
   );
 }
@@ -294,6 +298,10 @@ export function PlayerSurface({
   onOpenImmersive,
   videoMode,
   onToggleVideoMode,
+  videoUrlOverride,
+  videoQualities = [],
+  videoQualityId = null,
+  onVideoQualityChange,
   videoActive,
   videoControlRef,
   onVideoDuration,
@@ -334,6 +342,10 @@ export function PlayerSurface({
   onOpenImmersive: () => void;
   videoMode: boolean;
   onToggleVideoMode: () => void;
+  videoUrlOverride?: string;
+  videoQualities?: Array<{ id: number; label: string }>;
+  videoQualityId?: number | null;
+  onVideoQualityChange?: (qn: number | null) => void;
   videoActive: boolean;
   videoControlRef: { current: VideoControl | null };
   onVideoDuration: (seconds: number) => void;
@@ -411,9 +423,10 @@ export function PlayerSurface({
   if (videoMode && activeTrack.videoUrl) {
     return (
       <div
-        className="player-surface relative overflow-hidden rounded-[1.5rem] border border-white/55 p-5 shadow-[0_22px_70px_rgba(47,55,76,0.12)] sm:p-6"
+        className="player-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/55 p-5 shadow-[0_22px_70px_rgba(47,55,76,0.12)] sm:p-6"
         style={{
           ["--track-accent" as string]: palette.primary,
+          minHeight: 0,
           background: `linear-gradient(135deg, ${themePrimary}, var(--player-sheen) 42%, ${themeSecondary})`,
         }}
       >
@@ -423,7 +436,7 @@ export function PlayerSurface({
             background: `radial-gradient(circle at 24% 18%, ${palette.primary}38, transparent 24rem), radial-gradient(circle at 82% 82%, ${palette.secondary}28, transparent 18rem)`,
           }}
         />
-        <div className="relative flex min-h-[620px] flex-col">
+        <div className="relative flex h-full min-h-0 flex-col">
           <header className="flex flex-wrap items-center gap-3">
             <CoverArt track={activeTrack} className="size-14 shrink-0 rounded-[0.9rem]" fit="cover" />
             <div className="min-w-0 flex-1">
@@ -441,13 +454,12 @@ export function PlayerSurface({
             <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="glass"
-                size="sm"
+                size="icon"
                 title="切回封面与高音质音频模式"
                 aria-label="切回封面与高音质音频模式"
                 onClick={onToggleVideoMode}
               >
                 <Video />
-                封面
               </Button>
               <Button variant="glass" size="sm" title="打开沉浸视图" onClick={onOpenImmersive}>
                 <Maximize2 />
@@ -456,7 +468,7 @@ export function PlayerSurface({
             </div>
           </header>
 
-          <div className="mt-4 min-h-0 flex-1">
+          <div className="mt-4 flex min-h-0 flex-1 items-start justify-center">
             <VideoPlaybackChrome
               activeTrack={activeTrack}
               playing={playing}
@@ -464,6 +476,10 @@ export function PlayerSurface({
               onVolumeChange={onVolumeChange}
               videoActive={videoActive}
               videoControlRef={videoControlRef}
+              videoUrl={videoUrlOverride}
+              videoQualities={videoQualities}
+              videoQualityId={videoQualityId}
+              onVideoQualityChange={onVideoQualityChange}
               onVideoDuration={onVideoDuration}
               onVideoEnded={onVideoEnded}
               onVideoError={onVideoError}
@@ -479,16 +495,6 @@ export function PlayerSurface({
               liked={liked}
               onToggleLike={onToggleLike}
             />
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.1rem] border border-white/55 bg-white/38 px-4 py-3">
-            <p className="text-xs leading-5 text-neutral-500">
-              视频模式使用系统混音，不经过 mpv 独占输出或均衡器；切回封面后恢复高音质音频链路。
-            </p>
-            <div className="flex shrink-0 items-center gap-2">
-              <Badge>视频 {activeTrack.videoQuality ?? "自动"}</Badge>
-              <Badge>{sourceLabel[activeTrack.source]}</Badge>
-            </div>
           </div>
         </div>
       </div>
@@ -848,6 +854,7 @@ export function ImmersivePlayerView({
   analyserRef,
   visualizerMode,
   volume,
+  onVolumeChange,
   visualizerActive,
   onClose,
   onTogglePlay,
@@ -857,6 +864,10 @@ export function ImmersivePlayerView({
   videoMode,
   onToggleVideoMode,
   videoControlRef,
+  videoUrlOverride,
+  videoQualities = [],
+  videoQualityId = null,
+  onVideoQualityChange,
   onVideoDuration,
   onVideoEnded,
   onVideoError,
@@ -870,6 +881,7 @@ export function ImmersivePlayerView({
   analyserRef: { current: AnalyserNode | null };
   visualizerMode: AudioOutputMode;
   volume: number;
+  onVolumeChange: (volume: number) => void;
   visualizerActive: boolean;
   onClose: () => void;
   onTogglePlay: () => void;
@@ -879,6 +891,10 @@ export function ImmersivePlayerView({
   videoMode: boolean;
   onToggleVideoMode: () => void;
   videoControlRef: { current: VideoControl | null };
+  videoUrlOverride?: string;
+  videoQualities?: Array<{ id: number; label: string }>;
+  videoQualityId?: number | null;
+  onVideoQualityChange?: (qn: number | null) => void;
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
   onVideoError: (message: string) => void;
@@ -887,163 +903,260 @@ export function ImmersivePlayerView({
   const currentTime = usePlaybackTime();
   const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
   const progressFraction = resolvedDuration ? Math.min(1, Math.max(0, currentTime / resolvedDuration)) : 0;
-  const lyricLines = activeTrack.lyrics.length ? activeTrack.lyrics : [{ time: "00:00", text: "暂无歌词" }];
-  const activeLyricIndex = getActiveLyricIndex(lyricLines, currentTime);
-  const immersiveLyricLines = lyricLines.slice(Math.max(0, activeLyricIndex - 2), Math.min(lyricLines.length, activeLyricIndex + 5));
+  const lyrics = activeTrack.lyrics.length ? activeTrack.lyrics : [{ time: "00:00", text: "暂无歌词" }];
+  const activeLyricIndex = getActiveLyricIndex(lyrics, currentTime);
+  const visibleLyrics = lyrics.slice(Math.max(0, activeLyricIndex - 2), Math.min(lyrics.length, activeLyricIndex + 6));
+  const videoActiveMode = videoMode && Boolean(activeTrack.videoUrl);
+  const timeLabel = currentTime > 0 ? formatDuration(currentTime) : "0:00";
 
   return (
     <motion.div
-      className="aria-immersive fixed inset-0 z-50 overflow-hidden bg-neutral-950 text-white"
+      className="aria-immersive fixed inset-0 z-[80] overflow-hidden bg-[#07080c] text-white"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.28 }}
     >
-      <div
-        className="absolute inset-0"
-        style={{
-          background: `radial-gradient(circle at 24% 28%, ${colorWithAlpha(palette.primary, 0.24)} 0, transparent 34%), radial-gradient(circle at 78% 72%, ${colorWithAlpha(palette.secondary, 0.18)} 0, transparent 30%), linear-gradient(110deg, rgba(0,0,0,0.86), ${colorWithAlpha(palette.primary, 0.36)} 48%, rgba(0,0,0,0.8))`,
-        }}
-      />
+      {videoActiveMode ? (
+        <div className="relative h-full w-full bg-black">
+          <VideoStage
+            track={activeTrack}
+            src={videoUrlOverride}
+            active={videoActive}
+            playing={playing}
+            volume={volume}
+            controlRef={videoControlRef}
+            onDuration={onVideoDuration}
+            onEnded={onVideoEnded}
+            onError={onVideoError}
+            className="absolute inset-0 size-full"
+          />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-transparent to-black/80" />
 
-      <div className="relative grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-8 py-6 2xl:px-14">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/48">Immersive</p>
-            <p className="mt-1 text-sm text-white/62">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {activeTrack.videoUrl && (
+          <div className="absolute inset-x-0 top-0 z-10 flex flex-wrap items-start justify-between gap-4 p-5 sm:p-7">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/45">Now playing · Video</p>
+              <h1 className="mt-2 max-w-[62vw] truncate text-2xl font-semibold" title={activeTrack.title}>
+                {activeTrack.title}
+              </h1>
+              <p className="mt-1 truncate text-sm text-white/55">{activeTrack.artist} · {activeTrack.album}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {videoQualities.length > 0 && onVideoQualityChange && (
+                <select
+                  aria-label="视频画质"
+                  value={videoQualityId ?? ""}
+                  onChange={(event) => onVideoQualityChange(event.target.value ? Number(event.target.value) : null)}
+                  className="rounded-full border border-white/20 bg-black/50 px-3 py-1.5 text-xs font-medium text-white outline-none backdrop-blur"
+                >
+                  <option value="">自动</option>
+                  {videoQualities.map((quality) => (
+                    <option key={quality.id} value={quality.id}>{quality.label}</option>
+                  ))}
+                </select>
+              )}
               <Button
-                className={cn("bg-white/12 text-white hover:bg-white/20", videoMode && "bg-white text-neutral-950 hover:bg-white/90")}
-                size="sm"
-                aria-pressed={videoMode}
-                title={videoMode ? "切回封面与音频模式" : "观看视频"}
+                className="bg-white/12 text-white hover:bg-white/20"
+                size="icon"
+                aria-label="切回封面与音频模式"
+                title="切回封面与音频模式"
                 onClick={onToggleVideoMode}
               >
-                <Video />
-                {videoMode ? "封面" : "视频"}
+                <ImageIcon className="size-4" />
               </Button>
-            )}
-            <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
-              <AriaIcon name="close" className="size-5" />
-            </Button>
+              <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
+                <AriaIcon name="close" className="size-5" />
+              </Button>
+            </div>
           </div>
-        </div>
 
-        <div className={cn(
-          "immersive-content grid min-h-0 items-center gap-8",
-          videoMode ? "lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]" : "lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)]",
-        )}>
-          <div
-            className={cn(
-              "immersive-artwork mx-auto overflow-hidden rounded-[2rem] shadow-[0_42px_140px_rgba(0,0,0,0.46)]",
-              videoMode && activeTrack.videoUrl ? "aspect-video w-full max-w-5xl bg-black" : "aspect-square",
-            )}
-            data-taskbar-anchor="immersive"
-          >
-            {videoMode && activeTrack.videoUrl ? (
-              <VideoStage
-                track={activeTrack}
-                active={videoActive}
-                playing={playing}
-                volume={volume}
-                controlRef={videoControlRef}
-                onDuration={onVideoDuration}
-                onEnded={onVideoEnded}
-                onError={onVideoError}
-                className="size-full"
+          <div className="absolute inset-x-0 bottom-0 z-10 p-4 sm:p-6">
+            <div className="mx-auto w-full max-w-5xl rounded-[1.5rem] border border-white/10 bg-black/45 p-4 backdrop-blur-xl">
+              <input
+                aria-label="视频进度"
+                type="range"
+                min="0"
+                max={Math.max(1, resolvedDuration || 0)}
+                value={Math.min(currentTime, resolvedDuration || currentTime || 0)}
+                onChange={(event) => onSeek(Number(event.target.value))}
+                className="player-range w-full"
+                style={{ "--range-color": "#ffffff", "--range-value": progressFraction } as CSSProperties}
               />
-            ) : (
-              <CoverArt track={activeTrack} className="size-full" fit="cover" large />
-            )}
-          </div>
-
-          <div className="player-detail-panel flex max-h-full min-h-0 min-w-0 flex-col overflow-hidden">
-            <h1 className="player-track-title player-track-title-immersive shrink-0 font-semibold tracking-normal" title={activeTrack.title}>
-              <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-            </h1>
-            <p className="mt-5 shrink-0 truncate text-2xl text-white/68">
-              <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
-            </p>
-            <p className="mt-2 shrink-0 truncate text-lg text-white/42">{activeTrack.album}</p>
-            <div className="no-scrollbar mt-8 min-h-0 max-h-[34vh] max-w-5xl overflow-y-auto pr-2">
-              <div className="space-y-2">
-                {immersiveLyricLines.map((line, index) => {
-                  const originalIndex = Math.max(0, activeLyricIndex - 2) + index;
-                  const active = originalIndex === activeLyricIndex;
-                  return (
-                    <motion.button
-                      key={`${activeTrack.id}-immersive-${line.time}-${line.text}-${originalIndex}`}
-                      className={cn(
-                        "grid w-full grid-cols-[4.5rem_minmax(0,1fr)] items-start gap-4 rounded-3xl px-4 py-3 text-left transition",
-                        active ? "bg-white/12 text-white" : "text-white/48 hover:bg-white/8 hover:text-white/72",
-                      )}
-                      initial={false}
-                      animate={{ opacity: active ? 1 : 0.68, y: active ? 0 : 2 }}
-                      onClick={() => onSeek(getLyricStartTime(line))}
-                    >
-                      <span className={cn("pt-1 text-sm font-medium", active ? "text-white/70" : "text-white/34")}>
-                        {line.time}
-                      </span>
-                      <span className={cn("whitespace-pre-wrap break-words leading-relaxed", active ? "text-4xl font-semibold" : "text-xl")}>
-                        <WordLyricText line={line} active={active} currentTime={currentTime} playing={playing} color="#ffffff" pendingColor="rgba(255,255,255,0.38)" />
-                        {line.translation && (
-                          <span className={cn("mt-2 block text-base font-medium leading-relaxed", active ? "text-white/64" : "text-white/34")}>
-                            {line.translation}
-                          </span>
-                        )}
-                      </span>
-                    </motion.button>
-                  );
-                })}
+              <div className="mt-1 flex items-center justify-between text-[11px] font-medium text-white/50">
+                <span>{timeLabel}</span>
+                <span>{formatDuration(resolvedDuration)}</span>
+              </div>
+              <div className="mt-3 flex items-center justify-center gap-4">
+                <Button className="bg-white/10 text-white hover:bg-white/18" size="icon" aria-label="上一首" onClick={onPrevious}>
+                  <AriaIcon name="prev" className="size-5" />
+                </Button>
+                <Button className="bg-white text-neutral-950 hover:bg-white/90" size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
+                  {playing ? <Pause className="size-6 fill-current" /> : <Play className="ml-0.5 size-6 fill-current" />}
+                </Button>
+                <Button className="bg-white/10 text-white hover:bg-white/18" size="icon" aria-label="下一首" onClick={onNext}>
+                  <AriaIcon name="next" className="size-5" />
+                </Button>
+                <div className="ml-4 hidden items-center gap-2 sm:flex">
+                  <AriaIcon name={ariaVolumeIcon(volume, false)} className="size-4 text-white/60" />
+                  <input
+                    aria-label="沉浸音量"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={volume}
+                    onChange={(event) => onVolumeChange(Number(event.target.value))}
+                    className="player-range w-24"
+                    style={{ "--range-color": "#ffffff", "--range-value": Math.min(1, Math.max(0, volume / 100)) } as CSSProperties}
+                  />
+                </div>
               </div>
             </div>
           </div>
         </div>
+      ) : (
+        <div className="relative h-full w-full">
+          <div
+            className="absolute inset-0"
+            style={{
+              background: `radial-gradient(circle at 24% 24%, ${colorWithAlpha(palette.primary, 0.34)} 0, transparent 36%), radial-gradient(circle at 80% 76%, ${colorWithAlpha(palette.secondary, 0.24)} 0, transparent 34%), linear-gradient(125deg, #080910, #10131d 48%, #07080c)`,
+            }}
+          />
+          <div className="relative z-10 grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-6 py-6 lg:px-10 2xl:px-14">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/40">Immersive</p>
+                <p className="mt-1 truncate text-sm text-white/55">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {activeTrack.videoUrl && (
+                  <Button
+                    className="bg-white/10 text-white hover:bg-white/18"
+                    size="icon"
+                    aria-label="观看视频"
+                    title="观看视频"
+                    onClick={onToggleVideoMode}
+                  >
+                    <Video className="size-4" />
+                  </Button>
+                )}
+                <Button className="bg-white text-neutral-950 hover:bg-white/90" size="icon" aria-label="关闭沉浸视图" onClick={onClose}>
+                  <AriaIcon name="close" className="size-5" />
+                </Button>
+              </div>
+            </div>
 
-        <div className="mx-auto w-full max-w-6xl">
-          <SpectrumCanvas
-            analyserRef={analyserRef}
-            playing={visualizerPlaying}
-            active={visualizerActive}
-            palette={palette}
-            fallback={activeTrack.waveform}
-            outputMode={visualizerMode}
-            outputVolume={volume}
-          />
-          <input
-            aria-label="沉浸播放进度"
-            type="range"
-            min="0"
-            max={Math.max(1, resolvedDuration || 0)}
-            value={Math.min(currentTime, resolvedDuration || currentTime || 0)}
-            onChange={(event) => onSeek(Number(event.target.value))}
-            className="player-range mt-3 w-full"
-            style={
-              {
-                "--range-color": "#ffffff",
-                "--range-value": progressFraction,
-              } as CSSProperties
-            }
-          />
-          <div className="mt-2 flex items-center justify-between text-xs font-medium text-white/54">
-            <span>{formatDuration(currentTime)}</span>
-            <span>{formatDuration(resolvedDuration)}</span>
-          </div>
-          <div className="mt-5 flex items-center justify-center gap-3">
-            <Button className="bg-white/12 text-white hover:bg-white/18" size="icon" aria-label="上一首" onClick={onPrevious}>
-              <AriaIcon name="prev" className="size-5" />
-            </Button>
-            <Button className="bg-white text-neutral-950 hover:bg-white/90" size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
-              <AriaIcon name={playing ? "pause" : "play"} className="size-6" />
-            </Button>
-            <Button className="bg-white/12 text-white hover:bg-white/18" size="icon" aria-label="下一首" onClick={onNext}>
-              <AriaIcon name="next" className="size-5" />
-            </Button>
+            <div className="flex min-h-0 flex-1 flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-center lg:gap-8 2xl:gap-12">
+              <div className="flex min-w-0 items-center gap-4 lg:block">
+                <div className="size-20 shrink-0 overflow-hidden rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.4)] lg:mx-auto lg:aspect-square lg:h-auto lg:w-full lg:max-w-[min(46vh,28rem)] lg:rounded-[2rem] lg:shadow-[0_42px_140px_rgba(0,0,0,0.46)]">
+                  <CoverArt track={activeTrack} className="size-full" fit="cover" large />
+                </div>
+                <div className="min-w-0 lg:hidden">
+                  <h1 className="line-clamp-2 text-xl font-semibold leading-tight" title={activeTrack.title}>
+                    <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+                  </h1>
+                  <p className="mt-1 truncate text-sm text-white/60">
+                    <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-white/35">{activeTrack.album}</p>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 min-w-0 flex-col justify-center overflow-hidden">
+                <div className="hidden shrink-0 lg:block">
+                  <h1 className="line-clamp-2 text-3xl font-semibold leading-tight 2xl:text-4xl" title={activeTrack.title}>
+                    <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+                  </h1>
+                  <p className="mt-3 truncate text-lg text-white/65">
+                    <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
+                  </p>
+                  <p className="mt-1 truncate text-sm text-white/35">{activeTrack.album}</p>
+                </div>
+
+                <div className="no-scrollbar mt-2 min-h-0 overflow-y-auto pr-2 lg:mt-6">
+                  <div className="space-y-1.5">
+                    {visibleLyrics.map((line, index) => {
+                      const originalIndex = Math.max(0, activeLyricIndex - 2) + index;
+                      const active = originalIndex === activeLyricIndex;
+                      return (
+                        <button
+                          key={`${activeTrack.id}-immersive-${line.time}-${line.text}-${originalIndex}`}
+                          className={cn(
+                            "grid w-full grid-cols-[3.75rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left transition",
+                            active ? "bg-white/10 text-white" : "text-white/42 hover:bg-white/5 hover:text-white/70",
+                          )}
+                          onClick={() => onSeek(getLyricStartTime(line))}
+                        >
+                          <span className={cn("pt-1 text-xs font-medium tabular-nums", active ? "text-white/55" : "text-white/30")}>
+                            {line.time}
+                          </span>
+                          <span className={cn("min-w-0 whitespace-pre-wrap break-words", active ? "text-lg font-semibold leading-7 sm:text-xl sm:leading-8" : "text-sm leading-6")}>
+                            <WordLyricText line={line} active={active} currentTime={currentTime} playing={playing} color="#ffffff" pendingColor="rgba(255,255,255,0.38)" />
+                            {line.translation && (
+                              <span className={cn("mt-1 block text-xs font-medium leading-5", active ? "text-white/55" : "text-white/30")}>
+                                {line.translation}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mx-auto mt-4 w-full max-w-6xl">
+              <SpectrumCanvas
+                analyserRef={analyserRef}
+                playing={visualizerPlaying}
+                active={visualizerActive}
+                palette={palette}
+                fallback={activeTrack.waveform}
+                outputMode={visualizerMode}
+                outputVolume={volume}
+              />
+              <input
+                aria-label="沉浸播放进度"
+                type="range"
+                min="0"
+                max={Math.max(1, resolvedDuration || 0)}
+                value={Math.min(currentTime, resolvedDuration || currentTime || 0)}
+                onChange={(event) => onSeek(Number(event.target.value))}
+                className="player-range mt-3 w-full"
+                style={{ "--range-color": "#ffffff", "--range-value": progressFraction } as CSSProperties}
+              />
+              <div className="mt-2 flex items-center justify-between text-xs font-medium text-white/54">
+                <span>{timeLabel}</span>
+                <span>{formatDuration(resolvedDuration)}</span>
+              </div>
+              <div className="mt-4 flex items-center justify-center gap-3">
+                <Button className="bg-white/10 text-white hover:bg-white/18" size="icon" aria-label="上一首" onClick={onPrevious}>
+                  <AriaIcon name="prev" className="size-5" />
+                </Button>
+                <Button className="bg-white text-neutral-950 hover:bg-white/90" size="iconLg" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
+                  {playing ? <Pause className="size-6 fill-current" /> : <Play className="ml-0.5 size-6 fill-current" />}
+                </Button>
+                <Button className="bg-white/10 text-white hover:bg-white/18" size="icon" aria-label="下一首" onClick={onNext}>
+                  <AriaIcon name="next" className="size-5" />
+                </Button>
+                <div className="ml-4 hidden items-center gap-2 sm:flex">
+                  <AriaIcon name={ariaVolumeIcon(volume, false)} className="size-4 text-white/55" />
+                  <input
+                    aria-label="沉浸音量"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={volume}
+                    onChange={(event) => onVolumeChange(Number(event.target.value))}
+                    className="player-range w-24"
+                    style={{ "--range-color": "#ffffff", "--range-value": Math.min(1, Math.max(0, volume / 100)) } as CSSProperties}
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </motion.div>
   );
 }

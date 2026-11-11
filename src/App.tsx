@@ -73,6 +73,7 @@ import {
   mergeTracks,
   readCachedAudioSettings,
   readCachedPlayerState,
+  migrateBilibiliLyricsCache,
   restoreTrackLyrics,
   selectPlaybackQuality,
   splitArtistNames,
@@ -132,7 +133,10 @@ async function createMediaSessionArtwork(url: string, signal: AbortSignal): Prom
 }
 
 export default function App() {
-  const [initialPlayerCache] = useState(readCachedPlayerState);
+  const [initialPlayerCache] = useState(() => {
+    migrateBilibiliLyricsCache();
+    return readCachedPlayerState();
+  });
   const [cachedActiveTrackSnapshot, setCachedActiveTrackSnapshot] = useState(() => initialPlayerCache.activeTrackSnapshot);
   const [cachedQueueSnapshots, setCachedQueueSnapshots] = useState(() => initialPlayerCache.playQueueSnapshots ?? []);
   const [activeView, setActiveView] = useState<ViewId>("home");
@@ -143,6 +147,8 @@ export default function App() {
   );
   const [playing, setPlaying] = useState(false);
   const [videoMode, setVideoMode] = useState(false);
+  const [videoQn, setVideoQn] = useState<number | null>(null);
+  const [videoQualities, setVideoQualities] = useState<Array<{ id: number; label: string }>>([]);
   const videoControlRef = useRef<VideoControl | null>(null);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -712,13 +718,19 @@ export default function App() {
     if (!activeTrack.videoUrl) setVideoMode(false);
   }, [activeTrack.id, activeTrack.videoUrl]);
   useEffect(() => {
-    if (videoMode && (activeView !== "player" || Boolean(query.trim()))) {
-      commitActiveVideoTime();
-      pauseActiveVideo();
-      pendingSeekRef.current = getPlaybackTime();
-      setVideoMode(false);
+    setVideoQn(null);
+    setVideoQualities([]);
+  }, [activeTrack.id]);
+  const activeVideoUrl = useMemo(() => {
+    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || !videoQn) return activeTrack.videoUrl;
+    try {
+      const url = new URL(activeTrack.videoUrl, window.location.href);
+      url.searchParams.set("qn", String(videoQn));
+      return url.href;
+    } catch {
+      return activeTrack.videoUrl;
     }
-  }, [activeView, query, videoMode]);
+  }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
   const effectiveQualityLevel = useMemo(
@@ -753,9 +765,11 @@ export default function App() {
     if (!videoMode || activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
     let cancelled = false;
     api
-      .getSourceVideoMeta("bilibili", activeTrack.providerId)
+      .getSourceVideoMeta("bilibili", activeTrack.providerId, undefined, videoQn)
       .then((meta) => {
-        if (cancelled || !meta.quality) return;
+        if (cancelled) return;
+        setVideoQualities(meta.availableQualities ?? []);
+        if (!meta.quality) return;
         updateTrackRef.current(activeTrack.id, (track) => ({
           ...track,
           videoQuality: meta.quality ?? track.videoQuality,
@@ -766,7 +780,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, videoMode]);
+  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, videoMode, videoQn]);
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -2402,6 +2416,7 @@ export default function App() {
           className={cn(
             "app-content grid grid-cols-1 min-h-0 flex-1 gap-4 p-4 2xl:gap-5 2xl:p-5",
             activeView === "home" && !query.trim() && "app-content-home",
+            activeView === "player" && "overflow-hidden",
             activeView === "settings" || activeView === "home"
               ? "grid-cols-1"
               : activeView === "player"
@@ -2409,6 +2424,103 @@ export default function App() {
                 : "xl:grid-cols-[minmax(0,1fr)_minmax(340px,18vw)]",
           )}
         >
+          <div
+            className={cn(
+              "h-full min-h-0 min-w-0 overflow-hidden",
+              activeView !== "player" && "pointer-events-none fixed left-0 top-0 w-[min(92vw,1100px)] -translate-x-[200%] opacity-0",
+            )}
+            aria-hidden={activeView !== "player"}
+            inert={activeView !== "player"}
+          >
+<PlayerSurface
+                  activeTrack={activeTrack}
+                  palette={activePalette}
+                  playing={playing}
+                  visualizerPlaying={visualizerPlaying}
+                  shuffleEnabled={shuffleEnabled}
+                  repeatMode={repeatMode}
+                  onTogglePlay={togglePlayback}
+                  onToggleShuffle={toggleShuffleQueue}
+                  onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
+                  onNext={() => pickRelativeTrack(1)}
+                  onPrevious={() => pickRelativeTrack(-1)}
+                  onOpenImmersive={() => void openImmersiveView()}
+                  videoMode={videoMode}
+                  onToggleVideoMode={toggleVideoMode}
+                  videoUrlOverride={activeVideoUrl}
+                  videoQualities={videoQualities}
+                  videoQualityId={videoQn}
+                  onVideoQualityChange={(qn) => {
+                    commitActiveVideoTime();
+                    pendingSeekRef.current = getPlaybackTime();
+                    setVideoQn(qn);
+                  }}
+                  videoActive={videoMode && !immersiveOpen}
+                  videoControlRef={videoControlRef}
+                  onVideoDuration={setDurationSeconds}
+                  onVideoEnded={handleTrackEnded}
+                  onVideoError={(message) => {
+                    setPlaybackError(message);
+                    setVideoMode(false);
+                  }}
+                  onReplaceLocalArtwork={replaceLocalArtwork}
+                  liked={
+                    activeTrack.source === "netease"
+                      ? Boolean(neteaseLikedIds[activeTrack.id])
+                      : activeTrack.source === "qq"
+                        ? Boolean(qqData.likedIds[activeTrack.id])
+                        : activeTrack.source === "bilibili"
+                          ? Boolean(bilibiliData.likedIds[activeTrack.id])
+                          : Boolean(likedTrackIds[activeTrack.id])
+                  }
+                  onToggleLike={() => toggleLikeTrack(activeTrack.id)}
+                  volume={volume}
+                  onVolumeChange={setVolume}
+                  qualityLevel={effectiveQualityLevel}
+                  onQualityLevelChange={(level) => {
+                    // Explicit levels are manual choices; 臻品 also enables
+                    // HiFi so its companion setting remains visible.
+                    setQualityLevel(level);
+                    if (level === "jymaster") {
+                      // 臻品是 HiFi 优先下的额外处理档位，启用它时同步打开
+                      // HiFi，让设置页能够显示对应的独立开关。
+                      setHifiEnabled(true);
+                      setMasterQualityEnabled(true);
+                    } else {
+                      setHifiEnabled(false);
+                      setMasterQualityEnabled(false);
+                    }
+                  }}
+                  hifiEnabled={hifiEnabled}
+                  masterQualityEnabled={masterQualityEnabled}
+                  onMasterQualityEnabledChange={setMasterQualityEnabled}
+                  exclusiveMode={exclusiveMode}
+                  durationSeconds={durationSeconds}
+                  analyserRef={analyserRef}
+                  visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
+                  visualizerActive={pageVisible && !immersiveOpen && activeView === "player"}
+                  lyricDisplayMode={lyricDisplayMode}
+                  onLyricDisplayModeChange={setLyricDisplayMode}
+                  onSeek={seekTo}
+                  equalizerEnabled={equalizer.enabled}
+                  onOpenEqualizer={() => setEqualizerOpen(true)}
+                />
+                <EqualizerDialog
+                  open={equalizerOpen}
+                  onClose={() => setEqualizerOpen(false)}
+                  enabled={equalizer.enabled}
+                  bands={equalizer.bands}
+                  preset={equalizer.preset}
+                  error={equalizerError}
+                  customPresets={customEqualizerPresets}
+                  onEnabledChange={(enabled) => updateEqualizer({ enabled })}
+                  onBandsChange={(bands) => updateEqualizer({ bands })}
+                  onPresetChange={selectEqualizerPreset}
+                  onSavePreset={saveCustomEqualizerPreset}
+                  onDeletePreset={deleteCustomEqualizerPreset}
+                  onImportPresets={importCustomEqualizerPresets}
+                />
+          </div>
           <AnimatePresence initial={false} mode="popLayout">
             <motion.div
               key={selectedAlbum ? `album:${selectedAlbum.id}` : selectedUser ? `user:${selectedUser.id}` : query.trim() ? "search" : activeView}
@@ -2420,6 +2532,7 @@ export default function App() {
               className={cn(
                 "app-view min-h-0 min-w-0 scrollbar-thin",
                 activeView === "home" && !query.trim() && "app-view-home",
+                activeView === "player" && "hidden",
               )}
               style={{ willChange: "transform, opacity" }}
             >
@@ -2497,90 +2610,7 @@ export default function App() {
                   onNavigate={setActiveView}
                 />
               )}
-              {activeView === "player" && (
-                <>
-                <PlayerSurface
-                  activeTrack={activeTrack}
-                  palette={activePalette}
-                  playing={playing}
-                  visualizerPlaying={visualizerPlaying}
-                  shuffleEnabled={shuffleEnabled}
-                  repeatMode={repeatMode}
-                  onTogglePlay={togglePlayback}
-                  onToggleShuffle={toggleShuffleQueue}
-                  onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
-                  onNext={() => pickRelativeTrack(1)}
-                  onPrevious={() => pickRelativeTrack(-1)}
-                  onOpenImmersive={() => void openImmersiveView()}
-                  videoMode={videoMode}
-                  onToggleVideoMode={toggleVideoMode}
-                  videoActive={videoMode && !immersiveOpen}
-                  videoControlRef={videoControlRef}
-                  onVideoDuration={setDurationSeconds}
-                  onVideoEnded={handleTrackEnded}
-                  onVideoError={(message) => {
-                    setPlaybackError(message);
-                    setVideoMode(false);
-                  }}
-                  onReplaceLocalArtwork={replaceLocalArtwork}
-                  liked={
-                    activeTrack.source === "netease"
-                      ? Boolean(neteaseLikedIds[activeTrack.id])
-                      : activeTrack.source === "qq"
-                        ? Boolean(qqData.likedIds[activeTrack.id])
-                        : activeTrack.source === "bilibili"
-                          ? Boolean(bilibiliData.likedIds[activeTrack.id])
-                          : Boolean(likedTrackIds[activeTrack.id])
-                  }
-                  onToggleLike={() => toggleLikeTrack(activeTrack.id)}
-                  volume={volume}
-                  onVolumeChange={setVolume}
-                  qualityLevel={effectiveQualityLevel}
-                  onQualityLevelChange={(level) => {
-                    // Explicit levels are manual choices; 臻品 also enables
-                    // HiFi so its companion setting remains visible.
-                    setQualityLevel(level);
-                    if (level === "jymaster") {
-                      // 臻品是 HiFi 优先下的额外处理档位，启用它时同步打开
-                      // HiFi，让设置页能够显示对应的独立开关。
-                      setHifiEnabled(true);
-                      setMasterQualityEnabled(true);
-                    } else {
-                      setHifiEnabled(false);
-                      setMasterQualityEnabled(false);
-                    }
-                  }}
-                  hifiEnabled={hifiEnabled}
-                  masterQualityEnabled={masterQualityEnabled}
-                  onMasterQualityEnabledChange={setMasterQualityEnabled}
-                  exclusiveMode={exclusiveMode}
-                  durationSeconds={durationSeconds}
-                  analyserRef={analyserRef}
-                  visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
-                  visualizerActive={pageVisible && !immersiveOpen}
-                  lyricDisplayMode={lyricDisplayMode}
-                  onLyricDisplayModeChange={setLyricDisplayMode}
-                  onSeek={seekTo}
-                  equalizerEnabled={equalizer.enabled}
-                  onOpenEqualizer={() => setEqualizerOpen(true)}
-                />
-                <EqualizerDialog
-                  open={equalizerOpen}
-                  onClose={() => setEqualizerOpen(false)}
-                  enabled={equalizer.enabled}
-                  bands={equalizer.bands}
-                  preset={equalizer.preset}
-                  error={equalizerError}
-                  customPresets={customEqualizerPresets}
-                  onEnabledChange={(enabled) => updateEqualizer({ enabled })}
-                  onBandsChange={(bands) => updateEqualizer({ bands })}
-                  onPresetChange={selectEqualizerPreset}
-                  onSavePreset={saveCustomEqualizerPreset}
-                  onDeletePreset={deleteCustomEqualizerPreset}
-                  onImportPresets={importCustomEqualizerPresets}
-                />
-                </>
-              )}
+
               {activeView === "local" && (
                 <LibrarySurfacePanel
                   folderName={folderName}
@@ -2903,6 +2933,7 @@ export default function App() {
               analyserRef={analyserRef}
               visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
               volume={volume}
+              onVolumeChange={setVolume}
               onClose={() => void closeImmersiveView()}
               onTogglePlay={togglePlayback}
               onNext={() => pickRelativeTrack(1)}
@@ -2912,6 +2943,14 @@ export default function App() {
               videoMode={videoMode}
               onToggleVideoMode={toggleVideoMode}
               videoControlRef={videoControlRef}
+              videoUrlOverride={activeVideoUrl}
+              videoQualities={videoQualities}
+              videoQualityId={videoQn}
+              onVideoQualityChange={(qn) => {
+                commitActiveVideoTime();
+                pendingSeekRef.current = getPlaybackTime();
+                setVideoQn(qn);
+              }}
               onVideoDuration={setDurationSeconds}
               onVideoEnded={handleTrackEnded}
               onVideoError={(message) => {
@@ -2943,6 +2982,15 @@ export default function App() {
             qqAccount={qqAccount}
             bilibiliAccount={bilibiliAccount}
             onComplete={() => setOnboardingOpen(false)}
+          />
+        )}
+
+        {navOpen && !(activeView === "player" && videoMode) && (
+          <button
+            type="button"
+            aria-label="关闭副导航"
+            className="fixed inset-0 z-30 cursor-default bg-transparent"
+            onClick={() => setNavOpen(false)}
           />
         )}
 

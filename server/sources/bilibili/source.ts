@@ -7,6 +7,7 @@ import {
   getBilibiliLyrics,
   resolveBilibiliStreamMeta,
   resolveBilibiliVideoMeta,
+  resolveBilibiliLink,
   saveBilibiliCookie,
   searchBilibiliTracks,
   setBilibiliLike,
@@ -51,6 +52,10 @@ export const bilibiliSource: MusicSource = {
 
   getLikedTracks() {
     return getBilibiliLikedTracks();
+  },
+
+  resolveLink(url) {
+    return resolveBilibiliLink(url);
   },
 
   setLike(trackId, liked) {

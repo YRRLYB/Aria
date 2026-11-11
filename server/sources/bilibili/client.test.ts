@@ -7,6 +7,7 @@ import {
   parseBilibiliDuration,
   parseBilibiliTrackId,
   resetBilibiliStateForTests,
+  resolveBilibiliLink,
   resolveBilibiliStreamMeta,
   resolveBilibiliVideoMeta,
   searchBilibiliTracks,
@@ -150,6 +151,11 @@ describe("Bilibili client", () => {
       url: "https://cdn.test/video-360.mp4",
       mimeType: "video/mp4",
       quality: "流畅 360P",
+      qualityId: 16,
+      availableQualities: [
+        { id: 80, label: "高清 1080P" },
+        { id: 16, label: "流畅 360P" },
+      ],
     });
   });
 
@@ -218,9 +224,18 @@ describe("Bilibili client", () => {
       .mockResolvedValueOnce(jsonResponse({
         code: 0,
         data: {
+          wbi_img: {
+            img_url: "https://i0.hdslb.com/bfs/wbi/abcdef.png",
+            sub_url: "https://i0.hdslb.com/bfs/wbi/123456.png",
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
           subtitle: {
             subtitles: [
-              { lan: "ai-zh", subtitle_url: "//aisubtitle.hdslb.com/subtitle.json" },
+              { lan: "zh-CN", subtitle_url: "//aisubtitle.hdslb.com/subtitle.json" },
             ],
           },
         },
@@ -408,5 +423,58 @@ describe("Bilibili client", () => {
     const resourceCall = fetchMock.mock.calls.find(([url]) => String(url).includes("fav/resource/list"));
     const headers = (resourceCall?.[1] as RequestInit | undefined)?.headers as Record<string, string> | undefined;
     expect(headers?.Cookie).toContain("SESSDATA=test-sess");
+  });
+
+  it("resolves pasted Bilibili video and favourite-folder links", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }));
+    const video = await resolveBilibiliLink("https://www.bilibili.com/video/BV1xx411c7mD");
+    expect(video).toMatchObject({
+      kind: "video",
+      title: "测试视频",
+      tracks: [
+        {
+          id: "BV1xx411c7mD",
+          artist: "测试UP",
+          videoUrl: "/api/sources/bilibili/tracks/BV1xx411c7mD/video",
+          hasVideo: true,
+        },
+      ],
+    });
+
+    resetBilibiliStateForTests();
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValue(jsonResponse({
+        code: 0,
+        data: {
+          info: { title: "别人的收藏夹", media_count: 1 },
+          medias: [{
+            type: 2,
+            attr: 0,
+            bvid: "BV1xx411c7mD",
+            title: "收藏视频",
+            cover: "//i0.hdslb.com/fav.jpg",
+            duration: 100,
+            fav_time: 1_700_000_000,
+            upper: { name: "收藏UP" },
+          }],
+          has_more: false,
+        },
+      }));
+    const folder = await resolveBilibiliLink("https://space.bilibili.com/123/favlist?fid=456");
+    expect(folder).toMatchObject({
+      kind: "folder",
+      title: "别人的收藏夹",
+      tracks: [{ id: "BV1xx411c7mD", album: "B站 · 别人的收藏夹" }],
+    });
   });
 });

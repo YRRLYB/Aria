@@ -893,26 +893,31 @@ export const api = {
       availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
     }>(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/stream-meta${suffix}`);
   },
-  getSourceVideoUrl(sourceId: string, trackId: string, level?: string) {
+  getSourceVideoUrl(sourceId: string, trackId: string, level?: string, qn?: number | null) {
     const params = new URLSearchParams();
     if (level) params.set("level", level);
+    if (qn) params.set("qn", String(qn));
     const suffix = params.size ? `?${params}` : "";
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video${suffix}`);
   },
-  getSourceVideoMetaUrl(sourceId: string, trackId: string, level?: string) {
+  getSourceVideoMetaUrl(sourceId: string, trackId: string, level?: string, qn?: number | null) {
     const params = new URLSearchParams();
     if (level) params.set("level", level);
+    if (qn) params.set("qn", String(qn));
     const suffix = params.size ? `?${params}` : "";
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video-meta${suffix}`);
   },
-  getSourceVideoMeta(sourceId: string, trackId: string, level?: string) {
+  getSourceVideoMeta(sourceId: string, trackId: string, level?: string, qn?: number | null) {
     const params = new URLSearchParams();
     if (level) params.set("level", level);
+    if (qn) params.set("qn", String(qn));
     const suffix = params.size ? `?${params}` : "";
     return request<{
       url: string;
       mimeType?: string | null;
       quality?: string | null;
+      qualityId?: number | null;
+      availableQualities?: Array<{ id: number; label: string }>;
       width?: number | null;
       height?: number | null;
       expiresAt?: number | null;
@@ -930,6 +935,12 @@ export const api = {
   },
   getSourceLikedTracks(sourceId: string) {
     return request<{ tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/liked`);
+  },
+  resolveSourceLink(sourceId: string, url: string) {
+    return request<{ kind: "video" | "folder" | "playlist"; title?: string; tracks: ProviderTrack[] }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/resolve-link`,
+      { method: "POST", body: JSON.stringify({ url }) },
+    );
   },
   saveSourceCookie(sourceId: string, cookie: string) {
     return request<{ ok: boolean; account: SourceAccountSummary }>(

@@ -137,6 +137,10 @@ export type SourceVideoMeta = {
   headers?: Record<string, string>;
   mimeType?: string | null;
   quality?: string | null;
+  /** Platform quality id (Bilibili qn) currently granted. */
+  qualityId?: number | null;
+  /** Selectable qualities reported by the platform for this video. */
+  availableQualities?: Array<{ id: number; label: string }>;
   width?: number | null;
   height?: number | null;
   expiresAt?: number | null;
@@ -203,13 +207,15 @@ export type MusicSource = {
   /** Optional muxed video stream (Bilibili). Audio playback uses resolveStreamMeta. */
   resolveVideoMeta?(
     trackId: string,
-    options: { level?: AriaLevel; refresh?: boolean },
+    options: { level?: AriaLevel; refresh?: boolean; qn?: number },
     signal?: AbortSignal,
   ): Promise<SourceVideoMeta>;
   getLyrics?(trackId: string, signal?: AbortSignal): Promise<LyricLine[]>;
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
   /** Account-owned favourites/liked tracks, when the source can read them. */
   getLikedTracks?(): Promise<ProviderTrack[]>;
+  /** Resolve a pasted platform link (video, album, favourite folder, ...). */
+  resolveLink?(url: string): Promise<{ kind: "video" | "folder" | "playlist"; title?: string; tracks: ProviderTrack[] }>;
   /** 收藏/取消收藏（QQ 红心、B站默认收藏夹等）；未实现的源不提供该入口。 */
   setLike?(trackId: string, liked: boolean): Promise<{ ok: boolean; liked: boolean }>;
   /** 歌手详情页（简介 + 基础资料）。 */

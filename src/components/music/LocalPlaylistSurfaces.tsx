@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, ListMusic, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Link2, ListMusic, LoaderCircle, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
+import { api } from "@/lib/api";
 import { createLocalTrackSearchIndex, searchLocalTrackIndex } from "@/lib/localSearch";
 import type { LocalPlaylist } from "@/lib/localPlaylists";
 import { resolveLocalPlaylistTracks } from "@/lib/localPlaylists";
+import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { sourceLabel } from "@/lib/trackLabels";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
@@ -130,6 +132,7 @@ function LocalPlaylistDetail({
   onOpenNetease,
 }: LocalPlaylistSurfaceProps & { playlist: LocalPlaylist; onOpenNetease: () => void }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [bilibiliImportOpen, setBilibiliImportOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(playlist.name);
   const virtual = useVirtualRows({ count: selectedTracks.length, rowHeight: 80, overscan: 8 });
@@ -168,6 +171,7 @@ function LocalPlaylistDetail({
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <Button onClick={() => setPickerOpen(true)}><Plus />添加歌曲</Button>
+            <Button variant="glass" size="sm" onClick={() => setBilibiliImportOpen(true)}><Link2 />B站链接</Button>
             <Button variant="ghost" size="sm" aria-label="删除 Aria 歌单" title="删除歌单（不会删除音频文件）" onClick={() => { if (window.confirm(`删除 Aria 歌单“${playlist.name}”？音频文件不会被删除。`)) onDelete(playlist.id); }}><Trash2 />删除歌单</Button>
           </div>
         </div>
@@ -192,8 +196,108 @@ function LocalPlaylistDetail({
         </div>
         {!selectedTracks.length && <EmptyState text="歌单还是空的。点击“添加歌曲”，可从本地和在线曲库中挑选。" />}
       </div>
+      {bilibiliImportOpen && (
+        <BilibiliLinkDialog
+          onClose={() => setBilibiliImportOpen(false)}
+          onAdd={(tracks) => {
+            onAdd(playlist.id, tracks);
+            setBilibiliImportOpen(false);
+          }}
+        />
+      )}
       {pickerOpen && <LocalTrackPickerDialog tracks={allTracks} existingIds={selectedIds} onClose={() => setPickerOpen(false)} onAdd={(tracks) => { onAdd(playlist.id, tracks); setPickerOpen(false); }} />}
     </div>
+  );
+}
+
+function BilibiliLinkDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (tracks: Track[]) => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ kind: string; title?: string; tracks: Track[] } | null>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+
+  async function resolve() {
+    const value = url.trim();
+    if (!value || loading) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const resolved = await api.resolveSourceLink("bilibili", value);
+      setResult({
+        kind: resolved.kind,
+        title: resolved.title,
+        tracks: resolved.tracks.map((track, index) => providerTrackToUiTrack(track, index)),
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "解析B站链接失败，请检查链接后重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="bilibili-link-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      className="fixed inset-0 m-auto flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-black/25 p-4 backdrop-blur-sm backdrop:bg-transparent"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <section className="w-full max-w-lg rounded-3xl border border-white/70 bg-[#faf9fd] p-6 shadow-2xl">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 id="bilibili-link-title" className="text-xl font-semibold">从B站链接添加</h2>
+            <p className="mt-1 text-sm text-neutral-500">支持视频链接、BV 号、收藏夹/合集链接。收藏夹也可以粘贴别人的公开链接。</p>
+          </div>
+          <Button variant="ghost" size="icon" aria-label="关闭B站链接导入" onClick={onClose}><X /></Button>
+        </div>
+        <form className="mt-4 flex gap-2" onSubmit={(event) => { event.preventDefault(); void resolve(); }}>
+          <input
+            autoFocus
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://www.bilibili.com/video/BV... 或收藏夹链接"
+            aria-label="B站链接"
+            className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-violet-400"
+          />
+          <Button type="submit" disabled={!url.trim() || loading}>
+            {loading ? <LoaderCircle className="animate-spin" /> : <Link2 />}
+            {loading ? "解析中" : "解析"}
+          </Button>
+        </form>
+        {error && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-600">{error}</p>}
+        {result && (
+          <div className="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold" title={result.title}>{result.title ?? (result.kind === "video" ? "B站视频" : "B站收藏夹")}</p>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {result.kind === "video" ? "单个视频" : "收藏夹"} · {result.tracks.length} 首
+                </p>
+              </div>
+              <Button size="sm" onClick={() => onAdd(result.tracks)}>加入歌单</Button>
+            </div>
+            <div className="mt-3 max-h-40 space-y-1 overflow-y-auto pr-1">
+              {result.tracks.slice(0, 8).map((track) => (
+                <p key={track.id} className="truncate text-xs text-neutral-500">{track.title} · {track.artist}</p>
+              ))}
+              {result.tracks.length > 8 && <p className="text-xs text-neutral-400">还有 {result.tracks.length - 8} 首…</p>}
+            </div>
+          </div>
+        )}
+        <p className="mt-4 text-[11px] leading-5 text-neutral-400">
+          收藏夹必须公开，或先在设置里登录B站；私密收藏夹只有登录账号能读取。
+        </p>
+      </section>
+    </dialog>
   );
 }
 

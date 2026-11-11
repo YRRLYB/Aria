@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 
 export function VideoStage({
   track,
+  src,
   active,
   playing,
   volume,
@@ -15,6 +16,7 @@ export function VideoStage({
   className,
 }: {
   track: Track;
+  src?: string;
   active: boolean;
   playing: boolean;
   volume: number;
@@ -28,7 +30,7 @@ export function VideoStage({
   useVideoPlayback({
     videoRef,
     active,
-    videoUrl: track.videoUrl,
+    videoUrl: src ?? track.videoUrl,
     playing,
     volume,
     controlRef,

@@ -4,12 +4,13 @@ import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatBitrate, parseDuration, qualityOptions } from "@/lib/playerPresentation";
 import type { Track, ViewId } from "@/data/music";
+import { cn } from "@/lib/utils";
 // 根目录的 meow 线稿：用 CSS mask 上色，深浅主题切换时人物颜色会跟着变。
 import meowArtwork from "../../../meow.png";
 
 const DAY_MS = 86_400_000;
 
-function startOfDay(value = new Date()) {
+function startOfDay(value: Date | number = new Date()) {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);
   return date.getTime();
@@ -32,13 +33,24 @@ function formatListeningTime(seconds: number) {
   return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
 }
 
+type HeatmapDay = {
+  date: number;
+  count: number;
+  seconds: number;
+  future: boolean;
+};
+
 type ListeningSnapshot = {
   today: PlayHistoryEntry[];
   week: PlayHistoryEntry[];
   todaySeconds: number;
   weekSeconds: number;
   activity: number[];
+  activityGrid: HeatmapDay[];
+  activityTotal: number;
 };
+
+const heatmapWeeks = 26;
 
 function buildListeningSnapshot(history: PlayHistoryEntry[]): ListeningSnapshot {
   const todayStart = startOfDay();
@@ -51,13 +63,97 @@ function buildListeningSnapshot(history: PlayHistoryEntry[]): ListeningSnapshot 
     activity[bucket] += 1;
   });
   const duration = (entries: PlayHistoryEntry[]) => entries.reduce((total, entry) => total + parseDuration(entry.track.duration), 0);
-  return { today, week, todaySeconds: duration(today), weekSeconds: duration(week), activity };
+
+  // A GitHub-style contribution grid: 26 full weeks ending on this week's
+  // Saturday, with Sunday as the first row.
+  const weekday = new Date(todayStart).getDay();
+  const gridEnd = todayStart + (6 - weekday) * DAY_MS;
+  const gridStart = gridEnd - (heatmapWeeks * 7 - 1) * DAY_MS;
+  const buckets = new Map<number, { count: number; seconds: number }>();
+  let activityTotal = 0;
+  for (const entry of history) {
+    const day = startOfDay(entry.playedAt);
+    if (day < gridStart || day > gridEnd) continue;
+    const bucket = buckets.get(day) ?? { count: 0, seconds: 0 };
+    bucket.count += 1;
+    bucket.seconds += parseDuration(entry.track.duration);
+    buckets.set(day, bucket);
+    activityTotal += 1;
+  }
+  const activityGrid = Array.from({ length: heatmapWeeks * 7 }, (_, index) => {
+    const date = gridStart + index * DAY_MS;
+    const bucket = buckets.get(date);
+    return {
+      date,
+      count: bucket?.count ?? 0,
+      seconds: bucket?.seconds ?? 0,
+      future: date > todayStart,
+    } satisfies HeatmapDay;
+  });
+
+  return { today, week, todaySeconds: duration(today), weekSeconds: duration(week), activity, activityGrid, activityTotal };
+}
+
+function heatmapLevel(count: number) {
+  if (count <= 0) return 0;
+  if (count === 1) return 1;
+  if (count <= 3) return 2;
+  if (count <= 6) return 3;
+  return 4;
+}
+
+function ListeningHeatmap({ snapshot }: { snapshot: ListeningSnapshot }) {
+  const gridStart = snapshot.activityGrid[0]?.date ?? Date.now();
+  const startLabel = new Date(gridStart).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+  return (
+    <section className="mt-4 rounded-[1rem] border border-white/60 bg-white/42 p-3" aria-labelledby="home-heatmap-title">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <span className="text-[9px] font-semibold uppercase tracking-[0.2em] text-neutral-400">Activity</span>
+          <h2 id="home-heatmap-title" className="mt-0.5 text-sm font-semibold">聆听活动</h2>
+        </div>
+        <span className="text-[10px] text-neutral-400">{snapshot.activityTotal} 次播放</span>
+      </div>
+      <div className="mt-2 overflow-x-auto pb-0.5">
+        <div className="grid w-max grid-flow-col grid-rows-7 gap-[2px]" aria-label="最近 26 周聆听活动">
+          {snapshot.activityGrid.map((day) => {
+            const level = heatmapLevel(day.count);
+            return (
+              <span
+                key={day.date}
+                title={`${new Date(day.date).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · ${day.count} 次播放 · ${formatListeningTime(day.seconds)}`}
+                className={cn(
+                  "size-[7px] rounded-[2px]",
+                  day.future && "opacity-25",
+                  level === 0 && "bg-neutral-200/65",
+                  level === 1 && "bg-emerald-200/90",
+                  level === 2 && "bg-emerald-300",
+                  level === 3 && "bg-emerald-500",
+                  level === 4 && "bg-emerald-700",
+                )}
+              />
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-[9px] text-neutral-400">
+        <span>{startLabel} 起 · 最近 26 周</span>
+        <span className="flex items-center gap-0.5">
+          少
+          <i className="size-2 rounded-[2px] bg-neutral-200/65" />
+          <i className="size-2 rounded-[2px] bg-emerald-200/90" />
+          <i className="size-2 rounded-[2px] bg-emerald-300" />
+          <i className="size-2 rounded-[2px] bg-emerald-500" />
+          <i className="size-2 rounded-[2px] bg-emerald-700" />
+          多
+        </span>
+      </div>
+    </section>
+  );
 }
 
 function TodayListening({ snapshot }: { snapshot: ListeningSnapshot }) {
   const latest = snapshot.today[0];
-  const maxActivity = Math.max(1, ...snapshot.activity);
-  const labels = ["00", "04", "08", "12", "16", "20"];
   return (
     <aside className="home-today" aria-labelledby="home-today-title">
       <div className="home-today-heading">
@@ -69,14 +165,8 @@ function TodayListening({ snapshot }: { snapshot: ListeningSnapshot }) {
         <div><strong>{formatListeningTime(snapshot.todaySeconds)}</strong><span>记录时长</span></div>
       </div>
       <div className="home-today-period"><span><CalendarDays aria-hidden="true" /> 本周</span><strong>{snapshot.week.length} 首 · {formatListeningTime(snapshot.weekSeconds)}</strong></div>
-      <div className="home-today-activity">
-        <div className="home-today-activity-heading"><span>聆听分布</span><span>{latest ? `最近 ${playedAtLabel(latest.playedAt)}` : "等待第一首歌"}</span></div>
-        <div className="home-activity-bars" aria-label="今天的聆听时间分布">
-          {snapshot.activity.map((value, index) => <span key={labels[index]} className="home-activity-bar-wrap"><span className="home-activity-bar" style={{ height: `${Math.max(value ? 18 : 7, (value / maxActivity) * 100)}%` }} title={`${labels[index]} 点时段 · ${value} 首`} /></span>)}
-        </div>
-        <div className="home-activity-labels" aria-hidden="true">{labels.map((label) => <span key={label}>{label}</span>)}</div>
-      </div>
       <p className="home-today-note"><Clock3 aria-hidden="true" />{latest ? "按最近播放记录估算，重复播放会合并到歌曲记录。" : "播放一首歌后，这里会留下今天的聆听轨迹。"}</p>
+      <ListeningHeatmap snapshot={snapshot} />
       <div className="home-character" aria-hidden="true">
         <span
           className="home-character-art"

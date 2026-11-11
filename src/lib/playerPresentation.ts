@@ -317,6 +317,61 @@ export function removeCachedLyrics(trackId: string) {
   try { window.localStorage.setItem(lyricCacheKey, JSON.stringify(cache)); } catch { /* In-memory removal still applies. */ }
 }
 
+/**
+ * Bilibili's legacy player endpoint can return an account-personalised "ai-zh"
+ * subtitle for a different video. Older builds cached that result as real CC.
+ * Clear those caches once so the WBI-first subtitle path is used instead.
+ */
+const bilibiliLyricsMigrationKey = "aria-bilibili-cc-migration-v3";
+
+export function migrateBilibiliLyricsCache() {
+  try {
+    if (window.localStorage.getItem(bilibiliLyricsMigrationKey) === "1") return;
+    const lyricsRaw = window.localStorage.getItem(lyricCacheKey);
+    if (lyricsRaw) {
+      const cache = JSON.parse(lyricsRaw) as Record<string, LyricLine[]>;
+      for (const key of Object.keys(cache)) {
+        if (key.startsWith("bilibili:")) delete cache[key];
+      }
+      window.localStorage.setItem(lyricCacheKey, JSON.stringify(cache));
+    }
+    lyricsCacheState = null;
+
+    const sanitize = (track: unknown) => {
+      if (!track || typeof track !== "object") return track;
+      const candidate = track as Partial<Track>;
+      if (candidate.source !== "bilibili") return track;
+      return { ...candidate, lyrics: [], lyricStatus: "searchable" as const };
+    };
+    const playerRaw = window.localStorage.getItem(playerCacheKey);
+    if (playerRaw) {
+      const state = JSON.parse(playerRaw) as CachedPlayerState;
+      if (state.activeTrackSnapshot) state.activeTrackSnapshot = sanitize(state.activeTrackSnapshot) as Track;
+      if (Array.isArray(state.playQueueSnapshots)) {
+        state.playQueueSnapshots = state.playQueueSnapshots.map(sanitize) as Track[];
+      }
+      window.localStorage.setItem(playerCacheKey, JSON.stringify(state));
+    }
+
+    const playlistsRaw = window.localStorage.getItem("aria-local-playlists-v1");
+    if (playlistsRaw) {
+      const playlists = JSON.parse(playlistsRaw) as Array<Record<string, unknown>>;
+      if (Array.isArray(playlists)) {
+        for (const playlist of playlists) {
+          if (!playlist || typeof playlist !== "object" || !playlist.trackSnapshots || typeof playlist.trackSnapshots !== "object") continue;
+          playlist.trackSnapshots = Object.fromEntries(
+            Object.entries(playlist.trackSnapshots as Record<string, unknown>).map(([id, track]) => [id, sanitize(track)]),
+          );
+        }
+        window.localStorage.setItem("aria-local-playlists-v1", JSON.stringify(playlists));
+      }
+    }
+    window.localStorage.setItem(bilibiliLyricsMigrationKey, "1");
+  } catch {
+    // A broken cache must never block app startup.
+  }
+}
+
 export function readCachedAudioSettings() {
   try {
     const raw = window.localStorage.getItem(audioSettingsKey);
