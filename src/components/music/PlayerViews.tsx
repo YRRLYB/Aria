@@ -50,8 +50,10 @@ function VideoPlaybackChrome({
   videoActive,
   videoControlRef,
   videoUrl,
+  videoAudioUrl,
   videoQualities,
   videoQualityId,
+  videoAudioQuality,
   onVideoQualityChange,
   onVideoDuration,
   onVideoEnded,
@@ -75,8 +77,10 @@ function VideoPlaybackChrome({
   videoActive: boolean;
   videoControlRef: { current: VideoControl | null };
   videoUrl?: string;
+  videoAudioUrl?: string;
   videoQualities: Array<{ id: number; label: string }>;
   videoQualityId: number | null;
+  videoAudioQuality?: string | null;
   onVideoQualityChange?: (qn: number | null) => void;
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
@@ -125,6 +129,7 @@ function VideoPlaybackChrome({
         <VideoStage
           track={activeTrack}
           src={videoUrl}
+          audioSrc={videoAudioUrl}
           active={videoActive}
           playing={playing}
           volume={volume}
@@ -142,6 +147,11 @@ function VideoPlaybackChrome({
           <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/80 backdrop-blur">
             {activeTrack.videoQuality ?? "视频"}
           </span>
+          {videoAudioQuality && (
+            <span className="rounded-full bg-emerald-500/75 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur">
+              {videoAudioQuality} 音轨
+            </span>
+          )}
         </div>
         {videoQualities.length > 0 && onVideoQualityChange && (
           <select
@@ -155,18 +165,6 @@ function VideoPlaybackChrome({
               <option key={quality.id} value={quality.id}>{quality.label}</option>
             ))}
           </select>
-        )}
-        {!playing && (
-          <button
-            type="button"
-            className="absolute inset-0 flex items-center justify-center bg-black/10 text-white transition hover:bg-black/20"
-            aria-label="播放视频"
-            onClick={onTogglePlay}
-          >
-            <span className="flex size-16 items-center justify-center rounded-full bg-white/20 backdrop-blur transition hover:scale-105 hover:bg-white/30">
-              <Play className="ml-1 size-7 fill-current" />
-            </span>
-          </button>
         )}
         <div className="absolute inset-x-0 bottom-0 p-3">
           <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-black/45 px-3 py-2 text-white backdrop-blur-md">
@@ -299,8 +297,10 @@ export function PlayerSurface({
   videoMode,
   onToggleVideoMode,
   videoUrlOverride,
+  videoAudioUrlOverride,
   videoQualities = [],
   videoQualityId = null,
+  videoAudioQuality = null,
   onVideoQualityChange,
   videoActive,
   videoControlRef,
@@ -343,8 +343,10 @@ export function PlayerSurface({
   videoMode: boolean;
   onToggleVideoMode: () => void;
   videoUrlOverride?: string;
+  videoAudioUrlOverride?: string;
   videoQualities?: Array<{ id: number; label: string }>;
   videoQualityId?: number | null;
+  videoAudioQuality?: string | null;
   onVideoQualityChange?: (qn: number | null) => void;
   videoActive: boolean;
   videoControlRef: { current: VideoControl | null };
@@ -477,8 +479,10 @@ export function PlayerSurface({
               videoActive={videoActive}
               videoControlRef={videoControlRef}
               videoUrl={videoUrlOverride}
+              videoAudioUrl={videoAudioUrlOverride}
               videoQualities={videoQualities}
               videoQualityId={videoQualityId}
+              videoAudioQuality={videoAudioQuality}
               onVideoQualityChange={onVideoQualityChange}
               onVideoDuration={onVideoDuration}
               onVideoEnded={onVideoEnded}
@@ -578,6 +582,8 @@ export function PlayerSurface({
             ) : videoMode && activeTrack.videoUrl ? (
               <VideoStage
                 track={activeTrack}
+                src={videoUrlOverride}
+                audioSrc={videoAudioUrlOverride}
                 active={videoActive}
                 playing={playing}
                 volume={volume}
@@ -865,8 +871,10 @@ export function ImmersivePlayerView({
   onToggleVideoMode,
   videoControlRef,
   videoUrlOverride,
+  videoAudioUrlOverride,
   videoQualities = [],
   videoQualityId = null,
+  videoAudioQuality = null,
   onVideoQualityChange,
   onVideoDuration,
   onVideoEnded,
@@ -892,8 +900,10 @@ export function ImmersivePlayerView({
   onToggleVideoMode: () => void;
   videoControlRef: { current: VideoControl | null };
   videoUrlOverride?: string;
+  videoAudioUrlOverride?: string;
   videoQualities?: Array<{ id: number; label: string }>;
   videoQualityId?: number | null;
+  videoAudioQuality?: string | null;
   onVideoQualityChange?: (qn: number | null) => void;
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
@@ -922,6 +932,7 @@ export function ImmersivePlayerView({
           <VideoStage
             track={activeTrack}
             src={videoUrlOverride}
+            audioSrc={videoAudioUrlOverride}
             active={videoActive}
             playing={playing}
             volume={volume}
@@ -940,6 +951,10 @@ export function ImmersivePlayerView({
                 {activeTrack.title}
               </h1>
               <p className="mt-1 truncate text-sm text-white/55">{activeTrack.artist} · {activeTrack.album}</p>
+              <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                {activeTrack.videoQuality && <span className="rounded-full bg-white/10 px-2 py-0.5 text-white/75">{activeTrack.videoQuality}</span>}
+                {videoAudioQuality && <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-emerald-200">{videoAudioQuality} 音轨</span>}
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {videoQualities.length > 0 && onVideoQualityChange && (

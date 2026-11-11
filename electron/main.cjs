@@ -193,9 +193,14 @@ app.commandLine.appendSwitch("enable-features", "MediaSessionService");
 // This is scoped per session instead of a global --no-proxy-server switch so
 // the updater can still use the user's proxy to reach GitHub.
 // The app owns SMTC for both Chromium and mpv. Avoid a second Chromium card.
+// Bilibili 4K/DASH video is video-only + a separate audio element, so Chromium
+// would otherwise pause the picture in the background ("video-only background
+// media") while the audio element keeps playing.
+const disabledChromiumFeatures = ["BackgroundVideoPauseOptimization"];
 if (iconicThumbAddon?.mediaSessionAvailable || nowPlayingAddon?.available) {
-  app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling");
+  disabledChromiumFeatures.push("HardwareMediaKeyHandling");
 }
+app.commandLine.appendSwitch("disable-features", disabledChromiumFeatures.join(","));
 
 function getNativeAudioEngine() {
   if (!nativeAudioEngine) {
@@ -693,7 +698,10 @@ async function createWindow() {
       preload: resolvePreload(),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: true,
+      // Bilibili 4K is delivered as a video-only DASH stream plus a separate
+      // audio element. Chromium otherwise pauses "video-only background media"
+      // whenever the window loses focus, leaving the audio playing alone.
+      backgroundThrottling: false,
     },
   });
   if (process.platform !== "darwin") {

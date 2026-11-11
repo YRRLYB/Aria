@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 export function VideoStage({
   track,
   src,
+  audioSrc,
   active,
   playing,
   volume,
@@ -17,6 +18,7 @@ export function VideoStage({
 }: {
   track: Track;
   src?: string;
+  audioSrc?: string;
   active: boolean;
   playing: boolean;
   volume: number;
@@ -27,10 +29,13 @@ export function VideoStage({
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   useVideoPlayback({
     videoRef,
+    audioRef,
     active,
     videoUrl: src ?? track.videoUrl,
+    audioUrl: audioSrc,
     playing,
     volume,
     controlRef,
@@ -40,13 +45,16 @@ export function VideoStage({
   });
 
   return (
-    <video
-      ref={videoRef}
-      className={cn("size-full bg-black object-contain", className)}
-      poster={track.coverUrl}
-      playsInline
-      preload="metadata"
-      aria-label={`${track.title} 视频`}
-    />
+    <>
+      <video
+        ref={videoRef}
+        className={cn("size-full bg-black object-contain", className)}
+        poster={track.coverUrl}
+        playsInline
+        preload="metadata"
+        aria-label={`${track.title} 视频`}
+      />
+      <audio ref={audioRef} preload="auto" aria-hidden="true" className="hidden" />
+    </>
   );
 }

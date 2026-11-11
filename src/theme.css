@@ -85,12 +85,22 @@ button:disabled { cursor: default; }
 .home-dashboard {
   position: relative;
   height: 100%;
-  overflow: hidden;
+  /* The home canvas can outgrow short windows; keep it scrollable instead of
+     clipping the lower cards (the old fixed layout made the stack look stuck). */
+  overflow-x: hidden;
+  overflow-y: auto;
   min-height: 0;
   isolation: isolate;
   background: #fbfbfd;
 }
-.home-dashboard::before {
+.home-ambient {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.home-ambient::before {
   position: absolute;
   z-index: -1;
   inset: -22%;
@@ -105,9 +115,9 @@ button:disabled { cursor: default; }
   will-change: transform;
   pointer-events: none;
 }
-.home-content { --home-row-height: clamp(48px, calc(48px + (100dvh - 720px) * .045), 56px); width: 100%; max-width: 1880px; height: 100%; margin: 0 auto; padding: 22px 28px 104px; }
-.home-primary-layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(248px, 22vw, 300px); gap: 24px; height: 100%; min-height: 0; align-items: stretch; }
-.home-main-column { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 26px; min-width: 0; min-height: 0; }
+.home-content { --home-row-height: clamp(48px, calc(48px + (100dvh - 720px) * .045), 56px); display: flex; flex-direction: column; width: 100%; max-width: 1880px; min-height: 100%; margin: 0 auto; padding: 22px 28px 104px; }
+.home-primary-layout { display: grid; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr) clamp(248px, 22vw, 300px); gap: 24px; height: auto; min-height: 0; align-items: stretch; }
+.home-main-column { display: grid; grid-template-rows: minmax(min-content, 1fr) auto; gap: 26px; min-width: 0; min-height: 0; }
 .home-hero {
   position: relative;
   display: flex;
@@ -314,7 +324,7 @@ button:disabled { cursor: default; }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-nav-link, .home-song-play, .home-recent-track, .home-card-play { transition: none; }
-  .home-dashboard::before { animation: none; }
+  .home-ambient::before { animation: none; }
   .home-character-art { animation: none; }
 }
 

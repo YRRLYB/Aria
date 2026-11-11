@@ -7,6 +7,7 @@ import {
   resolveLocalPlaylistTracks,
   writeLocalPlaylists,
   type LocalPlaylist,
+  type LocalPlaylistRemoteRef,
 } from "@/lib/localPlaylists";
 
 export function useLocalPlaylists(tracks: Track[]) {
@@ -27,15 +28,38 @@ export function useLocalPlaylists(tracks: Track[]) {
     [tracks, selectedPlaylist],
   );
 
-  function create(name: string, initialTracks: Track[] = []) {
+  function create(name: string, initialTracks: Track[] = [], remoteRef?: LocalPlaylistRemoteRef) {
     const playlist = createLocalPlaylist(
       name,
       initialTracks.map((track) => track.id),
       Date.now(),
       createPlaylistTrackSnapshots(initialTracks),
+      remoteRef ? { ...remoteRef, syncedAt: Date.now() } : undefined,
     );
     setPlaylists((current) => [playlist, ...current]);
     return playlist;
+  }
+
+  function syncReference(id: string, tracksToSync: Track[], title?: string) {
+    const snapshots = createPlaylistTrackSnapshots(tracksToSync);
+    const trimmedTitle = title?.trim().slice(0, 120);
+    setPlaylists((current) => current.map((playlist) => {
+      if (playlist.id !== id) return playlist;
+      return {
+        ...playlist,
+        name: trimmedTitle || playlist.name,
+        trackIds: [...new Set(tracksToSync.map((track) => track.id))],
+        trackSnapshots: snapshots,
+        remoteRef: playlist.remoteRef
+          ? {
+              ...playlist.remoteRef,
+              ...(trimmedTitle ? { title: trimmedTitle } : {}),
+              syncedAt: Date.now(),
+            }
+          : undefined,
+        updatedAt: Date.now(),
+      };
+    }));
   }
 
   function rename(id: string, name: string) {
@@ -103,6 +127,7 @@ export function useLocalPlaylists(tracks: Track[]) {
     addTracks,
     removeTracks,
     reorder,
+    syncReference,
     remove,
   };
 }

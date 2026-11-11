@@ -43,7 +43,19 @@ type BiliPlayData = {
     audio?: BiliAudio[];
     dolby?: { type?: number; audio?: BiliAudio | null };
     flac?: { display?: boolean; audio?: BiliAudio | null };
-    video?: Array<{ id?: number; baseUrl?: string; base_url?: string; width?: number; height?: number }>;
+    video?: Array<{
+      id?: number;
+      baseUrl?: string;
+      base_url?: string;
+      width?: number;
+      height?: number;
+      bandwidth?: number;
+      codecs?: string;
+      frameRate?: string;
+      frame_rate?: string;
+      mimeType?: string;
+      mime_type?: string;
+    }>;
   };
   durl?: Array<{ url?: string; backup_url?: string[]; size?: number; length?: number }>;
 };
@@ -168,6 +180,20 @@ type BiliFavPage = {
   info?: { media_count?: number; title?: string };
   medias?: BiliFavMedia[] | null;
   has_more?: boolean;
+};
+
+type BiliSeasonArchive = {
+  bvid?: string;
+  title?: string;
+  pic?: string;
+  duration?: number;
+  pubdate?: number;
+};
+
+type BiliSeasonPage = {
+  meta?: { title?: string; total?: number; mid?: number; season_id?: number };
+  archives?: BiliSeasonArchive[] | null;
+  page?: { page_num?: number; page_size?: number; total?: number };
 };
 
 type BiliQrSession = {
@@ -627,6 +653,33 @@ function mapBilibiliFavMedia(media: BiliFavMedia, folderTitle: string): Provider
   };
 }
 
+function mapBilibiliSeasonArchive(archive: BiliSeasonArchive, seasonTitle: string): ProviderTrack | null {
+  const bvid = typeof archive.bvid === "string" ? archive.bvid : "";
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) return null;
+  const title = stripHtml(String(archive.title ?? "B站视频")).trim();
+  return {
+    id: bvid,
+    title: title || "B站视频",
+    artist: "B站合集",
+    album: seasonTitle ? `B站 · ${seasonTitle}` : "B站合集",
+    duration: Number(archive.duration ?? 0) || 0,
+    quality: "320K",
+    source: "bilibili",
+    streamUrl: `/api/sources/bilibili/tracks/${encodeURIComponent(bvid)}/stream`,
+    videoUrl: `/api/sources/bilibili/tracks/${encodeURIComponent(bvid)}/video`,
+    hasVideo: true,
+    videoQuality: null,
+    coverUrl: normalizeCover(archive.pic),
+    bitrate: null,
+    sampleRate: null,
+    currentLevel: null,
+    availableLevels: ["standard", "higher", "exhigh", "lossless", "hires"],
+    vip: false,
+    bpm: null,
+    likedAt: archive.pubdate ? archive.pubdate * 1000 : null,
+  };
+}
+
 function mapBilibiliViewToTrack(view: BiliViewData): ProviderTrack {
   return {
     id: view.bvid,
@@ -667,12 +720,23 @@ function bilibiliFavIdFromText(text: string) {
     ?? null;
 }
 
+function bilibiliSeasonTargetFromText(text: string): { mid: number; seasonId: number } | null {
+  const direct = text.match(/space\.bilibili\.com\/(\d+)\/lists\/(\d+)(?:[/?#]|$)/i);
+  const fromQuery = text.match(/[?&]season_id=(\d+)/i);
+  const midFromQuery = text.match(/[?&]mid=(\d+)/i);
+  const match = direct ?? (fromQuery && midFromQuery ? [null, midFromQuery[1], fromQuery[1]] : null);
+  if (!match) return null;
+  const mid = Number(match[1]);
+  const seasonId = Number(match[2]);
+  return Number.isFinite(mid) && mid > 0 && Number.isFinite(seasonId) && seasonId > 0 ? { mid, seasonId } : null;
+}
+
 /**
  * Resolve a pasted Bilibili video/favourite-folder link. Short b23.tv links
  * are followed once; folder links may come from space/favlist or medialist.
  */
 export async function resolveBilibiliLink(input: string): Promise<{
-  kind: "video" | "folder";
+  kind: "video" | "folder" | "playlist";
   title?: string;
   tracks: ProviderTrack[];
 }> {
@@ -689,6 +753,10 @@ export async function resolveBilibiliLink(input: string): Promise<{
       parsed = new URL(target);
     } catch {
       throw new SourceError("UNAVAILABLE", "B站链接格式不正确", { source: "bilibili" });
+    }
+    const seasonTarget = bilibiliSeasonTargetFromText(text);
+    if (seasonTarget) {
+      return await loadBilibiliSeason(seasonTarget.mid, seasonTarget.seasonId);
     }
     const host = parsed.hostname.toLowerCase();
     if (host !== "b23.tv" && !host.endsWith(".b23.tv")) {
@@ -709,11 +777,15 @@ export async function resolveBilibiliLink(input: string): Promise<{
         const finalUrl = response.url;
         bvid = bilibiliBvidFromText(finalUrl);
         if (!bvid) {
+          const finalSeason = bilibiliSeasonTargetFromText(finalUrl);
+          if (finalSeason) return await loadBilibiliSeason(finalSeason.mid, finalSeason.seasonId);
           const finalFav = bilibiliFavIdFromText(finalUrl);
           if (finalFav) return await loadBilibiliFavFolder(Number(finalFav));
           const html = await response.text();
           bvid = bilibiliBvidFromText(html);
           if (!bvid) {
+            const htmlSeason = bilibiliSeasonTargetFromText(html);
+            if (htmlSeason) return await loadBilibiliSeason(htmlSeason.mid, htmlSeason.seasonId);
             const favId = bilibiliFavIdFromText(html);
             if (favId) {
               return await loadBilibiliFavFolder(Number(favId));
@@ -764,6 +836,37 @@ async function loadBilibiliFavFolder(mediaId: number): Promise<{
     throw new SourceError("UNAVAILABLE", "该B站收藏夹为空、不可见，或需要登录后访问", { source: "bilibili" });
   }
   return { kind: "folder", title: folderTitle || `B站收藏夹 ${mediaId}`, tracks };
+}
+
+async function loadBilibiliSeason(mid: number, seasonId: number): Promise<{
+  kind: "playlist";
+  title?: string;
+  tracks: ProviderTrack[];
+}> {
+  const tracks: ProviderTrack[] = [];
+  const seen = new Set<string>();
+  let seasonTitle = "";
+  let page = 1;
+  let hasMore = true;
+  while (hasMore && page <= 20) {
+    const data = await biliJson<BiliSeasonPage>(
+      `https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=${mid}&season_id=${seasonId}&sort_reverse=false&page_num=${page}&page_size=30`,
+    );
+    seasonTitle = seasonTitle || String(data?.meta?.title ?? "").trim();
+    for (const archive of data?.archives ?? []) {
+      const track = mapBilibiliSeasonArchive(archive, seasonTitle);
+      if (!track || seen.has(track.id)) continue;
+      seen.add(track.id);
+      tracks.push(track);
+    }
+    const total = Number(data?.meta?.total ?? data?.page?.total ?? 0);
+    hasMore = (data?.archives?.length ?? 0) > 0 && (!total || tracks.length < total);
+    page += 1;
+  }
+  if (!tracks.length) {
+    throw new SourceError("UNAVAILABLE", "该B站合集为空，或需要登录后才能读取", { source: "bilibili" });
+  }
+  return { kind: "playlist", title: seasonTitle || `B站合集 ${seasonId}`, tracks };
 }
 
 export async function getBilibiliLikedTracks(): Promise<ProviderTrack[]> {
@@ -1106,6 +1209,41 @@ export async function resolveBilibiliStreamMeta(
   return meta;
 }
 
+type BiliVideoStream = NonNullable<NonNullable<BiliPlayData["dash"]>["video"]>[number];
+
+function videoBaseUrl(video: BiliVideoStream) {
+  return video.baseUrl ?? video.base_url ?? "";
+}
+
+/**
+ * Chromium can always decode H.264. Newer builds usually decode AV1 too, while
+ * HEVC depends on the platform decoder. Prefer the most compatible stream when
+ * Bilibili offers several codecs for the same quality.
+ */
+function videoCodecRank(video: BiliVideoStream) {
+  const codecs = (video.codecs ?? "").toLowerCase();
+  if (codecs.startsWith("avc1")) return 0;
+  if (codecs.startsWith("av01")) return 1;
+  if (codecs.startsWith("hev1") || codecs.startsWith("hvc1")) return 2;
+  return 3;
+}
+
+function chooseVideoStream(videos: BiliVideoStream[], qn: number | undefined) {
+  const playable = videos.filter((video) => Number.isFinite(video.id) && Boolean(videoBaseUrl(video)));
+  const ids = [...new Set(playable.map((video) => video.id as number))].sort((left, right) => right - left);
+  if (!ids.length) return null;
+  const requested = qn ?? 120;
+  const target = ids.includes(requested) ? requested : ids.find((id) => id <= requested) ?? ids[0];
+  return playable
+    .filter((video) => video.id === target)
+    .sort((left, right) => videoCodecRank(left) - videoCodecRank(right) || (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0] ?? null;
+}
+
+function videoQualityLabel(data: BiliPlayData, id: number) {
+  const index = data.accept_quality?.indexOf(id) ?? -1;
+  return index >= 0 ? data.accept_description?.[index] ?? `${id}P` : `${id}P`;
+}
+
 export async function resolveBilibiliVideoMeta(
   trackId: string,
   options: { level?: AriaLevel; qn?: number; refresh?: boolean },
@@ -1116,7 +1254,66 @@ export async function resolveBilibiliVideoMeta(
   if (!options.refresh && cachedVideo && Date.now() - cachedVideo.at < MEDIA_META_CACHE_MS) {
     return cachedVideo.meta;
   }
-  const { data } = await playurl(trackId, 0, "hires", signal, options.qn ?? 120);
+  // Ask for every format the account can access (DASH, 4K, HDR, Dolby audio,
+  // FLAC and AV1). Muxed durl tops out at 1080P and cannot carry 4K or a
+  // separate lossless track, so DASH is the primary video path.
+  const { data } = await playurl(trackId, 4048, "hires", signal, options.qn ?? 120);
+  const videos = data?.dash?.video ?? [];
+  const selected = chooseVideoStream(videos, options.qn);
+
+  if (selected) {
+    const streamIds = new Set(videos.map((video) => video.id).filter((id): id is number => Number.isFinite(id)));
+    const reportedQualities = (data?.accept_quality ?? []).filter((id) => streamIds.has(id));
+    const qualityIds = reportedQualities.length
+      ? reportedQualities
+      : [...streamIds].sort((left, right) => right - left);
+    const availableQualities = qualityIds.map((id) => {
+      const stream = chooseVideoStream(videos, id);
+      return {
+        id,
+        label: videoQualityLabel(data, id),
+        width: stream?.width ?? null,
+        height: stream?.height ?? null,
+        codecs: stream?.codecs ?? null,
+      };
+    });
+
+    const audios: BiliAudio[] = [...(data?.dash?.audio ?? [])];
+    const flacAudio = data?.dash?.flac?.audio;
+    if (flacAudio) audios.push({ ...flacAudio, id: flacAudio.id || 30251, kind: "flac" });
+    const dolbyAudio = data?.dash?.dolby?.audio;
+    if (dolbyAudio) audios.push({ ...dolbyAudio, id: dolbyAudio.id || 30250, kind: "dolby" });
+    const chosenAudio = chooseAudio(audios, "hires");
+    const url = videoBaseUrl(selected);
+    const audioUrl = chosenAudio ? audioBaseUrl(chosenAudio.audio) : null;
+    const meta: SourceVideoMeta = {
+      url: url.startsWith("//") ? `https:${url}` : url,
+      headers: {
+        "User-Agent": BILIBILI_UA,
+        Referer: BILIBILI_REFERER,
+        Cookie: await requestCookie(),
+      },
+      audioUrl: audioUrl ? (audioUrl.startsWith("//") ? `https:${audioUrl}` : audioUrl) : null,
+      audioQuality: chosenAudio?.entry.label ?? null,
+      audioCodecs: chosenAudio?.audio.codecs ?? null,
+      mode: "dash",
+      mimeType: "video/mp4",
+      quality: videoQualityLabel(data, selected.id as number),
+      qualityId: selected.id ?? null,
+      availableQualities,
+      width: selected.width ?? null,
+      height: selected.height ?? null,
+      expiresAt: Date.now() + STREAM_URL_TTL_MS,
+    };
+    videoMetaCache.set(cacheKey, { at: Date.now(), meta });
+    if (videoMetaCache.size > 120) {
+      const oldest = videoMetaCache.keys().next().value;
+      if (oldest) videoMetaCache.delete(oldest);
+    }
+    return meta;
+  }
+
+  // Very old videos may only expose a progressive durl stream.
   const durl = data?.durl?.[0];
   const url = durl?.url;
   if (!url) {
@@ -1138,6 +1335,8 @@ export async function resolveBilibiliVideoMeta(
       Referer: BILIBILI_REFERER,
       Cookie: await requestCookie(),
     },
+    audioUrl: null,
+    mode: "muxed",
     mimeType: "video/mp4",
     quality: quality ?? "360P",
     qualityId: data?.quality ?? null,

@@ -177,9 +177,10 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
       const level = parseLevelQuery(req.query.level);
       const qn = parseQnQuery(req.query.qn);
       const meta = await source.resolveVideoMeta(req.params.trackId, { level, qn });
-      const { headers, ...publicMeta } = meta;
+      const { headers, audioUrl, ...publicMeta } = meta;
       void headers;
-      res.json(publicMeta);
+      void audioUrl;
+      res.json({ ...publicMeta, hasSeparateAudio: Boolean(meta.audioUrl) });
     } catch (error) {
       next(error);
     }
@@ -200,6 +201,30 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
           refresh: attempt > 0,
         });
         return meta;
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/tracks/:trackId/video-audio", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.resolveVideoMeta) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}不提供视频音轨`, { source: source.manifest.id });
+      }
+      const level = parseLevelQuery(req.query.level);
+      const qn = parseQnQuery(req.query.qn);
+      await proxyAudioStream(req, res, async (attempt) => {
+        const meta = await source.resolveVideoMeta!(req.params.trackId, {
+          level,
+          qn,
+          refresh: attempt > 0,
+        });
+        if (!meta.audioUrl) {
+          throw new SourceError("UNAVAILABLE", "该B站视频没有独立音轨", { source: "bilibili" });
+        }
+        return { ...meta, url: meta.audioUrl, mimeType: /flac/i.test(meta.audioCodecs ?? "") ? "audio/flac" : meta.mimeType?.startsWith("audio/") ? meta.mimeType : "audio/mp4" };
       });
     } catch (error) {
       next(error);

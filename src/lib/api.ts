@@ -907,6 +907,12 @@ export const api = {
     const suffix = params.size ? `?${params}` : "";
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/tracks/${encodeURIComponent(trackId)}/video-meta${suffix}`);
   },
+  getSourceVideoAudioUrl(trackId: string, qn?: number | null) {
+    const params = new URLSearchParams();
+    if (qn) params.set("qn", String(qn));
+    const suffix = params.size ? `?${params}` : "";
+    return apiUrl(`/api/sources/bilibili/tracks/${encodeURIComponent(trackId)}/video-audio${suffix}`);
+  },
   getSourceVideoMeta(sourceId: string, trackId: string, level?: string, qn?: number | null) {
     const params = new URLSearchParams();
     if (level) params.set("level", level);
@@ -917,7 +923,11 @@ export const api = {
       mimeType?: string | null;
       quality?: string | null;
       qualityId?: number | null;
-      availableQualities?: Array<{ id: number; label: string }>;
+      availableQualities?: Array<{ id: number; label: string; width?: number | null; height?: number | null; codecs?: string | null }>;
+      hasSeparateAudio?: boolean;
+      audioQuality?: string | null;
+      audioCodecs?: string | null;
+      mode?: "muxed" | "dash" | null;
       width?: number | null;
       height?: number | null;
       expiresAt?: number | null;

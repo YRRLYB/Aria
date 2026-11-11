@@ -54,6 +54,33 @@ describe("local playlists", () => {
     expect(resolveLocalPlaylistTracks(null, tracks)).toEqual([]);
   });
 
+  it("keeps Bilibili reference metadata through a storage round trip", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: vi.fn((key: string) => values.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
+    };
+    const playlist = createLocalPlaylist(
+      "别人的收藏夹",
+      ["bilibili:BV1xx411c7mD"],
+      10,
+      undefined,
+      {
+        source: "bilibili",
+        url: "https://space.bilibili.com/123/favlist?fid=456",
+        kind: "folder",
+        title: "别人的收藏夹",
+        syncedAt: 20,
+      },
+    );
+    expect(writeLocalPlaylists([playlist], storage)).toBe(true);
+    expect(readLocalPlaylists(storage)).toEqual([playlist]);
+    expect(sanitizeLocalPlaylists([{
+      ...playlist,
+      remoteRef: { source: "bilibili", url: "  ", kind: "playlist" },
+    }])[0].remoteRef).toBeUndefined();
+  });
+
   it("keeps compact remote snapshots so mixed playlists survive a restart", () => {
     const remote = {
       id: "qq:0039MnYb0qxYhV",

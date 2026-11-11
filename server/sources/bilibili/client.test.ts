@@ -159,6 +159,60 @@ describe("Bilibili client", () => {
     });
   });
 
+  it("resolves 4K DASH video with a separate lossless audio track", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          quality: 120,
+          accept_quality: [120, 80, 16],
+          accept_description: ["超清 4K", "高清 1080P", "流畅 360P"],
+          dash: {
+            video: [
+              { id: 120, baseUrl: "https://cdn.test/4k-hevc.m4s", codecs: "hev1.1.6.L153.90", width: 3840, height: 2160, bandwidth: 2_300_000 },
+              { id: 120, baseUrl: "https://cdn.test/4k-avc.m4s", codecs: "avc1.4D4034", width: 3840, height: 2160, bandwidth: 5_500_000 },
+              { id: 80, baseUrl: "https://cdn.test/1080-avc.m4s", codecs: "avc1.640032", width: 1920, height: 1080, bandwidth: 1_000_000 },
+              { id: 16, baseUrl: "https://cdn.test/360-avc.m4s", codecs: "avc1.64001E", width: 640, height: 360, bandwidth: 300_000 },
+            ],
+            audio: [
+              { id: 30280, baseUrl: "https://cdn.test/audio-192.m4s", bandwidth: 320_000, codecs: "mp4a.40.2" },
+            ],
+            flac: {
+              display: true,
+              audio: {
+                id: 30251,
+                baseUrl: "https://cdn.test/audio-hires.flac",
+                bandwidth: 900_000,
+                codecs: "fLaC",
+              },
+            },
+          },
+        },
+      }));
+
+    const video = await resolveBilibiliVideoMeta("BV1xx411c7mD", { qn: 120 });
+    expect(video).toMatchObject({
+      mode: "dash",
+      url: "https://cdn.test/4k-avc.m4s",
+      audioUrl: "https://cdn.test/audio-hires.flac",
+      audioQuality: "Hi-Res",
+      quality: "超清 4K",
+      qualityId: 120,
+      width: 3840,
+      height: 2160,
+      availableQualities: [
+        { id: 120, label: "超清 4K", codecs: "avc1.4D4034" },
+        { id: 80, label: "高清 1080P", codecs: "avc1.640032" },
+        { id: 16, label: "流畅 360P", codecs: "avc1.64001E" },
+      ],
+    });
+  });
+
   it("exposes Bilibili FLAC and Dolby tracks for Big Members", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response("<html></html>", {
@@ -475,6 +529,33 @@ describe("Bilibili client", () => {
       kind: "folder",
       title: "别人的收藏夹",
       tracks: [{ id: "BV1xx411c7mD", album: "B站 · 别人的收藏夹" }],
+    });
+
+    resetBilibiliStateForTests();
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValue(jsonResponse({
+        code: 0,
+        data: {
+          meta: { title: "别人的合集", total: 1 },
+          archives: [{
+            bvid: "BV1xx411c7mD",
+            title: "合集视频",
+            pic: "//i0.hdslb.com/season.jpg",
+            duration: 120,
+            pubdate: 1_700_000_000,
+          }],
+        },
+      }));
+    const season = await resolveBilibiliLink("https://space.bilibili.com/123/lists/789?type=season");
+    expect(season).toMatchObject({
+      kind: "playlist",
+      title: "别人的合集",
+      tracks: [{ id: "BV1xx411c7mD", album: "B站 · 别人的合集", artist: "B站合集" }],
     });
   });
 });

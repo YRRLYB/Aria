@@ -214,6 +214,7 @@ export function HomeSurface({
 
   return (
     <div className="home-dashboard">
+      <div className="home-ambient" aria-hidden="true" />
       <div className="home-content">
         <div className="home-primary-layout">
           <div className="home-main-column">

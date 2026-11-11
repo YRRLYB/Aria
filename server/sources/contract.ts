@@ -132,15 +132,33 @@ export type SourceStreamMeta = {
   expiresAt?: number | null;
 };
 
+export type SourceVideoQuality = {
+  id: number;
+  label: string;
+  width?: number | null;
+  height?: number | null;
+  /** Codec string of the stream that will be served for this quality. */
+  codecs?: string | null;
+};
+
 export type SourceVideoMeta = {
   url: string;
   headers?: Record<string, string>;
+  /**
+   * Separate DASH audio track. When present the video stream is video-only and
+   * the client must play this URL in a synchronised audio element. Muxed
+   * streams (durl / progressive MP4) leave this empty.
+   */
+  audioUrl?: string | null;
+  audioQuality?: string | null;
+  audioCodecs?: string | null;
+  mode?: "muxed" | "dash" | null;
   mimeType?: string | null;
   quality?: string | null;
   /** Platform quality id (Bilibili qn) currently granted. */
   qualityId?: number | null;
   /** Selectable qualities reported by the platform for this video. */
-  availableQualities?: Array<{ id: number; label: string }>;
+  availableQualities?: SourceVideoQuality[];
   width?: number | null;
   height?: number | null;
   expiresAt?: number | null;

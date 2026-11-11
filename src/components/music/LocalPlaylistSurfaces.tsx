@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, Link2, ListMusic, LoaderCircle, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Link2, ListMusic, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
 import { createLocalTrackSearchIndex, searchLocalTrackIndex } from "@/lib/localSearch";
-import type { LocalPlaylist } from "@/lib/localPlaylists";
+import type { LocalPlaylist, LocalPlaylistRemoteRef } from "@/lib/localPlaylists";
 import { resolveLocalPlaylistTracks } from "@/lib/localPlaylists";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { sourceLabel } from "@/lib/trackLabels";
@@ -21,11 +21,12 @@ export type LocalPlaylistSurfaceProps = {
   storageError: boolean;
   onOpen: (id: string) => void;
   onClose: () => void;
-  onCreate: (name: string, tracks?: Track[]) => LocalPlaylist;
+  onCreate: (name: string, tracks?: Track[], remoteRef?: LocalPlaylistRemoteRef) => LocalPlaylist;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onAdd: (id: string, tracks: Track[]) => void;
   onRemove: (id: string, tracks: Track[]) => void;
+  onSyncReference: (id: string, tracks: Track[], title?: string) => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
 };
 
@@ -56,6 +57,7 @@ function LocalPlaylistGallery({
 }: LocalPlaylistSurfaceProps & { onOpenNetease: () => void }) {
   const [name, setName] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [referenceOpen, setReferenceOpen] = useState(false);
   const fileTracks = useMemo(() => allTracks, [allTracks]);
 
   function submit(event: React.FormEvent) {
@@ -75,9 +77,14 @@ function LocalPlaylistGallery({
           <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">Aria 歌单</h1>
           <p className="mt-3 text-neutral-500">保存在这台电脑，可混合本地、网易云、QQ 音乐和 B站歌曲。</p>
         </div>
-        <Button onClick={() => setCreateOpen((current) => !current)} aria-expanded={createOpen} aria-controls="create-local-playlist-form">
-          <Plus />新建
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="glass" onClick={() => setReferenceOpen(true)}>
+            <Link2 />引用B站歌单
+          </Button>
+          <Button onClick={() => setCreateOpen((current) => !current)} aria-expanded={createOpen} aria-controls="create-local-playlist-form">
+            <Plus />新建
+          </Button>
+        </div>
       </div>
       <div className="mt-6"><SourceTabs onOpenNetease={onOpenNetease} /></div>
       {storageError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">浏览器存储空间不足，本次修改可能无法在重启后保留。</p>}
@@ -96,7 +103,7 @@ function LocalPlaylistGallery({
                 {coverTrack ? <CoverArt track={coverTrack} className="size-16 rounded-2xl shadow-sm" /> : <span className="flex size-16 items-center justify-center rounded-2xl bg-violet-100 text-violet-600"><ListMusic className="size-7" /></span>}
                 <h2 className="mt-8 break-words pr-10 text-2xl font-semibold">{playlist.name}</h2>
                 <p className="mt-2 text-sm text-neutral-500">{playlist.trackIds.length} 首</p>
-                <Badge className="mt-5">Aria 歌单</Badge>
+                <Badge className="mt-5">{playlist.remoteRef ? "B站同步歌单" : "Aria 歌单"}</Badge>
               </button>
               <button
                 type="button"
@@ -115,6 +122,26 @@ function LocalPlaylistGallery({
         })}
       </div>
       {!playlists.length && <EmptyState text={fileTracks.length ? "还没有 Aria 歌单。点击“新建”，然后从本地或在线曲库中挑选歌曲。" : "先扫描本地文件夹或登录在线音源，再创建只属于你的 Aria 歌单。"} />}
+      {referenceOpen && (
+        <BilibiliLinkDialog
+          mode="reference"
+          onClose={() => setReferenceOpen(false)}
+          onReference={(resolved) => {
+            const created = onCreate(
+              resolved.title ?? (resolved.kind === "playlist" ? "B站合集" : "B站收藏夹"),
+              resolved.tracks,
+              {
+                source: "bilibili",
+                url: resolved.url,
+                kind: resolved.kind,
+                ...(resolved.title ? { title: resolved.title } : {}),
+              },
+            );
+            setReferenceOpen(false);
+            onOpen(created.id);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -128,15 +155,36 @@ function LocalPlaylistDetail({
   onDelete,
   onAdd,
   onRemove,
+  onSyncReference,
   onPickTrack,
   onOpenNetease,
 }: LocalPlaylistSurfaceProps & { playlist: LocalPlaylist; onOpenNetease: () => void }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [bilibiliImportOpen, setBilibiliImportOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(playlist.name);
   const virtual = useVirtualRows({ count: selectedTracks.length, rowHeight: 80, overscan: 8 });
   const selectedIds = useMemo(() => new Set(playlist.trackIds), [playlist.trackIds]);
+
+  async function syncReference() {
+    if (!playlist.remoteRef || syncing) return;
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const resolved = await api.resolveSourceLink("bilibili", playlist.remoteRef.url);
+      onSyncReference(
+        playlist.id,
+        resolved.tracks.map((track, index) => providerTrackToUiTrack(track, index)),
+        resolved.title,
+      );
+    } catch (reason) {
+      setSyncError(reason instanceof Error ? reason.message : "同步B站歌单失败，请稍后重试");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function saveName() {
     if (name.trim()) onRename(playlist.id, name);
@@ -155,7 +203,7 @@ function LocalPlaylistDetail({
           <div className="flex min-w-0 items-center gap-4">
             {selectedTracks[0] ? <CoverArt track={selectedTracks[0]} className="size-20 shrink-0 rounded-2xl shadow-md" /> : <span className="flex size-20 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-600"><ListMusic /></span>}
             <div className="min-w-0">
-              <Badge>仅保存在本机</Badge>
+              <Badge>{playlist.remoteRef ? "引用自B站 · 可同步" : "仅保存在本机"}</Badge>
               {renaming ? (
                 <form className="mt-2 flex gap-2" onSubmit={(event) => { event.preventDefault(); saveName(); }}>
                   <input autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} aria-label="重命名 Aria 歌单" className="min-w-0 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xl font-semibold outline-none" />
@@ -166,15 +214,22 @@ function LocalPlaylistDetail({
                   <h1 className="break-words text-3xl font-semibold sm:text-4xl">{playlist.name}</h1><Pencil className="size-4 shrink-0 text-neutral-400" />
                 </button>
               )}
-              <p className="mt-2 text-sm text-neutral-500">{selectedTracks.length} 首可播放{playlist.trackIds.length !== selectedTracks.length ? ` · ${playlist.trackIds.length - selectedTracks.length} 首文件暂不可用` : ""}</p>
+              <p className="mt-2 text-sm text-neutral-500">{selectedTracks.length} 首可播放{playlist.trackIds.length !== selectedTracks.length ? ` · ${playlist.trackIds.length - selectedTracks.length} 首文件暂不可用` : ""}{playlist.remoteRef?.syncedAt ? ` · 上次同步 ${new Date(playlist.remoteRef.syncedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}</p>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <Button onClick={() => setPickerOpen(true)}><Plus />添加歌曲</Button>
+            {playlist.remoteRef && (
+              <Button variant="glass" onClick={() => void syncReference()} disabled={syncing}>
+                {syncing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+                {syncing ? "同步中" : "刷新B站歌单"}
+              </Button>
+            )}
             <Button variant="glass" size="sm" onClick={() => setBilibiliImportOpen(true)}><Link2 />B站链接</Button>
             <Button variant="ghost" size="sm" aria-label="删除 Aria 歌单" title="删除歌单（不会删除音频文件）" onClick={() => { if (window.confirm(`删除 Aria 歌单“${playlist.name}”？音频文件不会被删除。`)) onDelete(playlist.id); }}><Trash2 />删除歌单</Button>
           </div>
         </div>
+        {syncError && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-600">{syncError}</p>}
       </div>
       <div ref={virtual.containerRef} className="no-scrollbar mt-6 min-h-0 flex-1 overflow-y-auto pr-1">
         <div className="relative" style={{ height: virtual.totalHeight }}>
@@ -210,12 +265,17 @@ function LocalPlaylistDetail({
   );
 }
 
-function BilibiliLinkDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (tracks: Track[]) => void }) {
+function BilibiliLinkDialog({ onClose, onAdd, onReference, mode = "add" }: {
+  onClose: () => void;
+  onAdd?: (tracks: Track[]) => void;
+  onReference?: (resolved: { url: string; kind: "folder" | "playlist"; title?: string; tracks: Track[] }) => void;
+  mode?: "add" | "reference";
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ kind: string; title?: string; tracks: Track[] } | null>(null);
+  const [result, setResult] = useState<{ url: string; kind: "video" | "folder" | "playlist"; title?: string; tracks: Track[] } | null>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -232,6 +292,7 @@ function BilibiliLinkDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (t
     try {
       const resolved = await api.resolveSourceLink("bilibili", value);
       setResult({
+        url: value,
         kind: resolved.kind,
         title: resolved.title,
         tracks: resolved.tracks.map((track, index) => providerTrackToUiTrack(track, index)),
@@ -254,8 +315,12 @@ function BilibiliLinkDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (t
       <section className="w-full max-w-lg rounded-3xl border border-white/70 bg-[#faf9fd] p-6 shadow-2xl">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 id="bilibili-link-title" className="text-xl font-semibold">从B站链接添加</h2>
-            <p className="mt-1 text-sm text-neutral-500">支持视频链接、BV 号、收藏夹/合集链接。收藏夹也可以粘贴别人的公开链接。</p>
+            <h2 id="bilibili-link-title" className="text-xl font-semibold">{mode === "reference" ? "引用B站歌单" : "从B站链接添加"}</h2>
+            <p className="mt-1 text-sm text-neutral-500">
+              {mode === "reference"
+                ? "粘贴别人的公开收藏夹或合集链接，创建可随时刷新的同步歌单。"
+                : "支持视频链接、BV 号、收藏夹/合集链接。收藏夹也可以粘贴别人的公开链接。"}
+            </p>
           </div>
           <Button variant="ghost" size="icon" aria-label="关闭B站链接导入" onClick={onClose}><X /></Button>
         </div>
@@ -283,7 +348,19 @@ function BilibiliLinkDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (t
                   {result.kind === "video" ? "单个视频" : "收藏夹"} · {result.tracks.length} 首
                 </p>
               </div>
-              <Button size="sm" onClick={() => onAdd(result.tracks)}>加入歌单</Button>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {onAdd && (
+                  <Button size="sm" variant="glass" onClick={() => onAdd(result.tracks)}>加入歌单</Button>
+                )}
+                {onReference && result.kind !== "video" && (
+                  <Button
+                    size="sm"
+                    onClick={() => onReference({ url: result.url, kind: result.kind as "folder" | "playlist", title: result.title, tracks: result.tracks })}
+                  >
+                    <RefreshCw />引用并同步
+                  </Button>
+                )}
+              </div>
             </div>
             <div className="mt-3 max-h-40 space-y-1 overflow-y-auto pr-1">
               {result.tracks.slice(0, 8).map((track) => (

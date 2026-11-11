@@ -149,6 +149,7 @@ export default function App() {
   const [videoMode, setVideoMode] = useState(false);
   const [videoQn, setVideoQn] = useState<number | null>(null);
   const [videoQualities, setVideoQualities] = useState<Array<{ id: number; label: string }>>([]);
+  const [videoAudioQuality, setVideoAudioQuality] = useState<string | null>(null);
   const videoControlRef = useRef<VideoControl | null>(null);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -720,15 +721,31 @@ export default function App() {
   useEffect(() => {
     setVideoQn(null);
     setVideoQualities([]);
+    setVideoAudioQuality(null);
   }, [activeTrack.id]);
   const activeVideoUrl = useMemo(() => {
     if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || !videoQn) return activeTrack.videoUrl;
     try {
-      const url = new URL(activeTrack.videoUrl, window.location.href);
+      const url = new URL(api.resolveUrl(activeTrack.videoUrl));
       url.searchParams.set("qn", String(videoQn));
       return url.href;
     } catch {
       return activeTrack.videoUrl;
+    }
+  }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
+  // Bilibili's high-quality path is DASH: the video element receives a
+  // video-only stream and this parallel route supplies the audio track
+  // (AAC / Dolby / FLAC). Muxed fallbacks simply play their own audio.
+  const activeVideoAudioUrl = useMemo(() => {
+    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili") return undefined;
+    try {
+      const url = new URL(api.resolveUrl(activeTrack.videoUrl));
+      url.pathname = url.pathname.replace(/\/video$/, "/video-audio");
+      if (videoQn) url.searchParams.set("qn", String(videoQn));
+      else url.searchParams.delete("qn");
+      return url.href;
+    } catch {
+      return undefined;
     }
   }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
@@ -769,6 +786,7 @@ export default function App() {
       .then((meta) => {
         if (cancelled) return;
         setVideoQualities(meta.availableQualities ?? []);
+        setVideoAudioQuality(meta.audioQuality ?? null);
         if (!meta.quality) return;
         updateTrackRef.current(activeTrack.id, (track) => ({
           ...track,
@@ -1715,7 +1733,7 @@ export default function App() {
   }
 
   function pauseActiveVideo() {
-    if (videoMode) videoControlRef.current?.element.pause();
+    if (videoMode) videoControlRef.current?.pause();
   }
 
   async function openImmersiveView() {
@@ -2448,8 +2466,10 @@ export default function App() {
                   videoMode={videoMode}
                   onToggleVideoMode={toggleVideoMode}
                   videoUrlOverride={activeVideoUrl}
+                  videoAudioUrlOverride={activeVideoAudioUrl}
                   videoQualities={videoQualities}
                   videoQualityId={videoQn}
+                  videoAudioQuality={videoAudioQuality}
                   onVideoQualityChange={(qn) => {
                     commitActiveVideoTime();
                     pendingSeekRef.current = getPlaybackTime();
@@ -2674,6 +2694,7 @@ export default function App() {
                     onDelete: localPlaylists.remove,
                     onAdd: localPlaylists.addTracks,
                     onRemove: localPlaylists.removeTracks,
+                    onSyncReference: localPlaylists.syncReference,
                     onPickTrack: chooseTrack,
                   }}
                   selectedPlaylist={selectedPlaylist}
@@ -2944,8 +2965,10 @@ export default function App() {
               onToggleVideoMode={toggleVideoMode}
               videoControlRef={videoControlRef}
               videoUrlOverride={activeVideoUrl}
+              videoAudioUrlOverride={activeVideoAudioUrl}
               videoQualities={videoQualities}
               videoQualityId={videoQn}
+              videoAudioQuality={videoAudioQuality}
               onVideoQualityChange={(qn) => {
                 commitActiveVideoTime();
                 pendingSeekRef.current = getPlaybackTime();

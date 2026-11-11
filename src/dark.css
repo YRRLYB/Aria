@@ -107,7 +107,7 @@ html.dark {
   background: var(--page);
 }
 
-.dark .home-dashboard::before {
+.dark .home-ambient::before {
   opacity: 0.55;
   background:
     radial-gradient(ellipse at 18% 22%, #3a2a6a80 0 10%, transparent 32%),

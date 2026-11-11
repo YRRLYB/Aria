@@ -3,6 +3,20 @@ import { createCachedQueueSnapshots } from "@/lib/playerPresentation";
 
 export const LOCAL_PLAYLISTS_STORAGE_KEY = "aria-local-playlists-v1";
 
+/**
+ * A referenced platform playlist (currently Bilibili favourite folders and
+ * collections). Aria keeps a mirrored track list and can re-sync it on demand,
+ * so following someone else's public folder does not become a one-time copy.
+ */
+export type LocalPlaylistRemoteRef = {
+  source: "bilibili";
+  url: string;
+  kind: "folder" | "playlist";
+  title?: string;
+  /** Last successful mirror timestamp (ms). */
+  syncedAt?: number;
+};
+
 export type LocalPlaylist = {
   id: string;
   name: string;
@@ -13,6 +27,7 @@ export type LocalPlaylist = {
    * library and do not need a snapshot.
    */
   trackSnapshots?: Record<string, Track>;
+  remoteRef?: LocalPlaylistRemoteRef;
   createdAt: number;
   updatedAt: number;
 };
@@ -37,12 +52,14 @@ export function createLocalPlaylist(
   trackIds: string[] = [],
   now = Date.now(),
   trackSnapshots?: Record<string, Track>,
+  remoteRef?: LocalPlaylistRemoteRef,
 ): LocalPlaylist {
   return {
     id: createPlaylistId(),
     name: name.trim().slice(0, 80) || "未命名歌单",
     trackIds: [...new Set(trackIds)],
     ...(trackSnapshots && Object.keys(trackSnapshots).length ? { trackSnapshots } : {}),
+    ...(remoteRef ? { remoteRef } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -66,6 +83,19 @@ function sanitizeSnapshots(value: unknown, trackIds: Set<string>): Record<string
   return compact.length ? Object.fromEntries(compact.map((track) => [track.id, track])) : undefined;
 }
 
+function sanitizeRemoteRef(value: unknown): LocalPlaylistRemoteRef | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<LocalPlaylistRemoteRef>;
+  if (candidate.source !== "bilibili" || typeof candidate.url !== "string" || !candidate.url.trim()) return undefined;
+  return {
+    source: "bilibili",
+    url: candidate.url.trim().slice(0, 2048),
+    kind: candidate.kind === "playlist" ? "playlist" : "folder",
+    ...(typeof candidate.title === "string" && candidate.title.trim() ? { title: candidate.title.trim().slice(0, 120) } : {}),
+    ...(typeof candidate.syncedAt === "number" && Number.isFinite(candidate.syncedAt) ? { syncedAt: candidate.syncedAt } : {}),
+  };
+}
+
 export function sanitizeLocalPlaylists(value: unknown): LocalPlaylist[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 500).flatMap((item) => {
@@ -77,11 +107,13 @@ export function sanitizeLocalPlaylists(value: unknown): LocalPlaylist[] {
       ? [...new Set(candidate.trackIds.filter((id): id is string => typeof id === "string" && Boolean(id)))].slice(0, 20_000)
       : [];
     const trackSnapshots = sanitizeSnapshots(candidate.trackSnapshots, new Set(trackIds));
+    const remoteRef = sanitizeRemoteRef(candidate.remoteRef);
     return [{
       id: candidate.id,
       name: candidate.name.trim().slice(0, 80) || "未命名歌单",
       trackIds,
       ...(trackSnapshots ? { trackSnapshots } : {}),
+      ...(remoteRef ? { remoteRef } : {}),
       createdAt: typeof candidate.createdAt === "number" && Number.isFinite(candidate.createdAt) ? candidate.createdAt : now,
       updatedAt: typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt) ? candidate.updatedAt : now,
     }];
@@ -112,6 +144,7 @@ export function writeLocalPlaylists(playlists: LocalPlaylist[], storage: Playlis
         name: playlist.name,
         trackIds: playlist.trackIds,
         ...(trackSnapshots && Object.keys(trackSnapshots).length ? { trackSnapshots } : {}),
+        ...(playlist.remoteRef ? { remoteRef: playlist.remoteRef } : {}),
         createdAt: playlist.createdAt,
         updatedAt: playlist.updatedAt,
       } satisfies LocalPlaylist;
