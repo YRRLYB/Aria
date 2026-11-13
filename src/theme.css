@@ -198,6 +198,9 @@ button:disabled { cursor: default; }
 .home-today-heading h2 { margin: 6px 0 0; color: #202647; font-size: 23px; font-weight: 710; line-height: 1.2; }
 .home-today-icon { display: grid; place-items: center; width: 33px; height: 33px; border: 1px solid #e4ddfb; border-radius: 11px; background: #f2edff; color: #866fd2; }
 .home-today-icon svg { width: 16px; height: 16px; }
+.home-heatmap-expand { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #e4ddfb; border-radius: 9px; background: #f7f3ff; color: #8a76d8; transition: background 160ms, color 160ms, border-color 160ms; }
+.home-heatmap-expand:hover { border-color: #d9cdf8; background: #efe9ff; color: #6f5bbf; }
+.home-heatmap-expand svg { width: 14px; height: 14px; }
 .home-today-primary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: 27px; padding-bottom: 19px; border-bottom: 1px solid #e8e7f2; }
 .home-today-primary > div { min-width: 0; }
 .home-today-primary > div + div { padding-left: 13px; border-left: 1px solid #e8e7f2; }

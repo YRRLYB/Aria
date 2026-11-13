@@ -372,6 +372,7 @@ type ArtistDetailProps = {
   tracksLoading?: boolean;
   tracksError?: string | null;
   onRetryTracks?: () => void;
+  onPlayNext?: (id: string) => void;
 };
 
 export function ArtistsSurface({
@@ -459,6 +460,7 @@ function ArtistDetailView({
   tracksLoading = false,
   tracksError = null,
   onRetryTracks = () => {},
+  onPlayNext,
 }: {
   artist: ArtistSummary;
   avatarUrl: string | null;
@@ -605,6 +607,7 @@ function ArtistDetailView({
                 icon={<Globe2 className="size-4" />}
                 tracks={neteaseTracks}
                 onPickTrack={onPickTrack}
+                onPlayNext={onPlayNext}
                 loading={tracksLoading}
               />
             )}
@@ -614,6 +617,7 @@ function ArtistDetailView({
                 icon={<Music4 className="size-4" />}
                 tracks={qqTracks}
                 onPickTrack={onPickTrack}
+                onPlayNext={onPlayNext}
                 loading={tracksLoading}
               />
             )}
@@ -623,6 +627,7 @@ function ArtistDetailView({
                 icon={<HardDrive className="size-4" />}
                 tracks={localTracks}
                 onPickTrack={onPickTrack}
+                onPlayNext={onPlayNext}
                 loading={false}
               />
             )}
@@ -694,12 +699,14 @@ function ArtistTrackGroup({
   icon,
   tracks,
   onPickTrack,
+  onPlayNext,
   loading,
 }: {
   title: string;
   icon: React.ReactNode;
   tracks: Track[];
   onPickTrack: (id: string, queue?: Track[]) => void;
+  onPlayNext?: (id: string) => void;
   loading: boolean;
 }) {
   return (
@@ -718,6 +725,7 @@ function ArtistTrackGroup({
             track={track}
             queue={tracks}
             onPickTrack={onPickTrack}
+            onPlayNext={onPlayNext}
           />
         ))}
       </div>

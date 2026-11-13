@@ -84,6 +84,8 @@ import {
   type PlayerSideView,
   type QualityLevel,
 } from "@/lib/playerPresentation";
+import { BILIBILI_VIDEO_ENABLED } from "@/lib/features";
+import { ArtistNavigationContext } from "@/components/music/shared";
 import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
 import { matchesShortcut, readKeyboardShortcuts, writeKeyboardShortcuts, type KeyboardShortcuts } from "@/lib/keyboardShortcuts";
@@ -209,6 +211,7 @@ export default function App() {
   });
   const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcuts>(readKeyboardShortcuts);
   const [query, setQuery] = useState("");
+  const searchActive = query.trim().length > 0;
   const [exploreTab, setExploreTab] = useState<"styles" | "radio" | "discover">("styles");
   const [exploreStyleGroups, setExploreStyleGroups] = useState<ProviderStyleGroup[]>([]);
   const [exploreStyleId, setExploreStyleId] = useState<string | null>(null);
@@ -716,7 +719,7 @@ export default function App() {
   );
   activeTrackRef.current = activeTrack;
   useEffect(() => {
-    if (!activeTrack.videoUrl) setVideoMode(false);
+    if (!BILIBILI_VIDEO_ENABLED || !activeTrack.videoUrl) setVideoMode(false);
   }, [activeTrack.id, activeTrack.videoUrl]);
   useEffect(() => {
     setVideoQn(null);
@@ -779,7 +782,7 @@ export default function App() {
   // proxy resolves its own URL; this only fills the badge/menu with the
   // quality Bilibili actually granted (360P anonymous, 1080P after login).
   useEffect(() => {
-    if (!videoMode || activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
+    if (!BILIBILI_VIDEO_ENABLED || !videoMode || activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
     let cancelled = false;
     api
       .getSourceVideoMeta("bilibili", activeTrack.providerId, undefined, videoQn)
@@ -1176,7 +1179,7 @@ export default function App() {
   }
 
   function toggleVideoMode() {
-    if (!activeTrack.videoUrl) return;
+    if (!BILIBILI_VIDEO_ENABLED || !activeTrack.videoUrl) return;
     commitActiveVideoTime();
     if (videoMode) pauseActiveVideo();
     pendingSeekRef.current = getPlaybackTime();
@@ -1191,6 +1194,37 @@ export default function App() {
 
     const fallbackTrack = playableTracks(playQueueTracks)[0] ?? playableTracks(contextualQueueTracks)[0] ?? playbackTracks[0];
     if (fallbackTrack) chooseTrack(fallbackTrack.id);
+  }
+
+  function openArtistForTrack(track: Track) {
+    const source = track.source === "qq" ? "qq" : track.source === "netease" ? "netease" : "local";
+    const artistId = track.artistIds?.[0];
+    const name = splitArtistNames(track.artist)[0] ?? track.artist;
+    if ((source === "qq" || source === "netease") && artistId) {
+      setSelectedArtist({
+        id: `${source}:${artistId}`,
+        name,
+        source,
+        providerId: artistId,
+        providerSource: source,
+        trackCount: 0,
+        avatarUrl: null,
+      });
+    } else {
+      setSelectedArtist({
+        id: `artist:${name.toLowerCase()}`,
+        name,
+        source: "local",
+        providerId: null,
+        providerSource: null,
+        trackCount: 0,
+        avatarUrl: null,
+      });
+    }
+    setSelectedUser(null);
+    setSelectedAlbum(null);
+    setQuery("");
+    setActiveView("artists");
   }
 
   function resolveQueueForTrack(trackId: string, preferredQueue?: Track[]) {
@@ -2191,6 +2225,7 @@ export default function App() {
   }, [localTracks]);
 
   return (
+    <ArtistNavigationContext.Provider value={openArtistForTrack}>
     <PlaylistActionsProvider openAdd={(tracks, playlistId) => {
       setAddPlaylistRequest({ tracks, playlistId });
       if (neteaseConnected && tracks.some((track) => track.source === "netease")) void refreshPlaylistList().catch(() => undefined);
@@ -2433,9 +2468,9 @@ export default function App() {
         <section
           className={cn(
             "app-content grid grid-cols-1 min-h-0 flex-1 gap-4 p-4 2xl:gap-5 2xl:p-5",
-            activeView === "home" && !query.trim() && "app-content-home",
-            activeView === "player" && "overflow-hidden",
-            activeView === "settings" || activeView === "home"
+            activeView === "home" && !searchActive && "app-content-home",
+            activeView === "player" && !searchActive && "overflow-hidden",
+            searchActive || activeView === "settings" || activeView === "home"
               ? "grid-cols-1"
               : activeView === "player"
                 ? "lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_minmax(380px,18vw)]"
@@ -2445,10 +2480,10 @@ export default function App() {
           <div
             className={cn(
               "h-full min-h-0 min-w-0 overflow-hidden",
-              activeView !== "player" && "pointer-events-none fixed left-0 top-0 w-[min(92vw,1100px)] -translate-x-[200%] opacity-0",
+              (activeView !== "player" || searchActive) && "pointer-events-none fixed left-0 top-0 w-[min(92vw,1100px)] -translate-x-[200%] opacity-0",
             )}
-            aria-hidden={activeView !== "player"}
-            inert={activeView !== "player"}
+            aria-hidden={activeView !== "player" || searchActive}
+            inert={activeView !== "player" || searchActive}
           >
 <PlayerSurface
                   activeTrack={activeTrack}
@@ -2552,7 +2587,7 @@ export default function App() {
               className={cn(
                 "app-view min-h-0 min-w-0 scrollbar-thin",
                 activeView === "home" && !query.trim() && "app-view-home",
-                activeView === "player" && "hidden",
+                activeView === "player" && !searchActive && "hidden",
               )}
               style={{ willChange: "transform, opacity" }}
             >
@@ -2825,6 +2860,7 @@ export default function App() {
                   onPickArtist={(artist) => setSelectedArtist(artist)}
                   onBack={() => setSelectedArtist(null)}
                   onPickTrack={chooseTrack}
+                  onPlayNext={playNextTrack}
                 />
               )}
               {activeView === "cloud" && (
@@ -2890,7 +2926,7 @@ export default function App() {
             </motion.div>
           </AnimatePresence>
 
-          {activeView === "settings" || activeView === "home" ? null : activeView === "player" ? (
+          {searchActive || activeView === "settings" || activeView === "home" ? null : activeView === "player" ? (
             <PlayerSidePanel
               playing={playing}
               mode={playerSideView}
@@ -3092,5 +3128,6 @@ export default function App() {
       ))}
     </main>
     </PlaylistActionsProvider>
+    </ArtistNavigationContext.Provider>
   );
 }

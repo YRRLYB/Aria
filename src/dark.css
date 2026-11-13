@@ -147,6 +147,18 @@ html.dark {
   color: #c8b4ff;
 }
 
+.dark .home-heatmap-expand {
+  border-color: rgba(180, 155, 243, 0.2);
+  background: rgba(180, 155, 243, 0.1);
+  color: #c8b4ff;
+}
+
+.dark .home-heatmap-expand:hover {
+  border-color: rgba(180, 155, 243, 0.32);
+  background: rgba(180, 155, 243, 0.18);
+  color: #e1d7ff;
+}
+
 .dark .home-today-primary {
   border-bottom-color: rgba(255, 255, 255, 0.08);
 }

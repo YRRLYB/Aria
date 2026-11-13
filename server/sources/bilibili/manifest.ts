@@ -19,6 +19,7 @@ export const bilibiliManifest: SourceManifest = {
     artistDetail: false,
     albumDetail: false,
     qualitySelection: true,
-    videoPlayback: true,
+    // Temporarily disabled while the video UI is reworked; audio stays on.
+    videoPlayback: false,
   },
 };

@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   ArrowLeft,
   Disc3,
+  ListEnd,
   ListMusic,
   ListPlus,
   LoaderCircle,
@@ -182,22 +183,31 @@ export function DiscoveryTrackRow({
   track,
   queue,
   onPickTrack,
+  onPlayNext,
   index,
   showMatchedLyric = false,
 }: {
   track: Track;
   queue: Track[];
   onPickTrack: (id: string, queue?: Track[]) => void;
+  onPlayNext?: (id: string) => void;
   index?: number;
   showMatchedLyric?: boolean;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-xl bg-white/55 px-3 py-2.5 transition hover:bg-white">
-      <button
-        type="button"
-        className="flex min-w-0 flex-1 items-center gap-3 text-left"
-        onClick={() => onPickTrack(track.id, queue)}
-      >
+    <div
+      role="button"
+      tabIndex={0}
+      className="flex min-w-0 cursor-pointer items-center gap-2 rounded-xl bg-white/55 px-3 py-2.5 transition hover:bg-white"
+      onClick={() => onPickTrack(track.id, queue)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onPickTrack(track.id, queue);
+      }}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-3 text-left">
         {index != null && (
           <span className="w-6 shrink-0 text-center text-xs tabular-nums text-neutral-400">
             {String(index + 1).padStart(2, "0")}
@@ -241,8 +251,21 @@ export function DiscoveryTrackRow({
             {sourceLabel[track.source]} · {track.duration}
           </span>
         </span>
-      </button>
-      <AddToPlaylistButton track={track} />
+      </div>
+      <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
+        {onPlayNext && (
+          <button
+            type="button"
+            className="flex size-8 items-center justify-center rounded-full text-neutral-400 transition hover:bg-violet-50 hover:text-violet-600"
+            title="下一首播放"
+            aria-label={`下一首播放：${track.title}`}
+            onClick={() => onPlayNext(track.id)}
+          >
+            <ListEnd className="size-4" />
+          </button>
+        )}
+        <AddToPlaylistButton track={track} />
+      </div>
     </div>
   );
 }

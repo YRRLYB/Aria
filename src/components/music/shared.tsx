@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { UserRound } from "lucide-react";
 import { ArtworkImage } from "./ArtworkImage";
 import type { Track } from "@/data/music";
@@ -321,6 +321,8 @@ export function CoverArt({
   );
 }
 
+export const ArtistNavigationContext = createContext<((track: Track) => void) | null>(null);
+
 export function CopyableTrackText({
   track,
   field = "summary",
@@ -332,9 +334,33 @@ export function CopyableTrackText({
   className?: string;
   children?: ReactNode;
 }) {
+  const openArtist = useContext(ArtistNavigationContext);
+  const canOpenArtist = field === "artist" && Boolean(openArtist);
   return (
     <span
-      className={cn("cursor-copy", className)}
+      className={cn(canOpenArtist ? "cursor-pointer" : "cursor-copy", className)}
+      title={canOpenArtist ? "左键打开歌手，右键复制" : undefined}
+      role={canOpenArtist ? "button" : undefined}
+      tabIndex={canOpenArtist ? 0 : undefined}
+      onClick={
+        canOpenArtist
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openArtist?.(track);
+            }
+          : undefined
+      }
+      onKeyDown={
+        canOpenArtist
+          ? (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              openArtist?.(track);
+            }
+          : undefined
+      }
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();

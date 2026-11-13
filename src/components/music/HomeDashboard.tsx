@@ -1,5 +1,5 @@
-import { useMemo, useRef } from "react";
-import { ArrowRight, CalendarDays, Clock3, Disc3, Headphones, Music2, Pause, Play } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, CalendarDays, Clock3, Disc3, Headphones, Maximize2, Music2, Pause, Play, X } from "lucide-react";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatBitrate, parseDuration, qualityOptions } from "@/lib/playerPresentation";
@@ -50,7 +50,7 @@ type ListeningSnapshot = {
   activityTotal: number;
 };
 
-const heatmapWeeks = 26;
+const heatmapWeeks = 53;
 
 function buildListeningSnapshot(history: PlayHistoryEntry[]): ListeningSnapshot {
   const todayStart = startOfDay();
@@ -102,10 +102,28 @@ function heatmapLevel(count: number) {
   return 4;
 }
 
-function ListeningHeatmap({ snapshot }: { snapshot: ListeningSnapshot }) {
-  const gridStart = snapshot.activityGrid[0]?.date ?? Date.now();
-  const startLabel = new Date(gridStart).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+function ListeningHeatmapDialog({ snapshot, onClose }: { snapshot: ListeningSnapshot; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const dragRef = useRef<{ x: number; left: number } | null>(null);
+  const weeks = useMemo(() => {
+    const columns: HeatmapDay[][] = [];
+    for (let index = 0; index < snapshot.activityGrid.length; index += 7) {
+      columns.push(snapshot.activityGrid.slice(index, index + 7));
+    }
+    return columns;
+  }, [snapshot.activityGrid]);
+  const monthLabels = useMemo(
+    () =>
+      weeks.map((days, index) => {
+        const first = new Date(days[0]?.date ?? Date.now());
+        if (index === 0) return `${first.getMonth() + 1}月`;
+        const previous = new Date(weeks[index - 1]?.[0]?.date ?? Date.now());
+        return first.getMonth() !== previous.getMonth() ? `${first.getMonth() + 1}月` : "";
+      }),
+    [weeks],
+  );
+  const start = new Date(snapshot.activityGrid[0]?.date ?? Date.now());
+  const end = new Date(snapshot.activityGrid[snapshot.activityGrid.length - 1]?.date ?? Date.now());
   const endDrag = (element: HTMLDivElement, pointerId: number) => {
     dragRef.current = null;
     try {
@@ -114,87 +132,153 @@ function ListeningHeatmap({ snapshot }: { snapshot: ListeningSnapshot }) {
       // The pointer may already be gone (touch cancel); nothing else to do.
     }
   };
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog?.open) dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
   return (
-    <section className="mt-4 rounded-[1rem] border border-white/60 bg-white/42 p-3" aria-labelledby="home-heatmap-title">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <span className="text-[9px] font-semibold uppercase tracking-[0.2em] text-neutral-400">Activity</span>
-          <h2 id="home-heatmap-title" className="mt-0.5 text-sm font-semibold">聆听活动</h2>
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="full-heatmap-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      className="fixed inset-0 m-auto flex h-full max-h-none w-full max-w-none items-start justify-end border-0 bg-black/30 p-4 pt-20 backdrop-blur-sm backdrop:bg-transparent sm:pt-24 sm:pr-8"
+    >
+      <section className="w-full max-w-[860px] rounded-[1.75rem] border border-white/70 bg-[#faf9fd] p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <span className="text-[9px] font-semibold uppercase tracking-[0.2em] text-neutral-400">Activity</span>
+            <h2 id="full-heatmap-title" className="mt-1 text-2xl font-semibold text-neutral-900">全年聆听活动</h2>
+            <p className="mt-1 text-xs text-neutral-500">
+              {start.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} — {end.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · {snapshot.activityTotal} 次播放
+            </p>
+          </div>
+          <button
+            type="button"
+            className="flex size-9 shrink-0 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-500 transition hover:bg-neutral-50 hover:text-neutral-900"
+            aria-label="关闭全年聆听活动"
+            onClick={onClose}
+          >
+            <X className="size-4" />
+          </button>
         </div>
-        <span className="text-[10px] text-neutral-400">{snapshot.activityTotal} 次播放</span>
-      </div>
-      <div
-        className="no-scrollbar mt-2 cursor-grab touch-pan-y select-none overflow-x-auto pb-0.5 active:cursor-grabbing"
-        onPointerDown={(event) => {
-          if (event.pointerType === "mouse" && event.button !== 0) return;
-          dragRef.current = { x: event.clientX, left: event.currentTarget.scrollLeft };
-          try {
-            event.currentTarget.setPointerCapture(event.pointerId);
-          } catch {
-            // Synthetic/expired pointers can reject capture; dragging still
-            // works while the pointer stays over the grid.
-          }
-        }}
-        onPointerMove={(event) => {
-          const drag = dragRef.current;
-          if (!drag) return;
-          event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
-        }}
-        onPointerUp={(event) => endDrag(event.currentTarget, event.pointerId)}
-        onPointerCancel={(event) => endDrag(event.currentTarget, event.pointerId)}
-      >
-        <div className="grid w-max grid-flow-col grid-rows-7 gap-[2px]" aria-label="最近 26 周聆听活动">
-          {snapshot.activityGrid.map((day) => {
-            const level = heatmapLevel(day.count);
-            return (
-              <span
-                key={day.date}
-                title={`${new Date(day.date).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · ${day.count} 次播放 · ${formatListeningTime(day.seconds)}`}
-                className={cn(
-                  "size-[7px] rounded-[2px]",
-                  day.future && "opacity-25",
-                  level === 0 && "bg-neutral-200/65",
-                  level === 1 && "bg-emerald-200/90",
-                  level === 2 && "bg-emerald-300",
-                  level === 3 && "bg-emerald-500",
-                  level === 4 && "bg-emerald-700",
-                )}
-              />
-            );
-          })}
+        <div
+          className="no-scrollbar mt-5 cursor-grab touch-pan-y select-none overflow-x-auto pb-1 active:cursor-grabbing"
+          onPointerDown={(event) => {
+            if (event.pointerType === "mouse" && event.button !== 0) return;
+            dragRef.current = { x: event.clientX, left: event.currentTarget.scrollLeft };
+            try {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            } catch {
+              // Synthetic/expired pointers can reject capture; dragging still
+              // works while the pointer stays over the grid.
+            }
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            if (!drag) return;
+            event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
+          }}
+          onPointerUp={(event) => endDrag(event.currentTarget, event.pointerId)}
+          onPointerCancel={(event) => endDrag(event.currentTarget, event.pointerId)}
+        >
+          <div className="w-max">
+            <div className="mb-1 flex gap-1 pl-[22px]">
+              {monthLabels.map((label, index) => (
+                <span key={`${label}-${index}`} className="w-3 text-[8px] font-medium text-neutral-400">{label}</span>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              <div className="grid grid-rows-7 gap-1 pr-1 text-[8px] text-neutral-400">
+                {["日", "一", "二", "三", "四", "五", "六"].map((label, index) => (
+                  <span key={label} className="flex h-3 items-center justify-end">{index % 2 === 1 ? label : ""}</span>
+                ))}
+              </div>
+              <div className="grid grid-flow-col grid-rows-7 gap-1" aria-label="全年聆听活动">
+                {snapshot.activityGrid.map((day) => {
+                  const level = heatmapLevel(day.count);
+                  return (
+                    <span
+                      key={day.date}
+                      title={`${new Date(day.date).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · ${day.count} 次播放 · ${formatListeningTime(day.seconds)}`}
+                      className={cn(
+                        "size-3 rounded-[3px]",
+                        day.future && "opacity-25",
+                        level === 0 && "bg-neutral-200/65",
+                        level === 1 && "bg-emerald-200/90",
+                        level === 2 && "bg-emerald-300",
+                        level === 3 && "bg-emerald-500",
+                        level === 4 && "bg-emerald-700",
+                      )}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2 text-[9px] text-neutral-400">
-        <span>{startLabel} 起 · 最近 26 周</span>
-        <span className="flex items-center gap-0.5">
-          少
-          <i className="size-2 rounded-[2px] bg-neutral-200/65" />
-          <i className="size-2 rounded-[2px] bg-emerald-200/90" />
-          <i className="size-2 rounded-[2px] bg-emerald-300" />
-          <i className="size-2 rounded-[2px] bg-emerald-500" />
-          <i className="size-2 rounded-[2px] bg-emerald-700" />
-          多
-        </span>
-      </div>
-    </section>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-neutral-200/70 pt-3 text-[10px] text-neutral-400">
+          <span>按住拖动查看全年 · 12 个月</span>
+          <span className="flex items-center gap-1">
+            少
+            <i className="size-2.5 rounded-[2px] bg-neutral-200/65" />
+            <i className="size-2.5 rounded-[2px] bg-emerald-200/90" />
+            <i className="size-2.5 rounded-[2px] bg-emerald-300" />
+            <i className="size-2.5 rounded-[2px] bg-emerald-500" />
+            <i className="size-2.5 rounded-[2px] bg-emerald-700" />
+            多
+          </span>
+        </div>
+      </section>
+    </dialog>
   );
 }
 
-function TodayListening({ snapshot }: { snapshot: ListeningSnapshot }) {
+function TodayListening({ snapshot, onOpenHeatmap }: { snapshot: ListeningSnapshot; onOpenHeatmap: () => void }) {
   const latest = snapshot.today[0];
+  const maxActivity = Math.max(1, ...snapshot.activity);
+  const labels = ["00", "04", "08", "12", "16", "20"];
   return (
     <aside className="home-today" aria-labelledby="home-today-title">
       <div className="home-today-heading">
         <div><span className="home-eyebrow">LISTENING LOG</span><h2 id="home-today-title">今日聆听</h2></div>
-        <span className="home-today-icon" aria-hidden="true"><Headphones /></span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="home-heatmap-expand"
+            aria-label="查看全年聆听活动"
+            title="查看全年聆听活动"
+            onClick={onOpenHeatmap}
+          >
+            <Maximize2 aria-hidden="true" />
+          </button>
+          <span className="home-today-icon" aria-hidden="true"><Headphones /></span>
+        </div>
       </div>
       <div className="home-today-primary">
         <div><strong>{snapshot.today.length}</strong><span>首记录</span></div>
         <div><strong>{formatListeningTime(snapshot.todaySeconds)}</strong><span>记录时长</span></div>
       </div>
       <div className="home-today-period"><span><CalendarDays aria-hidden="true" /> 本周</span><strong>{snapshot.week.length} 首 · {formatListeningTime(snapshot.weekSeconds)}</strong></div>
+      <div className="home-today-activity">
+        <div className="home-today-activity-heading"><span>聆听分布</span><span>{latest ? `最近 ${playedAtLabel(latest.playedAt)}` : "等待第一首歌"}</span></div>
+        <div className="home-activity-bars" aria-label="今天的聆听时间分布">
+          {snapshot.activity.map((value, index) => (
+            <span key={labels[index]} className="home-activity-bar-wrap">
+              <span
+                className="home-activity-bar"
+                style={{ height: `${Math.max(value ? 18 : 7, (value / maxActivity) * 100)}%` }}
+                title={`${labels[index]} 点时段 · ${value} 首`}
+              />
+            </span>
+          ))}
+        </div>
+        <div className="home-activity-labels" aria-hidden="true">
+          {labels.map((label) => <span key={label}>{label}</span>)}
+        </div>
+      </div>
       <p className="home-today-note"><Clock3 aria-hidden="true" />{latest ? "按最近播放记录估算，重复播放会合并到歌曲记录。" : "播放一首歌后，这里会留下今天的聆听轨迹。"}</p>
-      <ListeningHeatmap snapshot={snapshot} />
       <div className="home-character" aria-hidden="true">
         <span
           className="home-character-art"
@@ -234,6 +318,7 @@ export function HomeSurface({
     }).slice(0, 6);
   }, [playHistory]);
   const snapshot = useMemo(() => buildListeningSnapshot(playHistory), [playHistory]);
+  const [heatmapOpen, setHeatmapOpen] = useState(false);
   const hour = new Date().getHours();
   const greeting = hour < 11 ? "GOOD MORNING" : hour < 18 ? "GOOD AFTERNOON" : "GOOD EVENING";
   const hasTrack = activeTrack.id !== "idle";
@@ -270,9 +355,10 @@ export function HomeSurface({
               {recentTracks.length ? <div className="home-recent-list">{recentTracks.map(({ track, playedAt }, index) => <button key={track.id} className="home-recent-track" onClick={() => onPickTrack(track.id)} aria-label={`播放 ${track.title}`}><span className="home-recent-index">{String(index + 1).padStart(2, "0")}</span><span className="home-recent-art"><CoverArt track={track} className="size-full rounded-[inherit]" /></span><span className="home-recent-meta"><strong className="home-recent-title"><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></strong></span><span className="home-recent-artist"><CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText></span><time className="home-recent-date" dateTime={new Date(playedAt).toISOString()}>{playedAtLabel(playedAt)}</time><span className="home-card-play"><Play className="fill-current" aria-hidden="true" /></span></button>)}</div> : <div className="home-recent-empty"><span className="home-empty-disc"><Disc3 aria-hidden="true" /></span><span><strong>下一首歌，就是故事的开始</strong><small>开始听一首歌，这里会记住你喜欢的声音。</small></span><button onClick={() => onNavigate("local")}>开始聆听 <ArrowRight aria-hidden="true" /></button></div>}
             </section>
           </div>
-          <TodayListening snapshot={snapshot} />
+          <TodayListening snapshot={snapshot} onOpenHeatmap={() => setHeatmapOpen(true)} />
         </div>
       </div>
+      {heatmapOpen && <ListeningHeatmapDialog snapshot={snapshot} onClose={() => setHeatmapOpen(false)} />}
     </div>
   );
 }
