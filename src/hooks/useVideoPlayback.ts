@@ -168,7 +168,19 @@ export function useVideoPlayback(options: {
       // Preserve the outgoing video's position before another video element
       // (normal player vs immersive) takes over.
       commitPlaybackTime(video.currentTime, true);
+      video.pause();
       audio?.pause();
+      // Detach both streams when this stage loses ownership. A paused media
+      // element can otherwise retain its decoder, buffers and network request
+      // while the immersive stage (or the audio player) is active.
+      video.removeAttribute("src");
+      video.load();
+      sourceRef.current = null;
+      if (audio) {
+        audio.removeAttribute("src");
+        audio.load();
+        audioSourceRef.current = null;
+      }
       if (options.controlRef.current?.element === video) options.controlRef.current = null;
     };
   }, [options.active, options.videoUrl, options.audioUrl, options.videoRef, options.audioRef, options.controlRef]);
@@ -185,6 +197,8 @@ export function useVideoPlayback(options: {
         // The source may still be loading; loadedmetadata will apply the cue.
       }
     }
+    let cancelled = false;
+    let resume: (() => void) | undefined;
     if (options.playing) {
       if (audio && options.audioUrl) {
         const drift = audio.currentTime - video.currentTime;
@@ -196,11 +210,11 @@ export function useVideoPlayback(options: {
           }
         }
         audio.play().catch(() => {
+          if (cancelled) return;
           // Autoplay policies can reject the separate DASH audio element. Keep
           // the video playing and retry on the first user gesture below.
-          const resume = () => {
+          resume = () => {
             if (!video.paused) audio.play().catch(() => undefined);
-            window.removeEventListener("pointerdown", resume);
           };
           window.addEventListener("pointerdown", resume, { once: true });
         });
@@ -213,6 +227,10 @@ export function useVideoPlayback(options: {
       video.pause();
       audio?.pause();
     }
+    return () => {
+      cancelled = true;
+      if (resume) window.removeEventListener("pointerdown", resume);
+    };
   }, [options.active, options.playing, options.videoUrl, options.audioUrl, options.videoRef, options.audioRef]);
 
   useEffect(() => {

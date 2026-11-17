@@ -22,8 +22,10 @@ export function calculateVirtualRange({
     return { startIndex: 0, endIndex: 0, totalHeight: 0 };
   }
 
-  const safeScrollTop = Math.max(0, scrollTop);
   const safeViewportHeight = Math.max(0, viewportHeight);
+  // A search can shrink the list while the browser still reports its old
+  // scroll position. Clamp to the new extent so results remain visible.
+  const safeScrollTop = Math.min(Math.max(0, scrollTop), Math.max(0, count * rowHeight - safeViewportHeight));
   const startIndex = Math.max(0, Math.floor(safeScrollTop / rowHeight) - overscan);
   const endIndex = Math.min(count, Math.ceil((safeScrollTop + safeViewportHeight) / rowHeight) + overscan);
 
@@ -53,10 +55,11 @@ export function useVirtualRows({
 
     const update = () => {
       frameRef.current = null;
-      setMetrics({
-        scrollTop: container.scrollTop,
-        viewportHeight: container.clientHeight,
-      });
+      const scrollTop = container.scrollTop;
+      const viewportHeight = container.clientHeight;
+      setMetrics((current) => current.scrollTop === scrollTop && current.viewportHeight === viewportHeight
+        ? current
+        : { scrollTop, viewportHeight });
     };
 
     const requestUpdate = () => {
@@ -67,7 +70,10 @@ export function useVirtualRows({
     update();
     container.addEventListener("scroll", requestUpdate, { passive: true });
     window.addEventListener("resize", requestUpdate);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(requestUpdate);
+    observer?.observe(container);
     return () => {
+      observer?.disconnect();
       container.removeEventListener("scroll", requestUpdate);
       window.removeEventListener("resize", requestUpdate);
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);

@@ -99,7 +99,7 @@ export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlist
     if (!initialTracks.length || !onAddLocal || busyRef.current) return;
     if (localCreateOpen) {
       if (!newLocalName.trim() || !onCreateLocal) return;
-      const created = onCreateLocal(newLocalName.trim(), initialTracks);
+      const created = onCreateLocal(newLocalName.trim());
       onAddLocal(created.id, initialTracks);
       onClose();
       return;

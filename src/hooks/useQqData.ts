@@ -30,6 +30,7 @@ export function useQqData({ connected, applyTrackUpdate }: {
   const dailyLoadedRef = useRef(false);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const sessionTokenRef = useRef(0);
+  const accountEpochRef = useRef(0);
 
   const refresh = useCallback(() => {
     // Coalesce simultaneous requests from the connection effect, the liked-view
@@ -78,13 +79,16 @@ export function useQqData({ connected, applyTrackUpdate }: {
   // Signed out → drop everything; the lists reload lazily via refresh().
   useEffect(() => {
     if (connected) return;
+    accountEpochRef.current += 1;
     sessionTokenRef.current += 1;
+    requestRef.current += 1;
     refreshPromiseRef.current = null;
     setListLoading(false);
     setLikedTracks([]);
     setPlaylists([]);
     setSelectedPlaylist(null);
     setPlaylistTracks([]);
+    setPlaylistLoading(false);
     setPlaylistError(null);
     setListError(null);
   }, [connected]);
@@ -130,6 +134,7 @@ export function useQqData({ connected, applyTrackUpdate }: {
     const providerId = track.providerId ?? track.id.replace(/^qq:/, "");
     if (!providerId) throw new Error("缺少 QQ 音乐歌曲 ID");
     const wasLiked = likedTracks.some((item) => item.id === track.id);
+    const accountEpoch = accountEpochRef.current;
     const nextLiked = !wasLiked;
     const optimistic = { ...track, likedAt: nextLiked ? Date.now() : track.likedAt };
     setLikedTracks((current) => (
@@ -140,11 +145,13 @@ export function useQqData({ connected, applyTrackUpdate }: {
     try {
       await api.setQqLike(providerId, nextLiked);
     } catch (error) {
-      setLikedTracks((current) => (
-        wasLiked
-          ? [track, ...current.filter((item) => item.id !== track.id)]
-          : current.filter((item) => item.id !== track.id)
-      ));
+      if (accountEpoch === accountEpochRef.current) {
+        setLikedTracks((current) => (
+          wasLiked
+            ? [track, ...current.filter((item) => item.id !== track.id)]
+            : current.filter((item) => item.id !== track.id)
+        ));
+      }
       throw error;
     }
   }, [likedTracks]);

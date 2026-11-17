@@ -4,6 +4,7 @@ import type { NativeAudioState } from "@/lib/audioTypes";
 import { nativePlaybackStateChanged, syncNativePlaybackClock } from "@/lib/nativePlaybackState";
 import { api } from "@/lib/api";
 import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
+import { createGuardedAdvance, requestMediaPlayback } from "@/lib/mediaPlayback";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
 import { equalizerFrequencies } from "@/lib/equalizer";
 import { readCachedAudioSettings, writeCachedAudioSettings, type AudioOutputMode, type QualityLevel } from "@/lib/playerPresentation";
@@ -137,6 +138,16 @@ export function useAudioEngine(options: {
   const nativeSeekSequenceRef = useRef(0);
   const lastNativeRenderRef = useRef<NativeAudioState | null>(null);
   const audioErrorRef = useRef({ count: 0, lastAt: 0 });
+  const latestPlaybackRef = useRef({ trackId: options.activeTrack.id, playing: options.playing, pickRelativeTrack: options.pickRelativeTrack });
+  latestPlaybackRef.current = { trackId: options.activeTrack.id, playing: options.playing, pickRelativeTrack: options.pickRelativeTrack };
+  const errorAdvanceRef = useRef<ReturnType<typeof createGuardedAdvance> | null>(null);
+  if (!errorAdvanceRef.current) {
+    errorAdvanceRef.current = createGuardedAdvance(() => ({
+      trackId: latestPlaybackRef.current.trackId,
+      playing: latestPlaybackRef.current.playing,
+      advance: () => latestPlaybackRef.current.pickRelativeTrack(1),
+    }));
+  }
   const preloadKeyRef = useRef<string | null>(null);
   const handledGaplessGenerationRef = useRef(0);
   const previousStreamRef = useRef({ trackId: activeTrack.id, url: activeStreamUrl });
@@ -392,7 +403,7 @@ export function useAudioEngine(options: {
     }
 
     if (options.playing) {
-      audio.play().catch(() => {
+      return requestMediaPlayback(audio, () => {
         if (!nativePlaybackEnabled) options.setPlaying(() => false);
       });
     } else {
@@ -410,6 +421,10 @@ export function useAudioEngine(options: {
     options.volume,
     options.playing,
   ]);
+
+  useEffect(() => () => {
+    errorAdvanceRef.current?.cancel();
+  }, [options.activeTrack.id, options.playing]);
 
   // The browser audio lane stays mounted while video mode is active. A seek in
   // the video overlay only moves the video element, so consume the shared
@@ -935,11 +950,12 @@ export function useAudioEngine(options: {
       return;
     }
 
-    window.setTimeout(() => options.pickRelativeTrack(1), 650);
+    errorAdvanceRef.current?.schedule(options.activeTrack.id);
   }
 
   function resetAudioError() {
     audioErrorRef.current = { count: 0, lastAt: 0 };
+    errorAdvanceRef.current?.cancel();
   }
 
   return {

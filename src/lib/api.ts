@@ -384,8 +384,8 @@ export type ProviderDiscoveryBundle = {
 // - Desktop (Electron): preload injects apiBase for the embedded loopback
 //   server, which never asks for a token (loopback is exempt).
 // - Web / Aria mobile: the backend is a remote Aria desktop over the LAN,
-//   configured at runtime and persisted in localStorage. Every URL gains
-//   ?token= because <audio>/<img> requests cannot send headers.
+//   configured at runtime and persisted in localStorage. URLs on that server
+//   gain ?token= because <audio>/<img> requests cannot send headers.
 export type ApiConnection = {
   serverUrl: string;
   token: string;
@@ -446,8 +446,18 @@ export function setApiConnection(connection: Partial<ApiConnection> | null): Api
 
 function appendToken(url: string): string {
   const token = apiConnection.token;
-  if (!token || !/^https?:/i.test(url) || /[?&]token=/.test(url)) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+  if (!token || !apiConnection.serverUrl || !/^https?:/i.test(url)) return url;
+  try {
+    const destination = new URL(url);
+    const server = new URL(apiConnection.serverUrl);
+    if (destination.origin !== server.origin || destination.searchParams.has("token")) return url;
+    const hashIndex = url.indexOf("#");
+    const base = hashIndex < 0 ? url : url.slice(0, hashIndex);
+    const hash = hashIndex < 0 ? "" : url.slice(hashIndex);
+    return `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}${hash}`;
+  } catch {
+    return url;
+  }
 }
 
 export function apiUrl(url: string) {
@@ -546,11 +556,11 @@ export const api = {
   getCdDrives() {
     return request<{ drives: Array<{ drive: string; label: string }> }>("/api/library/cd-drives");
   },
-  getLibrary() {
-    return request<ApiLibraryIndex>("/api/library");
+  getLibrary(signal?: AbortSignal) {
+    return request<ApiLibraryIndex>("/api/library", { signal });
   },
-  getLibraryWatchState() {
-    return request<ApiLibraryWatchState>("/api/library/watch-state");
+  getLibraryWatchState(signal?: AbortSignal) {
+    return request<ApiLibraryWatchState>("/api/library/watch-state", { signal });
   },
   setLibraryAutoScan(enabled: boolean) {
     return request<ApiLibraryWatchState>("/api/library/auto-scan", {
@@ -927,6 +937,7 @@ export const api = {
       hasSeparateAudio?: boolean;
       audioQuality?: string | null;
       audioCodecs?: string | null;
+      availableAudioLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
       mode?: "muxed" | "dash" | null;
       width?: number | null;
       height?: number | null;

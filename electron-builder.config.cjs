@@ -15,6 +15,7 @@ const config = {
   },
   files: [
     "dist/**/*",
+    "!dist/player-demo/**/*",
     "!dist/win-unpacked/**/*",
     "dist-server/**/*",
     "electron/**/*",

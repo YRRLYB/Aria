@@ -283,6 +283,38 @@ textarea::selection,
   }
 }
 
+.video-stage:fullscreen {
+  width: 100%;
+  height: 100%;
+  max-width: none !important;
+  max-height: none;
+  border-radius: 0;
+}
+
+.video-quality-select {
+  color: #292532;
+  background: rgba(255, 255, 255, 0.64);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.player-video-area {
+  container-type: size;
+}
+
+.player-video-frame {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-video-frame .video-stage {
+  width: min(100%, 100cqh * 16 / 9);
+  flex: none;
+}
+
 .player-orbit {
   position: absolute;
   inset: 7%;

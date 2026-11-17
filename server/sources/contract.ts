@@ -152,6 +152,8 @@ export type SourceVideoMeta = {
   audioUrl?: string | null;
   audioQuality?: string | null;
   audioCodecs?: string | null;
+  /** Audio levels actually available for this video (FLAC / Dolby / AAC). */
+  availableAudioLevels?: AriaLevel[];
   mode?: "muxed" | "dash" | null;
   mimeType?: string | null;
   quality?: string | null;

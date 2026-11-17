@@ -11,6 +11,21 @@ export default defineConfig({
   },
   plugins: [react(), tailwindcss()],
   server: {
+    // Runtime data, packaged output and native binaries can contain thousands
+    // of files; none participate in frontend HMR.
+    watch: {
+      ignored: [
+        "**/.cache/**",
+        "**/.musicbox/**",
+        "**/.tmp-mpv/**",
+        "**/.tools/**",
+        "**/dist/**",
+        "**/dist-server/**",
+        "**/release/**",
+        "**/release-fixed/**",
+        "**/vendor/**",
+      ],
+    },
     proxy: {
       "/api": `http://127.0.0.1:${process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636}`,
     },

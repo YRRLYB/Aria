@@ -321,6 +321,12 @@ html.dark {
 
 /* ---------- player ---------- */
 
+.dark .video-quality-select {
+  color: #eceaf2;
+  background: #292830;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
 .dark .player-controls,
 .dark .player-volume {
   border-color: rgba(255, 255, 255, 0.08);

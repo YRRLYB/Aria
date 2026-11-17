@@ -54,7 +54,7 @@ export function VideoStage({
         preload="metadata"
         aria-label={`${track.title} 视频`}
       />
-      <audio ref={audioRef} preload="auto" aria-hidden="true" className="hidden" />
+      <audio ref={audioRef} preload="metadata" aria-hidden="true" className="hidden" />
     </>
   );
 }

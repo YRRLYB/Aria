@@ -7,10 +7,17 @@ import {
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
   sanitizeLocalPlaylists,
+  shouldUseLocalPlaylistDialog,
   writeLocalPlaylists,
 } from "./localPlaylists";
 
 describe("local playlists", () => {
+  it("routes empty and mixed selections to the searchable playlist dialog", () => {
+    expect(shouldUseLocalPlaylistDialog([])).toBe(false);
+    expect(shouldUseLocalPlaylistDialog([{ source: "local" }])).toBe(true);
+    expect(shouldUseLocalPlaylistDialog([{ source: "local" }, { source: "netease" }])).toBe(false);
+    expect(shouldUseLocalPlaylistDialog([{ source: "qq" }])).toBe(false);
+  });
   it("creates a named playlist and de-duplicates initial tracks", () => {
     const playlist = createLocalPlaylist("  杰伦与神秘歌曲  ", ["a", "a", "b"], 123);
     expect(playlist).toMatchObject({ name: "杰伦与神秘歌曲", trackIds: ["a", "b"], createdAt: 123, updatedAt: 123 });

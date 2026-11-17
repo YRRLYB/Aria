@@ -159,14 +159,14 @@ describe("Bilibili client", () => {
     });
   });
 
-  it("resolves 4K DASH video with a separate lossless audio track", async () => {
+  it("resolves explicit 4K lossless and defaults to 1080P with AAC", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response("<html></html>", {
         status: 200,
         headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
       }))
       .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }))
-      .mockResolvedValueOnce(jsonResponse({
+      .mockImplementation(async () => jsonResponse({
         code: 0,
         data: {
           quality: 120,
@@ -195,7 +195,7 @@ describe("Bilibili client", () => {
         },
       }));
 
-    const video = await resolveBilibiliVideoMeta("BV1xx411c7mD", { qn: 120 });
+    const video = await resolveBilibiliVideoMeta("BV1xx411c7mD", { qn: 120, level: "hires" });
     expect(video).toMatchObject({
       mode: "dash",
       url: "https://cdn.test/4k-avc.m4s",
@@ -210,6 +210,13 @@ describe("Bilibili client", () => {
         { id: 80, label: "高清 1080P", codecs: "avc1.640032" },
         { id: 16, label: "流畅 360P", codecs: "avc1.64001E" },
       ],
+    });
+    const automatic = await resolveBilibiliVideoMeta("BV1xx411c7mD", {});
+    expect(automatic).toMatchObject({
+      url: "https://cdn.test/1080-avc.m4s",
+      audioUrl: "https://cdn.test/audio-192.m4s",
+      audioQuality: "192K",
+      qualityId: 80,
     });
   });
 

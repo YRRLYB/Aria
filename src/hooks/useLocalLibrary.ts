@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
 import { createArtworkOverrideDataUrl, writeCachedArtworkOverride } from "@/lib/artworkOverrides";
-import { memoryLimits, trimStringSet, warmupBatchLimits } from "@/lib/memoryCache";
+import { memoryLimits, takeUnseen, trimStringSet, warmupBatchLimits } from "@/lib/memoryCache";
 import { mergeTracks } from "@/lib/playerPresentation";
 import { materializeQueueIds } from "@/lib/playQueue";
 import { localTrackToUiTrack } from "@/lib/trackMappers";
@@ -30,17 +30,12 @@ export function useLocalLibrary(options: {
     // Only warm small NetEase thumbnails. Local cover endpoints can contain
     // multi-megapixel embedded artwork; eager-decoding those images was the
     // main source of renderer memory growth while browsing a large library.
-    const urls = tracksToWarm
+    const candidateUrls = tracksToWarm
       .map((track) => track.coverUrl)
       .filter((url): url is string => Boolean(url))
       .filter((url) => url.includes("/api/providers/netease/cover"))
-      .map((url) => `${url}${url.includes("?") ? "&" : "?"}size=300y300`)
-      .filter((url) => {
-        if (preloadedCoverUrlsRef.current.has(url)) return false;
-        preloadedCoverUrlsRef.current.add(url);
-        return true;
-      })
-      .slice(0, limit);
+      .map((url) => `${url}${url.includes("?") ? "&" : "?"}size=300y300`);
+    const urls = takeUnseen(candidateUrls, preloadedCoverUrlsRef.current, (url) => url, limit);
     trimStringSet(preloadedCoverUrlsRef, 16);
 
     urls.forEach((url) => {
@@ -52,22 +47,20 @@ export function useLocalLibrary(options: {
         image.removeAttribute("src");
       };
       image.onload = release;
-      image.onerror = release;
+      image.onerror = () => {
+        preloadedCoverUrlsRef.current.delete(url);
+        release();
+      };
       image.src = url;
     });
   }
 
   function warmLocalCoverCache(tracksToWarm: Track[]) {
     preloadTrackCovers(tracksToWarm);
-    const ids = tracksToWarm
+    const candidateIds = tracksToWarm
       .filter((track) => track.source === "local" && track.coverUrl && !track.coverUrl.startsWith("data:"))
-      .map((track) => track.id)
-      .filter((id) => {
-        if (localCoverWarmupRef.current.has(id)) return false;
-        localCoverWarmupRef.current.add(id);
-        return true;
-      })
-      .slice(0, warmupBatchLimits.localCovers);
+      .map((track) => track.id);
+    const ids = takeUnseen(candidateIds, localCoverWarmupRef.current, (id) => id, warmupBatchLimits.localCovers);
     if (!ids.length) return;
     trimStringSet(localCoverWarmupRef, memoryLimits.localCoverWarmup);
     api.warmLocalCovers(ids).catch(() => {

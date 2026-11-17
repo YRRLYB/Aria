@@ -13,6 +13,7 @@ export function useBilibiliData(options: { connected: boolean }) {
   const [listError, setListError] = useState<string | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const sessionTokenRef = useRef(0);
+  const accountEpochRef = useRef(0);
 
   const refresh = useCallback(() => {
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
@@ -40,6 +41,7 @@ export function useBilibiliData(options: { connected: boolean }) {
 
   useEffect(() => {
     if (options.connected) return;
+    accountEpochRef.current += 1;
     sessionTokenRef.current += 1;
     refreshPromiseRef.current = null;
     setLikedTracks([]);
@@ -58,6 +60,7 @@ export function useBilibiliData(options: { connected: boolean }) {
   const toggleLike = useCallback(async (track: Track) => {
     const providerId = track.providerId ?? (track.id.startsWith("bilibili:") ? track.id.slice("bilibili:".length) : track.id);
     const wasLiked = likedTracks.some((item) => item.id === track.id);
+    const accountEpoch = accountEpochRef.current;
     const nextLiked = !wasLiked;
     const optimistic = { ...track, likedAt: nextLiked ? Date.now() : track.likedAt };
     setLikedTracks((current) => (
@@ -68,11 +71,13 @@ export function useBilibiliData(options: { connected: boolean }) {
     try {
       await api.setSourceLike("bilibili", providerId, nextLiked);
     } catch (error) {
-      setLikedTracks((current) => (
-        wasLiked
-          ? [track, ...current.filter((item) => item.id !== track.id)]
-          : current.filter((item) => item.id !== track.id)
-      ));
+      if (accountEpoch === accountEpochRef.current) {
+        setLikedTracks((current) => (
+          wasLiked
+            ? [track, ...current.filter((item) => item.id !== track.id)]
+            : current.filter((item) => item.id !== track.id)
+        ));
+      }
       throw error;
     }
   }, [likedTracks]);

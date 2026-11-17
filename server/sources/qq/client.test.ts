@@ -310,6 +310,41 @@ describe("qq multi-mode search and detail", () => {
 });
 
 describe("qq stream resolution", () => {
+  it("shares concurrent playback and metadata lookups for the same tier", async () => {
+    fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [freeSong] } } }));
+    await searchQqTracks("莉莉安", 1, 0);
+    fetchMock.mockResolvedValueOnce(musicuResponse("vkey", {
+      midurlinfo: [{ filename: "M500MIDFILE001.mp3", purl: "shared-segment" }],
+      sip: ["https://stream.example/"],
+    }));
+
+    const [audio, metadata] = await Promise.all([
+      resolveQqStreamMeta(freeSong.mid, { level: "standard" }),
+      resolveQqStreamMeta(freeSong.mid, { level: "standard" }),
+    ]);
+    expect(audio.url).toBe(metadata.url);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // one search and one vkey request
+  });
+
+  it("does not retain an old account's late stream response after sign-out", async () => {
+    let finishRequest!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finishRequest = resolve; }));
+    const oldRequest = resolveQqStreamMeta("testMid", { level: "standard" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await clearQqCookie();
+    finishRequest(musicuResponse("vkey", {
+      midurlinfo: [{ filename: "M500testMid.mp3", purl: "old-segment" }],
+      sip: ["https://stream.example/"],
+    }));
+    expect((await oldRequest).url).toContain("old-segment");
+
+    fetchMock.mockResolvedValueOnce(musicuResponse("vkey", {
+      midurlinfo: [{ filename: "M500testMid.mp3", purl: "new-segment" }],
+      sip: ["https://stream.example/"],
+    }));
+    expect((await resolveQqStreamMeta("testMid", { level: "standard" })).url).toContain("new-segment");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
   it("never mixes paid-tier filenames into a free song's request and degrades to 128k", async () => {
     // Populate the file-info cache (free song) through a search first.
     fetchMock.mockResolvedValueOnce(musicuResponse("search", { body: { song: { list: [freeSong] } } }));

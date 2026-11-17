@@ -308,7 +308,13 @@ function rememberVipProbe(state: "capable" | "incapable") {
 
 function rememberFileInfo(song: QqSearchSong) {
   if (!song.mid) return;
-  if (song.pay) payCache.set(song.mid, song.pay.pay_play === 0);
+  if (song.pay) {
+    payCache.set(song.mid, song.pay.pay_play === 0);
+    if (payCache.size > 1000) {
+      const oldest = payCache.keys().next().value;
+      if (oldest !== undefined) payCache.delete(oldest);
+    }
+  }
   const numericId = Number(song.id);
   if (Number.isSafeInteger(numericId) && numericId > 0) {
     songMetaCache.set(song.mid, {
@@ -539,9 +545,13 @@ type PurlEntry = {
 };
 
 const purlCache = new Map<string, PurlEntry>();
+const pendingStreamMeta = new Map<string, ReturnType<typeof resolveQqStreamMetaUncached>>();
+let streamSessionGeneration = 0;
 
 function clearPurlCache() {
+  streamSessionGeneration += 1;
   purlCache.clear();
+  pendingStreamMeta.clear();
 }
 
 function upstreamUrl(purl: string, sip?: string[]): string {
@@ -550,7 +560,26 @@ function upstreamUrl(purl: string, sip?: string[]): string {
   return `${prefix}${purl}`;
 }
 
-export async function resolveQqStreamMeta(
+export function resolveQqStreamMeta(
+  trackId: string,
+  options: { level?: AriaLevel; refresh?: boolean } = {},
+) {
+  // The player asks for metadata and the proxy resolves the same stream at
+  // almost the same time. Share the in-flight lookup to avoid duplicate vkey
+  // requests and QQ's rate limits. Explicit refreshes must bypass it.
+  if (options.refresh) return resolveQqStreamMetaUncached(trackId, options);
+  const key = `${trackId.trim()}:${options.level ?? "lossless"}`;
+  const pending = pendingStreamMeta.get(key);
+  if (pending) return pending;
+  const request = resolveQqStreamMetaUncached(trackId, options);
+  pendingStreamMeta.set(key, request);
+  void request.finally(() => {
+    if (pendingStreamMeta.get(key) === request) pendingStreamMeta.delete(key);
+  }).catch(() => undefined);
+  return request;
+}
+
+async function resolveQqStreamMetaUncached(
   trackId: string,
   options: { level?: AriaLevel; refresh?: boolean } = {},
 ): Promise<{
@@ -567,6 +596,7 @@ export async function resolveQqStreamMeta(
   if (!songmid || /[/?#]/.test(songmid)) {
     throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌曲 ID", { source: "qq" });
   }
+  const sessionGeneration = streamSessionGeneration;
   const session = await optionalQqCookie();
   const fileInfo = fileInfoCache.get(songmid);
   const isFreeSong = payCache.get(songmid);
@@ -631,10 +661,12 @@ export async function resolveQqStreamMeta(
           formatIndex,
           expiresAt: Date.now() + PURL_TTL_MS,
         };
-        purlCache.set(`${songmid}:${level}`, entry);
-        if (purlCache.size > PURL_CACHE_MAX) {
-          const oldest = purlCache.keys().next().value;
-          if (oldest !== undefined) purlCache.delete(oldest);
+        if (sessionGeneration === streamSessionGeneration) {
+          purlCache.set(`${songmid}:${level}`, entry);
+          if (purlCache.size > PURL_CACHE_MAX) {
+            const oldest = purlCache.keys().next().value;
+            if (oldest !== undefined) purlCache.delete(oldest);
+          }
         }
         return entry;
       }
@@ -684,11 +716,11 @@ export async function resolveQqStreamMeta(
   if ((knownVipSong || isFreeSong === undefined) && paidLevels.length) {
     const paidEntry = collectEntry(paidLevels, await fetchVkey(paidLevels));
     if (paidEntry) {
-      rememberVipProbe("capable");
+      if (sessionGeneration === streamSessionGeneration) rememberVipProbe("capable");
       return toStreamMeta(paidEntry, fileInfo);
     }
     // 只有确认的 VIP 歌才能判定"账号无 VIP"(免费歌全空另有原因)。
-    if (knownVipSong) rememberVipProbe("incapable");
+    if (knownVipSong && sessionGeneration === streamSessionGeneration) rememberVipProbe("incapable");
   }
   throw unavailableError();
 }

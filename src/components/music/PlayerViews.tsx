@@ -5,6 +5,8 @@ import {
   AudioLines,
   Copy,
   BookOpen,
+  Captions,
+  CaptionsOff,
   ImagePlus,
   Languages,
   Maximize2,
@@ -43,67 +45,44 @@ import { BILIBILI_VIDEO_ENABLED } from "@/lib/features";
 import { usePlaybackTime } from "@/lib/playbackClock";
 import { cn } from "@/lib/utils";
 const SongEncyclopediaDialog = lazy(() => import("./SongEncyclopediaDialog"));
-function VideoPlaybackChrome({
-  activeTrack,
-  playing,
-  volume,
-  onVolumeChange,
-  videoActive,
-  videoControlRef,
-  videoUrl,
-  videoAudioUrl,
-  videoQualities,
-  videoQualityId,
-  videoAudioQuality,
-  onVideoQualityChange,
-  onVideoDuration,
-  onVideoEnded,
-  onVideoError,
-  onSeek,
-  durationSeconds,
-  shuffleEnabled,
-  repeatMode,
-  onTogglePlay,
-  onToggleShuffle,
-  onCycleRepeatMode,
-  onNext,
-  onPrevious,
-  liked,
-  onToggleLike,
+const videoAudioLevelLabels: Record<string, string> = {
+  hires: "Hi-Res 无损",
+  lossless: "杜比全景声",
+  exhigh: "192K",
+  higher: "132K",
+  standard: "64K",
+};
+
+function PlayerVideo({
+  activeTrack, playing, volume, videoActive, videoControlRef, videoUrl, videoAudioUrl,
+  onVideoDuration, onVideoEnded, onVideoError, onSeek, durationSeconds, onTogglePlay, onPrevious, onNext,
 }: {
   activeTrack: Track;
   playing: boolean;
   volume: number;
-  onVolumeChange: (volume: number) => void;
   videoActive: boolean;
   videoControlRef: { current: VideoControl | null };
   videoUrl?: string;
   videoAudioUrl?: string;
-  videoQualities: Array<{ id: number; label: string }>;
-  videoQualityId: number | null;
-  videoAudioQuality?: string | null;
-  onVideoQualityChange?: (qn: number | null) => void;
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
   onVideoError: (message: string) => void;
   onSeek: (time: number) => void;
   durationSeconds: number;
-  shuffleEnabled: boolean;
-  repeatMode: "all" | "one";
   onTogglePlay: () => void;
-  onToggleShuffle: () => void;
-  onCycleRepeatMode: () => void;
-  onNext: () => void;
   onPrevious: () => void;
-  liked: boolean;
-  onToggleLike: () => void;
+  onNext: () => void;
 }) {
   const currentTime = usePlaybackTime();
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [showSubtitles, setShowSubtitles] = useState(false);
   const duration = durationSeconds > 0 ? durationSeconds : parseDuration(activeTrack.duration);
   const progress = duration > 0 ? Math.min(1, Math.max(0, currentTime / duration)) : 0;
+  const lyricIndex = activeTrack.lyrics.length ? getActiveLyricIndex(activeTrack.lyrics, currentTime) : -1;
+  const activeLyric = lyricIndex >= 0 ? activeTrack.lyrics[lyricIndex] : null;
 
+  useEffect(() => setShowSubtitles(false), [activeTrack.id]);
   useEffect(() => {
     const onChange = () => setFullscreen(document.fullscreenElement === stageRef.current);
     document.addEventListener("fullscreenchange", onChange);
@@ -112,170 +91,46 @@ function VideoPlaybackChrome({
 
   async function toggleFullscreen() {
     try {
-      if (document.fullscreenElement) await document.exitFullscreen();
+      if (document.fullscreenElement === stageRef.current) await document.exitFullscreen();
       else await stageRef.current?.requestFullscreen();
     } catch {
-      // Browsers can reject fullscreen when the click is no longer a user gesture.
+      // Fullscreen can be rejected if the browser loses the user gesture.
     }
   }
 
+  const videoButton = "flex size-8 items-center justify-center rounded-full bg-black/45 text-white/90 transition hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white";
   return (
-    <div className="flex w-full min-h-0 flex-col">
-      <div
-        ref={stageRef}
-        data-taskbar-anchor="player-cover"
-        className="group relative mx-auto aspect-video w-full overflow-hidden rounded-[1.4rem] bg-black shadow-[0_24px_70px_rgba(16,18,28,0.28)]"
-        style={{ maxWidth: "calc((100dvh - 19rem) * 16 / 9)" }}
-      >
-        <VideoStage
-          track={activeTrack}
-          src={videoUrl}
-          audioSrc={videoAudioUrl}
-          active={videoActive}
-          playing={playing}
-          volume={volume}
-          controlRef={videoControlRef}
-          onDuration={onVideoDuration}
-          onEnded={onVideoEnded}
-          onError={onVideoError}
-          className="size-full"
-        />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-black/10" />
-        <div className="absolute left-3 top-3 flex flex-wrap gap-2">
-          <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/90 backdrop-blur">
-            B站
-          </span>
-          <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/80 backdrop-blur">
-            {activeTrack.videoQuality ?? "视频"}
-          </span>
-          {videoAudioQuality && (
-            <span className="rounded-full bg-emerald-500/75 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur">
-              {videoAudioQuality} 音轨
-            </span>
-          )}
-        </div>
-        {videoQualities.length > 0 && onVideoQualityChange && (
-          <select
-            aria-label="视频画质"
-            value={videoQualityId ?? ""}
-            onChange={(event) => onVideoQualityChange(event.target.value ? Number(event.target.value) : null)}
-            className="absolute right-3 top-3 rounded-full border border-white/20 bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white outline-none backdrop-blur"
-          >
-            <option value="">自动</option>
-            {videoQualities.map((quality) => (
-              <option key={quality.id} value={quality.id}>{quality.label}</option>
-            ))}
-          </select>
-        )}
-        <div className="absolute inset-x-0 bottom-0 p-3">
-          <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-black/45 px-3 py-2 text-white backdrop-blur-md">
-            <button type="button" className="flex size-8 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15" aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>
-              {playing ? <Pause className="size-4 fill-current" /> : <Play className="ml-0.5 size-4 fill-current" />}
-            </button>
-            <span className="shrink-0 text-[11px] tabular-nums text-white/80">
-              {currentTime > 0 ? formatDuration(currentTime) : "0:00"} / {formatDuration(duration)}
-            </span>
-            <input
-              aria-label="视频进度"
-              type="range"
-              min="0"
-              max={duration > 0 ? duration : 1}
-              step="0.1"
-              value={Math.min(currentTime, duration || currentTime)}
-              onChange={(event) => onSeek(Number(event.target.value))}
-              className="player-range min-w-24 flex-1"
-              style={
-                {
-                  "--range-color": "#ffffff",
-                  "--range-value": progress,
-                } as CSSProperties
-              }
-            />
-            <button
-              type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15"
-              aria-label={volume > 0 ? "静音" : "取消静音"}
-              onClick={() => onVolumeChange(volume > 0 ? 0 : 72)}
-            >
-              <AriaIcon name={ariaVolumeIcon(volume, false)} className="size-4" />
-            </button>
-            <input
-              aria-label="视频音量"
-              type="range"
-              min="0"
-              max="100"
-              value={volume}
-              onChange={(event) => onVolumeChange(Number(event.target.value))}
-              className="player-range hidden w-20 sm:block"
-              style={
-                {
-                  "--range-color": "#ffffff",
-                  "--range-value": Math.min(1, Math.max(0, volume / 100)),
-                } as CSSProperties
-              }
-            />
-            <button
-              type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15"
-              aria-label={fullscreen ? "退出全屏" : "全屏"}
-              title={fullscreen ? "退出全屏" : "全屏"}
-              onClick={() => void toggleFullscreen()}
-            >
-              {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-            </button>
+    <div className="player-video-frame">
+      <div ref={stageRef} data-taskbar-anchor="player-cover" className="video-stage group relative aspect-video w-full overflow-hidden bg-black">
+        <VideoStage track={activeTrack} src={videoUrl} audioSrc={videoAudioUrl} active={videoActive} playing={playing} volume={volume} controlRef={videoControlRef} onDuration={onVideoDuration} onEnded={onVideoEnded} onError={onVideoError} className="absolute inset-0 size-full" />
+        {showSubtitles && activeLyric && (
+          <div className={cn("pointer-events-none absolute inset-x-4 flex justify-center text-center", fullscreen ? "bottom-28" : "bottom-4")}>
+            <span className="rounded-lg bg-black/55 px-3 py-1 text-sm font-semibold leading-6 text-white shadow-lg">{activeLyric.text}</span>
           </div>
+        )}
+        <div className="absolute right-3 top-3 flex gap-2 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+          <button type="button" className={videoButton} aria-label={showSubtitles ? "隐藏字幕" : "显示字幕"} aria-pressed={showSubtitles} disabled={!activeTrack.lyrics.length} title={activeTrack.lyrics.length ? "字幕" : "暂无字幕"} onClick={() => setShowSubtitles((value) => !value)}>
+            {showSubtitles ? <Captions className="size-4" /> : <CaptionsOff className="size-4" />}
+          </button>
+          <button type="button" className={videoButton} aria-label={fullscreen ? "退出全屏" : "全屏"} title={fullscreen ? "退出全屏" : "全屏"} onClick={() => void toggleFullscreen()}>
+            {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          </button>
         </div>
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-neutral-700">
-        <Button
-          className={cn("player-control-button", shuffleEnabled && "is-active")}
-          variant="ghost"
-          size="icon"
-          aria-label="随机播放"
-          aria-pressed={shuffleEnabled}
-          title="随机播放"
-          onClick={onToggleShuffle}
-        >
-          <AriaIcon name="shuffle" className="size-5" />
-        </Button>
-        <Button className="player-control-button" variant="ghost" size="icon" aria-label="上一首" title="上一首" onClick={onPrevious}>
-          <AriaIcon name="prev" className="size-5" />
-        </Button>
-        <Button
-          className="player-play-button text-white"
-          size="iconLg"
-          aria-label={playing ? "暂停" : "播放"}
-          title={playing ? "暂停" : "播放"}
-          onClick={onTogglePlay}
-        >
-          {playing ? <Pause className="size-6 fill-current" /> : <Play className="ml-0.5 size-6 fill-current" />}
-        </Button>
-        <Button className="player-control-button" variant="ghost" size="icon" aria-label="下一首" title="下一首" onClick={onNext}>
-          <AriaIcon name="next" className="size-5" />
-        </Button>
-        <Button
-          className={cn("player-control-button", repeatMode === "one" && "is-active")}
-          variant="ghost"
-          size="icon"
-          aria-label="循环播放"
-          aria-pressed={repeatMode === "one"}
-          title="循环播放"
-          onClick={onCycleRepeatMode}
-        >
-          <AriaIcon name={repeatMode === "one" ? "repeat-one" : "repeat"} className="size-5" />
-        </Button>
-        <Button
-          className={cn("player-control-button", liked && "is-liked")}
-          variant="ghost"
-          size="icon"
-          aria-label={liked ? "取消喜欢" : "喜欢"}
-          aria-pressed={liked}
-          title={liked ? "取消喜欢" : "喜欢"}
-          onClick={onToggleLike}
-        >
-          <AriaIcon name={liked ? "heart-fill" : "heart"} className="size-5" />
-        </Button>
+        {fullscreen && (
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-6 pb-5 pt-10 text-white">
+            <div className="mx-auto max-w-4xl">
+              <input aria-label="视频进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(currentTime, duration || currentTime)} onChange={(event) => onSeek(Number(event.target.value))} className="player-range w-full" style={{ "--range-color": "#ffffff", "--range-value": progress } as CSSProperties} />
+              <div className="mt-2 flex items-center justify-between gap-4 text-xs tabular-nums text-white/70">
+                <span>{formatDuration(currentTime)} / {formatDuration(duration)}</span>
+                <div className="flex items-center gap-2">
+                  <button type="button" className={videoButton} aria-label="上一首" onClick={onPrevious}><AriaIcon name="prev" className="size-4" /></button>
+                  <button type="button" className={videoButton} aria-label={playing ? "暂停" : "播放"} onClick={onTogglePlay}>{playing ? <Pause className="size-4 fill-current" /> : <Play className="size-4 fill-current" />}</button>
+                  <button type="button" className={videoButton} aria-label="下一首" onClick={onNext}><AriaIcon name="next" className="size-4" /></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -302,6 +157,9 @@ export function PlayerSurface({
   videoQualities = [],
   videoQualityId = null,
   videoAudioQuality = null,
+  videoAudioLevel = null,
+  videoAudioLevels = [],
+  onVideoAudioLevelChange,
   onVideoQualityChange,
   videoActive,
   videoControlRef,
@@ -348,6 +206,9 @@ export function PlayerSurface({
   videoQualities?: Array<{ id: number; label: string }>;
   videoQualityId?: number | null;
   videoAudioQuality?: string | null;
+  videoAudioLevel?: string | null;
+  videoAudioLevels?: string[];
+  onVideoAudioLevelChange?: (level: string | null) => void;
   onVideoQualityChange?: (qn: number | null) => void;
   videoActive: boolean;
   videoControlRef: { current: VideoControl | null };
@@ -374,10 +235,13 @@ export function PlayerSurface({
   onLyricDisplayModeChange: (mode: "original" | "bilingual") => void;
   onSeek: (time: number) => void;
 }) {
+  const showVideo = BILIBILI_VIDEO_ENABLED && videoMode && Boolean(activeTrack.videoUrl);
   const themePrimary = colorWithAlpha(palette.primary, 0.34);
   const themeSecondary = colorWithAlpha(palette.secondary, 0.24);
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
-  const resolvedQualityLevel = activeTrack.currentLevel ?? qualityLevel;
+  // The selected request and the provider's actual stream are separate: a
+  // cached/limited stream must not overwrite the user's selected button.
+  const resolvedQualityLevel = qualityLevel;
   const availableLevels = activeTrack.availableLevels ?? [];
   const qualitySwitchableSource = activeTrack.source === "netease" || activeTrack.source === "qq" || activeTrack.source === "bilibili";
   const hasKnownQualityLevels = qualitySwitchableSource && availableLevels.length > 0;
@@ -421,89 +285,6 @@ export function PlayerSurface({
   async function handleArtworkFile(file: File | undefined) {
     if (!file || !canReplaceArtwork) return;
     await onReplaceLocalArtwork(activeTrack.id, file);
-  }
-
-  if (BILIBILI_VIDEO_ENABLED && videoMode && activeTrack.videoUrl) {
-    return (
-      <div
-        className="player-surface relative flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/55 p-5 shadow-[0_22px_70px_rgba(47,55,76,0.12)] sm:p-6"
-        style={{
-          ["--track-accent" as string]: palette.primary,
-          minHeight: 0,
-          background: `linear-gradient(135deg, ${themePrimary}, var(--player-sheen) 42%, ${themeSecondary})`,
-        }}
-      >
-        <div
-          className="pointer-events-none absolute inset-0 opacity-70"
-          style={{
-            background: `radial-gradient(circle at 24% 18%, ${palette.primary}38, transparent 24rem), radial-gradient(circle at 82% 82%, ${palette.secondary}28, transparent 18rem)`,
-          }}
-        />
-        <div className="relative flex h-full min-h-0 flex-col">
-          <header className="flex flex-wrap items-center gap-3">
-            <CoverArt track={activeTrack} className="size-14 shrink-0 rounded-[0.9rem]" fit="cover" />
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
-                {sourceLabel[activeTrack.source]} · 视频播放
-              </p>
-              <h1 className="mt-1 truncate text-xl font-semibold text-neutral-950" title={activeTrack.title}>
-                <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
-              </h1>
-              <p className="mt-1 truncate text-sm text-neutral-500">
-                <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
-                <span className="text-neutral-400"> · {activeTrack.album}</span>
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button
-                variant="glass"
-                size="icon"
-                title="切回封面与高音质音频模式"
-                aria-label="切回封面与高音质音频模式"
-                onClick={onToggleVideoMode}
-              >
-                <Video />
-              </Button>
-              <Button variant="glass" size="sm" title="打开沉浸视图" onClick={onOpenImmersive}>
-                <Maximize2 />
-                沉浸
-              </Button>
-            </div>
-          </header>
-
-          <div className="mt-4 flex min-h-0 flex-1 items-start justify-center">
-            <VideoPlaybackChrome
-              activeTrack={activeTrack}
-              playing={playing}
-              volume={volume}
-              onVolumeChange={onVolumeChange}
-              videoActive={videoActive}
-              videoControlRef={videoControlRef}
-              videoUrl={videoUrlOverride}
-              videoAudioUrl={videoAudioUrlOverride}
-              videoQualities={videoQualities}
-              videoQualityId={videoQualityId}
-              videoAudioQuality={videoAudioQuality}
-              onVideoQualityChange={onVideoQualityChange}
-              onVideoDuration={onVideoDuration}
-              onVideoEnded={onVideoEnded}
-              onVideoError={onVideoError}
-              onSeek={onSeek}
-              durationSeconds={durationSeconds}
-              shuffleEnabled={shuffleEnabled}
-              repeatMode={repeatMode}
-              onTogglePlay={onTogglePlay}
-              onToggleShuffle={onToggleShuffle}
-              onCycleRepeatMode={onCycleRepeatMode}
-              onNext={onNext}
-              onPrevious={onPrevious}
-              liked={liked}
-              onToggleLike={onToggleLike}
-            />
-          </div>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -562,14 +343,22 @@ export function PlayerSurface({
           background: `radial-gradient(circle at 28% 32%, ${palette.primary}38, transparent 24rem), radial-gradient(circle at 82% 78%, ${palette.secondary}28, transparent 18rem)`,
         }}
       />
-      <div className="relative grid min-h-[620px] lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+      <div className={cn("relative grid min-h-[620px]", showVideo ? "lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]" : "lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]")}>
         <div
-          className="relative min-h-[420px] overflow-hidden bg-neutral-950"
+          className={cn("relative min-h-[420px] overflow-hidden bg-neutral-950", showVideo && "player-video-area")}
           style={{
-            background: `linear-gradient(145deg, ${palette.primary}30, ${palette.secondary}18, var(--cover-lift))`,
+            background: showVideo ? "#101116" : `linear-gradient(145deg, ${palette.primary}30, ${palette.secondary}18, var(--cover-lift))`,
           }}
         >
-          <div className="absolute inset-0" data-taskbar-anchor="player-cover">
+          {showVideo ? (
+            <>
+              <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+                <CoverArt track={activeTrack} className="size-full scale-110 opacity-35 blur-2xl" fit="cover" large />
+                <div className="absolute inset-0 bg-neutral-950/55" />
+              </div>
+              <PlayerVideo activeTrack={activeTrack} playing={playing} volume={volume} videoActive={videoActive} videoControlRef={videoControlRef} videoUrl={videoUrlOverride} videoAudioUrl={videoAudioUrlOverride} onVideoDuration={onVideoDuration} onVideoEnded={onVideoEnded} onVideoError={onVideoError} onSeek={onSeek} durationSeconds={durationSeconds} onTogglePlay={onTogglePlay} onPrevious={onPrevious} onNext={onNext} />
+            </>
+          ) : <div className="absolute inset-0" data-taskbar-anchor="player-cover">
             {activeTrack.id === "idle" ? (
               <div
                 className="player-idle-cover flex size-full items-center justify-center p-8 text-center"
@@ -580,20 +369,6 @@ export function PlayerSurface({
                   <p className="mt-2 text-sm text-neutral-600">从本地音乐、网易云或 QQ 音乐选择一首歌开始。</p>
                 </div>
               </div>
-            ) : BILIBILI_VIDEO_ENABLED && videoMode && activeTrack.videoUrl ? (
-              <VideoStage
-                track={activeTrack}
-                src={videoUrlOverride}
-                audioSrc={videoAudioUrlOverride}
-                active={videoActive}
-                playing={playing}
-                volume={volume}
-                controlRef={videoControlRef}
-                onDuration={onVideoDuration}
-                onEnded={onVideoEnded}
-                onError={onVideoError}
-                className="size-full"
-              />
             ) : (
               <CoverArt
                 track={activeTrack}
@@ -603,8 +378,8 @@ export function PlayerSurface({
                 onArtworkContextMenu={openArtworkMenu}
               />
             )}
-          </div>
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />
+          </div>}
+          {!showVideo && <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />}
         </div>
 
         <div
@@ -614,8 +389,8 @@ export function PlayerSurface({
           <div className="min-w-0 shrink-0">
             <div className="flex items-start gap-3">
               <div className="min-w-0 py-1">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {exclusiveMode ? "直通播放" : "正在播放"}</p>
-                <p className="mt-1 text-xs font-medium leading-5 text-neutral-600">{formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {showVideo ? "视频播放" : exclusiveMode ? "直通播放" : "正在播放"}</p>
+                <p className="mt-1 text-xs font-medium leading-5 text-neutral-600">{showVideo ? (videoAudioQuality ?? "视频音轨") : formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
               </div>
               <div className="ml-auto flex items-center gap-2">
                 {activeTrack.source === "netease" && /^\d{1,20}$/.test(activeTrack.providerId ?? activeTrack.id.replace(/^netease:/, "")) && <Button variant="glass" size="icon" aria-label="歌曲百科" title="歌曲百科与制作人员" onClick={() => setEncyclopediaOpen(true)}><BookOpen /></Button>}
@@ -721,7 +496,7 @@ export function PlayerSurface({
 
           <div className="mt-4 shrink-0">
             <div className="px-1">
-              <SpectrumCanvas
+              {!showVideo && <SpectrumCanvas
                 analyserRef={analyserRef}
                 playing={visualizerPlaying}
                 active={visualizerActive}
@@ -729,7 +504,7 @@ export function PlayerSurface({
                 fallback={activeTrack.waveform}
                 outputMode={visualizerMode}
                 outputVolume={volume}
-              />
+              />}
               <PlaybackProgress
                 palette={palette}
                 durationSeconds={durationSeconds}
@@ -816,6 +591,23 @@ export function PlayerSurface({
               className="player-quality mt-3 rounded-[1.25rem] border border-white/35 p-3 shadow-sm"
               style={{ background: `linear-gradient(135deg, var(--player-quality-sheen, rgba(255,255,255,0.28)), ${colorWithAlpha(palette.secondary, 0.1)})` }}
             >
+              {showVideo ? (
+                <div className="flex flex-wrap items-end gap-3">
+                  <p className="mr-auto self-center text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Quality</p>
+                  {onVideoQualityChange && <label className="text-[10px] font-medium text-neutral-500">画质
+                    <select aria-label="视频画质" value={videoQualityId ?? ""} onChange={(event) => onVideoQualityChange(event.target.value ? Number(event.target.value) : null)} className="video-quality-select mt-1 block max-w-36 rounded-lg border px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+                      <option value="">自动 · 1080P</option>
+                      {videoQualities.map((quality) => <option key={quality.id} value={quality.id}>{quality.label}</option>)}
+                    </select>
+                  </label>}
+                  {onVideoAudioLevelChange && <label className="text-[10px] font-medium text-neutral-500">音轨
+                    <select aria-label="视频音轨音质" value={videoAudioLevel ?? ""} onChange={(event) => onVideoAudioLevelChange(event.target.value || null)} className="video-quality-select mt-1 block max-w-36 rounded-lg border px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+                      <option value="">自动 · 192K</option>
+                      {videoAudioLevels.map((level) => <option key={level} value={level}>{videoAudioLevelLabels[level] ?? level}</option>)}
+                    </select>
+                  </label>}
+                </div>
+              ) : <>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Quality</p>
                 <div className="flex items-center gap-2">
@@ -824,6 +616,7 @@ export function PlayerSurface({
                   {qualityOptions.map((option) => (
                     <button
                       key={option.value}
+                      aria-pressed={resolvedQualityLevel === option.value}
                       className={cn(
                         "player-quality-option rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
                         resolvedQualityLevel === option.value && "is-active bg-neutral-950 text-white shadow-sm",
@@ -843,6 +636,7 @@ export function PlayerSurface({
                   B站无损 / Hi-Res 与部分高画质需要大会员；登录后这里会显示账号实际可用的档位。
                 </p>
               )}
+              </>}
             </div>
           </div>
 

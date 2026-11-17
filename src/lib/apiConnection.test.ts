@@ -29,10 +29,15 @@ describe("api connection layer", () => {
     expect(apiUrl("/api/library?token=other")).toBe("http://192.168.1.29:3636/api/library?token=other");
   });
 
-  it("leaves data: URLs and absolute cross-origin URLs untouched apart from tokenning http(s)", () => {
-    setApiConnection({ token: "tok" });
+  it("never attaches a pairing token to a different origin", () => {
+    setApiConnection({ serverUrl: "http://192.168.1.29:3636", token: "tok" });
     expect(apiUrl("data:image/png;base64,aaa")).toBe("data:image/png;base64,aaa");
-    expect(apiUrl("https://cdn.example.com/song.flac")).toBe("https://cdn.example.com/song.flac?token=tok");
+    expect(apiUrl("https://cdn.example.com/song.flac")).toBe("https://cdn.example.com/song.flac");
+    expect(apiUrl("http://192.168.1.29:3637/api/library")).toBe("http://192.168.1.29:3637/api/library");
+    expect(apiUrl("http://192.168.1.29:3636.evil.example/api/library")).toBe("http://192.168.1.29:3636.evil.example/api/library");
+    expect(apiUrl("http://192.168.1.29:3636/api/library#tracks")).toBe("http://192.168.1.29:3636/api/library?token=tok#tracks");
+    setApiConnection({ token: "tok" });
+    expect(apiUrl("https://cdn.example.com/song.flac")).toBe("https://cdn.example.com/song.flac");
   });
 
   it("clearing the connection restores relative URLs", () => {

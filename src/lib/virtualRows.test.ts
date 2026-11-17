@@ -36,9 +36,14 @@ describe("virtualRows", () => {
         overscan: 4,
       }),
     ).toEqual({
-      startIndex: 5,
+      startIndex: 0,
       endIndex: 10,
       totalHeight: 400,
     });
+  });
+
+  it("keeps filtered results visible after scrolling a much longer list", () => {
+    const range = calculateVirtualRange({ count: 3, rowHeight: 68, scrollTop: 20_000, viewportHeight: 400, overscan: 8 });
+    expect(range).toEqual({ startIndex: 0, endIndex: 3, totalHeight: 204 });
   });
 });

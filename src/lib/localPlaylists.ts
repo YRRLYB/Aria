@@ -34,6 +34,11 @@ export type LocalPlaylist = {
 
 type PlaylistStorage = Pick<Storage, "getItem" | "setItem">;
 
+/** Empty selections open the online search flow, not a local-track dialog. */
+export function shouldUseLocalPlaylistDialog(tracks: Array<Pick<Track, "source">>) {
+  return tracks.length > 0 && tracks.every((track) => track.source === "local");
+}
+
 function defaultStorage(): PlaylistStorage | null {
   try {
     return window.localStorage;

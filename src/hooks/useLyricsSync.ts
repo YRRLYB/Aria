@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { hasSyncedLyrics, writeCachedLyrics } from "@/lib/playerPresentation";
 import { idleTrack } from "@/lib/trackMappers";
 import { selectAutomaticMetadataCandidate } from "@/lib/localMetadata";
+import { memoryLimits, trimMapCache } from "@/lib/memoryCache";
 
 // Owns lyric acquisition: binding-driven rebinds for local tracks, automatic
 // sync (and bilingual translation refresh) for the active track.
@@ -16,6 +17,8 @@ export function useLyricsSync(options: {
   const [lyricBindings, setLyricBindings] = useState<Record<string, string>>({});
   const lyricBindingsRef = useRef(lyricBindings);
   lyricBindingsRef.current = lyricBindings;
+  const activeTrackRef = useRef(options.activeTrack);
+  activeTrackRef.current = options.activeTrack;
   const lyricSyncingRef = useRef<Set<string>>(new Set());
   const lyricEnrichmentRefreshRef = useRef<Set<string>>(new Set());
   // 首曲恢复/冷启动时后端可能还没就绪，歌词请求会失败一次。以前失败后
@@ -116,8 +119,9 @@ export function useLyricsSync(options: {
     const delay = [1_200, 3_000, 7_000][attempt] ?? 7_000;
     lyricRetryTimerRef.current = window.setTimeout(() => {
       lyricRetryTimerRef.current = null;
-      if (options.activeTrack.id !== trackId || hasSyncedLyrics(options.activeTrack)) return;
+      if (activeTrackRef.current.id !== trackId || hasSyncedLyrics(activeTrackRef.current)) return;
       lyricRetryCountRef.current.set(trackId, attempt + 1);
+      trimMapCache(lyricRetryCountRef.current, memoryLimits.lyricRetries);
       setLyricRetryTick((value) => value + 1);
     }, delay);
   }
@@ -126,6 +130,11 @@ export function useLyricsSync(options: {
     if (lyricRetryTimerRef.current !== null) window.clearTimeout(lyricRetryTimerRef.current);
     lyricRetryTimerRef.current = null;
   }, []);
+
+  useEffect(() => {
+    if (lyricRetryTimerRef.current !== null) window.clearTimeout(lyricRetryTimerRef.current);
+    lyricRetryTimerRef.current = null;
+  }, [options.activeTrack.id]);
 
   const syncActiveTrackLyrics = useEffectEvent(() => {
     const activeTrack = options.activeTrack;
@@ -152,12 +161,12 @@ export function useLyricsSync(options: {
           lyricRetryCountRef.current.delete(activeTrack.id);
           return;
         }
-        if (options.activeTrack.id === activeTrack.id) scheduleLyricRetry(activeTrack.id);
+        if (activeTrackRef.current.id === activeTrack.id) scheduleLyricRetry(activeTrack.id);
       })
       .catch(() => {
         // Keep the track searchable; the manual lyrics panel can retry.
         lyricEnrichmentRefreshRef.current.delete(activeTrack.id);
-        if (options.activeTrack.id === activeTrack.id) scheduleLyricRetry(activeTrack.id);
+        if (activeTrackRef.current.id === activeTrack.id) scheduleLyricRetry(activeTrack.id);
       })
       .finally(() => {
         lyricSyncingRef.current.delete(activeTrack.id);

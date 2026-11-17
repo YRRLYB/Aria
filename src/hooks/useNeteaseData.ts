@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type SetStateAction } from "react";
 import type { Track, ViewId } from "@/data/music";
 import type { NeteaseAccountSummary, ProviderPlaylist } from "@/lib/api";
 import { api } from "@/lib/api";
@@ -8,6 +8,7 @@ import { mergeTracks, trimTrackCache } from "@/lib/playerPresentation";
 import { materializeQueueIds } from "@/lib/playQueue";
 import { isLikedPlaylist, providerTrackToUiTrack, idleTrack } from "@/lib/trackMappers";
 import type { QualityLevel } from "@/lib/playerPresentation";
+import { accountSessionChanged, type AccountIdentity } from "@/lib/accountSession";
 
 // Owns everything NetEase: account, liked/daily/roam/playlist track pools,
 // stream-metadata warmup and the like toggle.
@@ -25,7 +26,11 @@ export function useNeteaseData(options: {
   const { applyTrackUpdate } = options;
   const initialSnapshot = useRef(readNeteaseSnapshot()).current;
   const snapshotUserIdRef = useRef<string | null>(initialSnapshot?.userId ?? null);
-  const [neteaseAccount, setNeteaseAccount] = useState<NeteaseAccountSummary | null>(null);
+  const [neteaseAccount, setNeteaseAccountState] = useState<NeteaseAccountSummary | null>(null);
+  const accountRef = useRef<NeteaseAccountSummary | null>(null);
+  const sessionIdentityRef = useRef<AccountIdentity>(initialSnapshot?.userId ? { connected: true, userId: initialSnapshot.userId } : null);
+  const sessionGenerationRef = useRef(0);
+  const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const [neteaseTracks, setNeteaseTracks] = useState<Track[]>(initialSnapshot?.neteaseTracks ?? []);
   const [neteaseLikedTracks, setNeteaseLikedTracks] = useState<Track[]>(initialSnapshot?.likedTracks ?? []);
   const [dailyTracks, setDailyTracks] = useState<Track[]>(initialSnapshot?.dailyTracks ?? []);
@@ -43,6 +48,26 @@ export function useNeteaseData(options: {
   const playlistRequestRef = useRef(0);
   const selectedPlaylistIdRef = useRef<string | null>(null);
   selectedPlaylistIdRef.current = selectedPlaylist?.id ?? null;
+
+  function setNeteaseAccount(action: SetStateAction<NeteaseAccountSummary | null>) {
+    const next = typeof action === "function" ? action(accountRef.current) : action;
+    if (accountSessionChanged(sessionIdentityRef.current, next)) {
+      sessionGenerationRef.current += 1;
+      refreshPromiseRef.current = null;
+      playlistRequestRef.current += 1;
+      selectedPlaylistIdRef.current = null;
+      setSelectedPlaylist(null);
+      setPlaylistLoading(false);
+      setPlaylistError(null);
+      setRoamRefreshing(false);
+    }
+    accountRef.current = next;
+    // Preserve a known user ID while an account check returns a partial profile.
+    sessionIdentityRef.current = next?.connected && !next.userId && sessionIdentityRef.current?.connected
+      ? { connected: true, userId: sessionIdentityRef.current.userId }
+      : next;
+    setNeteaseAccountState(next);
+  }
 
   useEffect(() => {
     if (!neteaseAccount) return;
@@ -186,9 +211,13 @@ export function useNeteaseData(options: {
     );
   }
 
-  async function refreshNeteaseData() {
+  function refreshNeteaseData(): Promise<void> {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const generation = sessionGenerationRef.current;
+    const isCurrent = () => generation === sessionGenerationRef.current;
+    const task = (async () => {
     const appendTracks = (tracksToAdd: Track[]) => {
-      if (!tracksToAdd.length) return;
+      if (!isCurrent() || !tracksToAdd.length) return;
       setNeteaseTracks((current) => trimTrackCache([...current, ...tracksToAdd]));
     };
 
@@ -196,6 +225,7 @@ export function useNeteaseData(options: {
     // Promise.all meant a slow private-roaming response held back liked songs,
     // daily recommendations, playlists and all of their cover artwork.
     const dailyTask = api.getProviderDaily().then((daily) => {
+      if (!isCurrent()) return [];
       const tracks = daily.tracks.map(providerTrackToUiTrack);
       setDailyTracks(tracks);
       appendTracks(tracks);
@@ -203,12 +233,14 @@ export function useNeteaseData(options: {
       return tracks;
     });
     const roamTask = api.getProviderRoam().then((roam) => {
+      if (!isCurrent()) return [];
       const tracks = roam.tracks.map((track, index) => providerTrackToUiTrack(track, index + 1000));
       setRoamTracks(tracks);
       appendTracks(tracks);
       return tracks;
     });
     const likedTask = api.getProviderLiked().then((liked) => {
+      if (!isCurrent()) return [];
       const tracks = liked.tracks.map((track, index) => providerTrackToUiTrack(track, index + 2000));
       setNeteaseLikedTracks(tracks);
       setNeteaseLikedIds(Object.fromEntries(tracks.map((track) => [track.id, true])));
@@ -216,11 +248,13 @@ export function useNeteaseData(options: {
       return tracks;
     });
     const playlistsTask = api.getProviderPlaylists().then((playlists) => {
+      if (!isCurrent()) return [];
       setProviderPlaylists(playlists.playlists);
       return playlists.playlists;
     });
 
     const results = await Promise.allSettled([dailyTask, roamTask, likedTask, playlistsTask]);
+    if (!isCurrent()) return;
     const trackResults = results.slice(0, 3);
     const successfulPools = trackResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
     if (!successfulPools.length && trackResults.every((result) => result.status === "rejected")) {
@@ -230,10 +264,17 @@ export function useNeteaseData(options: {
       const firstTrack = successfulPools.flat()[0];
       if (firstTrack) options.onAutoSelectTrack(firstTrack.id);
     }
+    })();
+    const pending = task.finally(() => {
+      if (refreshPromiseRef.current === pending) refreshPromiseRef.current = null;
+    });
+    refreshPromiseRef.current = pending;
+    return pending;
   }
 
   async function refreshRoamData() {
     if (roamRefreshing) return;
+    const generation = sessionGenerationRef.current;
     setRoamRefreshing(true);
     try {
       const currentSignature = trackIdSignature(roamTracks);
@@ -241,6 +282,7 @@ export function useNeteaseData(options: {
       let nextRoamTracks: Track[] = [];
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const roam = await api.getProviderRoam("netease", 30, { refresh: true, excludeIds });
+        if (generation !== sessionGenerationRef.current) return;
         const candidateTracks = mergeTracks(
           roam.tracks.map((track, index) => providerTrackToUiTrack(track, index + dailyTracks.length + attempt * 30)),
         );
@@ -266,7 +308,7 @@ export function useNeteaseData(options: {
         if (playableIds.length) options.setPlayQueueIds(() => playableIds);
       }
     } finally {
-      setRoamRefreshing(false);
+      if (generation === sessionGenerationRef.current) setRoamRefreshing(false);
     }
   }
 
@@ -300,8 +342,13 @@ export function useNeteaseData(options: {
   }
 
   async function refreshPlaylistList() {
+    const generation = sessionGenerationRef.current;
     const result = await api.getProviderPlaylists();
-    setProviderPlaylists(result.playlists);
+    if (generation === sessionGenerationRef.current) setProviderPlaylists(result.playlists);
+  }
+
+  function assertCurrentSession(generation: number) {
+    if (generation !== sessionGenerationRef.current) throw new Error("网易云账号已切换，请重新操作。");
   }
 
   function applyPlaylistDetails(playlist: ProviderPlaylist) {
@@ -310,12 +357,16 @@ export function useNeteaseData(options: {
   }
 
   async function updatePlaylist(id: string, fields: { name?: string; description?: string }) {
+    const generation = sessionGenerationRef.current;
     const { playlist } = await api.updateNeteasePlaylist(id, fields);
+    assertCurrentSession(generation);
     applyPlaylistDetails(playlist);
   }
 
   async function deletePlaylist(id: string) {
+    const generation = sessionGenerationRef.current;
     await api.deleteNeteasePlaylist(id);
+    assertCurrentSession(generation);
     const wasOpen = selectedPlaylistIdRef.current === id;
     setProviderPlaylists((current) => current.filter((playlist) => playlist.id !== id));
     if (wasOpen) {
@@ -326,23 +377,29 @@ export function useNeteaseData(options: {
   }
 
   async function uploadPlaylistCover(id: string, file: File) {
+    const generation = sessionGenerationRef.current;
     const { playlist } = await api.uploadNeteasePlaylistCover(id, file);
+    assertCurrentSession(generation);
     applyPlaylistDetails(playlist);
   }
 
   async function editPlaylistTracks(id: string, tracks: Track[], operation: "add" | "del") {
+    const generation = sessionGenerationRef.current;
     const ids = [...new Set(providerIdsForTracks(tracks.filter((track) => track.source === "netease")))];
     if (!ids.length) throw new Error("请选择网易云歌曲");
     await api.editNeteasePlaylistTracks(id, ids, operation);
+    assertCurrentSession(generation);
     // Refresh the current detail without navigating back to a previously opened playlist.
     setNeteaseTracks((current) => trimTrackCache([...current, ...tracks]));
     if (selectedPlaylistIdRef.current === id) {
       try {
         const { playlist, tracks: remoteTracks } = await api.getNeteasePlaylistDetail(id);
+        assertCurrentSession(generation);
         applyPlaylistDetails(playlist);
         setPlaylistTracks((current) => selectedPlaylistIdRef.current === id ? remoteTracks.map(providerTrackToUiTrack) : current);
         setPlaylistError(null);
       } catch {
+        if (generation !== sessionGenerationRef.current) throw new Error("网易云账号已切换，请重新操作。");
         if (selectedPlaylistIdRef.current === id) setPlaylistError("歌曲已同步，但重新读取歌单失败，请点击重试刷新。");
       }
     }
@@ -350,18 +407,24 @@ export function useNeteaseData(options: {
   }
 
   async function reorderPlaylistTracks(id: string, orderedTracks: Track[]) {
+    const generation = sessionGenerationRef.current;
     await api.reorderNeteasePlaylistTracks(id, providerIdsForTracks(orderedTracks));
+    assertCurrentSession(generation);
     setPlaylistTracks((current) => selectedPlaylistIdRef.current === id ? orderedTracks : current);
   }
 
   async function subscribePlaylist(id: string, subscribed: boolean) {
+    const generation = sessionGenerationRef.current;
     await api.subscribeNeteasePlaylist(id, subscribed);
+    assertCurrentSession(generation);
     setSelectedPlaylist((current) => current?.id === id ? { ...current, subscribed } : current);
     void refreshPlaylistList().catch(() => undefined);
   }
 
   async function createPlaylist(name: string, isPrivate: boolean, open = true) {
+    const generation = sessionGenerationRef.current;
     const { playlist } = await api.createNeteasePlaylist(name, isPrivate);
+    assertCurrentSession(generation);
     setProviderPlaylists((current) => [...current.filter((item) => item.id !== playlist.id), playlist]);
     // A newly created playlist is empty; open it immediately. A list refresh
     // failure must not turn a successful remote write into a retry prompt.
@@ -373,6 +436,7 @@ export function useNeteaseData(options: {
       setPlaylistError(null);
     }
     void api.getProviderPlaylists().then(({ playlists }) => {
+      if (generation !== sessionGenerationRef.current) return;
       setProviderPlaylists(playlists.some((item) => item.id === playlist.id) ? playlists : [...playlists, playlist]);
     }).catch(() => {});
     return playlist;
@@ -383,6 +447,7 @@ export function useNeteaseData(options: {
     if (!providerId) return;
 
     const wasLiked = Boolean(neteaseLikedIds[track.id]);
+    const generation = sessionGenerationRef.current;
     const nextLiked = !wasLiked;
     const likedTrack = { ...track, likedAt: nextLiked ? Date.now() : track.likedAt };
     setNeteaseLikedIds((current) => {
@@ -412,6 +477,7 @@ export function useNeteaseData(options: {
     }
 
     api.setNeteaseLike(providerId, nextLiked).catch(() => {
+      if (generation !== sessionGenerationRef.current) return;
       setNeteaseLikedIds((current) => {
         const next = { ...current };
         if (wasLiked) next[track.id] = true;

@@ -32,62 +32,71 @@ export async function proxyAudioStream(
   res: Response,
   resolve: (attempt: number) => Promise<UpstreamStream>,
 ): Promise<void> {
-  let upstream: globalThis.Response | null = null;
-  let meta: UpstreamStream | null = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    meta = await resolve(attempt);
-    upstream = await fetch(meta.url, {
-      headers: {
-        ...(meta.headers ?? {}),
-        ...(req.headers.range ? { Range: req.headers.range } : {}),
-      },
-    });
-    if (upstream.ok || upstream.status === 206) break;
-    if (!RETRYABLE_UPSTREAM_STATUS.has(upstream.status) || attempt === 1) break;
-    await upstream.body?.cancel();
-    upstream = null;
-  }
-
-  if (!upstream || !meta) {
-    throw new HttpError(502, "Upstream audio request failed", "AUDIO_UPSTREAM_FAILED");
-  }
-  if (!upstream.ok && upstream.status !== 206) {
-    await upstream.body?.cancel();
-    throw new HttpError(502, "Upstream audio request failed", "AUDIO_UPSTREAM_FAILED");
-  }
-
-  res.status(upstream.status);
-  if (meta.mimeType) {
-    res.setHeader("content-type", meta.mimeType);
-  } else {
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.setHeader("content-type", contentType);
-  }
-  for (const header of ["content-length", "content-range", "accept-ranges"]) {
-    const value = upstream.headers.get(header);
-    if (value) res.setHeader(header, value);
-  }
-  if (meta.bitrate) res.setHeader("x-aria-bitrate", String(meta.bitrate));
-  if (meta.sampleRate) res.setHeader("x-aria-sample-rate", String(meta.sampleRate));
-  if (meta.currentLevel) res.setHeader("x-aria-level", meta.currentLevel);
-  res.setHeader("Cache-Control", `private, max-age=${meta.cacheMaxAgeSeconds ?? 600}`);
-
-  if (req.method === "HEAD") {
-    res.end();
-    return;
-  }
-
-  if (!upstream.body) {
-    res.end();
-    return;
-  }
+  const controller = new AbortController();
+  const abortUpstream = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  req.once("aborted", abortUpstream);
+  res.once("close", abortUpstream);
   try {
+    let upstream: globalThis.Response | null = null;
+    let meta: UpstreamStream | null = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      meta = await resolve(attempt);
+      if (controller.signal.aborted) return;
+      upstream = await fetch(meta.url, {
+        headers: {
+          ...(meta.headers ?? {}),
+          ...(req.headers.range ? { Range: req.headers.range } : {}),
+        },
+        signal: controller.signal,
+      });
+      if (upstream.ok || upstream.status === 206) break;
+      if (!RETRYABLE_UPSTREAM_STATUS.has(upstream.status) || attempt === 1) break;
+      await upstream.body?.cancel();
+      upstream = null;
+    }
+
+    if (!upstream || !meta) {
+      throw new HttpError(502, "Upstream audio request failed", "AUDIO_UPSTREAM_FAILED");
+    }
+    if (!upstream.ok && upstream.status !== 206) {
+      await upstream.body?.cancel();
+      throw new HttpError(502, "Upstream audio request failed", "AUDIO_UPSTREAM_FAILED");
+    }
+
+    res.status(upstream.status);
+    if (meta.mimeType) {
+      res.setHeader("content-type", meta.mimeType);
+    } else {
+      const contentType = upstream.headers.get("content-type");
+      if (contentType) res.setHeader("content-type", contentType);
+    }
+    for (const header of ["content-length", "content-range", "accept-ranges"]) {
+      const value = upstream.headers.get(header);
+      if (value) res.setHeader(header, value);
+    }
+    if (meta.bitrate) res.setHeader("x-aria-bitrate", String(meta.bitrate));
+    if (meta.sampleRate) res.setHeader("x-aria-sample-rate", String(meta.sampleRate));
+    if (meta.currentLevel) res.setHeader("x-aria-level", meta.currentLevel);
+    res.setHeader("Cache-Control", `private, max-age=${meta.cacheMaxAgeSeconds ?? 600}`);
+
+    if (req.method === "HEAD" || !upstream.body) {
+      res.end();
+      // Fetch uses GET to preserve upstream headers; HEAD must release its body.
+      await upstream.body?.cancel();
+      return;
+    }
     await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>), res);
   } catch (error) {
+    if (controller.signal.aborted) return;
     // Once headers are sent Express cannot turn this into a JSON error; doing
     // so only logs ERR_HTTP_HEADERS_SENT and can leave the renderer with a
     // half-open media request. Tear the response down instead.
     if (!res.headersSent) throw error;
     res.destroy(error instanceof Error ? error : undefined);
+  } finally {
+    req.removeListener("aborted", abortUpstream);
+    res.removeListener("close", abortUpstream);
   }
 }

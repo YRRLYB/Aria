@@ -1232,7 +1232,10 @@ function chooseVideoStream(videos: BiliVideoStream[], qn: number | undefined) {
   const playable = videos.filter((video) => Number.isFinite(video.id) && Boolean(videoBaseUrl(video)));
   const ids = [...new Set(playable.map((video) => video.id as number))].sort((left, right) => right - left);
   if (!ids.length) return null;
-  const requested = qn ?? 120;
+  // Auto mode deliberately caps decoding work at 1080P. 4K remains an
+  // explicit user choice (qn=120); it should not be the default for a desktop
+  // music player, where most listening is background playback.
+  const requested = qn ?? 80;
   const target = ids.includes(requested) ? requested : ids.find((id) => id <= requested) ?? ids[0];
   return playable
     .filter((video) => video.id === target)
@@ -1249,15 +1252,16 @@ export async function resolveBilibiliVideoMeta(
   options: { level?: AriaLevel; qn?: number; refresh?: boolean },
   signal?: AbortSignal,
 ): Promise<SourceVideoMeta> {
-  const cacheKey = `${trackId}:${options.qn ?? "auto"}`;
+  const cacheKey = `${trackId}:${options.qn ?? "auto"}:${options.level ?? "exhigh"}`;
   const cachedVideo = videoMetaCache.get(cacheKey);
   if (!options.refresh && cachedVideo && Date.now() - cachedVideo.at < MEDIA_META_CACHE_MS) {
     return cachedVideo.meta;
   }
   // Ask for every format the account can access (DASH, 4K, HDR, Dolby audio,
   // FLAC and AV1). Muxed durl tops out at 1080P and cannot carry 4K or a
-  // separate lossless track, so DASH is the primary video path.
-  const { data } = await playurl(trackId, 4048, "hires", signal, options.qn ?? 120);
+  // separate lossless track, so DASH is the primary video path. Auto mode uses
+  // 1080P + 192K AAC to avoid needlessly decoding 4K/FLAC in the background.
+  const { data } = await playurl(trackId, 4048, options.level ?? "exhigh", signal, options.qn ?? 80);
   const videos = data?.dash?.video ?? [];
   const selected = chooseVideoStream(videos, options.qn);
 
@@ -1283,7 +1287,7 @@ export async function resolveBilibiliVideoMeta(
     if (flacAudio) audios.push({ ...flacAudio, id: flacAudio.id || 30251, kind: "flac" });
     const dolbyAudio = data?.dash?.dolby?.audio;
     if (dolbyAudio) audios.push({ ...dolbyAudio, id: dolbyAudio.id || 30250, kind: "dolby" });
-    const chosenAudio = chooseAudio(audios, "hires");
+    const chosenAudio = chooseAudio(audios, options.level ?? "exhigh");
     const url = videoBaseUrl(selected);
     const audioUrl = chosenAudio ? audioBaseUrl(chosenAudio.audio) : null;
     const meta: SourceVideoMeta = {
@@ -1296,6 +1300,9 @@ export async function resolveBilibiliVideoMeta(
       audioUrl: audioUrl ? (audioUrl.startsWith("//") ? `https:${audioUrl}` : audioUrl) : null,
       audioQuality: chosenAudio?.entry.label ?? null,
       audioCodecs: chosenAudio?.audio.codecs ?? null,
+      availableAudioLevels: AUDIO_LEVELS
+        .filter((entry) => audios.some((audio) => audioMatchesEntry(audio, entry)))
+        .map((entry) => entry.level),
       mode: "dash",
       mimeType: "video/mp4",
       quality: videoQualityLabel(data, selected.id as number),

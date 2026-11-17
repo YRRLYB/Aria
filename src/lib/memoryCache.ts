@@ -5,6 +5,7 @@ export const memoryLimits = {
   artistAvatarCache: 64,
   localCoverWarmup: 120,
   artworkSyncing: 240,
+  lyricRetries: 240,
 } as const;
 
 export const warmupBatchLimits = {
@@ -33,4 +34,26 @@ export function trimRecordCache<T>(value: Record<string, T>, maxItems: number) {
   const entries = Object.entries(value);
   if (entries.length <= maxItems) return value;
   return Object.fromEntries(entries.slice(-maxItems)) as Record<string, T>;
+}
+
+/** Mark only work actually selected for the current bounded batch. */
+export function takeUnseen<T>(items: Iterable<T>, seen: Set<string>, keyOf: (item: T) => string, limit: number): T[] {
+  const selected: T[] = [];
+  if (limit <= 0) return selected;
+  for (const item of items) {
+    const key = keyOf(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(item);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
+export function trimMapCache<K, V>(cache: Map<K, V>, maxItems: number) {
+  while (cache.size > Math.max(0, maxItems)) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.delete(oldest.value);
+  }
 }

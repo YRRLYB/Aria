@@ -19,7 +19,7 @@ export const bilibiliManifest: SourceManifest = {
     artistDetail: false,
     albumDetail: false,
     qualitySelection: true,
-    // Temporarily disabled while the video UI is reworked; audio stays on.
-    videoPlayback: false,
+    // MV is presented as an overlay on the shared Aria player, not a separate page.
+    videoPlayback: true,
   },
 };

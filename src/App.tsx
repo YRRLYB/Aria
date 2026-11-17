@@ -32,6 +32,7 @@ import { useDiscovery } from "@/hooks/useDiscovery";
 import { useDiscoveryDetails } from "@/hooks/useDiscoveryDetails";
 import { useLocalLibrary } from "@/hooks/useLocalLibrary";
 import { useLocalPlaylists } from "@/hooks/useLocalPlaylists";
+import { shouldUseLocalPlaylistDialog } from "@/lib/localPlaylists";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
 import { useQqData } from "@/hooks/useQqData";
@@ -90,6 +91,9 @@ import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime } from "@/lib/pl
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
 import { matchesShortcut, readKeyboardShortcuts, writeKeyboardShortcuts, type KeyboardShortcuts } from "@/lib/keyboardShortcuts";
 import { sourceLabel } from "@/lib/trackLabels";
+import { updateTracksById } from "@/lib/trackUpdates";
+import { createDebouncedTask } from "@/lib/debouncedTask";
+import { createLibraryWatchPoller, sameLibraryWatchState } from "@/lib/libraryWatch";
 import { getTrackSearchSignature, idleTrack, localTrackToUiTrack, providerTrackToUiTrack } from "@/lib/trackMappers";
 import { getBoundedCoverUrl } from "@/components/music/shared";
 import { cn } from "@/lib/utils";
@@ -152,6 +156,8 @@ export default function App() {
   const [videoQn, setVideoQn] = useState<number | null>(null);
   const [videoQualities, setVideoQualities] = useState<Array<{ id: number; label: string }>>([]);
   const [videoAudioQuality, setVideoAudioQuality] = useState<string | null>(null);
+  const [videoAudioLevel, setVideoAudioLevel] = useState<string | null>(null);
+  const [videoAudioLevels, setVideoAudioLevels] = useState<string[]>([]);
   const videoControlRef = useRef<VideoControl | null>(null);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -328,7 +334,6 @@ export default function App() {
   const navCloseTimer = useRef<number | null>(null);
   const countedTrackRef = useRef<string | null>(null);
   const pendingSeekRef = useRef(0);
-  const lastPlayerCacheWriteRef = useRef(0);
   const rendererDiagnosticRef = useRef<Record<string, unknown>>({});
   const immersiveFullscreenRef = useRef(false);
   const taskbarClipKeyRef = useRef<string>("");
@@ -725,17 +730,20 @@ export default function App() {
     setVideoQn(null);
     setVideoQualities([]);
     setVideoAudioQuality(null);
+    setVideoAudioLevel(null);
+    setVideoAudioLevels([]);
   }, [activeTrack.id]);
   const activeVideoUrl = useMemo(() => {
-    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || !videoQn) return activeTrack.videoUrl;
+    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || (!videoQn && !videoAudioLevel)) return activeTrack.videoUrl;
     try {
       const url = new URL(api.resolveUrl(activeTrack.videoUrl));
-      url.searchParams.set("qn", String(videoQn));
+      if (videoQn) url.searchParams.set("qn", String(videoQn));
+      if (videoAudioLevel) url.searchParams.set("level", videoAudioLevel);
       return url.href;
     } catch {
       return activeTrack.videoUrl;
     }
-  }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
+  }, [activeTrack.videoUrl, activeTrack.source, videoQn, videoAudioLevel]);
   // Bilibili's high-quality path is DASH: the video element receives a
   // video-only stream and this parallel route supplies the audio track
   // (AAC / Dolby / FLAC). Muxed fallbacks simply play their own audio.
@@ -746,11 +754,13 @@ export default function App() {
       url.pathname = url.pathname.replace(/\/video$/, "/video-audio");
       if (videoQn) url.searchParams.set("qn", String(videoQn));
       else url.searchParams.delete("qn");
+      if (videoAudioLevel) url.searchParams.set("level", videoAudioLevel);
+      else url.searchParams.delete("level");
       return url.href;
     } catch {
       return undefined;
     }
-  }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
+  }, [activeTrack.videoUrl, activeTrack.source, videoQn, videoAudioLevel]);
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
   const effectiveQualityLevel = useMemo(
@@ -758,20 +768,20 @@ export default function App() {
     [activeTrack.availableLevels, activeTrack.source, hifiEnabled, masterQualityEnabled, qualityLevel],
   );
   useEffect(() => {
-    if (activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
+    if ((activeTrack.source !== "bilibili" && activeTrack.source !== "qq") || !activeTrack.providerId) return;
     let cancelled = false;
     api
-      .getSourceStreamMeta("bilibili", activeTrack.providerId, effectiveQualityLevel)
+      .getSourceStreamMeta(activeTrack.source, activeTrack.providerId, effectiveQualityLevel)
       .then((meta) => {
-        if (cancelled || !meta.bitrate) return;
+        if (cancelled) return;
         updateTrackRef.current(activeTrack.id, (track) => ({
           ...track,
           bitrate: meta.bitrate ?? track.bitrate,
           sampleRate: meta.sampleRate ?? track.sampleRate,
           currentLevel: meta.currentLevel ?? track.currentLevel,
-          availableLevels: meta.availableLevels ?? track.availableLevels,
+          availableLevels: meta.availableLevels?.length ? meta.availableLevels : track.availableLevels,
           quality: meta.quality ?? track.quality,
-        }));
+        }), { includeHistory: false });
       })
       .catch(() => undefined);
     return () => {
@@ -785,11 +795,12 @@ export default function App() {
     if (!BILIBILI_VIDEO_ENABLED || !videoMode || activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
     let cancelled = false;
     api
-      .getSourceVideoMeta("bilibili", activeTrack.providerId, undefined, videoQn)
+      .getSourceVideoMeta("bilibili", activeTrack.providerId, videoAudioLevel ?? undefined, videoQn)
       .then((meta) => {
         if (cancelled) return;
         setVideoQualities(meta.availableQualities ?? []);
         setVideoAudioQuality(meta.audioQuality ?? null);
+        setVideoAudioLevels(meta.availableAudioLevels ?? []);
         if (!meta.quality) return;
         updateTrackRef.current(activeTrack.id, (track) => ({
           ...track,
@@ -801,7 +812,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, videoMode, videoQn]);
+  }, [activeTrack.id, activeTrack.providerId, activeTrack.source, videoMode, videoQn, videoAudioLevel]);
   const visibleTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return allTracks;
@@ -1332,8 +1343,7 @@ export default function App() {
     const includeHistory = updateOptions?.includeHistory ?? true;
     // Metadata warmups touch one track at a time; skip the full array copy
     // (and the re-render it triggers) for lists that do not contain it.
-    const applyTo = (tracks: Track[]) =>
-      tracks.some((track) => track.id === trackId) ? tracks.map(updateTrack) : tracks;
+    const applyTo = (tracks: Track[]) => updateTracksById(tracks, trackId, updateTrack);
     setLocalTracks(applyTo);
     setNeteaseTracks(applyTo);
     setQqSearchTracks(applyTo);
@@ -1355,10 +1365,10 @@ export default function App() {
     if (includeHistory) {
       setPlayHistory((current) =>
         current.some((entry) => entry.track.id === trackId)
-          ? current.map((entry) => ({
+          ? current.map((entry) => entry.track.id === trackId ? {
               ...entry,
               track: updateTrack(entry.track),
-            }))
+            } : entry)
           : current,
       );
     }
@@ -1559,6 +1569,7 @@ export default function App() {
   // the exact current view so an exiting animation cannot leave a stale clip
   // from the previous page.
   useEffect(() => {
+    if (!window.ariaDesktop?.setTaskbarPreviewRect || !pageVisible) return;
     const update = () => {
       const selectors = immersiveOpen
         ? ['[data-taskbar-anchor="immersive"]']
@@ -1605,7 +1616,7 @@ export default function App() {
       window.visualViewport?.removeEventListener("resize", update);
       window.visualViewport?.removeEventListener("scroll", update);
     };
-  }, [activeView, activeTrack.id, immersiveOpen]);
+  }, [activeView, activeTrack.id, immersiveOpen, pageVisible]);
 
   // Feed two bounded bitmaps to the native DWM bridge. Windows asks for a
   // square-ish thumbnail and a separate live preview; sharing one stretched
@@ -1919,38 +1930,22 @@ export default function App() {
       });
   }, []);
 
-  const lastLibraryWatchScanRef = useRef<number | null>(null);
-  const libraryWatchInitializedRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const state = await api.getLibraryWatchState();
-        if (cancelled) return;
-        setLibraryWatchState(state);
-        if (!libraryWatchInitializedRef.current) {
-          libraryWatchInitializedRef.current = true;
-          lastLibraryWatchScanRef.current = state.lastScanAt;
-          return;
-        }
-        if (!state.lastScanAt || state.lastScanAt === lastLibraryWatchScanRef.current) return;
-        lastLibraryWatchScanRef.current = state.lastScanAt;
-        // A watcher scan happens in the backend. Pull the new index so the
-        // local library updates without asking the user to rescan manually.
-        const library = await api.getLibrary();
-        if (cancelled) return;
+    const poller = createLibraryWatchPoller({
+      getState: api.getLibraryWatchState,
+      getLibrary: api.getLibrary,
+      onState: (state) => setLibraryWatchState((current) => sameLibraryWatchState(current, state) ? current : state),
+      onLibrary: (library) => {
         const uiTracks = library.tracks.map(localTrackToUiTrack);
         setLocalTracks(uiTracks);
         warmLocalCoverCache(uiTracks);
         setLibraryMeta({ roots: library.roots, updatedAt: library.updatedAt });
-      } catch {
-        // The backend may still be starting; the next tick retries.
-      }
-    };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 20_000);
+      },
+    });
+    void poller.poll();
+    const timer = window.setInterval(() => void poller.poll(), 20_000);
     return () => {
-      cancelled = true;
+      poller.dispose();
       window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2055,13 +2050,9 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [playing]);
 
-  useEffect(() => {
+  const writeLatestPlayerCacheRef = useRef<() => void>(() => undefined);
+  writeLatestPlayerCacheRef.current = () => {
     if (activeTrack.id === idleTrack.id || activeTrack.id !== activeTrackId) return;
-
-    const now = Date.now();
-    if (now - lastPlayerCacheWriteRef.current < 900) return;
-    lastPlayerCacheWriteRef.current = now;
-
     writeCachedPlayerState({
       activeTrackId: activeTrack.id,
       activeTrackSnapshot: createPlayerCacheSnapshot(activeTrack),
@@ -2073,8 +2064,20 @@ export default function App() {
       shuffleEnabled,
       repeatMode,
       playing: false,
-      updatedAt: now,
+      updatedAt: Date.now(),
     });
+  };
+  const playerCacheTaskRef = useRef<ReturnType<typeof createDebouncedTask> | null>(null);
+  if (!playerCacheTaskRef.current) {
+    playerCacheTaskRef.current = createDebouncedTask(() => writeLatestPlayerCacheRef.current(), 300);
+  }
+
+  useEffect(() => {
+    if (activeTrack.id === idleTrack.id || activeTrack.id !== activeTrackId) {
+      playerCacheTaskRef.current?.cancel();
+      return;
+    }
+    playerCacheTaskRef.current?.schedule();
   }, [
     activeTrack,
     activeTrack.id,
@@ -2087,6 +2090,15 @@ export default function App() {
     shuffleEnabled,
     volume,
   ]);
+
+  useEffect(() => {
+    const flush = () => playerCacheTaskRef.current?.flush();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
 
   useEffect(() => {
     api
@@ -2505,6 +2517,13 @@ export default function App() {
                   videoQualities={videoQualities}
                   videoQualityId={videoQn}
                   videoAudioQuality={videoAudioQuality}
+                  videoAudioLevel={videoAudioLevel}
+                  videoAudioLevels={videoAudioLevels}
+                  onVideoAudioLevelChange={(level) => {
+                    commitActiveVideoTime();
+                    pendingSeekRef.current = getPlaybackTime();
+                    setVideoAudioLevel(level);
+                  }}
                   onVideoQualityChange={(qn) => {
                     commitActiveVideoTime();
                     pendingSeekRef.current = getPlaybackTime();
@@ -2553,7 +2572,7 @@ export default function App() {
                   durationSeconds={durationSeconds}
                   analyserRef={analyserRef}
                   visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
-                  visualizerActive={pageVisible && !immersiveOpen && activeView === "player"}
+                  visualizerActive={pageVisible && !immersiveOpen && activeView === "player" && !videoMode}
                   lyricDisplayMode={lyricDisplayMode}
                   onLyricDisplayModeChange={setLyricDisplayMode}
                   onSeek={seekTo}
@@ -3097,7 +3116,7 @@ export default function App() {
           <button type="button" className="shrink-0 rounded-full px-1 text-white/60 hover:text-white" aria-label="关闭提示" onClick={() => { setPlaybackNotice(null); setPlaybackError(null); }}>×</button>
         </div>
       )}
-      {addPlaylistRequest && (addPlaylistRequest.tracks.every((track) => track.source === "local") ? (
+      {addPlaylistRequest && (shouldUseLocalPlaylistDialog(addPlaylistRequest.tracks) ? (
         <AddToLocalPlaylistDialog
           tracks={addPlaylistRequest.tracks}
           playlists={localPlaylists.playlists}

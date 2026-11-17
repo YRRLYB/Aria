@@ -331,6 +331,47 @@ describe("unified source routes", () => {
     }
   });
 
+  it("cancels the upstream body for HEAD requests", async () => {
+    const cancel = vi.fn();
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }), {
+      headers: { "content-type": "audio/mpeg", "content-length": "100" },
+    }));
+    const { base, close } = await listen();
+    try {
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const req = httpRequest(`${base}/qq/tracks/t1/stream`, { method: "HEAD" }, (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      expect(status).toBe(200);
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+    } finally {
+      await close();
+    }
+  });
+
+  it("aborts an upstream request when the player disconnects", async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    fetchMock.mockImplementationOnce((_url, init) => new Promise<Response>((_resolve, reject) => {
+      upstreamSignal = init?.signal ?? undefined;
+      upstreamSignal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }));
+    const { base, close } = await listen();
+    try {
+      const req = httpRequest(`${base}/qq/tracks/t1/stream`);
+      req.on("error", () => undefined);
+      req.end();
+      await vi.waitFor(() => expect(upstreamSignal).toBeDefined());
+      req.destroy();
+      await vi.waitFor(() => expect(upstreamSignal?.aborted).toBe(true));
+    } finally {
+      await close();
+    }
+  });
+
   it("serves lyrics when supported and errors when not", async () => {
     const { base, close } = await listen();
     try {
