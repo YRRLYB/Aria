@@ -90,6 +90,22 @@ const ICONS: Record<AriaIconName, string> = {
 
 /** aria-icons 套件图标:去掉固定宽高,尺寸交给 className,颜色跟随 currentColor。 */
 export function AriaIcon({ name, className }: { name: AriaIconName; className?: string }) {
+  // 播放态音柱直接用 React SVG + 全局 CSS @keyframes，避免部分 Windows / Chromium 环境下
+  // dangerouslySetInnerHTML 注入 SMIL 或内联 <style> 时时间轴延迟冻结。
+  if (name === "playing") {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn("inline-flex items-center justify-center [&>svg]:size-full", className)}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+          <rect className="aria-eq aria-eq-1" x="4.5" y="4.5" width="3" height="15" rx="1.5" />
+          <rect className="aria-eq aria-eq-2" x="10.5" y="4.5" width="3" height="15" rx="1.5" />
+          <rect className="aria-eq aria-eq-3" x="16.5" y="4.5" width="3" height="15" rx="1.5" />
+        </svg>
+      </span>
+    );
+  }
   const markup = (ICONS[name] ?? "")
     .replace(/width="\d+" height="\d+" /, "")
     .replace(/style="fill:var\(--aria-dot,currentColor\)"/g, 'style="fill:var(--aria-dot,currentColor)"');

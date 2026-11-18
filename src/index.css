@@ -733,6 +733,66 @@ textarea::selection,
   }
 }
 
+@keyframes aria-eq-a {
+  0%,
+  100% {
+    transform: scaleY(0.38);
+  }
+  35% {
+    transform: scaleY(0.95);
+  }
+  65% {
+    transform: scaleY(0.52);
+  }
+  85% {
+    transform: scaleY(0.86);
+  }
+}
+
+@keyframes aria-eq-b {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  40% {
+    transform: scaleY(0.34);
+  }
+  72% {
+    transform: scaleY(0.84);
+  }
+}
+
+@keyframes aria-eq-c {
+  0%,
+  100% {
+    transform: scaleY(0.44);
+  }
+  38% {
+    transform: scaleY(1);
+  }
+  70% {
+    transform: scaleY(0.36);
+  }
+}
+
+.aria-eq {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.aria-eq-1 {
+  animation: aria-eq-a 0.92s ease-in-out infinite;
+}
+
+.aria-eq-2 {
+  animation: aria-eq-b 0.78s ease-in-out -0.22s infinite;
+}
+
+.aria-eq-3 {
+  animation: aria-eq-c 0.86s ease-in-out -0.48s infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aria-fruit-wash {
     animation: none;
