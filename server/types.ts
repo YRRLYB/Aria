@@ -11,6 +11,7 @@ export type ScannedTrack = {
   quality: string;
   format: string;
   size: number;
+  mtimeMs?: number | null;
   bitrate?: number | null;
   sampleRate?: number | null;
   bpm?: number | null;

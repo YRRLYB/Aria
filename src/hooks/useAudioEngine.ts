@@ -75,11 +75,11 @@ export function useAudioEngine(options: {
   // Browser/System output must remain a Chromium media session. The two
   // WASAPI choices use mpv: Shared exposes Aria as an application-audio
   // source for OOPZ, while Exclusive opens the endpoint outside the system
-  // mixer. Audio CD playback always requires the native engine.
+  // mixer. Audio CD playback always requires the native engine. Video mode
+  // renders a muted visual companion and leaves this audio pipeline untouched.
   const nativePlaybackRequested = Boolean(
     nativeAudioSupported &&
-      (options.audioOutputMode !== "system" || activeTrack.requiresNativePlayback) &&
-      !options.videoMode,
+      (options.audioOutputMode !== "system" || activeTrack.requiresNativePlayback),
   );
   // Do not silently send a failed WASAPI request back through Chromium. That
   // made the UI say "Exclusive" while Windows was still mixing the audio.
@@ -108,19 +108,18 @@ export function useAudioEngine(options: {
   }, [activeTrack.availableLevels, analyserFallbackEnabled, nativePlaybackEnabled, options.effectiveQualityLevel]);
 
   const audioElementStreamUrl = useMemo(() => {
-    if (options.videoMode) return null;
     if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease" && activeTrack.source !== "qq" && activeTrack.source !== "bilibili") return resolvedUrl;
+    if (activeTrack.source !== "netease" && activeTrack.source !== "qq" && activeTrack.source !== "bilibili") {
+      return resolvedUrl;
+    }
 
     const url = new URL(resolvedUrl, window.location.href);
-    if (activeTrack.source === "netease" || activeTrack.source === "qq" || activeTrack.source === "bilibili") {
-      // Native mpv owns the audible stream. The renderer copy is analyser-only,
-      // so use the smallest real stream to avoid doubling decoder memory.
-      url.searchParams.set("level", analyserLevel);
-    }
+    // Native mpv owns the audible stream. The renderer copy is analyser-only,
+    // so use the smallest real stream to avoid doubling decoder memory.
+    url.searchParams.set("level", nativePlaybackEnabled ? analyserLevel : options.effectiveQualityLevel);
     return url.href;
-  }, [activeTrack, analyserLevel, options.videoMode]);
+  }, [activeTrack, analyserLevel, nativePlaybackEnabled, options.effectiveQualityLevel]);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -329,7 +328,9 @@ export function useAudioEngine(options: {
   }, [options.audioOutputMode]);
 
   useEffect(() => {
+    const existing = readCachedAudioSettings();
     writeCachedAudioSettings({
+      ...existing,
       sinkId: selectedSinkId,
       hifiEnabled: options.hifiEnabled,
       masterQualityEnabled: options.masterQualityEnabled,
@@ -426,11 +427,8 @@ export function useAudioEngine(options: {
     errorAdvanceRef.current?.cancel();
   }, [options.activeTrack.id, options.playing]);
 
-  // The browser audio lane stays mounted while video mode is active. A seek in
-  // the video overlay only moves the video element, so consume the shared
-  // pending position when switching back to cover/audio mode.
   useEffect(() => {
-    if (nativePlaybackEnabled || options.videoMode) return;
+    if (nativePlaybackEnabled) return;
     const audio = audioRef.current;
     if (!audio) return;
     const applyPendingSeek = () => {
@@ -448,7 +446,7 @@ export function useAudioEngine(options: {
     applyPendingSeek();
     audio.addEventListener("loadedmetadata", applyPendingSeek);
     return () => audio.removeEventListener("loadedmetadata", applyPendingSeek);
-  }, [audioElementStreamUrl, nativePlaybackEnabled, options.activeTrack.id, options.videoMode]);
+  }, [audioElementStreamUrl, nativePlaybackEnabled, options.activeTrack.id]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
@@ -720,11 +718,12 @@ export function useAudioEngine(options: {
   });
 
   useEffect(() => {
-    if (!audioSourceRef.current && (
-      !options.playing || !audioElementStreamUrl ||
+    const shouldSleepGraph =
+      !options.playing ||
+      !audioElementStreamUrl ||
       (!options.pageVisible && !options.normalizationEnabled) ||
-      (nativePlaybackEnabled && !options.analyserEnabled)
-    )) {
+      (nativePlaybackEnabled && !options.analyserEnabled);
+    if (!audioSourceRef.current && shouldSleepGraph) {
       return;
     }
 
@@ -767,10 +766,9 @@ export function useAudioEngine(options: {
       audioSourceRef.current.connect(analyserRef.current);
     }
 
-    if (!equalizerFiltersRef.current.length) {
-      // A fixed 10-band peaking chain always sits after the analyser. A
-      // disabled EQ simply runs at 0 dB, which avoids clicks and graph
-      // rebuilds while the user toggles it.
+    if (!nativePlaybackEnabled && !equalizerFiltersRef.current.length) {
+      // A fixed 10-band peaking chain sits after the analyser only in system
+      // mode; WASAPI mode runs EQ natively inside mpv.
       equalizerFiltersRef.current = equalizerFrequencies.map((frequency) => {
         const filter = context.createBiquadFilter();
         filter.type = "peaking";
@@ -786,12 +784,20 @@ export function useAudioEngine(options: {
     const equalizerFilters = equalizerFiltersRef.current;
     const equalizerInput = equalizerFilters[0];
     const equalizerOutput = equalizerFilters[equalizerFilters.length - 1];
-    equalizerFilters.forEach((filter, index) => {
-      const gain = options.equalizerEnabled ? Number(options.equalizerBands[index]) || 0 : 0;
-      filter.gain.setTargetAtTime(gain, context.currentTime, 0.02);
-    });
+    if (!nativePlaybackEnabled && equalizerFilters.length) {
+      equalizerFilters.forEach((filter, index) => {
+        const gain = options.equalizerEnabled ? Number(options.equalizerBands[index]) || 0 : 0;
+        filter.gain.setTargetAtTime(gain, context.currentTime, 0.02);
+      });
+    }
 
-    if (options.playing) void context.resume();
+    if (shouldSleepGraph) {
+      if (context.state === "running") {
+        void context.suspend().catch(() => undefined);
+      }
+    } else if (context.state !== "running") {
+      void context.resume().catch(() => undefined);
+    }
     const analyser = analyserRef.current;
     if (!analyser) return;
     configureSpectrumAnalyser(analyser);
@@ -812,27 +818,31 @@ export function useAudioEngine(options: {
         // The silent sink may already be disconnected.
       }
       try {
-        equalizerOutput.disconnect();
+        equalizerOutput?.disconnect();
       } catch {
         // The EQ tail may already be disconnected.
       }
       normalizerRef.current?.disconnect();
       outputGain.disconnect();
 
-      analyser.connect(equalizerInput);
       if (nativePlaybackEnabled) {
+        // In WASAPI mode mpv owns audible playback and EQ; bypass Chromium EQ
+        // filters and sink the analyser branch into a 0-gain node.
         const silentGain = nativeSilenceGainRef.current ?? context.createGain();
         silentGain.gain.value = 0;
         nativeSilenceGainRef.current = silentGain;
-        equalizerOutput.connect(silentGain);
+        analyser.connect(silentGain);
         silentGain.connect(context.destination);
-      } else if (desiredOutputMode === "normalized" && normalizerRef.current) {
-        equalizerOutput.connect(normalizerRef.current);
-        normalizerRef.current.connect(outputGain);
-        outputGain.connect(context.destination);
-      } else {
-        equalizerOutput.connect(outputGain);
-        outputGain.connect(context.destination);
+      } else if (equalizerInput && equalizerOutput) {
+        analyser.connect(equalizerInput);
+        if (desiredOutputMode === "normalized" && normalizerRef.current) {
+          equalizerOutput.connect(normalizerRef.current);
+          normalizerRef.current.connect(outputGain);
+          outputGain.connect(context.destination);
+        } else {
+          equalizerOutput.connect(outputGain);
+          outputGain.connect(context.destination);
+        }
       }
       analyserOutputModeRef.current = desiredOutputMode;
     }

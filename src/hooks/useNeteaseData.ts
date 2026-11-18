@@ -190,8 +190,9 @@ export function useNeteaseData(options: {
     // Private roaming rows need the stream response's actual bitrate. The
     // song-detail payload commonly carries only a quality bucket (320K), so
     // fetch only rows whose server response still lacks a bitrate. Other
-    // surfaces retain the lighter, non-authoritative warmup to avoid changing
-    // a user's selected quality in the background.
+    // surfaces retain a lightweight, non-authoritative warmup so available
+    // quality levels are known before entering the player without overwriting
+    // the user's selected quality.
     const metadataItems =
       options.activeView === "radar"
         ? warmupItems.filter((item) =>

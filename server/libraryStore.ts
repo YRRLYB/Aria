@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { LocalMetadataOverride } from "../src/lib/localMetadata";
 import type { ScannedTrack } from "./types";
 import { dataDir } from "./utils/paths";
 import { localMetadataStore } from "./localMetadataStore";
@@ -19,47 +21,138 @@ const defaultLibrary: LibraryIndex = {
   tracks: [],
 };
 
-export async function readLibrary(): Promise<LibraryIndex> {
+let rawLibraryCache: { mtimeMs: number; size: number; parsed: LibraryIndex } | null = null;
+let mergedLibraryCache: {
+  raw: LibraryIndex;
+  overrides: Record<string, LocalMetadataOverride>;
+  lyricBindings: Record<string, string>;
+  library: LibraryIndex;
+  byId: Map<string, ScannedTrack>;
+} | null = null;
+let pendingWrite: Promise<unknown> = Promise.resolve();
+
+async function readRawLibrary(): Promise<LibraryIndex> {
+  await pendingWrite.catch(() => undefined);
   try {
+    const fileStat = await stat(libraryPath);
+    if (
+      rawLibraryCache &&
+      rawLibraryCache.size === fileStat.size &&
+      Math.abs(rawLibraryCache.mtimeMs - fileStat.mtimeMs) < 1
+    ) {
+      return rawLibraryCache.parsed;
+    }
     const raw = await readFile(libraryPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<LibraryIndex>;
-    const metadata = await localMetadataStore.read();
-    const store = await readStore();
-    return {
-      updatedAt: parsed.updatedAt ?? null,
-      roots: parsed.roots ?? [],
-      tracks: (parsed.tracks ?? []).map((track) => {
-        let override = metadata.overrides[track.id];
-        if (override?.lyrics?.length && store.lyricBindings[track.id] !== (override.lyricCandidateId ?? override.candidateId)) {
-          override = { ...override, lyrics: undefined };
-        }
-        return { ...track, title: override?.title ?? track.title, artist: override?.artist ?? track.artist, album: override?.album ?? track.album, metadata: override };
-      }),
+    const parsedJson = JSON.parse(raw) as Partial<LibraryIndex>;
+    const parsed: LibraryIndex = {
+      updatedAt: parsedJson.updatedAt ?? null,
+      roots: parsedJson.roots ?? [],
+      tracks: parsedJson.tracks ?? [],
     };
+    rawLibraryCache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, parsed };
+    return parsed;
   } catch {
+    rawLibraryCache = null;
     return defaultLibrary;
   }
 }
 
-export async function writeLibrary(library: LibraryIndex) {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(libraryPath, JSON.stringify(library, null, 2), "utf8");
+async function resolveLibraryWithIndex(): Promise<{ library: LibraryIndex; byId: Map<string, ScannedTrack> }> {
+  const [raw, metadata, store] = await Promise.all([
+    readRawLibrary(),
+    localMetadataStore.read(),
+    readStore(),
+  ]);
+  if (raw === defaultLibrary) {
+    mergedLibraryCache = null;
+    return { library: defaultLibrary, byId: new Map() };
+  }
+  if (
+    mergedLibraryCache &&
+    mergedLibraryCache.raw === raw &&
+    mergedLibraryCache.overrides === metadata.overrides &&
+    mergedLibraryCache.lyricBindings === store.lyricBindings
+  ) {
+    return { library: mergedLibraryCache.library, byId: mergedLibraryCache.byId };
+  }
+
+  const byId = new Map<string, ScannedTrack>();
+  const tracks = raw.tracks.map((track) => {
+    let override = metadata.overrides[track.id];
+    if (override?.lyrics?.length && store.lyricBindings[track.id] !== (override.lyricCandidateId ?? override.candidateId)) {
+      override = { ...override, lyrics: undefined };
+    }
+    const merged: ScannedTrack = {
+      ...track,
+      title: override?.title ?? track.title,
+      artist: override?.artist ?? track.artist,
+      album: override?.album ?? track.album,
+      metadata: override,
+    };
+    byId.set(merged.id, merged);
+    return merged;
+  });
+  const library: LibraryIndex = {
+    updatedAt: raw.updatedAt,
+    roots: raw.roots,
+    tracks,
+  };
+  mergedLibraryCache = {
+    raw,
+    overrides: metadata.overrides,
+    lyricBindings: store.lyricBindings,
+    library,
+    byId,
+  };
+  return { library, byId };
+}
+
+export async function readLibrary(): Promise<LibraryIndex> {
+  return (await resolveLibraryWithIndex()).library;
+}
+
+export function writeLibrary(library: LibraryIndex): Promise<void> {
+  const operation = pendingWrite.catch(() => undefined).then(async () => {
+    await mkdir(dataDir, { recursive: true });
+    const temporary = `${libraryPath}.${randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify(library, null, 2), "utf8");
+    await rename(temporary, libraryPath);
+    try {
+      const fileStat = await stat(libraryPath);
+      const normalized: LibraryIndex = {
+        updatedAt: library.updatedAt ?? null,
+        roots: library.roots ?? [],
+        tracks: library.tracks ?? [],
+      };
+      rawLibraryCache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, parsed: normalized };
+    } catch {
+      rawLibraryCache = null;
+    }
+    mergedLibraryCache = null;
+  });
+  pendingWrite = operation;
+  return operation;
 }
 
 async function readOriginalTracks() {
-  try { return (JSON.parse(await readFile(libraryPath, "utf8")) as LibraryIndex).tracks ?? []; }
-  catch { return []; }
+  return (await readRawLibrary()).tracks;
+}
+
+export async function readOriginalTracksForRoot(root: string): Promise<ScannedTrack[]> {
+  const normalizedRoot = normalizeLibraryRoot(root);
+  const tracks = await readOriginalTracks();
+  return tracks.filter((track) => trackMatchesRoot(track, normalizedRoot));
 }
 
 export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
-  const current = await readLibrary();
+  const current = await readRawLibrary();
   const normalizedRoot = normalizeLibraryRoot(root);
   const normalizedTracks = tracks.map((track) => ({
     ...track,
     libraryRoot: track.libraryRoot ?? normalizedRoot,
   }));
   const nextTracks = [
-    ...(await readOriginalTracks()).filter((track) => !trackMatchesRoot(track, normalizedRoot)),
+    ...current.tracks.filter((track) => !trackMatchesRoot(track, normalizedRoot)),
     ...normalizedTracks,
   ];
   const roots = Array.from(
@@ -76,11 +169,11 @@ export async function replaceLibraryRoot(root: string, tracks: ScannedTrack[]) {
 
 export async function removeLibraryRoot(root: string) {
   const normalizedRoot = normalizeLibraryRoot(root);
-  const current = await readLibrary();
+  const current = await readRawLibrary();
   const next: LibraryIndex = {
     updatedAt: new Date().toISOString(),
     roots: current.roots.filter((item) => normalizeLibraryRoot(item) !== normalizedRoot),
-    tracks: (await readOriginalTracks()).filter((track) => !trackMatchesRoot(track, normalizedRoot)),
+    tracks: current.tracks.filter((track) => !trackMatchesRoot(track, normalizedRoot)),
   };
   await writeLibrary(next);
   return readLibrary();
@@ -103,6 +196,6 @@ export async function clearLibrary() {
 }
 
 export async function findTrack(trackId: string) {
-  const library = await readLibrary();
-  return library.tracks.find((track) => track.id === trackId) ?? null;
+  const { byId } = await resolveLibraryWithIndex();
+  return byId.get(trackId) ?? null;
 }

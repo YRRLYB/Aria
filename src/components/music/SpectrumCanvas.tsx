@@ -69,7 +69,7 @@ export function SpectrumCanvas({
     const draw = () => {
       const inputs = inputsRef.current;
       const now = performance.now();
-      if (now - lastPaintAtRef.current < 40) {
+      if (now - lastPaintAtRef.current < 30) {
         schedule();
         return;
       }

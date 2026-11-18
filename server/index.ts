@@ -38,7 +38,7 @@ import {
 
 const app = express();
 const port = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
-const remoteAccess = loadRemoteAccessConfig();
+let remoteAccess = loadRemoteAccessConfig();
 const remoteCoverCache = new RemoteCoverCache({ directory: path.join(cacheDir, "covers") });
 // QQ covers use fixed-size CDN variants, so no resize parameter is appended.
 const qqCoverCache = new RemoteCoverCache({
@@ -710,8 +710,33 @@ function resolveProvider(providerId: string) {
   return provider;
 }
 
-const listenHost = remoteAccess.enabled ? "0.0.0.0" : "127.0.0.1";
-app.listen(port, listenHost, () => {
-  console.log(`aria-api listening on http://${listenHost}:${port} (remote access ${remoteAccess.enabled ? "enabled" : "disabled"})`);
-  startLibraryWatchers();
-});
+let activeServer: ReturnType<typeof app.listen> | null = null;
+let watchersStarted = false;
+
+export async function restartAriaServer(): Promise<void> {
+  remoteAccess = loadRemoteAccessConfig();
+  if (activeServer) {
+    const previous = activeServer;
+    activeServer = null;
+    await new Promise<void>((resolve) => {
+      previous.close(() => resolve());
+      previous.closeAllConnections?.();
+    });
+  }
+  const listenHost = remoteAccess.enabled ? "0.0.0.0" : "127.0.0.1";
+  await new Promise<void>((resolve, reject) => {
+    const server = app.listen(port, listenHost, () => {
+      activeServer = server;
+      console.log(`aria-api listening on http://${listenHost}:${port} (remote access ${remoteAccess.enabled ? "enabled" : "disabled"})`);
+      if (!watchersStarted) {
+        watchersStarted = true;
+        startLibraryWatchers();
+      }
+      resolve();
+    });
+    server.once("error", reject);
+  });
+}
+
+(globalThis as { __ariaRestartServer?: () => Promise<void> }).__ariaRestartServer = restartAriaServer;
+void restartAriaServer();

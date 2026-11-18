@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { BarChart3, CalendarDays, Headphones, History, Pause, Play } from "lucide-react";
+import { BarChart3, CalendarDays, Headphones, History } from "lucide-react";
+import { AriaIcon } from "@/components/icons/aria";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyableTrackText, CoverArt, EmptyState, StatTile } from "@/components/music/shared";
@@ -174,7 +175,7 @@ export function HomeSurface({
                 onTogglePlay();
               }}
             >
-              {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
+              {playing ? <AriaIcon name="playing" className="size-6" /> : <AriaIcon name="play" className="size-6" />}
             </Button>
           </div>
           {activeTrack.id === "idle" ? (

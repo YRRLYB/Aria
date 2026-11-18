@@ -4,6 +4,7 @@ import type { Track } from "@/data/music";
 import { api, type ApiScannedTrack } from "@/lib/api";
 import { isUnknownTag, type LocalMetadataApplyOptions, type LocalMetadataPreview } from "@/lib/localMetadata";
 import { removeCachedLyrics, writeCachedLyrics } from "@/lib/playerPresentation";
+import { AriaSelect } from "@/components/ui/aria-select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArtworkImage } from "./ArtworkImage";
@@ -120,9 +121,18 @@ export function LocalMetadataPanel({ tracks, onMetadataUpdated }: { tracks: Trac
           <p className="mt-1 text-sm text-[var(--text-secondary)]">预览歌曲资料、封面和歌词，改选候选后再应用。每批最多 20 首。</p>
         </div>
         <div className="flex gap-2">
-          <select aria-label="补全范围" value={scope} onChange={(event) => { setScope(event.target.value as "missing" | "all"); setReviewed(new Set()); }} disabled={Boolean(busy)} className="rounded-full border border-[var(--line)] bg-[var(--surface)] px-3 text-sm">
-            <option value="missing">缺少资料的歌曲</option><option value="all">全部本地歌曲</option>
-          </select>
+          <AriaSelect
+            ariaLabel="补全范围"
+            size="sm"
+            align="right"
+            value={scope}
+            onChange={(value) => { setScope(value as "missing" | "all"); setReviewed(new Set()); }}
+            disabled={Boolean(busy)}
+            options={[
+              { value: "missing", label: "缺少资料的歌曲" },
+              { value: "all", label: "全部本地歌曲" },
+            ]}
+          />
           <Button variant="subtle" onClick={() => void search()} disabled={Boolean(busy) || !nextBatch.length}>
             <Search className={busy === "preview" ? "animate-pulse" : undefined} />{busy === "preview" ? "匹配中" : `预览 ${nextBatch.length} 首`}
           </Button>
@@ -157,9 +167,18 @@ export function LocalMetadataPanel({ tracks, onMetadataUpdated }: { tracks: Trac
                     <p className="truncate text-sm font-medium" title={`${row.title} · ${row.artist}`}>{row.title} <span className="font-normal text-[var(--text-muted)]">· {row.artist}</span></p>
                     {match ? (
                       <>
-                        <select aria-label={`${row.title} 匹配候选`} value={selected[row.trackId]} disabled={Boolean(busy) || done} onChange={(event) => setSelected((current) => ({ ...current, [row.trackId]: event.target.value }))} className="mt-1 w-full max-w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] p-1.5 text-xs">
-                          {row.candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title} · {candidate.artist} · {candidate.album}（{candidate.score}）</option>)}
-                        </select>
+                        <AriaSelect
+                          ariaLabel={`${row.title} 匹配候选`}
+                          size="sm"
+                          value={selected[row.trackId]}
+                          disabled={Boolean(busy) || done}
+                          onChange={(value) => setSelected((current) => ({ ...current, [row.trackId]: value }))}
+                          className="mt-1 w-full"
+                          options={row.candidates.map((candidate) => ({
+                            value: candidate.id,
+                            label: `${candidate.title} · ${candidate.artist} · ${candidate.album}（${candidate.score}）`,
+                          }))}
+                        />
                         <p className="mt-1 truncate text-xs text-[var(--text-muted)]">{match.preview.join(" / ") || "暂无歌词预览"}</p>
                       </>
                     ) : <p className="mt-1 text-xs text-[var(--text-muted)]">{row.error ?? "未找到候选"}</p>}

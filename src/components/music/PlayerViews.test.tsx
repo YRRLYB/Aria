@@ -26,5 +26,40 @@ describe("player and playlist surfaces", () => {
     expect(buttons.find((button) => button.includes(">标准</button>"))).toContain('aria-pressed="true"');
     expect(buttons.find((button) => button.includes(">无损</button>"))).toContain('aria-pressed="false"');
     expect(markup).toMatch(/>无损 <span class="text-neutral-400">/); // actual stream detail remains visible
+    expect(markup).toContain('aria-label="当前曲目无视频"');
+  });
+
+  it("mounts the Bilibili live video curtain without tearing down the underlying player surface", () => {
+    const biliTrack = {
+      ...tracks[0],
+      id: "bilibili:BV1xx411c7mD",
+      source: "bilibili" as const,
+      videoUrl: "/api/sources/bilibili/tracks/BV1xx411c7mD/video",
+      quality: "Hi-Res" as const,
+      currentLevel: "hires" as const,
+      availableLevels: ["standard", "hires"] as const,
+    };
+    const markup = renderToStaticMarkup(<PlayerSurface
+      activeTrack={{ ...biliTrack, availableLevels: [...biliTrack.availableLevels] }} palette={{ primary: "#7b61df", secondary: "#e06c9f" }}
+      playing visualizerPlaying visualizerActive shuffleEnabled={false} repeatMode="all"
+      onTogglePlay={vi.fn()} onToggleShuffle={vi.fn()} onCycleRepeatMode={vi.fn()} onNext={vi.fn()} onPrevious={vi.fn()} onOpenImmersive={vi.fn()}
+      videoMode onToggleVideoMode={vi.fn()} videoActive videoControlRef={{ current: null }} onVideoDuration={vi.fn()} onVideoEnded={vi.fn()} onVideoError={vi.fn()}
+      equalizerEnabled={false} onOpenEqualizer={vi.fn()} onReplaceLocalArtwork={vi.fn(async () => undefined)} liked={false} onToggleLike={vi.fn()}
+      volume={72} onVolumeChange={vi.fn()} qualityLevel="hires" onQualityLevelChange={vi.fn()} hifiEnabled masterQualityEnabled={false}
+      onMasterQualityEnabledChange={vi.fn()} exclusiveMode={false} durationSeconds={266} analyserRef={{ current: null }} visualizerMode="system"
+      lyricDisplayMode="bilingual" onLyricDisplayModeChange={vi.fn()} onSeek={vi.fn()} />);
+
+    expect(markup).toContain('aria-label="B站实时视频舞台"');
+    expect(markup).toContain('aria-label="收起实时视频"');
+    expect(markup).toContain('aria-label="沉浸全屏观看"');
+    expect(markup).toContain('aria-label="音质选择"');
+    expect(markup).toContain("音质 · Hi-Res");
+    expect(markup).toContain('aria-label="静音"');
+    expect(markup).toContain("aria-eq");
+    expect(markup).not.toContain(`将 ${biliTrack.title} 加入歌单`);
+    expect(markup).not.toContain(">沉浸</button>");
+    expect(markup).not.toContain(">收起</span>");
+    expect(markup).toContain('data-taskbar-anchor="player-cover"');
+    expect(markup).toContain(">Hi-Res</button>");
   });
 });

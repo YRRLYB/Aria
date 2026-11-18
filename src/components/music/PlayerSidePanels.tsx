@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, ListEnd, Trash2 } from "lucide-react";
+import { AriaIcon } from "@/components/icons/aria";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
 import type { Track } from "@/data/music";
-import { usePlaybackTime } from "@/lib/playbackClock";
+import { getPlaybackTime, subscribePlaybackTime } from "@/lib/playbackClock";
 import {
   colorWithAlpha,
   formatAudioDetail,
@@ -10,12 +11,12 @@ import {
   type CoverPalette,
 } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
-import { AddToPlaylistButton } from "./PlaylistActions";
 import { WordLyricText } from "./WordLyricText";
 import { getLyricStartTime } from "@/lib/lyricTiming";
 export function QueueList({
   tracks,
   activeTrackId,
+  playing = false,
   onPickTrack,
   onPlayNext,
   onRemove,
@@ -23,16 +24,17 @@ export function QueueList({
 }: {
   tracks: Track[];
   activeTrackId: string;
+  playing?: boolean;
   onPickTrack: (id: string) => void;
   onPlayNext?: (id: string) => void;
   onRemove?: (id: string) => void;
   onMove?: (id: string, direction: "up" | "down") => void;
 }) {
   const displayTracks = useMemo(() => {
-    const firstTracks = tracks.slice(0, 48);
+    const firstTracks = tracks.slice(0, 24);
     if (firstTracks.some((track) => track.id === activeTrackId)) return firstTracks;
     const activeTrack = tracks.find((track) => track.id === activeTrackId);
-    return activeTrack ? [activeTrack, ...firstTracks.slice(0, 47)] : firstTracks;
+    return activeTrack ? [activeTrack, ...firstTracks.slice(0, 23)] : firstTracks;
   }, [activeTrackId, tracks]);
   const hiddenCount = Math.max(0, tracks.length - displayTracks.length);
 
@@ -61,6 +63,9 @@ export function QueueList({
                 <span className="shrink-0 text-neutral-400" title={formatAudioDetail(track)}>· {formatAudioDetail(track)}</span>
               </p>
             </div>
+            {activeTrackId === track.id && playing && (
+              <AriaIcon name="playing" className="mr-1.5 size-4 shrink-0 text-[var(--accent)]" />
+            )}
           </button>
           <div className="pointer-events-none absolute right-2 top-1/2 z-10 flex max-w-[calc(100%-1rem)] -translate-y-1/2 flex-wrap items-center justify-end gap-0.5 rounded-full bg-white/95 p-0.5 opacity-0 shadow-md ring-1 ring-black/5 transition group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
             {onPlayNext && track.id !== activeTrackId && (
@@ -107,7 +112,6 @@ export function QueueList({
                 <Trash2 className="size-3.5" />
               </button>
             )}
-            <AddToPlaylistButton track={track} />
           </div>
         </div>
       ))}
@@ -194,6 +198,7 @@ export function PlayerSidePanel({
         <QueueList
           tracks={tracks}
           activeTrackId={activeTrackId}
+          playing={playing}
           onPickTrack={onPickTrack}
           onPlayNext={onPlayNext}
           onRemove={onRemove}
@@ -217,8 +222,11 @@ function SidebarLyrics({
   playing: boolean;
   onSeek: (time: number) => void;
 }) {
-  const currentTime = usePlaybackTime();
-  const activeLyricIndex = getActiveLyricIndex(track.lyrics, currentTime);
+  const activeLyricIndex = useSyncExternalStore(
+    subscribePlaybackTime,
+    () => getActiveLyricIndex(track.lyrics, getPlaybackTime()),
+    () => getActiveLyricIndex(track.lyrics, getPlaybackTime()),
+  );
   const lines = track.lyrics;
   const showPlaceholderLyrics = !(track.source === "bilibili" && track.lyricStatus !== "linked");
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -249,14 +257,20 @@ function SidebarLyrics({
         </p>
       )}
       <div
-        className="no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
+        className="aria-lyric-scroll no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
         onWheel={holdManualScroll}
         onTouchStart={holdManualScroll}
         onPointerDown={holdManualScroll}
       >
-        <div className="h-12 shrink-0" />
+        <div className="h-14 shrink-0" />
         {showPlaceholderLyrics && track.lyrics.map((line, index) => {
           const active = index === activeLyricIndex;
+          const distance = activeLyricIndex >= 0 ? Math.abs(index - activeLyricIndex) : 0;
+          const depthStyle: CSSProperties | undefined = active
+            ? { backgroundColor: `${palette.primary}18` }
+            : activeLyricIndex >= 0
+              ? { opacity: distance === 1 ? 0.72 : distance === 2 ? 0.48 : 0.28 }
+              : undefined;
           return (
             <button
               key={`${track.id}-${line.time}-${line.text}-${index}`}
@@ -264,18 +278,18 @@ function SidebarLyrics({
                 lineRefs.current[index] = node;
               }}
               className={cn(
-                "grid grid-cols-[3.25rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left text-neutral-500 transition hover:bg-neutral-950/[0.04]",
-                active && "text-neutral-950 shadow-sm",
+                "aria-lyric-line grid grid-cols-[3.25rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left text-neutral-500 hover:bg-neutral-950/[0.04]",
+                active && "is-active text-neutral-950 shadow-sm",
               )}
-              style={active ? { backgroundColor: `${palette.primary}18` } : undefined}
+              style={depthStyle}
               onClick={() => {
                 manualScrollUntilRef.current = 0;
                 onSeek(getLyricStartTime(line));
               }}
             >
-              <span className="text-sm font-medium text-neutral-400">{line.time}</span>
-              <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7", active ? "text-2xl font-semibold" : "text-base")}>
-                <WordLyricText line={line} active={active} currentTime={currentTime} playing={playing} color={palette.primary} />
+              <span className="pt-0.5 text-xs font-medium tabular-nums text-neutral-400">{line.time}</span>
+              <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7 transition-all duration-200", active ? "text-2xl font-semibold" : "text-base")}>
+                <WordLyricText line={line} active={active} playing={playing} color={palette.primary} />
                 {lyricDisplayMode === "bilingual" && line.translation && (
                   <span className={cn("mt-1 block text-sm font-medium leading-6", active ? "text-neutral-600" : "text-neutral-400")}>
                     {line.translation}
@@ -286,6 +300,7 @@ function SidebarLyrics({
           );
         })}
         {!lines.length && <p className="text-center text-sm text-neutral-500">歌词同步中</p>}
+        <div className="h-14 shrink-0" />
       </div>
     </div>
   );

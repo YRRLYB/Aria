@@ -74,6 +74,40 @@ html.dark {
   color: #a5a2b8;
 }
 
+.dark .app-search > button.app-search-clear:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.dark .app-search > button.app-search-submit {
+  background: rgba(180, 155, 243, 0.16);
+  color: #d2c1ff;
+}
+
+.dark .app-search > button.app-search-submit:hover {
+  background: rgba(180, 155, 243, 0.25);
+  color: #ede6ff;
+}
+
+.dark .app-history-btn {
+  color: #9895ad;
+}
+
+.dark .app-history-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.dark .nav-wave-base {
+  stroke: rgba(180, 155, 243, 0.34);
+  filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
+}
+
+.dark .nav-wave-flow {
+  stroke: rgba(208, 190, 255, 0.8);
+  filter: drop-shadow(0 1px 8px rgba(139, 115, 227, 0.55));
+}
+
 .dark .app-header-actions > .relative > button {
   background: rgba(255, 255, 255, 0.06);
   color: #c8b6ff;
@@ -321,10 +355,13 @@ html.dark {
 
 /* ---------- player ---------- */
 
-.dark .video-quality-select {
-  color: #eceaf2;
-  background: #292830;
-  border-color: rgba(255, 255, 255, 0.12);
+.dark .aria-mv-stage {
+  background-color: rgba(16, 16, 24, 0.96);
+}
+
+.dark .aria-mv-viewport {
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 24px 68px rgba(0, 0, 0, 0.56);
 }
 
 .dark .player-controls,
@@ -526,8 +563,17 @@ html.dark {
   background-color: rgba(255, 255, 255, 0.14);
 }
 
+.dark [class~="bg-neutral-50"],
 .dark [class~="bg-neutral-100"] {
   background-color: #232330;
+}
+
+.dark [class~="bg-neutral-200/65"] {
+  background-color: rgba(255, 255, 255, 0.07);
+}
+
+.dark [class~="bg-emerald-200/90"] {
+  background-color: rgba(52, 211, 153, 0.24);
 }
 
 .dark [class~="bg-neutral-200"] {
@@ -627,8 +673,9 @@ html.dark {
   background-color: rgba(52, 211, 153, 0.13);
 }
 
-.dark [class~="bg-amber-50"] {
-  background-color: rgba(251, 191, 36, 0.14);
+.dark [class~="bg-amber-50"],
+.dark [class~="bg-amber-100"] {
+  background-color: rgba(251, 191, 36, 0.15);
 }
 
 .dark [class~="bg-neutral-950/25"][class~="backdrop-blur"],
@@ -646,12 +693,41 @@ html.dark {
   border-color: rgba(255, 255, 255, 0.1);
 }
 
+.dark [class~="border-neutral-100"],
 .dark [class~="border-neutral-200"],
 .dark [class~="border-neutral-300"],
 .dark [class~="border-neutral-200/60"],
 .dark [class~="border-neutral-200/65"],
 .dark [class~="border-neutral-200/70"] {
   border-color: rgba(255, 255, 255, 0.11);
+}
+
+.dark [class~="border-violet-50"],
+.dark [class~="border-violet-100"],
+.dark [class~="border-violet-200"] {
+  border-color: rgba(180, 155, 243, 0.18);
+}
+
+.dark [class~="border-emerald-100"],
+.dark [class~="border-emerald-200"] {
+  border-color: rgba(52, 211, 153, 0.22);
+}
+
+.dark [class~="border-sky-100"],
+.dark [class~="border-sky-200"] {
+  border-color: rgba(56, 189, 248, 0.22);
+}
+
+.dark [class~="border-amber-100"],
+.dark [class~="border-amber-200"] {
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+.dark [class~="border-red-100"],
+.dark [class~="border-red-200"],
+.dark [class~="border-rose-100"],
+.dark [class~="border-rose-200"] {
+  border-color: rgba(244, 63, 94, 0.22);
 }
 
 .dark [class~="border-neutral-950"] {
@@ -756,8 +832,23 @@ html.dark {
   background-color: rgba(180, 155, 243, 0.22);
 }
 
+.dark [class~="hover:bg-neutral-50"]:hover,
+.dark [class~="hover:bg-neutral-100"]:hover,
+.dark [class~="hover:bg-neutral-200"]:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
 .dark [class~="hover:bg-violet-50"]:hover {
   background-color: rgba(180, 155, 243, 0.16);
+}
+
+.dark [class~="hover:bg-red-50"]:hover,
+.dark [class~="hover:bg-rose-50"]:hover {
+  background-color: rgba(244, 63, 94, 0.16);
+}
+
+.dark [class~="hover:bg-emerald-100"]:hover {
+  background-color: rgba(52, 211, 153, 0.2);
 }
 
 .dark [class~="hover:text-neutral-950"]:hover {

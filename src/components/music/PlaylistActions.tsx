@@ -4,6 +4,7 @@ import type { Track } from "@/data/music";
 import type { LocalPlaylist } from "@/lib/localPlaylists";
 import { api, type ProviderPlaylist } from "@/lib/api";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
+import { AriaSelect } from "@/components/ui/aria-select";
 import { Button } from "@/components/ui/button";
 import { CoverArt, EmptyState } from "./shared";
 
@@ -17,7 +18,7 @@ export function usePlaylistActions() { return useContext(PlaylistActionsContext)
 
 export function AddToPlaylistButton({ track, compact = true }: { track: Track; compact?: boolean }) {
   const actions = usePlaylistActions();
-  if (!actions) return null;
+  if (!actions || track.source === "bilibili" || track.id === "idle") return null;
   return <Button type="button" variant="ghost" size={compact ? "icon" : "sm"} aria-label={`将 ${track.title} 加入歌单`} title="加入歌单" onClick={(event) => {
     event.stopPropagation();
     actions.openAdd([track]);
@@ -130,10 +131,21 @@ export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlist
             </form>
           ) : (
             <div className="mt-3 flex gap-2">
-              <select value={localPlaylistId} onChange={(event) => setLocalPlaylistId(event.target.value)} aria-label="目标 Aria 歌单" className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm">
-                {!localPlaylists.length && <option value="">还没有 Aria 歌单</option>}
-                {localPlaylists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.name}（{playlist.trackIds.length} 首）</option>)}
-              </select>
+              <AriaSelect
+                ariaLabel="目标 Aria 歌单"
+                value={localPlaylistId}
+                onChange={setLocalPlaylistId}
+                disabled={!localPlaylists.length}
+                className="min-w-0 flex-1"
+                options={
+                  localPlaylists.length
+                    ? localPlaylists.map((playlist) => ({
+                        value: playlist.id,
+                        label: `${playlist.name}（${playlist.trackIds.length} 首）`,
+                      }))
+                    : [{ value: "", label: "还没有 Aria 歌单" }]
+                }
+              />
               <Button size="sm" disabled={!localPlaylistId} onClick={submitLocal}>加入</Button>
             </div>
           )}
@@ -143,10 +155,19 @@ export function AddToPlaylistDialog({ initialTracks, initialPlaylistId, playlist
         <p className="mt-4 rounded-2xl bg-white/60 px-4 py-3 text-xs text-neutral-500">该来源不能写入网易云歌单，请使用上方的 Aria 歌单。</p>
       ) : !connected ? <div className="mt-6"><EmptyState text="登录网易云后，可以将歌曲加入自己的云端歌单。" /><Button className="mt-4" onClick={onRequireLogin}>前往登录</Button></div> : <>
         <label className="mt-4 text-sm font-medium" htmlFor="target-playlist">目标歌单</label>
-        <div className="mt-2 flex gap-2"><select id="target-playlist" value={playlistId} onChange={(event) => { setPlaylistId(event.target.value); setCreateOpen(false); }} disabled={saving || createOpen} className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm">
-          {!ownedPlaylists.length && <option value="">暂无可编辑歌单</option>}
-          {ownedPlaylists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.name}</option>)}
-        </select><Button size="sm" variant="glass" disabled={saving} onClick={() => setCreateOpen((value) => !value)}>{createOpen ? "取消新建" : "新建歌单"}</Button></div>
+        <div className="mt-2 flex gap-2"><AriaSelect
+          id="target-playlist"
+          ariaLabel="目标歌单"
+          value={playlistId}
+          onChange={(value) => { setPlaylistId(value); setCreateOpen(false); }}
+          disabled={saving || createOpen || !ownedPlaylists.length}
+          className="min-w-0 flex-1"
+          options={
+            ownedPlaylists.length
+              ? ownedPlaylists.map((playlist) => ({ value: playlist.id, label: playlist.name }))
+              : [{ value: "", label: "暂无可编辑歌单" }]
+          }
+        /><Button size="sm" variant="glass" disabled={saving} onClick={() => setCreateOpen((value) => !value)}>{createOpen ? "取消新建" : "新建歌单"}</Button></div>
         {createOpen && <input autoFocus aria-label="新歌单名称" maxLength={40} value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="新歌单名称" disabled={saving} className="mt-3 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm outline-none" />}
         {!initialTracks.length && <div className="mt-4 flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2"><Search className="size-4 text-neutral-400" /><input autoFocus value={keyword} onChange={(event) => setKeyword(event.target.value)} aria-label="搜索要加入的歌曲" placeholder="搜索歌曲或歌手，可多选" className="min-w-0 flex-1 bg-transparent text-sm outline-none" /></div>}
         <div className="mt-4 min-h-0 flex-1 overflow-y-auto">

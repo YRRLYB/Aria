@@ -1,6 +1,7 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import type { LyricLine } from "@/data/music";
 import { getLyricWordProgress } from "@/lib/lyricTiming";
+import { getPlaybackTime, subscribePlaybackTime } from "@/lib/playbackClock";
 
 export function WordLyricText({
   line,
@@ -12,39 +13,68 @@ export function WordLyricText({
 }: {
   line: LyricLine;
   active: boolean;
-  currentTime: number;
+  currentTime?: number;
   playing: boolean;
   color?: string;
   pendingColor?: string;
 }) {
-  const [visualSample, setVisualSample] = useState({ sourceTime: currentTime, time: currentTime });
+  const containerRef = useRef<HTMLSpanElement | null>(null);
   const hasWords = Boolean(line.words?.length);
+
   useEffect(() => {
-    setVisualSample({ sourceTime: currentTime, time: currentTime });
-    if (!active || !playing || !hasWords) return;
-    const anchor = performance.now();
+    const words = line.words;
+    const container = containerRef.current;
+    if (!active || !hasWords || !words?.length || !container) return;
+
+    const applyWordProgress = (time: number) => {
+      const children = container.children;
+      for (let index = 0; index < words.length; index += 1) {
+        const element = children[index] as HTMLElement | undefined;
+        if (!element) continue;
+        const progress = getLyricWordProgress(words[index], time) * 100;
+        element.style.backgroundImage = `linear-gradient(90deg, ${color} ${progress}%, ${pendingColor} ${progress}%)`;
+      }
+    };
+
+    let anchorTime = typeof currentTime === "number" ? currentTime : getPlaybackTime();
+    let anchorNow = performance.now();
+    applyWordProgress(anchorTime);
+
+    const unsubscribe = typeof currentTime === "number"
+      ? undefined
+      : subscribePlaybackTime(() => {
+          anchorTime = getPlaybackTime();
+          anchorNow = performance.now();
+          applyWordProgress(anchorTime);
+        });
+
+    if (!playing) return () => unsubscribe?.();
+
     let frame = 0;
-    let lastFrame = anchor;
+    let lastFrame = anchorNow;
     const draw = (now: number) => {
-      if (now - lastFrame >= 32) {
+      if (now - lastFrame >= 33) {
         lastFrame = now;
         // Smooth only the active lyric between playback clock samples. The cap
         // prevents a buffered/stalled audio source from running ahead visually.
-        setVisualSample({ sourceTime: currentTime, time: currentTime + Math.min(0.4, (now - anchor) / 1000) });
+        const sampleTime = anchorTime + Math.min(0.4, (now - anchorNow) / 1000);
+        applyWordProgress(sampleTime);
       }
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(frame);
-  }, [active, currentTime, hasWords, playing]);
+    return () => {
+      unsubscribe?.();
+      cancelAnimationFrame(frame);
+    };
+  }, [active, color, currentTime, hasWords, line.words, pendingColor, playing]);
 
   if (!active || !line.words?.length) return <>{line.text}</>;
-  // Pausing and seeking use the actual sample immediately, including backwards.
-  const time = playing && visualSample.sourceTime === currentTime ? visualSample.time : currentTime;
+  const renderTime = typeof currentTime === "number" ? currentTime : getPlaybackTime();
   return (
-    <span aria-label={line.text} data-word-lyrics="true">
+    <span ref={containerRef} aria-label={line.text} data-word-lyrics="true">
       {line.words.map((word, index) => {
-        const progress = getLyricWordProgress(word, time) * 100;
+        const progress = getLyricWordProgress(word, renderTime) * 100;
         const style: CSSProperties = {
           backgroundImage: `linear-gradient(90deg, ${color} ${progress}%, ${pendingColor} ${progress}%)`,
           backgroundClip: "text",

@@ -185,7 +185,7 @@ function ensureWindowsTaskbarPreviewPolicy() {
 // V8 heap so long sessions collect garbage instead of growing without bound.
 // MediaSessionService is what publishes playback state to the OS media
 // overlay / lock screen (SMTC) on Windows.
-app.commandLine.appendSwitch("js-flags", "--max-old-space-size=256 --expose-gc");
+app.commandLine.appendSwitch("js-flags", "--max-old-space-size=192 --optimize-for-size --expose-gc");
 app.commandLine.appendSwitch("enable-features", "MediaSessionService");
 // Aria is a mainland-first NetEase client. The app session is switched to
 // direct network once Electron is ready (configureDirectNetwork), because a
@@ -193,14 +193,13 @@ app.commandLine.appendSwitch("enable-features", "MediaSessionService");
 // This is scoped per session instead of a global --no-proxy-server switch so
 // the updater can still use the user's proxy to reach GitHub.
 // The app owns SMTC for both Chromium and mpv. Avoid a second Chromium card.
-// Bilibili 4K/DASH video is video-only + a separate audio element, so Chromium
-// would otherwise pause the picture in the background ("video-only background
-// media") while the audio element keeps playing.
-const disabledChromiumFeatures = ["BackgroundVideoPauseOptimization"];
+const disabledChromiumFeatures = [];
 if (iconicThumbAddon?.mediaSessionAvailable || nowPlayingAddon?.available) {
   disabledChromiumFeatures.push("HardwareMediaKeyHandling");
 }
-app.commandLine.appendSwitch("disable-features", disabledChromiumFeatures.join(","));
+if (disabledChromiumFeatures.length > 0) {
+  app.commandLine.appendSwitch("disable-features", disabledChromiumFeatures.join(","));
+}
 
 function getNativeAudioEngine() {
   if (!nativeAudioEngine) {
@@ -335,6 +334,12 @@ function ensureRemoteAccessToken() {
 }
 
 function restartBackendForRemoteAccess() {
+  if (typeof globalThis.__ariaRestartServer === "function") {
+    void globalThis.__ariaRestartServer().catch((error) => {
+      writeLog("desktop.log", `in-process backend restart failed: ${error?.stack || error}`);
+    });
+    return;
+  }
   if (backendProcess && !backendProcess.killed) {
     // The exit handler schedules startBackend() 1.5s later, after the port
     // is released; apiOnline() inside startBackend prevents a double spawn.
@@ -384,15 +389,44 @@ async function configureDirectNetwork() {
   }
 }
 
+let inProcessBackendLoaded = false;
+
 async function startBackend() {
   if (await apiOnline(500)) return;
 
   ensureRemoteAccessToken();
   const serverEntry = resolveServerEntry();
-  writeLog("desktop.log", `starting backend: ${serverEntry}`);
+
+  if (process.env.ARIA_BACKEND_SUBPROCESS !== "1") {
+    try {
+      const env = directBackendEnvironment();
+      process.env.ARIA_API_PORT = env.ARIA_API_PORT;
+      process.env.MUSICBOX_API_PORT = env.MUSICBOX_API_PORT;
+      process.env.ARIA_DATA_DIR = env.ARIA_DATA_DIR;
+      for (const key of Object.keys(process.env)) {
+        if (/^(?:https?_proxy|all_proxy|no_proxy)$/i.test(key)) delete process.env[key];
+      }
+      if (!inProcessBackendLoaded) {
+        writeLog("desktop.log", `starting in-process backend: ${serverEntry}`);
+        require(serverEntry);
+        inProcessBackendLoaded = true;
+      } else if (typeof globalThis.__ariaRestartServer === "function") {
+        await globalThis.__ariaRestartServer();
+      }
+      const online = await apiOnline(6000);
+      if (online) {
+        writeLog("desktop.log", "in-process backend online: true");
+        return;
+      }
+    } catch (error) {
+      writeLog("desktop.log", `in-process backend fallback to child process: ${error?.stack || error}`);
+    }
+  }
+
+  writeLog("desktop.log", `starting backend child process: ${serverEntry}`);
   // Cap the backend V8 heap so long sessions GC eagerly instead of letting V8
   // grow its old space with machine RAM on large-memory hosts.
-  backendProcess = spawn(process.execPath, ["--max-old-space-size=384", serverEntry], {
+  backendProcess = spawn(process.execPath, ["--max-old-space-size=192", "--optimize-for-size", serverEntry], {
     cwd: app.getPath("userData"),
     env: directBackendEnvironment(),
     stdio: app.isPackaged ? ["ignore", "pipe", "pipe"] : "inherit",
@@ -421,11 +455,13 @@ function showWindow() {
   mainWindow.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
-  mainWindow.webContents.send("aria:window-visibility", true);
+  sendWindowVisibility(true);
 }
 
 function sendWindowVisibility(visible) {
-  mainWindow?.webContents.send("aria:window-visibility", Boolean(visible));
+  const isVisible = Boolean(visible);
+  nativeAudioEngine?.setWindowVisible?.(isVisible);
+  mainWindow?.webContents.send("aria:window-visibility", isVisible);
 }
 
 function sendPlaybackCommand(command) {
@@ -698,10 +734,6 @@ async function createWindow() {
       preload: resolvePreload(),
       contextIsolation: true,
       nodeIntegration: false,
-      // Bilibili 4K is delivered as a video-only DASH stream plus a separate
-      // audio element. Chromium otherwise pauses "video-only background media"
-      // whenever the window loses focus, leaving the audio playing alone.
-      backgroundThrottling: false,
     },
   });
   if (process.platform !== "darwin") {

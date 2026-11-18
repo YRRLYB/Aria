@@ -3,13 +3,20 @@ import { useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, Download, FolderPlus, FolderSearch, Globe, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
 import QRCode from "qrcode";
+import { AriaSelect } from "@/components/ui/aria-select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/music/shared";
 import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary, type SourceManifestInfo, type UpdateState } from "@/lib/api";
 import { SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import type { NativeAudioState } from "@/lib/audioTypes";
-import type { AudioOutputMode } from "@/lib/playerPresentation";
+import {
+  bilibiliAudioQualityOptions,
+  bilibiliVideoQualityOptions,
+  type AudioOutputMode,
+  type BilibiliDefaultAudioLevel,
+  type BilibiliDefaultVideoQn,
+} from "@/lib/playerPresentation";
 import { ariaThemeOptions, type AriaTheme } from "@/lib/theme";
 import {
   defaultKeyboardShortcuts,
@@ -207,6 +214,10 @@ export function SettingsPanel({
   onKeyboardShortcutsChange,
   theme,
   onThemeChange,
+  bilibiliDefaultVideoQn = 120,
+  onBilibiliDefaultVideoQnChange,
+  bilibiliDefaultAudioLevel = "hires",
+  onBilibiliDefaultAudioLevelChange,
   onNeteaseAccountChange,
   onSourceAccountChange,
   onClose,
@@ -246,6 +257,10 @@ export function SettingsPanel({
   onKeyboardShortcutsChange: (shortcuts: KeyboardShortcuts) => void;
   theme: AriaTheme;
   onThemeChange: (theme: AriaTheme) => void;
+  bilibiliDefaultVideoQn?: BilibiliDefaultVideoQn;
+  onBilibiliDefaultVideoQnChange?: (qn: BilibiliDefaultVideoQn) => void;
+  bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
+  onBilibiliDefaultAudioLevelChange?: (level: BilibiliDefaultAudioLevel) => void;
   /** Fired after NetEase signs in or out from Settings so the header can refresh. */
   onNeteaseAccountChange?: (account: NeteaseAccountSummary) => void;
   /** Fired after a non-NetEase source account changes so the header can refresh. */
@@ -488,7 +503,13 @@ export function SettingsPanel({
 
           <QqSourceCard onAccountChange={onSourceAccountChange} />
 
-          <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
+          <BilibiliSourceCard
+            onAccountChange={onSourceAccountChange}
+            defaultVideoQn={bilibiliDefaultVideoQn}
+            onDefaultVideoQnChange={onBilibiliDefaultVideoQnChange}
+            defaultAudioLevel={bilibiliDefaultAudioLevel}
+            onDefaultAudioLevelChange={onBilibiliDefaultAudioLevelChange}
+          />
 
           <SourceEnableCard />
 
@@ -728,6 +749,15 @@ export function SettingsPanel({
               </div>
             )}
             </div>
+            {(onBilibiliDefaultVideoQnChange || onBilibiliDefaultAudioLevelChange) && (
+              <BilibiliDefaultQualityControls
+                className="mt-3"
+                defaultVideoQn={bilibiliDefaultVideoQn}
+                onDefaultVideoQnChange={onBilibiliDefaultVideoQnChange}
+                defaultAudioLevel={bilibiliDefaultAudioLevel}
+                onDefaultAudioLevelChange={onBilibiliDefaultAudioLevelChange}
+              />
+            )}
             <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
               <div>
                 <p className="text-sm font-semibold">音量标准化</p>
@@ -1883,8 +1913,68 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
   );
 }
 
+function BilibiliDefaultQualityControls({
+  defaultVideoQn = 120,
+  onDefaultVideoQnChange,
+  defaultAudioLevel = "hires",
+  onDefaultAudioLevelChange,
+  className,
+}: {
+  defaultVideoQn?: BilibiliDefaultVideoQn;
+  onDefaultVideoQnChange?: (qn: BilibiliDefaultVideoQn) => void;
+  defaultAudioLevel?: BilibiliDefaultAudioLevel;
+  onDefaultAudioLevelChange?: (level: BilibiliDefaultAudioLevel) => void;
+  className?: string;
+}) {
+  if (!onDefaultVideoQnChange && !onDefaultAudioLevelChange) return null;
+  return (
+    <div className={cn("grid gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3 sm:grid-cols-2", className)}>
+      {onDefaultVideoQnChange && (
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">B站默认画质</p>
+          <p className="mt-0.5 text-xs text-neutral-500">切到 B站 MV 时默认优先请求的清晰度</p>
+          <AriaSelect
+            ariaLabel="B站默认画质"
+            size="sm"
+            className="mt-2 w-full"
+            value={String(defaultVideoQn)}
+            onChange={(value) => onDefaultVideoQnChange(Number(value) as BilibiliDefaultVideoQn)}
+            options={bilibiliVideoQualityOptions}
+          />
+        </div>
+      )}
+      {onDefaultAudioLevelChange && (
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">B站默认音质</p>
+          <p className="mt-0.5 text-xs text-neutral-500">播放 B站音频与 MV 音轨时的首选档位</p>
+          <AriaSelect
+            ariaLabel="B站默认音质"
+            size="sm"
+            className="mt-2 w-full"
+            value={defaultAudioLevel}
+            onChange={(value) => onDefaultAudioLevelChange(value as BilibiliDefaultAudioLevel)}
+            options={bilibiliAudioQualityOptions}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Bilibili source row: QR/cookie login + live account state from /api/sources/bilibili. */
-function BilibiliSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
+function BilibiliSourceCard({
+  onAccountChange,
+  defaultVideoQn = 120,
+  onDefaultVideoQnChange,
+  defaultAudioLevel = "hires",
+  onDefaultAudioLevelChange,
+}: {
+  onAccountChange?: () => void;
+  defaultVideoQn?: BilibiliDefaultVideoQn;
+  onDefaultVideoQnChange?: (qn: BilibiliDefaultVideoQn) => void;
+  defaultAudioLevel?: BilibiliDefaultAudioLevel;
+  onDefaultAudioLevelChange?: (level: BilibiliDefaultAudioLevel) => void;
+}) {
   const [account, setAccount] = useState<SourceAccountSummary | null>(null);
   const [hasStoredCookie, setHasStoredCookie] = useState(false);
   const [cookie, setCookie] = useState("");
@@ -2083,6 +2173,15 @@ function BilibiliSourceCard({ onAccountChange }: { onAccountChange?: () => void 
             </Button>
           </div>
         </div>
+      )}
+      {(onDefaultVideoQnChange || onDefaultAudioLevelChange) && (
+        <BilibiliDefaultQualityControls
+          className="mt-3"
+          defaultVideoQn={defaultVideoQn}
+          onDefaultVideoQnChange={onDefaultVideoQnChange}
+          defaultAudioLevel={defaultAudioLevel}
+          onDefaultAudioLevelChange={onDefaultAudioLevelChange}
+        />
       )}
       {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
       {!account?.connected && (

@@ -1,6 +1,7 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ListMusic, Maximize2, Minus, Moon, Radio, Search, Settings2, Sparkles, Sun, UserRound, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Maximize2, Minus, Moon, Radio, Search, Settings2, Sparkles, Sun, UserRound, X } from "lucide-react";
+import { AriaIcon } from "@/components/icons/aria";
 import { Button } from "@/components/ui/button";
 import {
   CollectionSurface,
@@ -8,7 +9,6 @@ import {
   PlaylistSurface,
   StatsSurface,
 } from "@/components/music/CollectionSurfaces";
-import { CloudSurface } from "@/components/music/CloudSurface";
 import { LibrarySurface as LibrarySurfacePanel } from "@/components/music/LibrarySurface";
 import { HistorySurface } from "@/components/music/HomeSurfaces";
 import { HomeSurface } from "@/components/music/HomeDashboard";
@@ -18,10 +18,26 @@ import { SearchSurface, ArtistsSurface } from "@/components/music/DiscoverySurfa
 import { AlbumDetailSurface, UserDetailSurface } from "@/components/music/DiscoveryDetails";
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
-import { EqualizerDialog } from "@/components/music/EqualizerPanel";
 import { FloatingNav } from "@/components/music/FloatingNav";
-import { ExploreSurface } from "@/components/music/ExploreSurface";
-import { AccountPanel, OnboardingDialog, SettingsPanel } from "@/components/music/SettingsPanels";
+
+const EqualizerDialog = lazy(() =>
+  import("@/components/music/EqualizerPanel").then((mod) => ({ default: mod.EqualizerDialog })),
+);
+const CloudSurface = lazy(() =>
+  import("@/components/music/CloudSurface").then((mod) => ({ default: mod.CloudSurface })),
+);
+const ExploreSurface = lazy(() =>
+  import("@/components/music/ExploreSurface").then((mod) => ({ default: mod.ExploreSurface })),
+);
+const AccountPanel = lazy(() =>
+  import("@/components/music/SettingsPanels").then((mod) => ({ default: mod.AccountPanel })),
+);
+const OnboardingDialog = lazy(() =>
+  import("@/components/music/SettingsPanels").then((mod) => ({ default: mod.OnboardingDialog })),
+);
+const SettingsPanel = lazy(() =>
+  import("@/components/music/SettingsPanels").then((mod) => ({ default: mod.SettingsPanel })),
+);
 import ariaIconUrl from "../build/icon.png";
 import { type Track, type ViewId } from "@/data/music";
 import type { ArtistSummary } from "@/lib/artists";
@@ -79,13 +95,22 @@ import {
   selectPlaybackQuality,
   splitArtistNames,
   trimTrackCache,
+  writeCachedAudioSettings,
   writeCachedPlayerState,
   type AudioOutputMode,
+  type BilibiliDefaultAudioLevel,
+  type BilibiliDefaultVideoQn,
   type CoverPalette,
   type PlayerSideView,
   type QualityLevel,
 } from "@/lib/playerPresentation";
-import { BILIBILI_VIDEO_ENABLED } from "@/lib/features";
+import { BILIBILI_VIDEO_ENABLED, canPlayTrackVideo, resolveNextVideoMode } from "@/lib/features";
+import {
+  createViewHistory,
+  pushViewSnapshot,
+  stepViewHistory,
+  type ViewHistorySnapshot,
+} from "@/lib/viewHistory";
 import { ArtistNavigationContext } from "@/components/music/shared";
 import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
@@ -216,8 +241,23 @@ export default function App() {
     }
   });
   const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcuts>(readKeyboardShortcuts);
+  const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState("");
   const searchActive = query.trim().length > 0;
+  const restoringHistoryRef = useRef(false);
+  const [viewHistory, setViewHistory] = useState(() =>
+    createViewHistory({
+      view: "home",
+      query: "",
+      artist: null,
+      album: null,
+      user: null,
+      playlistSource: null,
+      neteasePlaylist: null,
+      qqPlaylist: null,
+      localPlaylistId: null,
+    }),
+  );
   const [exploreTab, setExploreTab] = useState<"styles" | "radio" | "discover">("styles");
   const [exploreStyleGroups, setExploreStyleGroups] = useState<ProviderStyleGroup[]>([]);
   const [exploreStyleId, setExploreStyleId] = useState<string | null>(null);
@@ -249,6 +289,12 @@ export default function App() {
   const [gaplessEnabled, setGaplessEnabled] = useState(() => readCachedAudioSettings().gaplessEnabled ?? false);
   const [normalizationEnabled, setNormalizationEnabled] = useState(() => readCachedAudioSettings().normalizationEnabled ?? false);
   const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>(() => readCachedAudioSettings().outputMode ?? "system");
+  const [bilibiliDefaultVideoQn, setBilibiliDefaultVideoQn] = useState<BilibiliDefaultVideoQn>(
+    () => readCachedAudioSettings().bilibiliDefaultVideoQn ?? 120,
+  );
+  const [bilibiliDefaultAudioLevel, setBilibiliDefaultAudioLevel] = useState<BilibiliDefaultAudioLevel>(
+    () => readCachedAudioSettings().bilibiliDefaultAudioLevel ?? "hires",
+  );
   const [equalizer, setEqualizer] = useState(() => readCachedEqualizerSettings() ?? defaultEqualizerSettings());
   useEffect(() => {
     writeCachedEqualizerSettings(equalizer);
@@ -303,6 +349,19 @@ export default function App() {
   function handleHifiEnabledChange(value: boolean) {
     setHifiEnabled(value);
     if (!value) setMasterQualityEnabled(false);
+  }
+
+  function handleQualityLevelChange(level: QualityLevel) {
+    // Explicit levels are manual choices; 臻品 also enables HiFi so its
+    // companion setting remains visible.
+    setQualityLevel(level);
+    if (level === "jymaster") {
+      setHifiEnabled(true);
+      setMasterQualityEnabled(true);
+    } else {
+      setHifiEnabled(false);
+      setMasterQualityEnabled(false);
+    }
   }
 
   const [theme, setTheme] = useState<AriaTheme>(() => readCachedTheme());
@@ -453,7 +512,7 @@ export default function App() {
     toggleNeteaseLike,
   } = useNeteaseData({
     applyTrackUpdate,
-    getWarmupLevel: (track) => selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel }),
+    getWarmupLevel: (track) => selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel }),
     playing,
     canAutoSelectFirstTrack: activeTrackId === idleTrack.id && !localTracks.length,
     onAutoSelectTrack: setActiveTrackId,
@@ -468,6 +527,7 @@ export default function App() {
   const bilibiliConnected = Boolean(bilibiliAccount?.connected);
   // The header shows a single account chip; NetEase wins when multiple sources are signed in.
   const primaryAccount = neteaseConnected ? neteaseAccount : qqConnected ? qqAccount : bilibiliConnected ? bilibiliAccount : null;
+  const lastAccountRefreshAtRef = useRef(0);
   const refreshQqAccount = useEffectEvent(() => {
     api
       .getSourceAccount("qq")
@@ -482,6 +542,9 @@ export default function App() {
   });
 
   useEffect(() => {
+    const now = Date.now();
+    if (now - lastAccountRefreshAtRef.current < 60_000 && activeView !== "settings") return;
+    lastAccountRefreshAtRef.current = now;
     refreshQqAccount();
     refreshBilibiliAccount();
   }, [activeView]);
@@ -661,6 +724,7 @@ export default function App() {
     [playHistory, allTracksById],
   );
   const artistSummaries = useMemo(() => {
+    if (activeView !== "artists" && !searchActive) return [] as ArtistSummary[];
     const artists = new Map<string, ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> }>();
     for (const track of allTracks) {
       // Bilibili has no artist catalogue yet; keeping its UP names out of the
@@ -696,7 +760,7 @@ export default function App() {
     return [...artists.values()]
       .map(({ albums, sources, ...artist }) => ({ ...artist, albumCount: albums.size }))
       .sort((left, right) => left.name.localeCompare(right.name, "zh-CN", { numeric: true }));
-  }, [allTracks]);
+  }, [activeView, allTracks, searchActive]);
   const playQueueTracks = useMemo(() => {
     return mergeQueueTrackSources(playQueueIds, allTracks, cachedQueueSnapshots);
   }, [allTracks, cachedQueueSnapshots, playQueueIds]);
@@ -724,15 +788,29 @@ export default function App() {
   );
   activeTrackRef.current = activeTrack;
   useEffect(() => {
-    if (!BILIBILI_VIDEO_ENABLED || !activeTrack.videoUrl) setVideoMode(false);
-  }, [activeTrack.id, activeTrack.videoUrl]);
+    setVideoMode((current) => resolveNextVideoMode(current, activeTrack));
+  }, [activeTrack.id, activeTrack.source, activeTrack.videoUrl]);
   useEffect(() => {
-    setVideoQn(null);
+    setVideoQn(activeTrack.source === "bilibili" ? bilibiliDefaultVideoQn : null);
     setVideoQualities([]);
     setVideoAudioQuality(null);
-    setVideoAudioLevel(null);
+    setVideoAudioLevel(activeTrack.source === "bilibili" ? bilibiliDefaultAudioLevel : null);
     setVideoAudioLevels([]);
-  }, [activeTrack.id]);
+  }, [activeTrack.id, activeTrack.source]);
+  useEffect(() => {
+    const current = readCachedAudioSettings();
+    writeCachedAudioSettings({
+      sinkId: current.sinkId ?? "default",
+      hifiEnabled,
+      masterQualityEnabled,
+      gaplessEnabled,
+      normalizationEnabled,
+      exclusiveMode: audioOutputMode === "exclusive",
+      outputMode: audioOutputMode,
+      bilibiliDefaultVideoQn,
+      bilibiliDefaultAudioLevel,
+    });
+  }, [bilibiliDefaultVideoQn, bilibiliDefaultAudioLevel]);
   const activeVideoUrl = useMemo(() => {
     if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || (!videoQn && !videoAudioLevel)) return activeTrack.videoUrl;
     try {
@@ -764,8 +842,8 @@ export default function App() {
   const mediaSessionArtwork = mediaArtwork?.trackId === activeTrack.id && mediaArtwork.coverUrl === activeTrack.coverUrl
     ? mediaArtwork.data : null;
   const effectiveQualityLevel = useMemo(
-    () => selectPlaybackQuality(activeTrack, { hifiEnabled, masterQualityEnabled, qualityLevel }),
-    [activeTrack.availableLevels, activeTrack.source, hifiEnabled, masterQualityEnabled, qualityLevel],
+    () => selectPlaybackQuality(activeTrack, { hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel }),
+    [activeTrack.availableLevels, activeTrack.source, hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel],
   );
   useEffect(() => {
     if ((activeTrack.source !== "bilibili" && activeTrack.source !== "qq") || !activeTrack.providerId) return;
@@ -903,6 +981,7 @@ export default function App() {
     artistAvatarLookupRef,
   } = useDiscovery({
     query,
+    suggestionQuery: searchDraft,
     localTracks,
     localSearchSignature,
     allTracks,
@@ -925,20 +1004,113 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (restoringHistoryRef.current) return;
     setSelectedUser(null);
     setSelectedAlbum(null);
     setSearchFocused(false);
     if (activeView !== "playlists") playlistReturnRef.current = null;
   }, [activeView]);
 
-  useEffect(() => { setSuggestionIndex(-1); }, [query, searchSuggestions]);
+  useEffect(() => { setSuggestionIndex(-1); }, [searchDraft, searchSuggestions]);
 
-  function pickSuggestion(value: string) {
-    setSelectedUser(null);
-    setSelectedAlbum(null);
-    setQuery(value);
+  function clearSearchState() {
+    setSearchDraft("");
+    setQuery("");
     setSearchFocused(false);
   }
+
+  function submitSearch(rawValue = searchDraft) {
+    const trimmed = rawValue.trim();
+    setSearchFocused(false);
+    if (!trimmed) {
+      setQuery("");
+      return;
+    }
+    setSelectedUser(null);
+    setSelectedAlbum(null);
+    setSearchDraft(trimmed);
+    setQuery(trimmed);
+  }
+
+  function pickSuggestion(value: string) {
+    submitSearch(value);
+  }
+
+  const currentViewSnapshot = useMemo<ViewHistorySnapshot>(
+    () => ({
+      view: activeView,
+      query,
+      artist: selectedArtist,
+      album: selectedAlbum,
+      user: selectedUser,
+      playlistSource: playlistSourceIntent,
+      neteasePlaylist: selectedPlaylist,
+      qqPlaylist: qqData.selectedPlaylist,
+      localPlaylistId: localPlaylists.selectedPlaylist?.id ?? null,
+    }),
+    [
+      activeView,
+      query,
+      selectedArtist,
+      selectedAlbum,
+      selectedUser,
+      playlistSourceIntent,
+      selectedPlaylist,
+      qqData.selectedPlaylist,
+      localPlaylists.selectedPlaylist?.id,
+    ],
+  );
+
+  useEffect(() => {
+    if (restoringHistoryRef.current) {
+      restoringHistoryRef.current = false;
+      return;
+    }
+    setViewHistory((current) => pushViewSnapshot(current, currentViewSnapshot));
+  }, [currentViewSnapshot]);
+
+  const canGoBack = viewHistory.index > 0;
+  const canGoForward = viewHistory.index < viewHistory.entries.length - 1;
+
+  const navigateHistory = useEffectEvent((direction: -1 | 1): boolean => {
+    const stepped = stepViewHistory(viewHistory, direction);
+    if (!stepped) return false;
+    restoringHistoryRef.current = true;
+    setViewHistory(stepped.state);
+    const target = stepped.target;
+    setActiveView(target.view);
+    setQuery(target.query);
+    setSearchDraft(target.query);
+    setSearchFocused(false);
+    setSelectedArtist(target.artist);
+    setSelectedAlbum(target.album);
+    setSelectedUser(target.user);
+    setPlaylistSourceIntent(target.playlistSource);
+    if (target.neteasePlaylist) {
+      if (selectedPlaylist?.id !== target.neteasePlaylist.id) void openPlaylist(target.neteasePlaylist);
+    } else if (selectedPlaylist) {
+      closePlaylist();
+    }
+    if (target.qqPlaylist) {
+      if (qqData.selectedPlaylist?.id !== target.qqPlaylist.id) void qqData.openPlaylist(target.qqPlaylist);
+    } else if (qqData.selectedPlaylist) {
+      qqData.closePlaylist();
+    }
+    localPlaylists.setSelectedId(target.localPlaylistId);
+    return true;
+  });
+
+  useEffect(() => {
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button === 3) {
+        if (navigateHistory(-1)) event.preventDefault();
+      } else if (event.button === 4) {
+        if (navigateHistory(1)) event.preventDefault();
+      }
+    };
+    window.addEventListener("mouseup", onMouseUp);
+    return () => window.removeEventListener("mouseup", onMouseUp);
+  }, []);
 
   const contextualQueueTracks = useMemo(() => {
     switch (activeView) {
@@ -977,7 +1149,7 @@ export default function App() {
       const resolvedUrl = api.resolveUrl(track.streamUrl);
       if (track.source !== "netease") return resolvedUrl;
       const url = new URL(resolvedUrl, window.location.href);
-      url.searchParams.set("level", selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel }));
+      url.searchParams.set("level", selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel }));
       return url.href;
     };
 
@@ -1031,7 +1203,10 @@ export default function App() {
     equalizerBands: equalizer.bands,
     audioOutputMode,
     pageVisible,
-    analyserEnabled: pageVisible && (activeView === "player" || immersiveOpen),
+    analyserEnabled:
+      pageVisible &&
+      !(videoMode && canPlayTrackVideo(activeTrack)) &&
+      (activeView === "player" || immersiveOpen),
     videoMode,
     pendingSeekRef,
     setPlaying,
@@ -1172,11 +1347,7 @@ export default function App() {
   }
 
   function seekTo(nextTime: number) {
-    if (videoMode && videoControlRef.current) {
-      videoControlRef.current.seek(nextTime);
-      if (!playing) setPlaying(true);
-      return;
-    }
+    videoControlRef.current?.seek(nextTime);
     if (nativePlaybackEnabled) {
       void seekNativeTrack(nextTime);
       if (!playing) setPlaying(true);
@@ -1190,10 +1361,7 @@ export default function App() {
   }
 
   function toggleVideoMode() {
-    if (!BILIBILI_VIDEO_ENABLED || !activeTrack.videoUrl) return;
-    commitActiveVideoTime();
-    if (videoMode) pauseActiveVideo();
-    pendingSeekRef.current = getPlaybackTime();
+    if (!canPlayTrackVideo(activeTrack)) return;
     setVideoMode((value) => !value);
   }
 
@@ -1234,7 +1402,7 @@ export default function App() {
     }
     setSelectedUser(null);
     setSelectedAlbum(null);
-    setQuery("");
+    clearSearchState();
     setActiveView("artists");
   }
 
@@ -1570,6 +1738,8 @@ export default function App() {
   // from the previous page.
   useEffect(() => {
     if (!window.ariaDesktop?.setTaskbarPreviewRect || !pageVisible) return;
+    let observer: ResizeObserver | null = null;
+    let observedElement: HTMLElement | null = null;
     const update = () => {
       const selectors = immersiveOpen
         ? ['[data-taskbar-anchor="immersive"]']
@@ -1578,15 +1748,22 @@ export default function App() {
           : activeView === "home"
             ? ['[data-taskbar-anchor="home-cover"]']
             : [];
+      let matchedElement: HTMLElement | null = null;
       let rect: DOMRect | null = null;
       for (const selector of selectors) {
         const candidate = document.querySelector<HTMLElement>(selector);
         if (!candidate) continue;
+        matchedElement = candidate;
         const nextRect = candidate.getBoundingClientRect();
         if (nextRect.width >= 8 && nextRect.height >= 8 && nextRect.right > 0 && nextRect.bottom > 0) {
           rect = nextRect;
           break;
         }
+      }
+      if (observer && matchedElement !== observedElement) {
+        observer.disconnect();
+        observedElement = matchedElement;
+        if (matchedElement) observer.observe(matchedElement);
       }
       if (!rect) {
         if (taskbarClipKeyRef.current !== "none") {
@@ -1605,27 +1782,28 @@ export default function App() {
         height: rect.height,
       });
     };
+    if (typeof ResizeObserver === "function") {
+      observer = new ResizeObserver(update);
+    }
     update();
-    const interval = window.setInterval(update, 500);
+    const transitionTimer = window.setTimeout(update, 280);
     window.addEventListener("resize", update);
     window.visualViewport?.addEventListener("resize", update);
     window.visualViewport?.addEventListener("scroll", update);
     return () => {
-      window.clearInterval(interval);
+      window.clearTimeout(transitionTimer);
+      observer?.disconnect();
       window.removeEventListener("resize", update);
       window.visualViewport?.removeEventListener("resize", update);
       window.visualViewport?.removeEventListener("scroll", update);
     };
   }, [activeView, activeTrack.id, immersiveOpen, pageVisible]);
 
-  // Feed two bounded bitmaps to the native DWM bridge. Windows asks for a
-  // square-ish thumbnail and a separate live preview; sharing one stretched
-  // source is what made the old implementation look unlike NetEase Cloud.
+  // Feed a bounded 220x220 cover bitmap to the native DWM taskbar thumbnail.
   useEffect(() => {
     const setThumb = window.ariaDesktop?.setTaskbarIconicThumb;
     const clearThumb = window.ariaDesktop?.clearTaskbarIconicThumb;
     if (!setThumb) return;
-    const taskbarProgressRatio = playing ? 0.42 : 0.18;
 
     let cancelled = false;
     let sending = false;
@@ -1635,10 +1813,6 @@ export default function App() {
     thumbnail.height = 220;
     const thumbnailContext = thumbnail.getContext("2d", { willReadFrequently: true });
     if (!thumbnailContext) return;
-    // Retain names used by the legacy dead branch below without allocating a
-    // second canvas; the current build sends only the compact cover bitmap.
-    const livePreview = { width: 1, height: 1 };
-    const liveContext: any = null;
 
     if (!hasActiveTrack) {
       void clearThumb?.().catch(() => undefined);
@@ -1658,60 +1832,8 @@ export default function App() {
       context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
     };
 
-    let image: any = null;
-    const drawFrame = () => {
+    const drawFrame = (image: HTMLImageElement | null) => {
       drawCover(thumbnailContext, thumbnail.width, thumbnail.height, image);
-      return;
-      const width = livePreview.width;
-      const height = livePreview.height;
-      const background = liveContext.createLinearGradient(0, 0, width, height);
-      background.addColorStop(0, "#f5f6f8");
-      background.addColorStop(1, activeTrack.accent || "#dfe4ec");
-      liveContext.fillStyle = background;
-      liveContext.fillRect(0, 0, width, height);
-      liveContext.fillStyle = "rgba(255,255,255,0.78)";
-      liveContext.fillRect(36, 32, width - 72, height - 64);
-      liveContext.fillStyle = "#17191e";
-      liveContext.font = "600 34px Segoe UI, sans-serif";
-      liveContext.fillText("Aria", 74, 92);
-      liveContext.fillStyle = "#3e4653";
-      liveContext.font = "600 30px Segoe UI, sans-serif";
-      const title = activeTrack.title.length > 24 ? `${activeTrack.title.slice(0, 23)}...` : activeTrack.title;
-      liveContext.fillText(title, 74, 176);
-      liveContext.fillStyle = "#727b89";
-      liveContext.font = "24px Segoe UI, sans-serif";
-      const artist = activeTrack.artist.length > 30 ? `${activeTrack.artist.slice(0, 29)}...` : activeTrack.artist;
-      liveContext.fillText(artist, 74, 216);
-      liveContext.fillStyle = "#c5ccd5";
-      liveContext.fillRect(74, 458, 520, 8);
-      liveContext.fillStyle = "#8fa7ff";
-      liveContext.fillRect(74, 458, taskbarProgressRatio * 520, 8);
-      liveContext.fillStyle = "#6d7684";
-      liveContext.font = "18px Segoe UI, sans-serif";
-      liveContext.fillText("NOW PLAYING", 74, 412);
-      liveContext.fillStyle = "#17191e";
-      liveContext.beginPath();
-      liveContext.arc(190, 518, 24, 0, Math.PI * 2);
-      liveContext.arc(270, 518, 30, 0, Math.PI * 2);
-      liveContext.arc(350, 518, 24, 0, Math.PI * 2);
-      liveContext.fill();
-      liveContext.fillStyle = "#ffffff";
-      liveContext.font = "28px Segoe UI Symbol, sans-serif";
-      liveContext.fillText("‹", 181, 527);
-      liveContext.fillText(playing ? "Ⅱ" : "▶", 259, 528);
-      liveContext.fillText("›", 341, 527);
-      if (image && image.naturalWidth && image.naturalHeight) {
-        const coverSize = 390;
-        const scale = Math.max(coverSize / image.naturalWidth, coverSize / image.naturalHeight);
-        const drawWidth = image.naturalWidth * scale;
-        const drawHeight = image.naturalHeight * scale;
-        liveContext.save();
-        liveContext.beginPath();
-        liveContext.roundRect(520, 92, coverSize, coverSize, 24);
-        liveContext.clip();
-        liveContext.drawImage(image, 520 + (coverSize - drawWidth) / 2, 92 + (coverSize - drawHeight) / 2, drawWidth, drawHeight);
-        liveContext.restore();
-      }
     };
 
     const send = () => {
@@ -1722,12 +1844,11 @@ export default function App() {
       }
       try {
         const thumbnailPixels = thumbnailContext.getImageData(0, 0, thumbnail.width, thumbnail.height).data;
-        const requests = [setThumb(thumbnailPixels, thumbnail.width, thumbnail.height)];
         // The large Aero Peek preview is intentionally left to DWM's live
         // capture of the real Aria window. Sending a second hand-drawn frame
         // here made the preview diverge from the application UI.
         sending = true;
-        void Promise.all(requests)
+        void setThumb(thumbnailPixels, thumbnail.width, thumbnail.height)
           .catch(() => undefined)
           .finally(() => {
             sending = false;
@@ -1742,19 +1863,27 @@ export default function App() {
       }
     };
 
-    drawFrame();
+    drawFrame(null);
     send();
 
     const imageElement = new Image();
     imageElement.crossOrigin = "anonymous";
     imageElement.decoding = "async";
-    imageElement.onload = () => {
-      if (cancelled) return;
-      image = imageElement;
-      drawFrame();
-      send();
+    const releaseImage = () => {
+      imageElement.onload = null;
+      imageElement.onerror = null;
+      imageElement.removeAttribute("src");
     };
-    imageElement.onerror = () => undefined;
+    imageElement.onload = () => {
+      if (cancelled) {
+        releaseImage();
+        return;
+      }
+      drawFrame(imageElement);
+      send();
+      releaseImage();
+    };
+    imageElement.onerror = releaseImage;
     if (activeTrack.coverUrl) {
       const previewCoverUrl = activeTrack.coverUrl.includes("/api/providers/netease/cover")
         ? `${activeTrack.coverUrl}${activeTrack.coverUrl.includes("?") ? "&" : "?"}size=320y320`
@@ -1766,15 +1895,12 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      imageElement.onload = null;
-      imageElement.onerror = null;
-      imageElement.removeAttribute("src");
+      releaseImage();
     };
-  }, [activeTrack.accent, activeTrack.artist, activeTrack.coverUrl, activeTrack.id, activeTrack.title, hasActiveTrack, playing]);
+  }, [activeTrack.accent, activeTrack.coverUrl, activeTrack.id, hasActiveTrack]);
 
   function commitActiveVideoTime() {
-    const video = videoMode ? videoControlRef.current?.element : null;
-    if (video && Number.isFinite(video.currentTime)) commitPlaybackTime(video.currentTime, true);
+    // Audio engine owns the authoritative clock even while muted video is open.
   }
 
   function pauseActiveVideo() {
@@ -1851,8 +1977,20 @@ export default function App() {
         }
         return;
       }
+      if (event.key === "BrowserBack") {
+        if (navigateHistory(-1)) event.preventDefault();
+        return;
+      }
+      if (event.key === "BrowserForward") {
+        if (navigateHistory(1)) event.preventDefault();
+        return;
+      }
       if (event.key === "Escape") {
-        void closeImmersiveView();
+        if (immersiveOpen) {
+          void closeImmersiveView();
+        } else if (videoMode) {
+          setVideoMode(false);
+        }
         return;
       }
       if (!window.ariaDesktop?.configureGlobalShortcuts) {
@@ -1910,7 +2048,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const tracksToWarm = [activeTrack, ...playQueueTracks.slice(0, 12), ...visibleTracks.slice(0, 24)];
+    const tracksToWarm = [activeTrack, ...playQueueTracks.slice(0, 8), ...visibleTracks.slice(0, 12)];
     const timer = window.setTimeout(() => warmLocalCoverCache(tracksToWarm), playing ? 700 : 120);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1922,7 +2060,7 @@ export default function App() {
       .then((library) => {
         const uiTracks = library.tracks.map(localTrackToUiTrack);
         setLocalTracks(uiTracks);
-        warmLocalCoverCache(uiTracks);
+        warmLocalCoverCache(uiTracks.slice(0, 16));
         setLibraryMeta({ roots: library.roots, updatedAt: library.updatedAt });
       })
       .catch(() => {
@@ -1938,7 +2076,7 @@ export default function App() {
       onLibrary: (library) => {
         const uiTracks = library.tracks.map(localTrackToUiTrack);
         setLocalTracks(uiTracks);
-        warmLocalCoverCache(uiTracks);
+        warmLocalCoverCache(uiTracks.slice(0, 16));
         setLibraryMeta({ roots: library.roots, updatedAt: library.updatedAt });
       },
     });
@@ -2244,6 +2382,7 @@ export default function App() {
     }}>
     <main
       className="aria-stage relative h-dvh overflow-hidden text-[var(--text-primary)]"
+      data-ambient-active={playing && pageVisible ? "true" : "false"}
       style={
         {
           "--aria-accent": activePalette.primary,
@@ -2308,7 +2447,7 @@ export default function App() {
               className="flex min-w-0 items-center gap-2.5 rounded-xl text-left"
               aria-label="Aria 主页"
               onClick={() => {
-                setQuery("");
+                clearSearchState();
                 setSelectedUser(null);
                 setSelectedAlbum(null);
                 setActiveView("home");
@@ -2317,10 +2456,32 @@ export default function App() {
               <img src={ariaIconUrl} alt="" draggable={false} className="size-9 shrink-0 rounded-xl object-cover" />
               <p className="app-wordmark">Aria</p>
             </button>
+            <div className="app-history-controls" role="group" aria-label="视图历史导航">
+              <button
+                type="button"
+                className="app-history-btn"
+                aria-label="后退"
+                title="后退（也可使用鼠标后退侧键）"
+                disabled={!canGoBack}
+                onClick={() => { void navigateHistory(-1); }}
+              >
+                <ChevronLeft className="size-4" />
+              </button>
+              <button
+                type="button"
+                className="app-history-btn"
+                aria-label="前进"
+                title="前进（也可使用鼠标前进侧键）"
+                disabled={!canGoForward}
+                onClick={() => { void navigateHistory(1); }}
+              >
+                <ChevronRight className="size-4" />
+              </button>
+            </div>
           </div>
 
           <div className="app-nav-slot" style={noDragRegionStyle}>
-            <AppNavigation activeView={activeView} onPick={(id) => { setQuery(""); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); } setActiveView(id); }} />
+            <AppNavigation activeView={activeView} onPick={(id) => { clearSearchState(); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); } setActiveView(id); }} />
           </div>
 
           <div
@@ -2330,24 +2491,34 @@ export default function App() {
           >
             <Search className="size-4 shrink-0 text-neutral-700" />
             <input
-              value={query}
-              onChange={(event) => { setQuery(event.target.value); setSelectedUser(null); setSelectedAlbum(null); setSearchFocused(true); }}
+              value={searchDraft}
+              onChange={(event) => { setSearchDraft(event.target.value); setSearchFocused(true); }}
               onFocus={() => setSearchFocused(true)}
               onKeyDown={(event) => {
-                if (event.key === "Escape") { setSearchFocused(false); return; }
+                if (event.key === "Escape") {
+                  setSearchFocused(false);
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  if (searchFocused && suggestionIndex >= 0 && searchSuggestions[suggestionIndex]) {
+                    pickSuggestion(searchSuggestions[suggestionIndex]);
+                  } else {
+                    submitSearch(searchDraft);
+                  }
+                  return;
+                }
                 if (!searchSuggestions.length || !searchFocused) return;
                 if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                   event.preventDefault();
                   setSuggestionIndex((current) => (current + (event.key === "ArrowDown" ? 1 : -1) + searchSuggestions.length) % searchSuggestions.length);
-                } else if (event.key === "Enter" && suggestionIndex >= 0) {
-                  event.preventDefault(); pickSuggestion(searchSuggestions[suggestionIndex]);
                 }
               }}
               spellCheck={false}
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder="歌曲、歌词、专辑、歌手、歌单、用户"
+              placeholder="输入关键词，回车或点搜索"
               aria-label="搜索音乐、歌手、专辑、歌单、用户"
               role="combobox"
               aria-autocomplete="list"
@@ -2356,19 +2527,39 @@ export default function App() {
               aria-activedescendant={searchFocused && suggestionIndex >= 0 ? `search-suggestion-${suggestionIndex}` : undefined}
               className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 outline-none placeholder:text-neutral-500"
             />
+            {(searchDraft.length > 0 || searchActive) && (
+              <button
+                type="button"
+                className="app-search-clear flex shrink-0 items-center justify-center transition"
+                aria-label="清空搜索"
+                title="清空搜索"
+                onClick={clearSearchState}
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+            <button
+              type="button"
+              className="app-search-submit flex shrink-0 items-center justify-center"
+              aria-label="执行搜索"
+              title="开始搜索 (Enter)"
+              onClick={() => submitSearch(searchDraft)}
+            >
+              搜索
+            </button>
             <Button
               variant="ghost"
               size="icon"
               aria-label="设置"
               onClick={() => {
                 setSettingsReturnView(activeView === "settings" ? "home" : activeView);
-                setQuery("");
+                clearSearchState();
                 setActiveView("settings");
               }}
             >
               <Settings2 />
             </Button>
-            {searchFocused && query.trim() && searchSuggestions.length > 0 && <div id="search-suggestions" role="listbox" aria-label="搜索建议" className="absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-violet-100 bg-white p-2 shadow-xl">
+            {searchFocused && searchDraft.trim() && searchSuggestions.length > 0 && <div id="search-suggestions" role="listbox" aria-label="搜索建议" className="absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-violet-100 bg-white p-2 shadow-xl">
               {searchSuggestions.map((suggestion, index) => <button key={suggestion} id={`search-suggestion-${index}`} type="button" role="option" aria-selected={suggestionIndex === index} className={cn("flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-neutral-600 hover:bg-violet-50", suggestionIndex === index && "bg-violet-50 text-violet-700")} onMouseDown={(event) => event.preventDefault()} onClick={() => pickSuggestion(suggestion)}><Search className="size-3.5 shrink-0" /><span className="truncate">{suggestion}</span></button>)}
             </div>}
           </div>
@@ -2383,7 +2574,7 @@ export default function App() {
             >
               {resolvedTheme === "dark" ? <Sun /> : <Moon />}
             </Button>
-            {activeView === "player" && <Button className="xl:hidden" variant="ghost" size="icon" aria-label="打开播放队列" onClick={() => setQueueOpen(true)}><ListMusic /></Button>}
+            {activeView === "player" && <Button className="xl:hidden" variant="ghost" size="icon" aria-label="打开播放队列" onClick={() => setQueueOpen(true)}><AriaIcon name="queue" className="size-4" /></Button>}
             <div className="relative">
             <Button
               variant="glass"
@@ -2411,42 +2602,44 @@ export default function App() {
             <span
               className={cn(
                 "absolute right-0 top-0 size-2.5 rounded-full ring-2 ring-white",
-                neteaseConnected || qqConnected ? "bg-[#28c840]" : "bg-neutral-300",
+                neteaseConnected || qqConnected || bilibiliConnected ? "bg-[#28c840]" : "bg-neutral-300",
               )}
             />
             <AnimatePresence>
               {accountOpen && (
-                <AccountPanel
-                  sourceAccounts={[
-                    {
-                      id: "netease",
-                      label: "网易云音乐",
-                      connected: neteaseConnected,
-                      nickname: neteaseAccount?.nickname ?? null,
-                      avatarUrl: neteaseAccount?.avatarUrl ?? null,
-                    },
-                    {
-                      id: "qq",
-                      label: "QQ 音乐",
-                      connected: qqConnected,
-                      nickname: qqAccount?.nickname ?? null,
-                      avatarUrl: qqAccount?.avatarUrl ?? null,
-                    },
-                    {
-                      id: "bilibili",
-                      label: "哔哩哔哩",
-                      connected: bilibiliConnected,
-                      nickname: bilibiliAccount?.nickname ?? null,
-                      avatarUrl: bilibiliAccount?.avatarUrl ?? null,
-                    },
-                  ]}
-                  onManageSources={() => {
-                    setAccountOpen(false);
-                    setSettingsReturnView(activeView === "settings" ? "home" : activeView);
-                    setActiveView("settings");
-                  }}
-                  onClose={() => setAccountOpen(false)}
-                />
+                <Suspense fallback={null}>
+                  <AccountPanel
+                    sourceAccounts={[
+                      {
+                        id: "netease",
+                        label: "网易云音乐",
+                        connected: neteaseConnected,
+                        nickname: neteaseAccount?.nickname ?? null,
+                        avatarUrl: neteaseAccount?.avatarUrl ?? null,
+                      },
+                      {
+                        id: "qq",
+                        label: "QQ 音乐",
+                        connected: qqConnected,
+                        nickname: qqAccount?.nickname ?? null,
+                        avatarUrl: qqAccount?.avatarUrl ?? null,
+                      },
+                      {
+                        id: "bilibili",
+                        label: "哔哩哔哩",
+                        connected: bilibiliConnected,
+                        nickname: bilibiliAccount?.nickname ?? null,
+                        avatarUrl: bilibiliAccount?.nickname ? bilibiliAccount.avatarUrl ?? null : bilibiliAccount?.avatarUrl ?? null,
+                      },
+                    ]}
+                    onManageSources={() => {
+                      setAccountOpen(false);
+                      setSettingsReturnView(activeView === "settings" ? "home" : activeView);
+                      setActiveView("settings");
+                    }}
+                    onClose={() => setAccountOpen(false)}
+                  />
+                </Suspense>
               )}
             </AnimatePresence>
             </div>
@@ -2492,7 +2685,7 @@ export default function App() {
           <div
             className={cn(
               "h-full min-h-0 min-w-0 overflow-hidden",
-              (activeView !== "player" || searchActive) && "pointer-events-none fixed left-0 top-0 w-[min(92vw,1100px)] -translate-x-[200%] opacity-0",
+              (activeView !== "player" || searchActive) && "hidden",
             )}
             aria-hidden={activeView !== "player" || searchActive}
             inert={activeView !== "player" || searchActive}
@@ -2529,7 +2722,7 @@ export default function App() {
                     pendingSeekRef.current = getPlaybackTime();
                     setVideoQn(qn);
                   }}
-                  videoActive={videoMode && !immersiveOpen}
+                  videoActive={videoMode && !immersiveOpen && activeView === "player" && !searchActive && pageVisible}
                   videoControlRef={videoControlRef}
                   onVideoDuration={setDurationSeconds}
                   onVideoEnded={handleTrackEnded}
@@ -2551,20 +2744,7 @@ export default function App() {
                   volume={volume}
                   onVolumeChange={setVolume}
                   qualityLevel={effectiveQualityLevel}
-                  onQualityLevelChange={(level) => {
-                    // Explicit levels are manual choices; 臻品 also enables
-                    // HiFi so its companion setting remains visible.
-                    setQualityLevel(level);
-                    if (level === "jymaster") {
-                      // 臻品是 HiFi 优先下的额外处理档位，启用它时同步打开
-                      // HiFi，让设置页能够显示对应的独立开关。
-                      setHifiEnabled(true);
-                      setMasterQualityEnabled(true);
-                    } else {
-                      setHifiEnabled(false);
-                      setMasterQualityEnabled(false);
-                    }
-                  }}
+                  onQualityLevelChange={handleQualityLevelChange}
                   hifiEnabled={hifiEnabled}
                   masterQualityEnabled={masterQualityEnabled}
                   onMasterQualityEnabledChange={setMasterQualityEnabled}
@@ -2579,21 +2759,25 @@ export default function App() {
                   equalizerEnabled={equalizer.enabled}
                   onOpenEqualizer={() => setEqualizerOpen(true)}
                 />
-                <EqualizerDialog
-                  open={equalizerOpen}
-                  onClose={() => setEqualizerOpen(false)}
-                  enabled={equalizer.enabled}
-                  bands={equalizer.bands}
-                  preset={equalizer.preset}
-                  error={equalizerError}
-                  customPresets={customEqualizerPresets}
-                  onEnabledChange={(enabled) => updateEqualizer({ enabled })}
-                  onBandsChange={(bands) => updateEqualizer({ bands })}
-                  onPresetChange={selectEqualizerPreset}
-                  onSavePreset={saveCustomEqualizerPreset}
-                  onDeletePreset={deleteCustomEqualizerPreset}
-                  onImportPresets={importCustomEqualizerPresets}
-                />
+                {equalizerOpen && (
+                  <Suspense fallback={null}>
+                    <EqualizerDialog
+                      open={equalizerOpen}
+                      onClose={() => setEqualizerOpen(false)}
+                      enabled={equalizer.enabled}
+                      bands={equalizer.bands}
+                      preset={equalizer.preset}
+                      error={equalizerError}
+                      customPresets={customEqualizerPresets}
+                      onEnabledChange={(enabled) => updateEqualizer({ enabled })}
+                      onBandsChange={(bands) => updateEqualizer({ bands })}
+                      onPresetChange={selectEqualizerPreset}
+                      onSavePreset={saveCustomEqualizerPreset}
+                      onDeletePreset={deleteCustomEqualizerPreset}
+                      onImportPresets={importCustomEqualizerPresets}
+                    />
+                  </Suspense>
+                )}
           </div>
           <AnimatePresence initial={false} mode="popLayout">
             <motion.div
@@ -2612,18 +2796,18 @@ export default function App() {
             >
               {selectedAlbum ? (
                 <AlbumDetailSurface album={albumDetail ?? selectedAlbum} tracks={albumTracks} loading={albumLoading} error={albumError}
-                  onBack={() => setSelectedAlbum(null)} onRetry={retryAlbum} onPickTrack={chooseTrack}
+                  onBack={() => { if (!navigateHistory(-1)) setSelectedAlbum(null); }} onRetry={retryAlbum} onPickTrack={chooseTrack}
                   onPickArtist={(id, name) => {
                     const source = (albumDetail ?? selectedAlbum)?.source === "qq" ? "qq" : "netease";
                     setSelectedAlbum(null);
                     setSelectedArtist({ id: `${source}:${id}`, providerId: id, providerSource: source, name, source, trackCount: 0 });
-                    setQuery("");
+                    clearSearchState();
                     setActiveView("artists");
                   }} />
               ) : selectedUser ? (
                 <UserDetailSurface user={userDetail ?? selectedUser} playlists={userPlaylists} loading={userLoading} error={userError} more={userPlaylistsMore}
-                  onBack={() => setSelectedUser(null)} onRetry={retryUser} onLoadMore={() => void loadMoreUserPlaylists()}
-                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { query, user: selectedUser }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); setSelectedUser(null); }} />
+                  onBack={() => { if (!navigateHistory(-1)) setSelectedUser(null); }} onRetry={retryUser} onLoadMore={() => void loadMoreUserPlaylists()}
+                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { query, user: selectedUser }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); clearSearchState(); setSelectedUser(null); }} />
               ) : query.trim() ? (
                 <SearchSurface
                   query={query.trim()}
@@ -2652,12 +2836,11 @@ export default function App() {
                   artistAvatarCache={artistAvatarCache}
                   onPickTrack={(id, queue) => {
                     chooseTrack(id, queue);
-                    setQuery("");
                   }}
                   onPickArtist={(artist) => {
                     setSelectedArtist(artist);
                     setActiveView("artists");
-                    setQuery("");
+                    clearSearchState();
                   }}
                   onPickPlaylist={(playlist) => {
                     playlistReturnRef.current = { query, user: null };
@@ -2668,7 +2851,7 @@ export default function App() {
                       void openPlaylist(playlist);
                     }
                     setActiveView("playlists");
-                    setQuery("");
+                    clearSearchState();
                   }}
                 />
               ) : (
@@ -2769,7 +2952,7 @@ export default function App() {
                     setActiveView("settings");
                   }}
                   onOpenPlaylist={(playlist) => { if (playlist.id !== selectedPlaylist?.id) playlistReturnRef.current = null; void openPlaylist(playlist); }}
-                  onClosePlaylist={() => { closePlaylist(); const origin = playlistReturnRef.current; playlistReturnRef.current = null; if (origin) { setQuery(origin.query); setSelectedUser(origin.user); } }}
+                  onClosePlaylist={() => { closePlaylist(); const origin = playlistReturnRef.current; playlistReturnRef.current = null; if (origin) { setSearchDraft(origin.query); setQuery(origin.query); setSelectedUser(origin.user); } }}
                   onPickTrack={chooseTrack}
                   qq={{
                     connected: qqConnected,
@@ -2784,6 +2967,7 @@ export default function App() {
                       const origin = playlistReturnRef.current;
                       playlistReturnRef.current = null;
                       if (origin) {
+                        setSearchDraft(origin.query);
                         setQuery(origin.query);
                         setSelectedUser(origin.user);
                       }
@@ -2823,41 +3007,43 @@ export default function App() {
                 />
               )}
               {activeView === "explore" && (
-                <ExploreSurface
-                  styleGroups={exploreStyleGroups}
-                  selectedStyle={exploreStyle}
-                  tracks={exploreTracks}
-                  radioTracks={exploreRadioTracks}
-                  activeTab={exploreTab}
-                  selectedStyleId={exploreStyleId}
-                  stylesLoading={exploreStylesLoading}
-                  loading={exploreTracksLoading}
-                  loadingMore={exploreTracksLoadingMore}
-                  radioLoading={exploreRadioLoading}
-                  styleError={exploreStyleError}
-                  radioError={exploreRadioError}
-                  discovery={exploreDiscovery}
-                  discoveryLoading={exploreDiscoveryLoading}
-                  discoveryError={exploreDiscoveryError}
-                  selectedBpm={exploreSelectedBpm}
-                  sort={exploreStyleSort}
-                  onSelectStyle={(id) => {
-                    setExploreStyleId(id);
-                    setExploreTab("styles");
-                  }}
-                  onRetryStyles={() => {
-                    setExploreStyleGroups([]);
-                  }}
-                  onSortChange={setExploreStyleSort}
-                  onLoadMore={() => void loadMoreExploreTracks()}
-                  onLoadRadio={(bpm) => void loadExploreRadio(bpm)}
-                  onLoadDiscovery={() => void loadExploreDiscovery()}
-                  onRetryDiscovery={() => void loadExploreDiscovery(true)}
-                  onSearchHot={(value) => { setQuery(value); setSearchFocused(false); }}
-                  onOpenPlaylist={(playlist) => { playlistReturnRef.current = { query: "", user: null }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); setQuery(""); }}
-                  onPickTrack={chooseTrack}
-                  onTabChange={setExploreTab}
-                />
+                <Suspense fallback={null}>
+                  <ExploreSurface
+                    styleGroups={exploreStyleGroups}
+                    selectedStyle={exploreStyle}
+                    tracks={exploreTracks}
+                    radioTracks={exploreRadioTracks}
+                    activeTab={exploreTab}
+                    selectedStyleId={exploreStyleId}
+                    stylesLoading={exploreStylesLoading}
+                    loading={exploreTracksLoading}
+                    loadingMore={exploreTracksLoadingMore}
+                    radioLoading={exploreRadioLoading}
+                    styleError={exploreStyleError}
+                    radioError={exploreRadioError}
+                    discovery={exploreDiscovery}
+                    discoveryLoading={exploreDiscoveryLoading}
+                    discoveryError={exploreDiscoveryError}
+                    selectedBpm={exploreSelectedBpm}
+                    sort={exploreStyleSort}
+                    onSelectStyle={(id) => {
+                      setExploreStyleId(id);
+                      setExploreTab("styles");
+                    }}
+                    onRetryStyles={() => {
+                      setExploreStyleGroups([]);
+                    }}
+                    onSortChange={setExploreStyleSort}
+                    onLoadMore={() => void loadMoreExploreTracks()}
+                    onLoadRadio={(bpm) => void loadExploreRadio(bpm)}
+                    onLoadDiscovery={() => void loadExploreDiscovery()}
+                    onRetryDiscovery={() => void loadExploreDiscovery(true)}
+                    onSearchHot={(value) => submitSearch(value)}
+                    onOpenPlaylist={(playlist) => { playlistReturnRef.current = { query: "", user: null }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); clearSearchState(); }}
+                    onPickTrack={chooseTrack}
+                    onTabChange={setExploreTab}
+                  />
+                </Suspense>
               )}
               {activeView === "artists" && (
                 <ArtistsSurface
@@ -2877,68 +3063,92 @@ export default function App() {
                   onPickAlbum={setSelectedAlbum}
                   artistAvatarCache={artistAvatarCache}
                   onPickArtist={(artist) => setSelectedArtist(artist)}
-                  onBack={() => setSelectedArtist(null)}
+                  onBack={() => { if (!navigateHistory(-1)) setSelectedArtist(null); }}
                   onPickTrack={chooseTrack}
                   onPlayNext={playNextTrack}
                 />
               )}
               {activeView === "cloud" && (
-                <CloudSurface
-                  {...cloudLibrary}
-                  connected={neteaseConnected}
-                  activeTrackId={activeTrackId}
-                  onPickTrack={chooseTrack}
-                  onRequireLogin={() => {
-                    setSettingsReturnView("cloud");
-                    setActiveView("settings");
-                  }}
-                />
+                <Suspense fallback={null}>
+                  <CloudSurface
+                    {...cloudLibrary}
+                    connected={neteaseConnected}
+                    activeTrackId={activeTrackId}
+                    onPickTrack={chooseTrack}
+                    onRequireLogin={() => {
+                      setSettingsReturnView("cloud");
+                      setActiveView("settings");
+                    }}
+                  />
+                </Suspense>
               )}
               {activeView === "stats" && <StatsSurface tracks={allTracks} playCounts={playCounts} />}
               {activeView === "settings" && (
-                <SettingsPanel
-                  backgroundEnabled={backgroundEnabled}
-                  onBackgroundEnabledChange={setBackgroundEnabled}
-                  neteaseAccount={neteaseAccount}
-                  libraryMeta={libraryMeta}
-                  libraryAutoScanEnabled={libraryWatchState?.enabled ?? true}
-                  libraryWatchState={libraryWatchState}
-                  onAddLibraryFolder={() => void addLibraryFolder()}
-                  onRemoveLibraryRoot={(root) => void removeLibraryFolder(root)}
-                  onToggleLibraryAutoScan={(enabled) => void toggleLibraryAutoScan(enabled)}
-                  trackCount={allTracks.length}
-                  likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length + bilibiliData.likedTracks.length}
-                  lyricProgress={lyricProgress}
-                  volume={volume}
-                  onVolumeChange={setVolume}
-                  audioOutputDevices={audioOutputDevices}
-                  selectedSinkId={selectedSinkId}
-                  onSelectedSinkIdChange={setSelectedSinkId}
-                  hifiEnabled={hifiEnabled}
-                  onHifiEnabledChange={handleHifiEnabledChange}
-                  masterQualityEnabled={masterQualityEnabled}
-                  onMasterQualityEnabledChange={setMasterQualityEnabled}
-                  gaplessEnabled={gaplessEnabled}
-                  onGaplessEnabledChange={setGaplessEnabled}
-                  normalizationEnabled={normalizationEnabled}
-                  onNormalizationEnabledChange={setNormalizationEnabled}
-                  normalizationError={normalizationError}
-                  nativeAudioSupported={nativeAudioSupported}
-                  nativeAudioState={nativeAudioState}
-                  audioOutputMode={audioOutputMode}
-                  onAudioOutputModeChange={setAudioOutputMode}
-                  exclusiveMode={exclusiveMode}
-                  keyboardShortcuts={keyboardShortcuts}
-                  onKeyboardShortcutsChange={setKeyboardShortcuts}
-                  theme={theme}
-                  onThemeChange={setTheme}
-                  onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
-                  onNeteaseAccountChange={(account) => {
-                    setNeteaseAccount(account);
-                    if (account.connected) void refreshNeteaseData();
-                  }}
-                  onClose={() => setActiveView(settingsReturnView)}
-                />
+                <Suspense fallback={null}>
+                  <SettingsPanel
+                    backgroundEnabled={backgroundEnabled}
+                    onBackgroundEnabledChange={setBackgroundEnabled}
+                    neteaseAccount={neteaseAccount}
+                    libraryMeta={libraryMeta}
+                    libraryAutoScanEnabled={libraryWatchState?.enabled ?? true}
+                    libraryWatchState={libraryWatchState}
+                    onAddLibraryFolder={() => void addLibraryFolder()}
+                    onRemoveLibraryRoot={(root) => void removeLibraryFolder(root)}
+                    onToggleLibraryAutoScan={(enabled) => void toggleLibraryAutoScan(enabled)}
+                    trackCount={allTracks.length}
+                    likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length + bilibiliData.likedTracks.length}
+                    lyricProgress={lyricProgress}
+                    volume={volume}
+                    onVolumeChange={setVolume}
+                    audioOutputDevices={audioOutputDevices}
+                    selectedSinkId={selectedSinkId}
+                    onSelectedSinkIdChange={setSelectedSinkId}
+                    hifiEnabled={hifiEnabled}
+                    onHifiEnabledChange={handleHifiEnabledChange}
+                    masterQualityEnabled={masterQualityEnabled}
+                    onMasterQualityEnabledChange={setMasterQualityEnabled}
+                    gaplessEnabled={gaplessEnabled}
+                    onGaplessEnabledChange={setGaplessEnabled}
+                    normalizationEnabled={normalizationEnabled}
+                    onNormalizationEnabledChange={setNormalizationEnabled}
+                    normalizationError={normalizationError}
+                    nativeAudioSupported={nativeAudioSupported}
+                    nativeAudioState={nativeAudioState}
+                    audioOutputMode={audioOutputMode}
+                    onAudioOutputModeChange={setAudioOutputMode}
+                    exclusiveMode={exclusiveMode}
+                    keyboardShortcuts={keyboardShortcuts}
+                    onKeyboardShortcutsChange={setKeyboardShortcuts}
+                    theme={theme}
+                    onThemeChange={setTheme}
+                    bilibiliDefaultVideoQn={bilibiliDefaultVideoQn}
+                    onBilibiliDefaultVideoQnChange={(qn) => {
+                      setBilibiliDefaultVideoQn(qn);
+                      if (activeTrack.source === "bilibili") {
+                        commitActiveVideoTime();
+                        pendingSeekRef.current = getPlaybackTime();
+                        setVideoQn(qn);
+                      }
+                    }}
+                    bilibiliDefaultAudioLevel={bilibiliDefaultAudioLevel}
+                    onBilibiliDefaultAudioLevelChange={(level) => {
+                      setBilibiliDefaultAudioLevel(level);
+                      if (activeTrack.source === "bilibili") {
+                        commitActiveVideoTime();
+                        pendingSeekRef.current = getPlaybackTime();
+                        setVideoAudioLevel(level);
+                      }
+                    }}
+                    onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
+                    onNeteaseAccountChange={(account) => {
+                      setNeteaseAccount(account);
+                      if (account.connected) void refreshNeteaseData();
+                    }}
+                    onClose={() => {
+                      if (!navigateHistory(-1)) setActiveView(settingsReturnView);
+                    }}
+                  />
+                </Suspense>
               )}
                 </>
               )}
@@ -2971,13 +3181,14 @@ export default function App() {
                 <h2 className="mt-1 text-xl font-semibold">下一首</h2>
               </div>
               <Button variant="ghost" size="icon" aria-label="展开队列" onClick={() => setQueueOpen(true)}>
-                <ListMusic />
+                <AriaIcon name="queue" className="size-4" />
               </Button>
             </div>
 
             <QueueList
               tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
               activeTrackId={activeTrackId}
+              playing={playing}
               onPickTrack={chooseTrack}
               onPlayNext={playNextTrack}
               onRemove={removeFromQueue}
@@ -3010,6 +3221,22 @@ export default function App() {
               visualizerMode={nativePlaybackEnabled ? audioOutputMode : "system"}
               volume={volume}
               onVolumeChange={setVolume}
+              shuffleEnabled={shuffleEnabled}
+              repeatMode={repeatMode}
+              liked={
+                activeTrack.source === "netease"
+                  ? Boolean(neteaseLikedIds[activeTrack.id])
+                  : activeTrack.source === "qq"
+                    ? Boolean(qqData.likedIds[activeTrack.id])
+                    : activeTrack.source === "bilibili"
+                      ? Boolean(bilibiliData.likedIds[activeTrack.id])
+                      : Boolean(likedTrackIds[activeTrack.id])
+              }
+              onToggleShuffle={toggleShuffleQueue}
+              onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
+              onToggleLike={() => toggleLikeTrack(activeTrack.id)}
+              qualityLevel={effectiveQualityLevel}
+              onQualityLevelChange={handleQualityLevelChange}
               onClose={() => void closeImmersiveView()}
               onTogglePlay={togglePlayback}
               onNext={() => pickRelativeTrack(1)}
@@ -3024,6 +3251,13 @@ export default function App() {
               videoQualities={videoQualities}
               videoQualityId={videoQn}
               videoAudioQuality={videoAudioQuality}
+              videoAudioLevel={videoAudioLevel}
+              videoAudioLevels={videoAudioLevels}
+              onVideoAudioLevelChange={(level) => {
+                commitActiveVideoTime();
+                pendingSeekRef.current = getPlaybackTime();
+                setVideoAudioLevel(level);
+              }}
               onVideoQualityChange={(qn) => {
                 commitActiveVideoTime();
                 pendingSeekRef.current = getPlaybackTime();
@@ -3041,26 +3275,28 @@ export default function App() {
         </AnimatePresence>
 
         {onboardingOpen && (
-          <OnboardingDialog
-            neteaseAccount={neteaseAccount}
-            hifiEnabled={hifiEnabled}
-            onHifiEnabledChange={handleHifiEnabledChange}
-            backgroundEnabled={backgroundEnabled}
-            onBackgroundEnabledChange={setBackgroundEnabled}
-            gaplessEnabled={gaplessEnabled}
-            onGaplessEnabledChange={setGaplessEnabled}
-            onAddLocalMusic={() => void chooseLocalFolder()}
-            localMusicInfo={onboardingLocalInfo ?? (localTracks.length ? { path: folderName, count: localTracks.length } : null)}
-            scanProgress={libraryScanProgress}
-            onAccountChange={(account) => {
-              setNeteaseAccount(account);
-              if (account.connected) void refreshNeteaseData();
-            }}
-            onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
-            qqAccount={qqAccount}
-            bilibiliAccount={bilibiliAccount}
-            onComplete={() => setOnboardingOpen(false)}
-          />
+          <Suspense fallback={null}>
+            <OnboardingDialog
+              neteaseAccount={neteaseAccount}
+              hifiEnabled={hifiEnabled}
+              onHifiEnabledChange={handleHifiEnabledChange}
+              backgroundEnabled={backgroundEnabled}
+              onBackgroundEnabledChange={setBackgroundEnabled}
+              gaplessEnabled={gaplessEnabled}
+              onGaplessEnabledChange={setGaplessEnabled}
+              onAddLocalMusic={() => void chooseLocalFolder()}
+              localMusicInfo={onboardingLocalInfo ?? (localTracks.length ? { path: folderName, count: localTracks.length } : null)}
+              scanProgress={libraryScanProgress}
+              onAccountChange={(account) => {
+                setNeteaseAccount(account);
+                if (account.connected) void refreshNeteaseData();
+              }}
+              onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
+              qqAccount={qqAccount}
+              bilibiliAccount={bilibiliAccount}
+              onComplete={() => setOnboardingOpen(false)}
+            />
+          </Suspense>
         )}
 
         {navOpen && !(activeView === "player" && videoMode) && (
@@ -3088,14 +3324,14 @@ export default function App() {
             navCloseTimer.current = window.setTimeout(() => {
               setNavOpen(false);
               navCloseTimer.current = null;
-            }, 180);
+            }, 300);
           }}
           onPick={(id) => {
             if (navCloseTimer.current !== null) {
               window.clearTimeout(navCloseTimer.current);
               navCloseTimer.current = null;
             }
-            setQuery("");
+            clearSearchState();
             setSelectedUser(null);
             setSelectedAlbum(null);
             setQueueOpen(false);

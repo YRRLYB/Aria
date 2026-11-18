@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppStore } from "./types";
 import { dataDir } from "./utils/paths";
@@ -15,18 +16,40 @@ const defaultStore: AppStore = {
   libraryAutoScanEnabled: true,
 };
 
+let storeCache: { mtimeMs: number; size: number; value: AppStore } | null = null;
+
 export async function readStore(): Promise<AppStore> {
   try {
+    const fileStat = await stat(storePath);
+    if (
+      storeCache &&
+      storeCache.size === fileStat.size &&
+      Math.abs(storeCache.mtimeMs - fileStat.mtimeMs) < 1
+    ) {
+      return storeCache.value;
+    }
     const raw = await readFile(storePath, "utf8");
-    return { ...defaultStore, ...JSON.parse(raw) };
+    const parsed: AppStore = { ...defaultStore, ...JSON.parse(raw) };
+    storeCache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, value: parsed };
+    return parsed;
   } catch {
+    storeCache = null;
     return defaultStore;
   }
 }
 
 export async function writeStore(nextStore: AppStore) {
   await mkdir(dataDir, { recursive: true });
-  await writeFile(storePath, JSON.stringify(nextStore, null, 2), "utf8");
+  const serialized = JSON.stringify(nextStore, null, 2);
+  const temporary = `${storePath}.${randomUUID()}.tmp`;
+  await writeFile(temporary, serialized, "utf8");
+  await rename(temporary, storePath);
+  try {
+    const fileStat = await stat(storePath);
+    storeCache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, value: { ...defaultStore, ...nextStore } };
+  } catch {
+    storeCache = null;
+  }
 }
 
 let pendingUpdate: Promise<unknown> = Promise.resolve();

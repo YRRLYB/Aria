@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { LocalMetadataOverride } from "../src/lib/localMetadata";
 import { dataDir } from "./utils/paths";
@@ -10,20 +10,45 @@ type UndoEntry = {
 };
 type MetadataState = { overrides: Record<string, LocalMetadataOverride>; undo: UndoEntry[] };
 
+const emptyMetadataState: MetadataState = { overrides: {}, undo: [] };
+
 /** One small journal, persisted atomically. Original audio files and tags are
  * never rewritten, so a match can be corrected or undone without re-scanning. */
 export class LocalMetadataStore {
   private pending: Promise<unknown> = Promise.resolve();
+  private cache: { mtimeMs: number; size: number; state: MetadataState } | null = null;
   constructor(private readonly directory: string) {}
 
   async read(): Promise<MetadataState> {
     await this.pending.catch(() => undefined);
-    return this.readFile();
+    return this.readCached();
   }
 
-  private async readFile(): Promise<MetadataState> {
+  private async readCached(): Promise<MetadataState> {
+    const target = path.join(this.directory, "local-metadata.json");
     try {
-      const parsed = JSON.parse(await readFile(path.join(this.directory, "local-metadata.json"), "utf8"));
+      const fileStat = await stat(target);
+      if (
+        this.cache &&
+        this.cache.size === fileStat.size &&
+        Math.abs(this.cache.mtimeMs - fileStat.mtimeMs) < 1
+      ) {
+        return this.cache.state;
+      }
+      const parsed = JSON.parse(await readFile(target, "utf8"));
+      const state: MetadataState = { overrides: parsed.overrides ?? {}, undo: parsed.undo ?? [] };
+      this.cache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, state };
+      return state;
+    } catch {
+      this.cache = null;
+      return emptyMetadataState;
+    }
+  }
+
+  private async readMutableFile(): Promise<MetadataState> {
+    const target = path.join(this.directory, "local-metadata.json");
+    try {
+      const parsed = JSON.parse(await readFile(target, "utf8"));
       return { overrides: parsed.overrides ?? {}, undo: parsed.undo ?? [] };
     } catch {
       return { overrides: {}, undo: [] };
@@ -32,13 +57,19 @@ export class LocalMetadataStore {
 
   private change<T>(operation: (state: MetadataState) => T): Promise<T> {
     const next = this.pending.catch(() => undefined).then(async () => {
-      const state = await this.readFile();
+      const state = await this.readMutableFile();
       const result = operation(state);
       await mkdir(this.directory, { recursive: true });
       const target = path.join(this.directory, "local-metadata.json");
       const temporary = `${target}.${randomUUID()}.tmp`;
       await writeFile(temporary, JSON.stringify(state), "utf8");
       await rename(temporary, target);
+      try {
+        const fileStat = await stat(target);
+        this.cache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, state };
+      } catch {
+        this.cache = null;
+      }
       return result;
     });
     this.pending = next;

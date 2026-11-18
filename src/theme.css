@@ -23,11 +23,37 @@ button:disabled { cursor: default; }
      opaque-ish fill looks the same and keeps scrolling on Intel Macs smooth. */
   backdrop-filter: none;
 }
-.app-brand { grid-column: 1; min-width: 0; }
+.app-brand { grid-column: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* macOS keeps its native traffic lights: leave room before the wordmark. */
 [data-platform="darwin"] .app-header { padding-left: 92px; }
 .app-brand > button { gap: 10px; }
 .app-brand img { width: 32px; height: 32px; border-radius: 9px; }
+.app-history-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+.app-history-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: #8b91b0;
+  background: transparent;
+  transition: color 150ms, background-color 150ms, opacity 150ms;
+}
+.app-history-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: #f3effe;
+}
+.app-history-btn:disabled {
+  opacity: 0.32;
+}
 .app-wordmark { color: var(--text-primary); font-size: 27px; font-weight: 720; letter-spacing: -1.4px; line-height: 1; }
 .app-wordmark span { color: var(--accent); }
 .app-nav-slot { grid-column: 2; min-width: 0; }
@@ -73,6 +99,32 @@ button:disabled { cursor: default; }
 .app-search input { color: var(--text-primary); font-size: 12px; }
 .app-search input::placeholder { color: #a3aaca; }
 .app-search > button { width: 31px; height: 31px; color: #878eae; }
+.app-search > button.app-search-clear {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: #969dbe;
+}
+.app-search > button.app-search-clear:hover {
+  background: #f2effc;
+  color: var(--text-primary);
+}
+.app-search > button.app-search-submit {
+  width: auto;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #f0ebff;
+  color: #745bc2;
+  font-size: 11.5px;
+  font-weight: 640;
+  white-space: nowrap;
+  transition: background-color 150ms, color 150ms;
+}
+.app-search > button.app-search-submit:hover {
+  background: #e5dcff;
+  color: #5e44b0;
+}
 .app-header-actions { grid-column: 4; }
 .app-header-actions > .relative > button { width: 36px; height: 36px; border-color: transparent; background: #f4f1ff; color: #8271c4; }
 .app-header-actions > .relative > button:hover { background: #eae4ff; }
@@ -108,11 +160,10 @@ button:disabled { cursor: default; }
     radial-gradient(ellipse at 18% 22%, #ded2ff80 0 10%, transparent 32%),
     radial-gradient(ellipse at 82% 76%, #eee8ffb8 0 12%, transparent 35%),
     radial-gradient(ellipse at 54% 100%, #f5f0ffcc 0 12%, transparent 34%);
-  filter: blur(34px);
   opacity: .72;
   content: "";
-  animation: home-fluid-drift 26s ease-in-out infinite alternate;
-  will-change: transform;
+  animation: none;
+  will-change: auto;
   pointer-events: none;
 }
 .home-content { --home-row-height: clamp(48px, calc(48px + (100dvh - 720px) * .045), 56px); display: flex; flex-direction: column; width: 100%; max-width: 1880px; min-height: 100%; margin: 0 auto; padding: 22px 28px 104px; }
@@ -120,9 +171,12 @@ button:disabled { cursor: default; }
 .home-main-column { display: grid; grid-template-rows: minmax(min-content, 1fr) auto; gap: 26px; min-width: 0; min-height: 0; }
 .home-hero {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(290px, 32%, 380px);
   align-items: center;
+  gap: 24px;
   min-height: 0;
+  padding-right: 24px;
   overflow: visible;
   border: 0;
   border-radius: 0;
@@ -130,33 +184,29 @@ button:disabled { cursor: default; }
   box-shadow: none;
   isolation: isolate;
 }
-.home-hero-copy { position: relative; z-index: 1; width: calc(100% - 360px); min-width: 0; padding: 28px 0 30px 42px; }
+.home-hero-copy { position: relative; z-index: 1; width: 100%; min-width: 0; padding: 28px 0 30px 42px; }
 .home-greeting { display: flex; align-items: center; gap: 10px; margin: 0 0 20px; color: #8583a7; font-size: 10px; font-weight: 650; letter-spacing: .14em; }
 .home-greeting-mark { display: block; width: 22px; height: 2px; flex: 0 0 22px; border-radius: 2px; background: #917df0; box-shadow: 7px 4px 0 #c6b9f6; }
 .home-hero-title {
   margin: 0;
   color: #182044;
-  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
-  font-size: clamp(36px, 3.1vw, 54px);
-  font-weight: 560;
-  letter-spacing: -.07em;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: clamp(34px, 3vw, 52px);
+  font-weight: 620;
+  letter-spacing: -.028em;
   line-height: 1.24;
-  white-space: nowrap;
+  text-wrap: balance;
 }
 .home-hero-title span { color: #9f84ee; }
 .home-hero-subtitle { margin: 15px 0 0; color: #697296; font-size: 12px; letter-spacing: .025em; line-height: 1.8; }
 .home-hero-caption { margin: 26px 0 0; color: #9d9ab7; font-size: 9px; font-weight: 550; letter-spacing: .16em; }
 .home-song-card {
-  position: absolute;
-  right: 28px;
-  top: 50%;
-  bottom: auto;
+  position: relative;
   z-index: 2;
-  width: clamp(300px, 31%, 380px);
+  width: 100%;
   min-width: 0;
-  min-height: 0;
-  aspect-ratio: 3 / 2;
   min-height: 220px;
+  aspect-ratio: 3 / 2;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -168,7 +218,6 @@ button:disabled { cursor: default; }
   color: #fff;
   isolation: isolate;
   overflow: hidden;
-  transform: translateY(-50%);
 }
 .home-song-poster, .home-song-poster-shade { position: absolute; inset: 0; border-radius: 18px; }
 .home-song-poster { z-index: 0; box-shadow: 0 18px 42px #3431602e; overflow: hidden; }
@@ -301,11 +350,15 @@ button:disabled { cursor: default; }
   .app-nav-link { gap: 5px; padding-inline: 8px; }
   .app-nav-group { gap: 2px; }
   .home-content { padding-inline: 22px; }
-  .home-hero-copy { width: calc(100% - 326px); padding-left: 28px; }
-  .home-hero-title { font-size: 36px; }
-  .home-song-card { right: 22px; width: 300px; }
+  .home-hero { grid-template-columns: minmax(0, 1fr) 292px; gap: 18px; padding-right: 18px; }
+  .home-hero-copy { width: 100%; padding-left: 24px; }
+  .home-hero-title { font-size: 34px; }
   .home-today { padding-inline: 20px; }
   .home-recent-track { gap: 10px; }
+}
+[data-ambient-active="false"] .home-ambient::before,
+[data-ambient-active="false"] .home-character-art {
+  animation-play-state: paused;
 }
 @media (max-height: 780px) {
   .home-content { padding-top: 18px; }

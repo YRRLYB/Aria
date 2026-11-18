@@ -170,32 +170,8 @@ export function Metric({ value, label }: { value: string; label: string }) {
   );
 }
 
-// Oversized embedded artwork is decoded into a bounded bitmap before it is
-// handed to the player <ArtworkImage>; while that resolves, the caller keeps painting
-// its generated poster instead of decoding the full-resolution image.
 function useLargeCoverSrc(url: string | undefined, large: boolean) {
-  const normalizedUrl = cachedArtworkUrl(url, 512);
-  const needsBoundedCover = Boolean(
-    large && normalizedUrl && !normalizedUrl.startsWith("data:"),
-  );
-  const [src, setSrc] = useState<string | undefined>(needsBoundedCover ? undefined : normalizedUrl);
-
-  useEffect(() => {
-    if (!needsBoundedCover) {
-      setSrc(normalizedUrl);
-      return;
-    }
-    let mounted = true;
-    setSrc(undefined);
-    void getBoundedCoverUrl(normalizedUrl).then((resolved) => {
-      if (mounted && resolved) setSrc(resolved);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [needsBoundedCover, normalizedUrl]);
-
-  return src;
+  return large ? sizedCoverUrl(cachedArtworkUrl(url, 512), 768) : undefined;
 }
 
 export function CoverArt({
@@ -212,10 +188,10 @@ export function CoverArt({
   onArtworkContextMenu?: (event: MouseEvent<HTMLElement>, track: Track) => void;
 }) {
   const [failedImageSrc, setFailedImageSrc] = useState<string | null>(null);
-  // List rows render at ~56px; ask the NetEase proxy for a 300px thumbnail so
+  // List rows render at ~56px; ask the NetEase/QQ proxy for a 160px thumbnail so
   // full-resolution artwork is only decoded for the player surfaces.
   const largeCoverSrc = useLargeCoverSrc(track.coverUrl, large);
-  const thumbnailSrc = cachedArtworkUrl(track.coverUrl, 300);
+  const thumbnailSrc = cachedArtworkUrl(track.coverUrl, 160);
   const imageSrc = large ? largeCoverSrc : sizedCoverUrl(thumbnailSrc, 320);
   const previewSrc = null;
   const hasImage = Boolean(imageSrc) && failedImageSrc !== imageSrc;

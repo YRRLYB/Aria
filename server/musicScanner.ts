@@ -5,6 +5,7 @@ import type { Dirent } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { parseFile } from "music-metadata";
+import { readOriginalTracksForRoot } from "./libraryStore";
 import { quantizeBitrate } from "./utils/bitrate";
 import type { ScannedTrack } from "./types";
 
@@ -36,14 +37,25 @@ export type ScanProgress = {
   total: number;
 };
 
-export async function scanMusicFolder(root: string, onProgress?: (progress: ScanProgress) => void): Promise<ScannedTrack[]> {
+export async function scanMusicFolder(
+  root: string,
+  onProgress?: (progress: ScanProgress) => void,
+  existingTracks?: ScannedTrack[],
+): Promise<ScannedTrack[]> {
   const resolvedRoot = path.resolve(root);
   onProgress?.({ phase: "discovering", processed: 0, total: 0 });
-  const files = await collectAudioFiles(resolvedRoot);
+  const [files, cachedTracks] = await Promise.all([
+    collectAudioFiles(resolvedRoot),
+    existingTracks ? Promise.resolve(existingTracks) : readOriginalTracksForRoot(resolvedRoot).catch(() => []),
+  ]);
+  const existingByPath = new Map<string, ScannedTrack>();
+  for (const track of cachedTracks) {
+    if (track.path) existingByPath.set(path.resolve(track.path), track);
+  }
   onProgress?.({ phase: "metadata", processed: 0, total: files.length });
   let processed = 0;
   const tracks = await mapWithConcurrency(files, 6, async (file) => {
-    const track = await readTrackMetadata(file, resolvedRoot);
+    const track = await readTrackMetadata(file, resolvedRoot, existingByPath);
     processed += 1;
     onProgress?.({ phase: "metadata", processed, total: files.length });
     return track;
@@ -151,9 +163,29 @@ async function collectAudioFiles(dir: string): Promise<string[]> {
   return nested.flat();
 }
 
-async function readTrackMetadata(filePath: string, libraryRoot: string): Promise<ScannedTrack | null> {
+async function readTrackMetadata(
+  filePath: string,
+  libraryRoot: string,
+  existingByPath?: Map<string, ScannedTrack>,
+): Promise<ScannedTrack | null> {
   try {
-    const [metadata, fileStat] = await Promise.all([parseFile(filePath), stat(filePath)]);
+    const resolvedFilePath = path.resolve(filePath);
+    const fileStat = await stat(filePath);
+    const cached = existingByPath?.get(resolvedFilePath);
+    if (
+      cached &&
+      cached.size === fileStat.size &&
+      typeof cached.mtimeMs === "number" &&
+      Math.abs(cached.mtimeMs - fileStat.mtimeMs) < 1
+    ) {
+      return {
+        ...cached,
+        libraryRoot,
+        mtimeMs: fileStat.mtimeMs,
+      };
+    }
+
+    const metadata = await parseFile(filePath);
     const common = metadata.common;
     const format = metadata.format;
     const filename = path.basename(filePath, path.extname(filePath));
@@ -174,6 +206,7 @@ async function readTrackMetadata(filePath: string, libraryRoot: string): Promise
       }),
       format: format.container || path.extname(filePath).slice(1).toUpperCase(),
       size: fileStat.size,
+      mtimeMs: fileStat.mtimeMs,
       bitrate: typeof format.bitrate === "number" ? quantizeBitrate(format.bitrate) : null,
       sampleRate: typeof format.sampleRate === "number" ? format.sampleRate : null,
       bpm: null,

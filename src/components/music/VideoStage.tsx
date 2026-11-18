@@ -23,16 +23,14 @@ export function VideoStage({
   playing: boolean;
   volume: number;
   controlRef: RefObject<VideoControl | null>;
-  onDuration: (seconds: number) => void;
-  onEnded: () => void;
+  onDuration?: (seconds: number) => void;
+  onEnded?: () => void;
   onError: (message: string) => void;
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   useVideoPlayback({
     videoRef,
-    audioRef,
     active,
     videoUrl: src ?? track.videoUrl,
     audioUrl: audioSrc,
@@ -45,16 +43,14 @@ export function VideoStage({
   });
 
   return (
-    <>
-      <video
-        ref={videoRef}
-        className={cn("size-full bg-black object-contain", className)}
-        poster={track.coverUrl}
-        playsInline
-        preload="metadata"
-        aria-label={`${track.title} 视频`}
-      />
-      <audio ref={audioRef} preload="metadata" aria-hidden="true" className="hidden" />
-    </>
+    <video
+      ref={videoRef}
+      muted
+      playsInline
+      preload="auto"
+      poster={track.coverUrl}
+      className={cn("size-full bg-black object-contain", className)}
+      aria-label={`${track.title} 实时视频画面`}
+    />
   );
 }

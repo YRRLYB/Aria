@@ -177,6 +177,12 @@ class MpvAudioEngine {
     // playlist on EOF. The pending entry's identity and a generation counter
     // (so the renderer can re-arm after each seamless advance) live here.
     this.pendingAutoAdvance = null;
+    this.windowVisible = true;
+    this.lastEmittedPosition = -1;
+    this.lastProgressEmitAt = 0;
+    this.cachedExecutable = null;
+    this.cachedSupported = null;
+    this.cachedSupportCheckedAt = 0;
     this.cdRipper = new CdAudioRipper({ app, writeLog });
     this.state = {
       supported: this.isSupported(),
@@ -198,22 +204,48 @@ class MpvAudioEngine {
     };
   }
 
+  setWindowVisible(visible) {
+    const nextVisible = Boolean(visible);
+    if (this.windowVisible === nextVisible) return;
+    this.windowVisible = nextVisible;
+    if (nextVisible && this.state.active) {
+      this.lastProgressEmitAt = Date.now();
+      this.lastEmittedPosition = this.state.position;
+      this.emit({ kind: "progress" });
+    }
+  }
+
   isSupported() {
+    const now = Date.now();
+    if (typeof this.cachedSupported === "boolean" && now - this.cachedSupportCheckedAt < 30000) {
+      return this.cachedSupported;
+    }
     const executable = this.resolveExecutable();
-    if (!fs.existsSync(executable)) return false;
+    let supported = fs.existsSync(executable);
     // A packaged app can accidentally carry the other architecture's decoder.
     // Check the Mach-O slices so the renderer falls back to Web Audio instead
     // of offering native output that can never start.
-    if (IS_MAC && !macBinaryMatchesHost(executable)) return false;
-    return true;
+    if (supported && IS_MAC && !macBinaryMatchesHost(executable)) {
+      supported = false;
+    }
+    this.cachedSupported = supported;
+    this.cachedSupportCheckedAt = now;
+    return supported;
   }
 
   resolveExecutable() {
+    const now = Date.now();
+    if (this.cachedExecutable && now - this.cachedSupportCheckedAt < 30000) {
+      return this.cachedExecutable;
+    }
     const mpvDirectory = this.app.isPackaged
       ? path.join(process.resourcesPath, "app.asar.unpacked", "vendor", "mpv")
       : path.join(__dirname, "..", "vendor", "mpv");
     const brandedExecutable = path.join(mpvDirectory, NATIVE_AUDIO_PROCESS_NAME);
-    if (fs.existsSync(brandedExecutable)) return brandedExecutable;
+    if (fs.existsSync(brandedExecutable)) {
+      this.cachedExecutable = brandedExecutable;
+      return brandedExecutable;
+    }
 
     const vendored = path.join(mpvDirectory, NATIVE_AUDIO_EXECUTABLE);
     // macOS has no official mpv release to bundle, so a packaged build often
@@ -222,9 +254,13 @@ class MpvAudioEngine {
     // restarting Aria is then enough to leave the browser audio engine.
     if (IS_MAC && !fs.existsSync(vendored)) {
       const systemMpv = findSystemMpvExecutable();
-      if (systemMpv) return systemMpv;
+      if (systemMpv) {
+        this.cachedExecutable = systemMpv;
+        return systemMpv;
+      }
     }
 
+    this.cachedExecutable = vendored;
     return vendored;
   }
 
@@ -368,7 +404,6 @@ class MpvAudioEngine {
     await this.command("observe_property", 1, "time-pos");
     await this.command("observe_property", 2, "duration");
     await this.command("observe_property", 3, "pause");
-    await this.command("observe_property", 4, "audio-bitrate");
     await this.command("observe_property", 5, "audio-exclusive");
     await this.command("observe_property", 6, "audio-device");
   }
@@ -406,11 +441,27 @@ class MpvAudioEngine {
       // seek. Keep the last playhead until a real timestamp arrives.
       if (message.name === "time-pos") {
         if (typeof message.data !== "number" || !Number.isFinite(message.data)) return;
-        this.state.position = Math.max(0, message.data);
+        const nextPosition = Math.max(0, message.data);
+        this.state.position = nextPosition;
+        const now = Date.now();
+        const minIntervalMs = this.windowVisible === false ? 1500 : 240;
+        if (
+          Math.abs(nextPosition - this.lastEmittedPosition) < 0.24 &&
+          now - this.lastProgressEmitAt < minIntervalMs
+        ) {
+          return;
+        }
+        this.lastEmittedPosition = nextPosition;
+        this.lastProgressEmitAt = now;
+        this.emit({ kind: "progress" });
+        return;
+      }
+      if (message.name === "audio-bitrate") {
+        this.state.bitrate = Number(message.data) || null;
+        return;
       }
       if (message.name === "duration") this.state.duration = Number(message.data) || 0;
       if (message.name === "pause") this.state.paused = Boolean(message.data);
-      if (message.name === "audio-bitrate") this.state.bitrate = Number(message.data) || null;
       if (message.name === "audio-exclusive") this.state.exclusive = Boolean(message.data);
       if (message.name === "audio-device" && typeof message.data === "string") this.state.deviceId = message.data;
       this.emit({ kind: "progress" });
@@ -428,6 +479,8 @@ class MpvAudioEngine {
         this.state.trackId = advanced.trackId;
         this.state.url = advanced.url;
         this.state.position = 0;
+        this.lastEmittedPosition = 0;
+        this.lastProgressEmitAt = 0;
         this.state.duration = 0;
         this.state.bitrate = null;
         this.state.gaplessGeneration += 1;
@@ -438,6 +491,8 @@ class MpvAudioEngine {
       const pendingSeek = this.pendingSeek;
       const loadToken = this.loadToken;
       this.pendingSeek = 0;
+      this.lastEmittedPosition = this.state.position;
+      this.lastProgressEmitAt = 0;
       Promise.resolve()
         .then(async () => {
           if (pendingSeek > 0) {
@@ -461,6 +516,8 @@ class MpvAudioEngine {
         // mpv moves to the appended entry itself; suppress the renderer's
         // own advance so the track does not skip.
         this.state.position = 0;
+        this.lastEmittedPosition = 0;
+        this.lastProgressEmitAt = 0;
         this.state.duration = 0;
         this.emit({ kind: "progress" });
         return;
@@ -468,6 +525,8 @@ class MpvAudioEngine {
       this.pendingAutoAdvance = null;
       this.state.active = false;
       this.state.position = this.state.duration || this.state.position;
+      this.lastEmittedPosition = this.state.position;
+      this.lastProgressEmitAt = 0;
       this.state.paused = true;
       if (message.reason !== "eof" && advanced) {
         // The preloaded entry failed to load; fall back to the renderer's
@@ -778,6 +837,8 @@ class MpvAudioEngine {
     this.state.trackId = trackId;
     this.state.url = url;
     this.state.position = this.pendingSeek;
+    this.lastEmittedPosition = this.pendingSeek;
+    this.lastProgressEmitAt = 0;
     this.state.duration = 0;
     this.state.active = false;
     this.state.paused = this.pendingPause;
@@ -827,6 +888,8 @@ class MpvAudioEngine {
     const loadToken = this.loadToken;
     const nextPosition = Math.max(0, Number(position) || 0);
     this.state.position = nextPosition;
+    this.lastEmittedPosition = nextPosition;
+    this.lastProgressEmitAt = 0;
     await this.command("seek", nextPosition, "absolute+exact");
     if (token !== this.seekToken || this.process !== child || !this.isCurrentLoad(loadToken)) {
       return this.snapshot({ kind: "superseded" });
@@ -834,6 +897,8 @@ class MpvAudioEngine {
     // Old property ticks can arrive while the seek command is in flight.
     // Publish the requested position, then let later time-pos ticks advance it.
     this.state.position = nextPosition;
+    this.lastEmittedPosition = nextPosition;
+    this.lastProgressEmitAt = 0;
     this.emit({ kind: "seek" });
     return this.snapshot({ kind: "seek" });
   }

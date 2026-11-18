@@ -26,7 +26,7 @@ const config = {
     "!node_modules/**/*",
   ],
   asarUnpack: [
-    "dist-server/node_modules/**/*",
+    "dist-server/**/*",
     "vendor/mpv/**/*",
     "electron/native/**/*.node",
   ],

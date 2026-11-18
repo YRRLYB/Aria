@@ -4,6 +4,34 @@ import { formatDuration, normalizeQuality, readCachedLyrics } from "@/lib/player
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 import type { Track } from "@/data/music";
 
+const LOCAL_DEFAULT_WAVEFORM = [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48];
+const PROVIDER_DEFAULT_WAVEFORM = [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52];
+const DEFAULT_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = ["standard", "higher", "exhigh"];
+const LOCAL_PLACEHOLDER_LYRICS: Track["lyrics"] = [
+  { time: "00:00", text: "本地歌词等待匹配" },
+  { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
+  { time: "00:30", text: "绑定后会保存到本地索引" },
+];
+const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili", Track["lyrics"]> = {
+  netease: [
+    { time: "00:00", text: "歌词等待同步" },
+    { time: "00:15", text: "网易云歌曲已接入真实账号数据" },
+    { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
+  ],
+  qq: [
+    { time: "00:00", text: "歌词等待同步" },
+    { time: "00:15", text: "QQ音乐歌词会在播放时自动获取" },
+    { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
+  ],
+  bilibili: [
+    { time: "00:00", text: "歌词等待同步" },
+    { time: "00:15", text: "B站视频字幕会在播放时自动获取" },
+    { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
+  ],
+};
+const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
+const EMPTY_ARTIST_IDS: string[] = [];
+
 export const localCoverPalettes = [
   "linear-gradient(135deg, #d9e7f6 0%, #5e8ab8 48%, #182338 100%)",
   "linear-gradient(135deg, #f4d4ce 0%, #c6796d 50%, #241a1a 100%)",
@@ -54,16 +82,12 @@ export function localTrackToUiTrack(track: ApiScannedTrack, index: number): Trac
     cdReadQuality: track.cdReadQuality ?? "high",
     requiresNativePlayback: track.requiresNativePlayback ?? false,
     currentLevel: null,
-    availableLevels: [],
+    availableLevels: EMPTY_AVAILABLE_LEVELS,
     cover: localCoverPalettes[index % localCoverPalettes.length],
     accent: ["#5e8ab8", "#c6796d", "#5aa894", "#8680b4"][index % 4],
-    waveform: [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48],
+    waveform: LOCAL_DEFAULT_WAVEFORM,
     lyricStatus: (track.metadata?.lyrics?.length || cachedLyrics.length) ? "linked" : "searchable",
-    lyrics: track.metadata?.lyrics?.length ? track.metadata.lyrics : cachedLyrics.length ? cachedLyrics : [
-      { time: "00:00", text: "本地歌词等待匹配" },
-      { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
-      { time: "00:30", text: "绑定后会保存到本地索引" },
-    ],
+    lyrics: track.metadata?.lyrics?.length ? track.metadata.lyrics : cachedLyrics.length ? cachedLyrics : LOCAL_PLACEHOLDER_LYRICS,
   };
 }
 
@@ -83,7 +107,7 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     id: trackKey,
     providerId: track.id,
     albumId: track.albumId ?? null,
-    artistIds: track.artistIds ?? [],
+    artistIds: track.artistIds ?? EMPTY_ARTIST_IDS,
     matchedLyric: track.matchedLyric ?? null,
     vip: track.vip === true,
     title: track.title,
@@ -114,16 +138,12 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
     currentLevel: track.currentLevel ?? null,
-    availableLevels: track.availableLevels ?? ["standard", "higher", "exhigh"],
+    availableLevels: track.availableLevels ?? DEFAULT_AVAILABLE_LEVELS,
     cover: palette,
     accent,
-    waveform: [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52],
+    waveform: PROVIDER_DEFAULT_WAVEFORM,
     lyricStatus: cachedLyrics.length ? "linked" : "searchable",
-    lyrics: cachedLyrics.length ? cachedLyrics : [
-      { time: "00:00", text: "歌词等待同步" },
-      { time: "00:15", text: source === "qq" ? "QQ音乐歌词会在播放时自动获取" : source === "bilibili" ? "B站视频字幕会在播放时自动获取" : "网易云歌曲已接入真实账号数据" },
-      { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
-    ],
+    lyrics: cachedLyrics.length ? cachedLyrics : PROVIDER_PLACEHOLDER_LYRICS[source],
   };
 }
 

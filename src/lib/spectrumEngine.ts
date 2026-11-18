@@ -18,14 +18,15 @@ export type SpectrumEngineOptions = {
   now: number;
 };
 
-const minHz = 32;
-const maxVisualHz = 18000;
+const minHz = 36;
+const maxVisualHz = 17500;
+const perceptualCornerHz = 320;
 const minRenderableLevel = 0.018;
 const noiseGate = 0.008;
 
 export function configureSpectrumAnalyser(analyser: AnalyserNode) {
-  analyser.fftSize = 1024;
-  analyser.smoothingTimeConstant = 0.18;
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.16;
   analyser.minDecibels = -100;
   analyser.maxDecibels = -8;
 }
@@ -50,9 +51,9 @@ export class RealtimeSpectrumEngine {
     this.noiseFloor.fill(0.012);
     for (let index = 0; index < spectrumBandCount; index += 1) {
       const position = index / Math.max(1, spectrumBandCount - 1);
-      this.bandVoiceLift[index] = 1 + Math.exp(-Math.pow((position - 0.42) / 0.22, 2)) * 0.2;
-      this.bandHighLift[index] = 1 + Math.max(0, position - 0.68) * 0.52;
-      this.bandLowTrim[index] = position < 0.1 ? 0.84 + position * 1.6 : 1;
+      this.bandVoiceLift[index] = 1 + Math.exp(-Math.pow((position - 0.42) / 0.22, 2)) * 0.18;
+      this.bandHighLift[index] = 1 + Math.max(0, position - 0.66) * 0.48;
+      this.bandLowTrim[index] = position < 0.12 ? 0.9 + (position / 0.12) * 0.1 : 1;
     }
   }
 
@@ -146,35 +147,71 @@ export class RealtimeSpectrumEngine {
     const sampleRate = analyser.context.sampleRate || 44100;
     const binHz = sampleRate / analyser.fftSize;
     const maxHz = Math.min(maxVisualHz, sampleRate / 2);
+    const pMin = hzToPerceptual(minHz);
+    const pMax = hzToPerceptual(maxHz);
     const minDb = analyser.minDecibels;
     const maxDb = analyser.maxDecibels;
+    const dbSpan = Math.max(1, maxDb - minDb);
     let signal = 0;
 
     for (let band = 0; band < spectrumBandCount; band += 1) {
-      const startHz = logInterpolate(minHz, maxHz, band / spectrumBandCount);
-      const endHz = logInterpolate(minHz, maxHz, (band + 1) / spectrumBandCount);
-      const startBin = Math.max(1, Math.floor(startHz / binHz));
-      const endBin = Math.min(this.frequencyData.length - 1, Math.max(startBin + 1, Math.ceil(endHz / binHz)));
-      let weighted = 0;
-      let weight = 0;
-      let bandPeak = 0;
+      const startHz = perceptualToHz(pMin + (pMax - pMin) * (band / spectrumBandCount));
+      const endHz = perceptualToHz(pMin + (pMax - pMin) * ((band + 1) / spectrumBandCount));
+      const centerHz = (startHz + endHz) * 0.5;
+      const binWidthCount = (endHz - startHz) / binHz;
 
-      for (let bin = startBin; bin <= endBin; bin += 1) {
-        const frequency = bin * binHz;
-        const normalizedDb = clamp((this.frequencyData[bin] - minDb) / Math.max(1, maxDb - minDb), 0, 1);
-        const perceptual = Math.pow(normalizedDb, 1.52);
-        const binWeight = frequencyWeight(frequency);
-        weighted += perceptual * binWeight;
-        weight += binWeight;
-        bandPeak = Math.max(bandPeak, perceptual);
+      let raw = 0;
+      let bandPeak = 0;
+      if (binWidthCount < 2) {
+        // Low/mid bands span < 2 FFT bins: use sub-bin cubic interpolation at
+        // 3 sub-positions so adjacent bass bars never snap to the same bin.
+        let sum = 0;
+        for (const offset of [0.22, 0.5, 0.78]) {
+          const sampleHz = startHz + (endHz - startHz) * offset;
+          const pos = clamp(sampleHz / binHz, 1, this.frequencyData.length - 2);
+          const normalizedDb = sampleInterpolatedBin(this.frequencyData, pos, minDb, dbSpan);
+          const perceptual = Math.pow(normalizedDb, 1.56) * frequencyWeight(sampleHz);
+          sum += perceptual;
+          bandPeak = Math.max(bandPeak, perceptual);
+        }
+        raw = sum / 3;
+      } else {
+        const startBin = Math.max(1, Math.floor(startHz / binHz));
+        const endBin = Math.min(this.frequencyData.length - 1, Math.ceil(endHz / binHz));
+        let weighted = 0;
+        let weight = 0;
+
+        for (let bin = startBin; bin <= endBin; bin += 1) {
+          const frequency = bin * binHz;
+          const normalizedDb = clamp((this.frequencyData[bin] - minDb) / dbSpan, 0, 1);
+          const perceptual = Math.pow(normalizedDb, 1.52);
+          const binWeight = frequencyWeight(frequency);
+          weighted += perceptual * binWeight;
+          weight += binWeight;
+          bandPeak = Math.max(bandPeak, perceptual);
+        }
+        raw = weight > 0 ? weighted / weight : 0;
       }
 
-      const raw = weight > 0 ? weighted / weight : 0;
       const noise = this.noiseFloor[band];
       this.noiseFloor[band] += (Math.min(raw, noise) - noise) * 0.006;
       const cleaned = Math.max(0, raw - noise * 0.72);
-      bands[band] = clamp(cleaned * 0.98 + bandPeak * 0.2, 0, 1);
+      const baseEnergy = clamp(cleaned * 0.98 + bandPeak * 0.18, 0, 1);
+      // Subtle harmonic shimmer proportional to actual band energy prevents sustained
+      // low notes from looking artificially frozen, while staying 0 when silent.
+      const microMotion = 1 + Math.sin(options.now / 95 + band * 1.47 + centerHz * 0.03) * 0.045;
+      bands[band] = clamp(baseEnergy * microMotion, 0, 1);
       signal += bands[band];
+    }
+
+    // Mild local contrast emphasis keeps adjacent low/mid bars visibly separated.
+    for (let band = 1; band < spectrumBandCount - 1; band += 1) {
+      const prev = bands[band - 1];
+      const next = bands[band + 1];
+      const neighborAvg = (prev + next) * 0.5;
+      if (bands[band] > 0.02) {
+        bands[band] = clamp(bands[band] + (bands[band] - neighborAvg) * 0.22, 0, 1);
+      }
     }
 
     return {
@@ -271,8 +308,34 @@ function frequencyWeight(frequency: number) {
   return bass * presence * air;
 }
 
-function logInterpolate(start: number, end: number, ratio: number) {
-  return start * Math.pow(end / start, ratio);
+function hzToPerceptual(hz: number) {
+  return Math.log(1 + hz / perceptualCornerHz);
+}
+
+function perceptualToHz(value: number) {
+  return perceptualCornerHz * (Math.exp(value) - 1);
+}
+
+function sampleInterpolatedBin(frequencyData: Float32Array, pos: number, minDb: number, dbSpan: number) {
+  const maxIdx = frequencyData.length - 1;
+  const i1 = Math.floor(pos);
+  const t = pos - i1;
+  const i0 = Math.max(0, i1 - 1);
+  const i2 = Math.min(maxIdx, i1 + 1);
+  const i3 = Math.min(maxIdx, i1 + 2);
+  const v0 = clamp((frequencyData[i0] - minDb) / dbSpan, 0, 1);
+  const v1 = clamp((frequencyData[i1] - minDb) / dbSpan, 0, 1);
+  const v2 = clamp((frequencyData[i2] - minDb) / dbSpan, 0, 1);
+  const v3 = clamp((frequencyData[i3] - minDb) / dbSpan, 0, 1);
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const interpolated =
+    0.5 *
+    (2 * v1 +
+      (-v0 + v2) * t +
+      (2 * v0 - 5 * v1 + 4 * v2 - v3) * t2 +
+      (-v0 + 3 * v1 - 3 * v2 + v3) * t3);
+  return clamp(interpolated, 0, 1);
 }
 
 function clamp(value: number, min: number, max: number) {

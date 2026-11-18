@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Link2, ListMusic, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { AriaSelect } from "@/components/ui/aria-select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
@@ -475,7 +476,7 @@ export function AddToLocalPlaylistDialog({ tracks, playlists, onClose, onCreate,
       <section className="w-full max-w-md rounded-3xl border border-white/70 bg-[#faf9fd] p-6 shadow-2xl">
         <div className="flex items-center justify-between"><h2 id="add-local-playlist-title" className="text-xl font-semibold">加入 Aria 歌单</h2><Button variant="ghost" size="icon" aria-label="关闭" onClick={onClose}><X /></Button></div>
         <div className="mt-4 flex items-center gap-3 rounded-2xl bg-white p-3"><CoverArt track={tracks[0]} className="size-12 rounded-xl" /><div className="min-w-0"><p className="truncate text-sm font-semibold">{tracks[0]?.title}</p><p className="text-xs text-neutral-500">{tracks.length > 1 ? `等 ${tracks.length} 首歌曲` : tracks[0]?.artist}</p></div></div>
-        {playlists.length > 0 && <div className="mt-5"><label htmlFor="local-target-playlist" className="text-sm font-medium">目标歌单</label><div className="mt-2 flex gap-2"><select id="local-target-playlist" value={playlistId} onChange={(event) => setPlaylistId(event.target.value)} className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm">{playlists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.name}（{playlist.trackIds.length} 首）</option>)}</select><Button size="sm" disabled={!playlistId} onClick={() => addTo(playlistId)}>加入</Button></div></div>}
+        {playlists.length > 0 && <div className="mt-5"><label htmlFor="local-target-playlist" className="text-sm font-medium">目标歌单</label><div className="mt-2 flex gap-2"><AriaSelect id="local-target-playlist" ariaLabel="目标歌单" value={playlistId} onChange={setPlaylistId} className="min-w-0 flex-1" options={playlists.map((playlist) => ({ value: playlist.id, label: `${playlist.name}（${playlist.trackIds.length} 首）` }))} /><Button size="sm" disabled={!playlistId} onClick={() => addTo(playlistId)}>加入</Button></div></div>}
         <form className="mt-5" onSubmit={(event) => { event.preventDefault(); if (!newName.trim()) return; const created = onCreate(newName); addTo(created.id); }}><label htmlFor="new-local-target-playlist" className="text-sm font-medium">或新建 Aria 歌单</label><div className="mt-2 flex gap-2"><input id="new-local-target-playlist" value={newName} onChange={(event) => setNewName(event.target.value)} maxLength={80} placeholder="新歌单名称" className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm outline-none" /><Button type="submit" size="sm" variant="glass" disabled={!newName.trim()}>新建并加入</Button></div></form>
         <p className="mt-4 text-xs text-neutral-500">歌单仅保存歌曲引用，不会复制或修改音频文件，也不会上传网易云。</p>
       </section>

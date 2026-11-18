@@ -3,9 +3,25 @@ import { getLyricStartTime } from "./lyricTiming";
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 
 export type QualityLevel = "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster";
+export type BilibiliDefaultVideoQn = 120 | 116 | 80 | 64;
+export type BilibiliDefaultAudioLevel = "hires" | "lossless" | "exhigh" | "standard";
 export type CoverPalette = { primary: string; secondary: string };
 export type PlayerSideView = "lyrics" | "queue";
 export type AudioOutputMode = "system" | "shared" | "exclusive";
+
+export const bilibiliVideoQualityOptions: Array<{ value: string; label: string }> = [
+  { value: "120", label: "超清优先 (4K / 1080P60)" },
+  { value: "116", label: "高帧率 (1080P 60帧)" },
+  { value: "80", label: "高清 (1080P)" },
+  { value: "64", label: "流畅 (720P)" },
+];
+
+export const bilibiliAudioQualityOptions: Array<{ value: BilibiliDefaultAudioLevel; label: string }> = [
+  { value: "hires", label: "Hi-Res / 无损优先" },
+  { value: "lossless", label: "杜比全景声 / 无损" },
+  { value: "exhigh", label: "极高 (192K)" },
+  { value: "standard", label: "标准 (64K)" },
+];
 
 export type CachedPlayerState = {
   activeTrackId?: string;
@@ -25,7 +41,10 @@ export type CachedPlayerState = {
 const playerCacheKey = "aria-player-state";
 const lyricCacheKey = "aria-lyrics-cache";
 const audioSettingsKey = "aria-audio-settings";
-export const maxCachedQueueTracks = 1200;
+export const maxCachedQueueTracks = 400;
+const DEFAULT_WAVEFORM = [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52];
+const EMPTY_LYRICS: LyricLine[] = [{ time: "00:00", text: "" }];
+const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
 
 export const qualityOptions: Array<{ value: QualityLevel; label: string }> = [
   { value: "standard", label: "标准" },
@@ -49,6 +68,7 @@ export type PlaybackQualitySettings = {
   qualityLevel: QualityLevel;
   hifiEnabled: boolean;
   masterQualityEnabled: boolean;
+  bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
 };
 
 // Original recordings stop at Hi-Res. Master quality is a separate opt-in
@@ -72,10 +92,15 @@ export function selectPlaybackQuality(
   }
   if (track && track.source === "bilibili") {
     const levels = track.availableLevels ?? [];
+    const preferredOrder: QualityLevel[] = ["standard", "higher", "exhigh", "lossless", "hires"];
+    if (settings.bilibiliDefaultAudioLevel) {
+      const maxIndex = preferredOrder.indexOf(settings.bilibiliDefaultAudioLevel);
+      const allowed = maxIndex >= 0 ? preferredOrder.slice(0, maxIndex + 1) : preferredOrder;
+      const reachable = allowed.filter((level) => !levels.length || levels.includes(level));
+      return reachable.at(-1) ?? settings.bilibiliDefaultAudioLevel;
+    }
     if (!settings.hifiEnabled) return originalPreference;
-    const reachable = [...qualityOptions]
-      .map((option) => option.value)
-      .filter((level) => level !== "jymaster" && (!levels.length || levels.includes(level)));
+    const reachable = preferredOrder.filter((level) => !levels.length || levels.includes(level));
     return reachable.at(-1) ?? "exhigh";
   }
   if (track && track.source !== "netease") return originalPreference;
@@ -255,14 +280,14 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     requiresNativePlayback: track.requiresNativePlayback === true,
     likedAt: typeof track.likedAt === "number" ? track.likedAt : null,
     currentLevel: track.currentLevel ?? null,
-    availableLevels: Array.isArray(track.availableLevels) ? track.availableLevels : [],
+    availableLevels: Array.isArray(track.availableLevels) ? track.availableLevels : EMPTY_AVAILABLE_LEVELS,
     cover: typeof track.cover === "string" ? track.cover : "linear-gradient(135deg, #eef1f5 0%, #aeb7c6 50%, #586273 100%)",
     accent: typeof track.accent === "string" ? track.accent : "#7b8494",
     waveform:
       Array.isArray(track.waveform) && track.waveform.some((item) => typeof item === "number")
         ? track.waveform.filter((item): item is number => typeof item === "number")
-        : [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52],
-    lyrics: Array.isArray(track.lyrics) ? track.lyrics : [{ time: "00:00", text: "" }],
+        : DEFAULT_WAVEFORM,
+    lyrics: Array.isArray(track.lyrics) ? track.lyrics : EMPTY_LYRICS,
     lyricStatus:
       track.lyricStatus === "linked" || track.lyricStatus === "searchable" || track.lyricStatus === "missing"
         ? track.lyricStatus
@@ -372,6 +397,9 @@ export function migrateBilibiliLyricsCache() {
   }
 }
 
+const validBilibiliVideoQns = new Set<BilibiliDefaultVideoQn>([120, 116, 80, 64]);
+const validBilibiliAudioLevels = new Set<BilibiliDefaultAudioLevel>(["hires", "lossless", "exhigh", "standard"]);
+
 export function readCachedAudioSettings() {
   try {
     const raw = window.localStorage.getItem(audioSettingsKey);
@@ -384,6 +412,8 @@ export function readCachedAudioSettings() {
       normalizationEnabled?: boolean;
       exclusiveMode?: boolean;
       outputMode?: AudioOutputMode;
+      bilibiliDefaultVideoQn?: BilibiliDefaultVideoQn;
+      bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
     };
     const outputMode =
       parsed.outputMode === "shared" || parsed.outputMode === "exclusive" || parsed.outputMode === "system"
@@ -399,6 +429,12 @@ export function readCachedAudioSettings() {
       normalizationEnabled: parsed.normalizationEnabled === true,
       exclusiveMode: typeof parsed.exclusiveMode === "boolean" ? parsed.exclusiveMode : false,
       outputMode,
+      bilibiliDefaultVideoQn: validBilibiliVideoQns.has(parsed.bilibiliDefaultVideoQn as BilibiliDefaultVideoQn)
+        ? (parsed.bilibiliDefaultVideoQn as BilibiliDefaultVideoQn)
+        : 120,
+      bilibiliDefaultAudioLevel: validBilibiliAudioLevels.has(parsed.bilibiliDefaultAudioLevel as BilibiliDefaultAudioLevel)
+        ? (parsed.bilibiliDefaultAudioLevel as BilibiliDefaultAudioLevel)
+        : "hires",
     };
   } catch {
     return {};
@@ -413,9 +449,19 @@ export function writeCachedAudioSettings(settings: {
   normalizationEnabled?: boolean;
   exclusiveMode: boolean;
   outputMode: AudioOutputMode;
+  bilibiliDefaultVideoQn?: BilibiliDefaultVideoQn;
+  bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
 }) {
   try {
-    window.localStorage.setItem(audioSettingsKey, JSON.stringify(settings));
+    const existing = readCachedAudioSettings();
+    window.localStorage.setItem(
+      audioSettingsKey,
+      JSON.stringify({
+        ...settings,
+        bilibiliDefaultVideoQn: settings.bilibiliDefaultVideoQn ?? existing.bilibiliDefaultVideoQn ?? 120,
+        bilibiliDefaultAudioLevel: settings.bilibiliDefaultAudioLevel ?? existing.bilibiliDefaultAudioLevel ?? "hires",
+      }),
+    );
   } catch {
     // Audio settings are best-effort.
   }
@@ -566,7 +612,7 @@ export function mergeTracks(tracksToMerge: Track[]) {
   });
 }
 
-export function trimTrackCache(tracksToMerge: Track[], maxItems = 800) {
+export function trimTrackCache(tracksToMerge: Track[], maxItems = 360) {
   // Later entries usually come from a fresh provider response. Keep the
   // first-seen ordering for stable lists, but let the newer copy replace a
   // stale snapshot of the same track so it picks up stream metadata.

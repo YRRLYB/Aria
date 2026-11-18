@@ -4,6 +4,7 @@ import type { Track } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { formatAudioDetail } from "@/lib/playerPresentation";
+import { AriaSelect } from "@/components/ui/aria-select";
 import { Button } from "@/components/ui/button";
 import { ArtworkImage } from "./ArtworkImage";
 import { CoverArt, EmptyState } from "./shared";
@@ -113,7 +114,18 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, sh
     {(actionError || success) && <p role={actionError ? "alert" : "status"} className={`mt-3 shrink-0 text-sm ${actionError ? "text-red-600" : "text-violet-600"}`}>{actionError || success}</p>}
     <div className="mt-4 flex shrink-0 flex-wrap items-center gap-2">
       <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="歌单内查找" aria-label="歌单内查找" className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white/70 px-3 py-2 text-sm outline-none" />
-      <select aria-label="歌单显示顺序" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="rounded-xl border border-neutral-200 bg-white/70 px-3 py-2 text-sm"><option value="original">歌单原始顺序</option><option value="title">歌曲名称</option><option value="artist">歌手名称</option><option value="plays">聆听次数</option></select>
+      <AriaSelect
+        ariaLabel="歌单显示顺序"
+        value={sort}
+        onChange={setSort}
+        align="right"
+        options={[
+          { value: "original", label: "歌单原始顺序" },
+          { value: "title", label: "歌曲名称" },
+          { value: "artist", label: "歌手名称" },
+          { value: "plays", label: "聆听次数" },
+        ]}
+      />
       {orderDraft && <><Button size="sm" disabled={busy} onClick={() => void run(() => onReorder(orderDraft), "顺序已同步到网易云").then((saved) => { if (saved) setOrderDraft(null); })}><Save />保存顺序</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => setOrderDraft(null)}>撤销排序</Button></>}
     </div>
     {canEditTracks && <div className="mt-3 flex shrink-0 items-center gap-3 text-xs text-neutral-500"><label className="flex items-center gap-2"><input type="checkbox" aria-label="选择所有显示歌曲" disabled={busy || loading || !visibleTracks.length} checked={visibleTracks.length > 0 && visibleTracks.every((track) => selectedIds.has(track.id))} onChange={(event) => setSelectedIds(event.target.checked ? new Set(visibleTracks.map((track) => track.id)) : new Set())} className="accent-violet-500" />已选 {selection.length} 首</label>{selection.length > 0 && <><Button size="sm" variant="ghost" disabled={busy} onClick={() => actions?.openAdd(selection)}><ListPlus />加入其他歌单</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => onRemove(selection), `已移除 ${selection.length} 首`).then((saved) => { if (saved) setSelectedIds(new Set()); })}><Trash2 />从歌单移除</Button></>}<span className="ml-auto">{canReorder ? "拖动歌曲调整顺序，保存后同步" : "切回原始顺序并清空查找可排序"}</span></div>}

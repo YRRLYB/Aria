@@ -51,6 +51,7 @@ const searchPageSize = 24;
 // drill-down with remote track merging, and artist avatar lookups.
 export function useDiscovery(options: {
   query: string;
+  suggestionQuery?: string;
   localTracks: Track[];
   localSearchSignature: string;
   allTracks: Track[];
@@ -333,8 +334,9 @@ export function useDiscovery(options: {
     };
   }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision, sourceSwitches.qq, sourceSwitches.netease, sourceSwitches.bilibili]);
 
+  const activeSuggestionQuery = options.suggestionQuery ?? options.query;
   useEffect(() => {
-    const text = options.query.trim();
+    const text = activeSuggestionQuery.trim();
     setSearchSuggestions([]);
     if (!text) return;
     let cancelled = false;
@@ -352,7 +354,7 @@ export function useDiscovery(options: {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [options.query]);
+  }, [activeSuggestionQuery]);
 
   async function loadMoreSearch() {
     // “加载更多”必须同时推进两个在线源。只翻网易云会让 QQ 搜索看起来

@@ -154,16 +154,22 @@ describe("playerPresentation", () => {
     expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard", "exhigh", "lossless"] }, settings)).toBe("lossless");
     expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard", "exhigh"] }, settings)).toBe("hires");
     expect(selectPlaybackQuality({ source: "qq", availableLevels: ["standard"] }, { ...settings, hifiEnabled: false, qualityLevel: "exhigh" })).toBe("exhigh");
+    expect(selectPlaybackQuality({ source: "bilibili", availableLevels: ["standard", "exhigh", "hires"] }, { ...settings, bilibiliDefaultAudioLevel: "hires" })).toBe("hires");
+    expect(selectPlaybackQuality({ source: "bilibili", availableLevels: ["standard", "exhigh", "hires"] }, { ...settings, bilibiliDefaultAudioLevel: "exhigh" })).toBe("exhigh");
   });
 
   it("persists master quality independently and defaults legacy audio settings to disabled", () => {
     const storage = mockLocalStorage();
     storage.setItem("aria-audio-settings", JSON.stringify({ hifiEnabled: true }));
-    expect(readCachedAudioSettings().masterQualityEnabled).toBe(false);
-    writeCachedAudioSettings({ sinkId: "default", hifiEnabled: true, masterQualityEnabled: true, gaplessEnabled: false, exclusiveMode: false, outputMode: "system" });
-    expect(readCachedAudioSettings()).toMatchObject({ hifiEnabled: true, masterQualityEnabled: true });
+    expect(readCachedAudioSettings()).toMatchObject({
+      masterQualityEnabled: false,
+      bilibiliDefaultVideoQn: 120,
+      bilibiliDefaultAudioLevel: "hires",
+    });
+    writeCachedAudioSettings({ sinkId: "default", hifiEnabled: true, masterQualityEnabled: true, gaplessEnabled: false, exclusiveMode: false, outputMode: "system", bilibiliDefaultVideoQn: 116, bilibiliDefaultAudioLevel: "exhigh" });
+    expect(readCachedAudioSettings()).toMatchObject({ hifiEnabled: true, masterQualityEnabled: true, bilibiliDefaultVideoQn: 116, bilibiliDefaultAudioLevel: "exhigh" });
     writeCachedAudioSettings({ sinkId: "default", hifiEnabled: true, masterQualityEnabled: false, gaplessEnabled: false, exclusiveMode: false, outputMode: "system" });
-    expect(readCachedAudioSettings()).toMatchObject({ hifiEnabled: true, masterQualityEnabled: false });
+    expect(readCachedAudioSettings()).toMatchObject({ hifiEnabled: true, masterQualityEnabled: false, bilibiliDefaultVideoQn: 116, bilibiliDefaultAudioLevel: "exhigh" });
   });
 
   it("hydrates compact queue lyrics and keeps an empty legacy linked snapshot eligible for sync", () => {

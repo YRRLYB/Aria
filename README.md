@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  当前源码版本：<strong>0.7.1（开发中）</strong> ·
+  当前源码版本：<strong>0.7.3</strong> ·
   <a href="https://github.com/YRRLYB/Aria/releases/latest">下载最新安装包</a> ·
   <a href="https://github.com/YRRLYB/Aria-Mobile">Android 端</a> ·
   <a href="CHANGELOG.md">更新记录</a>

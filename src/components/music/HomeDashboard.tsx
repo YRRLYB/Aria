@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, CalendarDays, Clock3, Disc3, Headphones, Maximize2, Music2, Pause, Play, X } from "lucide-react";
+import { ArrowRight, CalendarDays, Clock3, Disc3, Headphones, Maximize2, Music2, Play, X } from "lucide-react";
+import { AriaIcon } from "@/components/icons/aria";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatBitrate, parseDuration, qualityOptions } from "@/lib/playerPresentation";
@@ -345,7 +346,7 @@ export function HomeSurface({
                   <button className="home-song-info" onClick={hasTrack ? onOpenPlayer : () => onNavigate("local")} aria-label={hasTrack ? "打开正在播放" : "打开本地音乐"}>
                     <span className="home-song-meta"><strong>{hasTrack ? <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText> : "挑一首喜欢的歌"}</strong><span>{hasTrack ? <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText> : "让音乐陪你一会儿"}</span></span>
                   </button>
-                  <button className="home-song-play" onClick={hasTrack ? onTogglePlay : () => onNavigate("local")} aria-label={hasTrack ? (playing ? "暂停播放" : "继续播放") : "打开本地音乐"}>{playing && hasTrack ? <Pause className="fill-current" /> : <Play className="fill-current" />}</button>
+                  <button className="home-song-play" onClick={hasTrack ? onTogglePlay : () => onNavigate("local")} aria-label={hasTrack ? (playing ? "暂停播放" : "继续播放") : "打开本地音乐"}>{playing && hasTrack ? <AriaIcon name="playing" className="size-5" /> : <AriaIcon name="play" className="size-5" />}</button>
                 </div>
                 {hasTrack && <div className="home-song-footer" aria-label="音质与音频码率"><span className="home-song-quality">{qualityLabel}</span><span className="home-song-bitrate">{bitrateLabel}</span></div>}
               </div>
