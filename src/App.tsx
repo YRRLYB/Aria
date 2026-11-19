@@ -52,7 +52,7 @@ import { shouldUseLocalPlaylistDialog } from "@/lib/localPlaylists";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
 import { useQqData } from "@/hooks/useQqData";
-import { useBilibiliData } from "@/hooks/useBilibiliData";
+import { saveBilibiliAudioMeta, useBilibiliData } from "@/hooks/useBilibiliData";
 import {
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
@@ -84,10 +84,13 @@ import { ArtworkImage } from "@/components/music/ArtworkImage";
 import { AddToPlaylistDialog, PlaylistActionsProvider } from "@/components/music/PlaylistActions";
 import { AddToLocalPlaylistDialog } from "@/components/music/LocalPlaylistSurfaces";
 import {
+  adaptPaletteForTheme,
   extractDominantColors,
   createCachedQueueSnapshots,
   hasSyncedLyrics,
+  mergeTrackRecord,
   mergeTracks,
+  normalizeQuality,
   readCachedAudioSettings,
   readCachedPlayerState,
   migrateBilibiliLyricsCache,
@@ -104,7 +107,7 @@ import {
   type PlayerSideView,
   type QualityLevel,
 } from "@/lib/playerPresentation";
-import { BILIBILI_VIDEO_ENABLED, canPlayTrackVideo, resolveNextVideoMode } from "@/lib/features";
+import { BILIBILI_LYRICS_ENABLED, BILIBILI_VIDEO_ENABLED, canPlayTrackVideo, resolveNextVideoMode } from "@/lib/features";
 import {
   createViewHistory,
   pushViewSnapshot,
@@ -235,9 +238,9 @@ export default function App() {
   const [playerSideView, setPlayerSideView] = useState<PlayerSideView>(initialPlayerCache.playerSideView ?? "lyrics");
   const [lyricDisplayMode, setLyricDisplayMode] = useState<"original" | "bilingual">(() => {
     try {
-      return window.localStorage.getItem("aria-lyric-display-mode") === "bilingual" ? "bilingual" : "original";
+      return window.localStorage.getItem("aria-lyric-display-mode") === "original" ? "original" : "bilingual";
     } catch {
-      return "original";
+      return "bilingual";
     }
   });
   const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcuts>(readKeyboardShortcuts);
@@ -258,7 +261,7 @@ export default function App() {
       localPlaylistId: null,
     }),
   );
-  const [exploreTab, setExploreTab] = useState<"styles" | "radio" | "discover">("styles");
+  const [exploreTab, setExploreTab] = useState<"discover" | "styles">("discover");
   const [exploreStyleGroups, setExploreStyleGroups] = useState<ProviderStyleGroup[]>([]);
   const [exploreStyleId, setExploreStyleId] = useState<string | null>(null);
   const [exploreStyle, setExploreStyle] = useState<ProviderStyle | null>(null);
@@ -270,17 +273,13 @@ export default function App() {
   const [exploreTracksLoading, setExploreTracksLoading] = useState(false);
   const [exploreTracksLoadingMore, setExploreTracksLoadingMore] = useState(false);
   const [exploreStyleError, setExploreStyleError] = useState<string | null>(null);
-  const [exploreRadioTracks, setExploreRadioTracks] = useState<Track[]>([]);
-  const [exploreRadioLoading, setExploreRadioLoading] = useState(false);
-  const [exploreRadioError, setExploreRadioError] = useState<string | null>(null);
-  const [exploreSelectedBpm, setExploreSelectedBpm] = useState<number | null>(null);
   const [exploreDiscovery, setExploreDiscovery] = useState<ProviderDiscoveryBundle | null>(null);
   const [exploreDiscoveryLoading, setExploreDiscoveryLoading] = useState(false);
   const [exploreDiscoveryError, setExploreDiscoveryError] = useState<string | null>(null);
   const [addPlaylistRequest, setAddPlaylistRequest] = useState<{ tracks: Track[]; playlistId?: string } | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
-  const playlistReturnRef = useRef<{ query: string; user: ProviderUser | null } | null>(null);
+  const playlistReturnRef = useRef<{ view?: ViewId; query: string; user: ProviderUser | null } | null>(null);
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
   const [masterQualityEnabled, setMasterQualityEnabled] = useState(() => {
     const settings = readCachedAudioSettings();
@@ -362,6 +361,9 @@ export default function App() {
       setHifiEnabled(false);
       setMasterQualityEnabled(false);
     }
+    if (activeTrack.source === "bilibili") {
+      setVideoAudioLevel(level);
+    }
   }
 
   const [theme, setTheme] = useState<AriaTheme>(() => readCachedTheme());
@@ -375,6 +377,14 @@ export default function App() {
     return () => query.removeEventListener?.("change", handleChange);
   }, []);
   const resolvedTheme = resolveTheme(theme, systemDark);
+  const surfacePalette = useMemo(
+    () => adaptPaletteForTheme(activePalette, resolvedTheme === "dark"),
+    [activePalette, resolvedTheme],
+  );
+  const darkSurfacePalette = useMemo(
+    () => adaptPaletteForTheme(activePalette, true),
+    [activePalette],
+  );
   useEffect(() => {
     applyThemeToDocument(theme, systemDark);
     writeCachedTheme(theme);
@@ -550,7 +560,7 @@ export default function App() {
   }, [activeView]);
 
   const qqData = useQqData({ connected: qqConnected, applyTrackUpdate });
-  const bilibiliData = useBilibiliData({ connected: bilibiliConnected });
+  const bilibiliData = useBilibiliData({ connected: bilibiliConnected, applyTrackUpdate });
   // Reload the QQ liked/playlists whenever the account connects (mount, login,
   // or re-login from settings); disconnect clears inside the hook.
   useEffect(() => {
@@ -608,8 +618,9 @@ export default function App() {
     setExploreStyleError(null);
     void api.getNeteaseStyles().then((result) => {
       if (cancelled) return;
-      setExploreStyleGroups(result.groups);
-      const first = result.groups.flatMap((group) => group.styles)[0];
+      const groups = Array.isArray(result.groups) ? result.groups : [];
+      setExploreStyleGroups(groups);
+      const first = groups.flatMap((group) => group.styles ?? [])[0];
       if (first) setExploreStyleId((current) => current ?? first.id);
     }).catch((error: unknown) => {
       if (!cancelled) setExploreStyleError(error instanceof Error ? error.message : "曲风列表加载失败");
@@ -630,9 +641,9 @@ export default function App() {
     void api.getNeteaseStyle(exploreStyleId, { sort: exploreStyleSort, limit: 24 }).then((result) => {
       if (cancelled) return;
       setExploreStyle(result.style);
-      setExploreTracks(result.tracks.map((track, index) => providerTrackToUiTrack(track, index)));
-      setExploreStyleCursor(result.cursor);
-      setExploreStyleMore(result.more);
+      setExploreTracks((Array.isArray(result.tracks) ? result.tracks : []).map((track, index) => providerTrackToUiTrack(track, index)));
+      setExploreStyleCursor(result.cursor ?? null);
+      setExploreStyleMore(Boolean(result.more));
     }).catch((error: unknown) => {
       if (!cancelled) setExploreStyleError(error instanceof Error ? error.message : "曲风歌曲加载失败");
     }).finally(() => {
@@ -655,20 +666,6 @@ export default function App() {
       setExploreStyleError(error instanceof Error ? error.message : "更多歌曲加载失败");
     } finally {
       setExploreTracksLoadingMore(false);
-    }
-  }
-
-  async function loadExploreRadio(bpm: number) {
-    setExploreRadioLoading(true);
-    setExploreRadioError(null);
-    try {
-      const result = await api.getNeteaseSportRadio(bpm, true);
-      setExploreRadioTracks(result.tracks.map((track, index) => providerTrackToUiTrack(track, index)));
-      setExploreSelectedBpm(result.bpm);
-    } catch (error) {
-      setExploreRadioError(error instanceof Error ? error.message : "节拍电台加载失败");
-    } finally {
-      setExploreRadioLoading(false);
     }
   }
 
@@ -703,8 +700,8 @@ export default function App() {
   );
   const bilibiliLibraryTracks = bilibiliData.likedTracks;
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...bilibiliLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks, ...exploreRadioTracks]),
-    [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, bilibiliLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks, exploreRadioTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...bilibiliLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks]),
+    [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, bilibiliLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks],
   );
   // Mixed playlists resolve live tracks first, then compact remote snapshots.
   const localPlaylists = useLocalPlaylists(allTracks);
@@ -768,11 +765,13 @@ export default function App() {
     allTracks.find((track) => track.id === activeTrackId);
   const cachedActiveTrack = cachedActiveTrackSnapshot?.id === activeTrackId ? cachedActiveTrackSnapshot : null;
   const resolvedActiveTrack =
-    (requestedActiveTrack?.streamUrl ? requestedActiveTrack : null) ??
-    (cachedActiveTrack?.streamUrl ? cachedActiveTrack : null) ??
-    requestedActiveTrack ??
-    cachedActiveTrack ??
-    (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
+    requestedActiveTrack && cachedActiveTrack
+      ? mergeTrackRecord(cachedActiveTrack, requestedActiveTrack)
+      : (requestedActiveTrack?.streamUrl ? requestedActiveTrack : null) ??
+        (cachedActiveTrack?.streamUrl ? cachedActiveTrack : null) ??
+        requestedActiveTrack ??
+        cachedActiveTrack ??
+        (activeTrackId === idleTrack.id ? allTracks[0] ?? idleTrack : idleTrack);
   // Queue snapshots intentionally omit lyric payloads. When a track is
   // restored after restart, reattach the hydrated active snapshot lyrics so
   // the lyric panel can render immediately and the sync hook can refresh
@@ -812,16 +811,15 @@ export default function App() {
     });
   }, [bilibiliDefaultVideoQn, bilibiliDefaultAudioLevel]);
   const activeVideoUrl = useMemo(() => {
-    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || (!videoQn && !videoAudioLevel)) return activeTrack.videoUrl;
+    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || !videoQn) return activeTrack.videoUrl;
     try {
       const url = new URL(api.resolveUrl(activeTrack.videoUrl));
-      if (videoQn) url.searchParams.set("qn", String(videoQn));
-      if (videoAudioLevel) url.searchParams.set("level", videoAudioLevel);
+      url.searchParams.set("qn", String(videoQn));
       return url.href;
     } catch {
       return activeTrack.videoUrl;
     }
-  }, [activeTrack.videoUrl, activeTrack.source, videoQn, videoAudioLevel]);
+  }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
   // Bilibili's high-quality path is DASH: the video element receives a
   // video-only stream and this parallel route supplies the audio track
   // (AAC / Dolby / FLAC). Muxed fallbacks simply play their own audio.
@@ -852,6 +850,14 @@ export default function App() {
       .getSourceStreamMeta(activeTrack.source, activeTrack.providerId, effectiveQualityLevel)
       .then((meta) => {
         if (cancelled) return;
+        if (activeTrack.source === "bilibili" && activeTrack.providerId) {
+          saveBilibiliAudioMeta(activeTrack.providerId, {
+            bitrate: meta.bitrate ?? null,
+            quality: meta.quality ? normalizeQuality(meta.quality) : undefined,
+            currentLevel: meta.currentLevel ?? null,
+            availableLevels: meta.availableLevels,
+          });
+        }
         updateTrackRef.current(activeTrack.id, (track) => ({
           ...track,
           bitrate: meta.bitrate ?? track.bitrate,
@@ -942,10 +948,9 @@ export default function App() {
     localTracks,
   });
 
-  // Signing in unlocks Bilibili AI/CC subtitles. Retry the active video once
-  // when the account becomes connected instead of waiting for a track change.
+  // Signing in unlocks Bilibili AI/CC subtitles when Bilibili lyrics are enabled.
   useEffect(() => {
-    if (!bilibiliConnected || activeTrack.source !== "bilibili") return;
+    if (!BILIBILI_LYRICS_ENABLED || !bilibiliConnected || activeTrack.source !== "bilibili") return;
     if (hasSyncedLyrics(activeTrack) || lyricSyncingRef.current.has(activeTrack.id)) return;
     lyricSyncingRef.current.add(activeTrack.id);
     void syncLyricsForTrack(activeTrack)
@@ -1119,7 +1124,7 @@ export default function App() {
       case "liked":
         return likedDisplayTracks;
       case "history":
-        return playHistory.map((entry) => entry.track);
+        return displayHistory.map((entry) => entry.track);
       case "playlists":
         return playlistTracks;
       case "daily":
@@ -1127,7 +1132,7 @@ export default function App() {
       case "radar":
         return recommendSource === "qq" ? qqData.roamTracks : roamTracks;
       case "explore":
-        return mergeTracks([...exploreTracks, ...exploreRadioTracks]);
+        return exploreTracks;
       case "cloud":
         return cloudLibrary.visibleTracks;
       case "artists":
@@ -1137,7 +1142,7 @@ export default function App() {
       default:
         return [];
     }
-  }, [activeView, artistTracks, dailyTracks, exploreRadioTracks, exploreTracks, likedDisplayTracks, playHistory, playlistTracks, qqData.dailyTracks, qqData.roamTracks, recommendSource, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
+  }, [activeView, artistTracks, dailyTracks, displayHistory, exploreTracks, likedDisplayTracks, playlistTracks, qqData.dailyTracks, qqData.roamTracks, recommendSource, roamTracks, cloudLibrary.visibleTracks, visibleLocalTracks, visibleTracks]);
 
   const hasActiveTrack = activeTrack.id !== idleTrack.id;
 
@@ -1147,7 +1152,7 @@ export default function App() {
     const resolveUrl = (track: Track): string | null => {
       if (!track.streamUrl || track.requiresNativePlayback) return null;
       const resolvedUrl = api.resolveUrl(track.streamUrl);
-      if (track.source !== "netease") return resolvedUrl;
+      if (track.source !== "netease" && track.source !== "qq" && track.source !== "bilibili") return resolvedUrl;
       const url = new URL(resolvedUrl, window.location.href);
       url.searchParams.set("level", selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel }));
       return url.href;
@@ -1376,6 +1381,7 @@ export default function App() {
   }
 
   function openArtistForTrack(track: Track) {
+    if (immersiveOpen) void closeImmersiveView();
     const source = track.source === "qq" ? "qq" : track.source === "netease" ? "netease" : "local";
     const artistId = track.artistIds?.[0];
     const name = splitArtistNames(track.artist)[0] ?? track.artist;
@@ -1454,9 +1460,11 @@ export default function App() {
     // stream URL. Upsert the playable copy that the caller just resolved so
     // queue materialization cannot drop the active song.
     if (targetTrack.source === "netease") {
-      setNeteaseTracks((current) => trimTrackCache([...current, targetTrack]));
+      setNeteaseTracks((current) => trimTrackCache([...current, targetTrack], 360, trackId));
     } else if (targetTrack.source === "qq") {
-      setQqSearchTracks((current) => trimTrackCache([...current, targetTrack]));
+      setQqSearchTracks((current) => trimTrackCache([...current, targetTrack], 360, trackId));
+    } else if (targetTrack.source === "bilibili") {
+      setBilibiliSearchTracks((current) => trimTrackCache([...current, targetTrack], 360, trackId));
     }
 
     const playableIds = materializeQueueIds(queue.length ? queue : [targetTrack], trackId, shuffleEnabled);
@@ -1527,7 +1535,6 @@ export default function App() {
     bilibiliData.setLikedTracks(applyTo);
     setCloudTracks(applyTo);
     setExploreTracks(applyTo);
-    setExploreRadioTracks(applyTo);
     setCachedQueueSnapshots(applyTo);
     setCachedActiveTrackSnapshot((current) => current?.id === trackId ? updateTrack(current) : current);
     if (includeHistory) {
@@ -1903,13 +1910,8 @@ export default function App() {
     // Audio engine owns the authoritative clock even while muted video is open.
   }
 
-  function pauseActiveVideo() {
-    if (videoMode) videoControlRef.current?.pause();
-  }
-
   async function openImmersiveView() {
     commitActiveVideoTime();
-    pauseActiveVideo();
     setImmersiveOpen(true);
     if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
     try {
@@ -1922,7 +1924,6 @@ export default function App() {
 
   async function closeImmersiveView() {
     commitActiveVideoTime();
-    pauseActiveVideo();
     setImmersiveOpen(false);
     if (!immersiveFullscreenRef.current || !document.fullscreenElement || !document.exitFullscreen) return;
     immersiveFullscreenRef.current = false;
@@ -1987,8 +1988,10 @@ export default function App() {
       }
       if (event.key === "Escape") {
         if (immersiveOpen) {
+          event.preventDefault();
           void closeImmersiveView();
         } else if (videoMode) {
+          event.preventDefault();
           setVideoMode(false);
         }
         return;
@@ -2013,13 +2016,13 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handlePlaybackCommand, immersiveOpen, keyboardShortcuts]);
+  }, [handlePlaybackCommand, immersiveOpen, keyboardShortcuts, videoMode]);
 
   useEffect(() => {
     const sourceTracks = activeView === "radar"
       ? roamTracks
       : activeView === "explore"
-        ? mergeTracks([...exploreTracks, ...exploreRadioTracks])
+        ? exploreTracks
         : playQueueTracks.length ? playQueueTracks : visibleTracks;
     const tracksToWarm = sourceTracks.slice(0, activeView === "radar" || activeView === "explore" ? 72 : playing ? 12 : 36);
     const timer = window.setTimeout(() => warmNeteaseTrackCache(tracksToWarm), playing ? 1600 : 260);
@@ -2027,7 +2030,7 @@ export default function App() {
     // warmNeteaseTrackCache closes over fresh state on every render, matching
     // the pre-hook behavior; only its inputs belong in the dependency list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, exploreRadioTracks, exploreTracks, hifiEnabled, masterQualityEnabled, playing, playQueueTracks, roamTracks, qualityLevel, visibleTracks]);
+  }, [activeView, exploreTracks, hifiEnabled, masterQualityEnabled, playing, playQueueTracks, roamTracks, qualityLevel, visibleTracks]);
 
   useEffect(() => {
     trimStringSet(neteaseWarmupRef, memoryLimits.neteaseWarmup);
@@ -2385,8 +2388,8 @@ export default function App() {
       data-ambient-active={playing && pageVisible ? "true" : "false"}
       style={
         {
-          "--aria-accent": activePalette.primary,
-          "--aria-accent-secondary": activePalette.secondary,
+          "--aria-accent": surfacePalette.primary,
+          "--aria-accent-secondary": surfacePalette.secondary,
         } as CSSProperties
       }
     >
@@ -2480,7 +2483,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="app-nav-slot" style={noDragRegionStyle}>
+          <div className="app-nav-slot">
             <AppNavigation activeView={activeView} onPick={(id) => { clearSearchState(); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); } setActiveView(id); }} />
           </div>
 
@@ -2489,7 +2492,19 @@ export default function App() {
             style={noDragRegionStyle}
             onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSearchFocused(false); }}
           >
-            <Search className="size-4 shrink-0 text-neutral-700" />
+            <button
+              type="button"
+              className={cn(
+                "app-search-trigger flex shrink-0 items-center justify-center",
+                (searchFocused || searchDraft.trim().length > 0) && "is-active",
+              )}
+              aria-label="执行搜索"
+              title="开始搜索 (Enter)"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => submitSearch(searchDraft)}
+            >
+              <Search className="size-3.5" strokeWidth={2.25} />
+            </button>
             <input
               value={searchDraft}
               onChange={(event) => { setSearchDraft(event.target.value); setSearchFocused(true); }}
@@ -2518,7 +2533,7 @@ export default function App() {
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder="输入关键词，回车或点搜索"
+              placeholder="搜索歌曲、歌手、专辑、歌单…"
               aria-label="搜索音乐、歌手、专辑、歌单、用户"
               role="combobox"
               aria-autocomplete="list"
@@ -2538,15 +2553,6 @@ export default function App() {
                 <X className="size-3.5" />
               </button>
             )}
-            <button
-              type="button"
-              className="app-search-submit flex shrink-0 items-center justify-center"
-              aria-label="执行搜索"
-              title="开始搜索 (Enter)"
-              onClick={() => submitSearch(searchDraft)}
-            >
-              搜索
-            </button>
             <Button
               variant="ghost"
               size="icon"
@@ -2685,14 +2691,17 @@ export default function App() {
           <div
             className={cn(
               "h-full min-h-0 min-w-0 overflow-hidden",
-              (activeView !== "player" || searchActive) && "hidden",
+              (activeView !== "player" || searchActive) &&
+                (immersiveOpen && BILIBILI_VIDEO_ENABLED && videoMode && Boolean(activeTrack.videoUrl)
+                  ? "fixed inset-0 z-[80]"
+                  : "hidden"),
             )}
-            aria-hidden={activeView !== "player" || searchActive}
-            inert={activeView !== "player" || searchActive}
+            aria-hidden={(activeView !== "player" || searchActive) && !(immersiveOpen && BILIBILI_VIDEO_ENABLED && videoMode && Boolean(activeTrack.videoUrl))}
+            inert={(activeView !== "player" || searchActive) && !(immersiveOpen && BILIBILI_VIDEO_ENABLED && videoMode && Boolean(activeTrack.videoUrl))}
           >
 <PlayerSurface
                   activeTrack={activeTrack}
-                  palette={activePalette}
+                  palette={surfacePalette}
                   playing={playing}
                   visualizerPlaying={visualizerPlaying}
                   shuffleEnabled={shuffleEnabled}
@@ -2703,6 +2712,8 @@ export default function App() {
                   onNext={() => pickRelativeTrack(1)}
                   onPrevious={() => pickRelativeTrack(-1)}
                   onOpenImmersive={() => void openImmersiveView()}
+                  immersive={immersiveOpen}
+                  onCloseImmersive={() => void closeImmersiveView()}
                   videoMode={videoMode}
                   onToggleVideoMode={toggleVideoMode}
                   videoUrlOverride={activeVideoUrl}
@@ -2716,13 +2727,16 @@ export default function App() {
                     commitActiveVideoTime();
                     pendingSeekRef.current = getPlaybackTime();
                     setVideoAudioLevel(level);
+                    if (level && level !== effectiveQualityLevel) {
+                      handleQualityLevelChange(level as QualityLevel);
+                    }
                   }}
                   onVideoQualityChange={(qn) => {
                     commitActiveVideoTime();
                     pendingSeekRef.current = getPlaybackTime();
                     setVideoQn(qn);
                   }}
-                  videoActive={videoMode && !immersiveOpen && activeView === "player" && !searchActive && pageVisible}
+                  videoActive={videoMode && (activeView === "player" || immersiveOpen) && !searchActive && pageVisible}
                   videoControlRef={videoControlRef}
                   onVideoDuration={setDurationSeconds}
                   onVideoEnded={handleTrackEnded}
@@ -2807,7 +2821,7 @@ export default function App() {
               ) : selectedUser ? (
                 <UserDetailSurface user={userDetail ?? selectedUser} playlists={userPlaylists} loading={userLoading} error={userError} more={userPlaylistsMore}
                   onBack={() => { if (!navigateHistory(-1)) setSelectedUser(null); }} onRetry={retryUser} onLoadMore={() => void loadMoreUserPlaylists()}
-                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { query, user: selectedUser }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); clearSearchState(); setSelectedUser(null); }} />
+                  onPickPlaylist={(playlist) => { playlistReturnRef.current = { view: activeView, query, user: selectedUser }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); clearSearchState(); setSelectedUser(null); }} />
               ) : query.trim() ? (
                 <SearchSurface
                   query={query.trim()}
@@ -2843,7 +2857,7 @@ export default function App() {
                     clearSearchState();
                   }}
                   onPickPlaylist={(playlist) => {
-                    playlistReturnRef.current = { query, user: null };
+                    playlistReturnRef.current = { view: activeView, query, user: null };
                     setPlaylistSourceIntent(playlist.source === "qq" ? "qq" : "netease");
                     if (playlist.source === "qq") {
                       void qqData.openPlaylist(playlist);
@@ -2906,12 +2920,15 @@ export default function App() {
                     if (source === "qq" || source === "all") void qqData.refresh();
                     if (source === "bilibili" || source === "all") void bilibiliData.refresh();
                   }}
+                  onVisibleTracksChange={(tracks) => bilibiliData.hydrateTracks(tracks, bilibiliDefaultAudioLevel)}
                   onPickTrack={chooseTrack}
                 />
               )}
               {activeView === "history" && (
                 <HistorySurface
                   history={displayHistory}
+                  activeTrackId={activeTrackId}
+                  playing={playing}
                   onPickTrack={chooseTrack}
                 />
               )}
@@ -2952,7 +2969,17 @@ export default function App() {
                     setActiveView("settings");
                   }}
                   onOpenPlaylist={(playlist) => { if (playlist.id !== selectedPlaylist?.id) playlistReturnRef.current = null; void openPlaylist(playlist); }}
-                  onClosePlaylist={() => { closePlaylist(); const origin = playlistReturnRef.current; playlistReturnRef.current = null; if (origin) { setSearchDraft(origin.query); setQuery(origin.query); setSelectedUser(origin.user); } }}
+                  onClosePlaylist={() => {
+                    closePlaylist();
+                    const origin = playlistReturnRef.current;
+                    playlistReturnRef.current = null;
+                    if (origin) {
+                      if (origin.view && origin.view !== "playlists") setActiveView(origin.view);
+                      setSearchDraft(origin.query);
+                      setQuery(origin.query);
+                      setSelectedUser(origin.user);
+                    }
+                  }}
                   onPickTrack={chooseTrack}
                   qq={{
                     connected: qqConnected,
@@ -2967,6 +2994,7 @@ export default function App() {
                       const origin = playlistReturnRef.current;
                       playlistReturnRef.current = null;
                       if (origin) {
+                        if (origin.view && origin.view !== "playlists") setActiveView(origin.view);
                         setSearchDraft(origin.query);
                         setQuery(origin.query);
                         setSelectedUser(origin.user);
@@ -3012,19 +3040,15 @@ export default function App() {
                     styleGroups={exploreStyleGroups}
                     selectedStyle={exploreStyle}
                     tracks={exploreTracks}
-                    radioTracks={exploreRadioTracks}
                     activeTab={exploreTab}
                     selectedStyleId={exploreStyleId}
                     stylesLoading={exploreStylesLoading}
                     loading={exploreTracksLoading}
                     loadingMore={exploreTracksLoadingMore}
-                    radioLoading={exploreRadioLoading}
                     styleError={exploreStyleError}
-                    radioError={exploreRadioError}
                     discovery={exploreDiscovery}
                     discoveryLoading={exploreDiscoveryLoading}
                     discoveryError={exploreDiscoveryError}
-                    selectedBpm={exploreSelectedBpm}
                     sort={exploreStyleSort}
                     onSelectStyle={(id) => {
                       setExploreStyleId(id);
@@ -3035,11 +3059,10 @@ export default function App() {
                     }}
                     onSortChange={setExploreStyleSort}
                     onLoadMore={() => void loadMoreExploreTracks()}
-                    onLoadRadio={(bpm) => void loadExploreRadio(bpm)}
                     onLoadDiscovery={() => void loadExploreDiscovery()}
                     onRetryDiscovery={() => void loadExploreDiscovery(true)}
                     onSearchHot={(value) => submitSearch(value)}
-                    onOpenPlaylist={(playlist) => { playlistReturnRef.current = { query: "", user: null }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); clearSearchState(); }}
+                    onOpenPlaylist={(playlist) => { playlistReturnRef.current = { view: "explore", query: "", user: null }; setPlaylistSourceIntent("netease"); void openPlaylist(playlist); setActiveView("playlists"); clearSearchState(); }}
                     onPickTrack={chooseTrack}
                     onTabChange={setExploreTab}
                   />
@@ -3082,7 +3105,16 @@ export default function App() {
                   />
                 </Suspense>
               )}
-              {activeView === "stats" && <StatsSurface tracks={allTracks} playCounts={playCounts} />}
+              {activeView === "stats" && (
+                <StatsSurface
+                  tracks={allTracks}
+                  playCounts={playCounts}
+                  playHistory={displayHistory}
+                  activeTrackId={activeTrackId}
+                  playing={playing}
+                  onPickTrack={chooseTrack}
+                />
+              )}
               {activeView === "settings" && (
                 <Suspense fallback={null}>
                   <SettingsPanel
@@ -3136,6 +3168,8 @@ export default function App() {
                       if (activeTrack.source === "bilibili") {
                         commitActiveVideoTime();
                         pendingSeekRef.current = getPlaybackTime();
+                        setHifiEnabled(true);
+                        setQualityLevel(level);
                         setVideoAudioLevel(level);
                       }
                     }}
@@ -3161,7 +3195,7 @@ export default function App() {
               mode={playerSideView}
               onModeChange={setPlayerSideView}
               track={activeTrack}
-              palette={activePalette}
+              palette={surfacePalette}
               lyricDisplayMode={lyricDisplayMode}
               tracks={playQueueTracks.length ? playQueueTracks : visibleTracks}
               activeTrackId={activeTrackId}
@@ -3210,10 +3244,10 @@ export default function App() {
         />}
 
         <AnimatePresence>
-          {immersiveOpen && (
+          {immersiveOpen && !(BILIBILI_VIDEO_ENABLED && videoMode && Boolean(activeTrack.videoUrl)) && (
             <ImmersivePlayerView
               activeTrack={activeTrack}
-              palette={activePalette}
+              palette={darkSurfacePalette}
               playing={playing}
               visualizerPlaying={visualizerPlaying}
               durationSeconds={durationSeconds}
@@ -3243,6 +3277,7 @@ export default function App() {
               onPrevious={() => pickRelativeTrack(-1)}
               onSeek={seekTo}
               visualizerActive={pageVisible}
+              lyricDisplayMode={lyricDisplayMode}
               videoMode={videoMode}
               onToggleVideoMode={toggleVideoMode}
               videoControlRef={videoControlRef}
@@ -3257,6 +3292,9 @@ export default function App() {
                 commitActiveVideoTime();
                 pendingSeekRef.current = getPlaybackTime();
                 setVideoAudioLevel(level);
+                if (level && level !== effectiveQualityLevel) {
+                  handleQualityLevelChange(level as QualityLevel);
+                }
               }}
               onVideoQualityChange={(qn) => {
                 commitActiveVideoTime();

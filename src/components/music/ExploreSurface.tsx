@@ -1,13 +1,13 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
 import {
   ChevronRight,
+  Compass,
   Disc3,
-  LayoutGrid,
+  Flame,
   ListMusic,
   LoaderCircle,
   Play,
-  Radio,
-  Sparkles,
+  RefreshCw,
   Trophy,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -36,29 +36,26 @@ export type ExploreSelectedStyle = ExploreStyle & {
   description?: string | null;
 };
 
+export type ExploreTab = "discover" | "styles";
+
 export function ExploreSurface({
   styleGroups,
   selectedStyle,
   tracks,
-  radioTracks,
   activeTab,
   selectedStyleId,
   stylesLoading,
   loading,
   loadingMore,
-  radioLoading,
   styleError,
-  radioError,
   discovery,
   discoveryLoading,
   discoveryError,
-  selectedBpm,
   sort,
   onSelectStyle,
   onRetryStyles,
   onSortChange,
   onLoadMore,
-  onLoadRadio,
   onLoadDiscovery,
   onRetryDiscovery,
   onSearchHot,
@@ -69,63 +66,47 @@ export function ExploreSurface({
   styleGroups: ExploreStyleGroup[];
   selectedStyle: ExploreSelectedStyle | null;
   tracks: Track[];
-  radioTracks: Track[];
-  activeTab: "styles" | "radio" | "discover";
+  activeTab: ExploreTab;
   selectedStyleId: string | null;
   stylesLoading: boolean;
   loading: boolean;
   loadingMore: boolean;
-  radioLoading: boolean;
   styleError: string | null;
-  radioError: string | null;
   discovery: { hotSearches: string[]; rankings: ProviderPlaylist[]; playlists: ProviderPlaylist[] } | null;
   discoveryLoading: boolean;
   discoveryError: string | null;
-  selectedBpm: number | null;
   sort: "hot" | "new";
   onSelectStyle: (id: string) => void;
   onRetryStyles: () => void;
   onSortChange: (sort: "hot" | "new") => void;
   onLoadMore?: () => void;
-  onLoadRadio: (bpm: number) => void;
   onLoadDiscovery: () => void;
   onRetryDiscovery: () => void;
   onSearchHot: (value: string) => void;
   onOpenPlaylist: (playlist: ProviderPlaylist) => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
-  onTabChange: (tab: "styles" | "radio" | "discover") => void;
+  onTabChange: (tab: ExploreTab) => void;
 }) {
-  const [bpm, setBpm] = useState(100);
-  const [bpmInput, setBpmInput] = useState("100");
   const tabId = useId();
   const tabListRef = useRef<HTMLDivElement | null>(null);
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const tabs = ["styles", "radio", "discover"] as const;
-    let tab: (typeof tabs)[number];
+    const tabs: ExploreTab[] = ["discover", "styles"];
+    let tab: ExploreTab;
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       const offset = event.key === "ArrowRight" ? 1 : -1;
       tab = tabs[(tabs.indexOf(activeTab) + offset + tabs.length) % tabs.length];
-    } else if (event.key === "Home") tab = "styles";
-    else if (event.key === "End") tab = "discover";
-    else return;
+    } else if (event.key === "Home") {
+      tab = "discover";
+    } else if (event.key === "End") {
+      tab = "styles";
+    } else {
+      return;
+    }
     event.preventDefault();
     onTabChange(tab);
+    if (tab === "discover") onLoadDiscovery();
     tabListRef.current?.querySelector<HTMLButtonElement>(`[data-explore-tab="${tab}"]`)?.focus();
-  }
-
-  function updateBpm(value: number) {
-    if (!Number.isFinite(value)) return;
-    const next = Math.min(180, Math.max(60, Math.round(value)));
-    setBpm(next);
-    setBpmInput(String(next));
-  }
-
-  function requestRadio() {
-    const value = bpmInput.trim() ? Number(bpmInput) : bpm;
-    const next = Number.isFinite(value) ? Math.min(180, Math.max(60, Math.round(value))) : bpm;
-    updateBpm(next);
-    onLoadRadio(next);
   }
 
   function playTracks(items: Track[]) {
@@ -134,166 +115,245 @@ export function ExploreSurface({
   }
 
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7" aria-label="探索音乐">
-      <header className="flex shrink-0 flex-wrap items-start justify-between gap-5">
+    <section
+      className="explore-surface glass flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7"
+      aria-label="探索音乐"
+    >
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-4">
         <div className="min-w-0">
-          <Badge className="gap-2"><Sparkles className="size-3.5" /> Explore</Badge>
-          <h1 className="mt-4 truncate text-3xl font-semibold tracking-tight sm:text-4xl">探索</h1>
-          <p className="mt-2 max-w-xl text-sm text-neutral-500">按曲风发现下一首，或用节拍打开一段新的播放序列。</p>
+          <div className="flex items-center gap-2">
+            <span className="explore-eyebrow">EXPLORE · 网易云音乐</span>
+          </div>
+          <h1 className="mt-1.5 truncate text-2xl font-semibold tracking-tight sm:text-3xl">探索发现</h1>
+          <p className="mt-1 text-xs text-neutral-500">榜单风向、精选歌单与细分曲风漫游</p>
         </div>
-        <div ref={tabListRef} onKeyDown={handleTabKeyDown} className="flex shrink-0 items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--surface-muted)] p-1" role="tablist" aria-label="探索模式">
-          <button
-            type="button"
-            role="tab"
-            id={`${tabId}-styles-tab`}
-            data-explore-tab="styles"
-            aria-controls={`${tabId}-styles-panel`}
-            aria-selected={activeTab === "styles"}
-            tabIndex={activeTab === "styles" ? 0 : -1}
-            className={cn("inline-flex h-9 items-center gap-2 rounded-full px-3 text-sm transition", activeTab === "styles" ? "bg-[var(--surface)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
-            onClick={() => onTabChange("styles")}
+
+        <div className="flex shrink-0 items-center gap-2.5">
+          {activeTab === "discover" && (
+            <Button
+              type="button"
+              variant="glass"
+              size="sm"
+              className="size-9 px-0"
+              aria-label="刷新探索推荐"
+              title="刷新榜单与热搜"
+              disabled={discoveryLoading}
+              onClick={onRetryDiscovery}
+            >
+              <RefreshCw className={cn("size-3.5", discoveryLoading && "animate-spin")} />
+            </Button>
+          )}
+          <div
+            ref={tabListRef}
+            onKeyDown={handleTabKeyDown}
+            className="explore-tablist flex shrink-0 items-center gap-1 rounded-full border p-1"
+            role="tablist"
+            aria-label="探索模式"
           >
-            <Disc3 className="size-4" /> 曲风
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id={`${tabId}-radio-tab`}
-            data-explore-tab="radio"
-            aria-controls={`${tabId}-radio-panel`}
-            aria-selected={activeTab === "radio"}
-            tabIndex={activeTab === "radio" ? 0 : -1}
-            className={cn("inline-flex h-9 items-center gap-2 rounded-full px-3 text-sm transition", activeTab === "radio" ? "bg-[var(--surface)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
-            onClick={() => onTabChange("radio")}
-          >
-            <Radio className="size-4" /> 节拍电台
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id={`${tabId}-discover-tab`}
-            data-explore-tab="discover"
-            aria-controls={`${tabId}-discover-panel`}
-            aria-selected={activeTab === "discover"}
-            tabIndex={activeTab === "discover" ? 0 : -1}
-            className={cn("inline-flex h-9 items-center gap-2 rounded-full px-3 text-sm transition", activeTab === "discover" ? "bg-[var(--surface)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
-            onClick={() => { onTabChange("discover"); onLoadDiscovery(); }}
-          >
-            <LayoutGrid className="size-4" /> 发现
-          </button>
+            <button
+              type="button"
+              role="tab"
+              id={`${tabId}-discover-tab`}
+              data-explore-tab="discover"
+              aria-controls={`${tabId}-discover-panel`}
+              aria-selected={activeTab === "discover"}
+              tabIndex={activeTab === "discover" ? 0 : -1}
+              className={cn(
+                "explore-tab inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition",
+                activeTab === "discover" && "is-active",
+              )}
+              onClick={() => {
+                onTabChange("discover");
+                onLoadDiscovery();
+              }}
+            >
+              <Compass className="size-3.5" /> 榜单与精选
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id={`${tabId}-styles-tab`}
+              data-explore-tab="styles"
+              aria-controls={`${tabId}-styles-panel`}
+              aria-selected={activeTab === "styles"}
+              tabIndex={activeTab === "styles" ? 0 : -1}
+              className={cn(
+                "explore-tab inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition",
+                activeTab === "styles" && "is-active",
+              )}
+              onClick={() => onTabChange("styles")}
+            >
+              <Disc3 className="size-3.5" /> 曲风漫游
+            </button>
+          </div>
         </div>
       </header>
 
-      <div id={`${tabId}-styles-panel`} role="tabpanel" aria-labelledby={`${tabId}-styles-tab`} hidden={activeTab !== "styles"} className={cn("mt-6 min-h-0 flex-1 flex-col gap-5 overflow-hidden", activeTab === "styles" ? "flex" : "hidden")}>
-        {activeTab === "styles" && <>
-          <div className="no-scrollbar max-h-[130px] shrink-0 space-y-3 overflow-y-auto pr-1" aria-busy={stylesLoading}>
-            {stylesLoading && !styleGroups.length && <div className="flex items-center gap-2 py-3 text-sm text-neutral-400"><LoaderCircle className="size-4 animate-spin" /> 正在加载曲风</div>}
-            {styleGroups.map((group) => (
-              <div key={group.id} className="flex items-start gap-3">
-                <span className="w-16 shrink-0 pt-2 text-xs font-semibold text-neutral-400">{group.name}</span>
-                <div className="flex min-w-0 flex-wrap gap-2">
-                  {group.styles.map((style) => (
-                    <button
-                      key={style.id}
-                      type="button"
-                      aria-pressed={selectedStyleId === style.id}
-                      className={cn("rounded-full border px-3 py-1.5 text-sm transition", selectedStyleId === style.id ? "border-neutral-950 bg-neutral-950 text-white" : "border-[var(--line)] bg-[var(--surface)] text-neutral-600 hover:bg-[var(--surface-muted)]")}
-                      onClick={() => onSelectStyle(style.id)}
-                    >
-                      {style.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-            {!stylesLoading && !styleGroups.length && !styleError && <EmptyState text="暂无曲风数据" />}
-          </div>
-
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.25rem] border border-[var(--line)] bg-[var(--surface-muted)]/45">
-            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--line)] px-4 py-4 sm:px-5">
-              <div className="min-w-0">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Selected style</p>
-                <h2 className="mt-1 truncate text-xl font-semibold">{selectedStyle?.name ?? "选择一个曲风"}</h2>
-                {selectedStyle?.description && <p className="mt-1 line-clamp-2 text-sm text-neutral-500">{selectedStyle.description}</p>}
-              </div>
-              <div className="flex shrink-0 items-center gap-3">
-                <div className="flex items-center gap-1 rounded-full bg-[var(--surface)] p-1" role="group" aria-label="曲风歌曲排序">
-                  {(["hot", "new"] as const).map((value) => <button key={value} type="button" aria-pressed={sort === value} disabled={!selectedStyleId || loading || loadingMore} onClick={() => onSortChange(value)} className={cn("rounded-full px-3 py-1 text-xs transition disabled:opacity-45", sort === value ? "bg-neutral-950 text-white" : "text-neutral-500 hover:bg-[var(--surface-muted)]")}>{value === "hot" ? "热门" : "最新"}</button>)}
-                </div>
-                <Button variant="glass" size="sm" disabled={!tracks.length || loading} onClick={() => playTracks(tracks)}>
-                  <Play className="fill-current" /> 播放全部
-                </Button>
-              </div>
-            </div>
-            {styleError && <ErrorMessage message={styleError} onRetry={onRetryStyles} disabled={stylesLoading || loading || loadingMore} />}
-            <TrackList tracks={tracks} loading={loading} error={Boolean(styleError)} onPickTrack={onPickTrack} emptyText={selectedStyle ? "这个曲风暂时没有歌曲" : "从上方选择一个曲风"} />
-            {onLoadMore && tracks.length > 0 && (
-              <div className="shrink-0 border-t border-[var(--line)] px-4 py-3 text-center">
-                <Button variant="ghost" size="sm" disabled={loading || loadingMore} onClick={onLoadMore}>
-                  {loadingMore && <LoaderCircle className="animate-spin" />} {loadingMore ? "正在加载" : "加载更多"}
-                </Button>
+      {/* Discover Tab */}
+      <div
+        id={`${tabId}-discover-panel`}
+        role="tabpanel"
+        aria-labelledby={`${tabId}-discover-tab`}
+        hidden={activeTab !== "discover"}
+        className={cn("mt-5 min-h-0 flex-1 flex-col gap-5 overflow-hidden", activeTab === "discover" ? "flex" : "hidden")}
+      >
+        {activeTab === "discover" && (
+          <>
+            {discoveryError && <ErrorMessage message={discoveryError} onRetry={onRetryDiscovery} disabled={discoveryLoading} />}
+            {discoveryLoading && !discovery && (
+              <div className="flex min-h-48 flex-1 items-center justify-center text-sm text-neutral-400">
+                <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在同步榜单与精选推荐…
               </div>
             )}
-          </div>
-        </>}
-      </div>
-      <div id={`${tabId}-radio-panel`} role="tabpanel" aria-labelledby={`${tabId}-radio-tab`} hidden={activeTab !== "radio"} className={cn("mt-6 min-h-0 flex-1 flex-col gap-5 overflow-hidden", activeTab === "radio" ? "flex" : "hidden")}>
-        {activeTab === "radio" && <>
-          <div className="shrink-0 rounded-[1.25rem] border border-[var(--line)] bg-[var(--surface-muted)]/55 p-4 sm:p-5">
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Tempo radio</p>
-                <h2 className="mt-1 text-xl font-semibold">按节拍开始</h2>
-                <p className="mt-1 text-sm text-neutral-500">BPM 作为推荐偏好，曲目不保证严格匹配。</p>
+            {discovery && (
+              <div className="no-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto pr-1">
+                <section className="explore-section rounded-2xl border p-4 sm:p-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="explore-icon-pill">
+                        <Flame className="size-3.5" />
+                      </span>
+                      <h2 className="text-base font-semibold">热搜风向</h2>
+                    </div>
+                    <span className="text-[11px] text-neutral-400">点按直达全站搜索</span>
+                  </div>
+                  <div className="mt-3.5 flex flex-wrap gap-2">
+                    {discovery.hotSearches.map((term, index) => (
+                      <button
+                        key={`${term}-${index}`}
+                        type="button"
+                        className={cn(
+                          "explore-hot-chip inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                          index < 3 && "is-top",
+                        )}
+                        onClick={() => onSearchHot(term)}
+                      >
+                        <span className="explore-hot-rank tabular-nums">{String(index + 1).padStart(2, "0")}</span>
+                        <span>{term}</span>
+                      </button>
+                    ))}
+                    {!discovery.hotSearches.length && <p className="text-sm text-neutral-400">暂无热搜数据</p>}
+                  </div>
+                </section>
+
+                <DiscoveryPlaylistSection
+                  title="实时榜单"
+                  subtitle="热门流行与飙升榜"
+                  icon={<Trophy className="size-4" />}
+                  playlists={discovery.rankings}
+                  onOpenPlaylist={onOpenPlaylist}
+                  emptyText="暂无榜单数据"
+                />
+
+                <DiscoveryPlaylistSection
+                  title="歌单广场"
+                  subtitle="精选主题与编辑推荐"
+                  icon={<ListMusic className="size-4" />}
+                  playlists={discovery.playlists}
+                  onOpenPlaylist={onOpenPlaylist}
+                  emptyText="暂无歌单数据"
+                />
               </div>
-              <Button disabled={radioLoading} onClick={requestRadio}>
-                {radioLoading ? <LoaderCircle className="animate-spin" /> : <Radio />} {selectedBpm == null ? "获取推荐" : "换一组"}
-              </Button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Styles Tab */}
+      <div
+        id={`${tabId}-styles-panel`}
+        role="tabpanel"
+        aria-labelledby={`${tabId}-styles-tab`}
+        hidden={activeTab !== "styles"}
+        className={cn("mt-5 min-h-0 flex-1 flex-col gap-4 overflow-hidden", activeTab === "styles" ? "flex" : "hidden")}
+      >
+        {activeTab === "styles" && (
+          <>
+            <div className="explore-section no-scrollbar max-h-[144px] shrink-0 space-y-2.5 overflow-y-auto rounded-2xl border p-3.5 sm:p-4" aria-busy={stylesLoading}>
+              {stylesLoading && !styleGroups.length && (
+                <div className="flex items-center gap-2 py-2 text-xs text-neutral-400">
+                  <LoaderCircle className="size-3.5 animate-spin" /> 正在加载曲风分类…
+                </div>
+              )}
+              {styleGroups.map((group) => (
+                <div key={group.id} className="flex items-start gap-3">
+                  <span className="w-14 shrink-0 pt-1.5 text-[11px] font-semibold text-neutral-400">{group.name}</span>
+                  <div className="flex min-w-0 flex-wrap gap-1.5">
+                    {group.styles.map((style) => {
+                      const selected = selectedStyleId === style.id;
+                      return (
+                        <button
+                          key={style.id}
+                          type="button"
+                          aria-pressed={selected}
+                          className={cn(
+                            "explore-style-chip rounded-full border px-2.5 py-1 text-xs font-medium transition",
+                            selected && "is-active",
+                          )}
+                          onClick={() => onSelectStyle(style.id)}
+                        >
+                          {style.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              {!stylesLoading && !styleGroups.length && !styleError && <EmptyState text="暂无曲风数据" />}
             </div>
-            <div className="mt-5 flex items-center gap-4">
-              <input
-                aria-label="目标 BPM"
-                type="range"
-                min={60}
-                max={180}
-                value={bpm}
-                onChange={(event) => updateBpm(Number(event.target.value))}
-                className="min-w-0 flex-1 accent-[var(--accent)]"
+
+            <div className="explore-section flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border">
+              <div className="explore-style-banner flex shrink-0 flex-wrap items-center justify-between gap-4 border-b px-4 py-3.5 sm:px-5">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">GENRE CURATION</p>
+                  <h2 className="mt-0.5 truncate text-lg font-semibold">{selectedStyle?.name ?? "选择一个曲风"}</h2>
+                  {selectedStyle?.description && (
+                    <p className="mt-0.5 line-clamp-1 text-xs text-neutral-500" title={selectedStyle.description}>
+                      {selectedStyle.description}
+                    </p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-2.5">
+                  <div className="explore-sort-group flex items-center gap-1 rounded-full p-1" role="group" aria-label="曲风歌曲排序">
+                    {(["hot", "new"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={sort === value}
+                        disabled={!selectedStyleId || loading || loadingMore}
+                        onClick={() => onSortChange(value)}
+                        className={cn(
+                          "explore-sort-btn rounded-full px-3 py-1 text-xs font-medium transition disabled:opacity-45",
+                          sort === value && "is-active",
+                        )}
+                      >
+                        {value === "hot" ? "热门" : "最新"}
+                      </button>
+                    ))}
+                  </div>
+                  <Button size="sm" disabled={!tracks.length || loading} onClick={() => playTracks(tracks)}>
+                    <Play className="size-3.5 fill-current" /> 播放全部
+                  </Button>
+                </div>
+              </div>
+              {styleError && <ErrorMessage message={styleError} onRetry={onRetryStyles} disabled={stylesLoading || loading || loadingMore} />}
+              <ExploreTrackList
+                tracks={tracks}
+                loading={loading}
+                error={Boolean(styleError)}
+                onPickTrack={onPickTrack}
+                emptyText={selectedStyle ? "这个曲风暂时没有歌曲" : "从上方选择一个曲风"}
               />
-              <label className="flex h-10 w-24 shrink-0 items-center justify-between rounded-xl border border-[var(--line)] bg-[var(--surface)] px-3 text-sm">
-                <input aria-label="BPM 数值" type="number" min={60} max={180} value={bpmInput} onChange={(event) => setBpmInput(event.target.value)} onBlur={() => updateBpm(bpmInput.trim() ? Number(bpmInput) : bpm)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} className="w-12 bg-transparent text-right font-semibold outline-none" />
-                <span className="text-xs text-neutral-400">BPM</span>
-              </label>
+              {onLoadMore && tracks.length > 0 && (
+                <div className="explore-divider shrink-0 border-t px-4 py-2.5 text-center">
+                  <Button variant="ghost" size="sm" disabled={loading || loadingMore} onClick={onLoadMore}>
+                    {loadingMore && <LoaderCircle className="animate-spin" />} {loadingMore ? "正在加载…" : "加载更多曲目"}
+                  </Button>
+                </div>
+              )}
             </div>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.25rem] border border-[var(--line)] bg-[var(--surface-muted)]/45">
-            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-4 sm:px-5">
-              <div className="min-w-0"><div className="flex items-center gap-2"><ListMusic className="size-4 shrink-0 text-neutral-400" /><h2 className="truncate text-lg font-semibold">节拍推荐</h2></div>{selectedBpm != null && <p className="mt-1 text-xs text-neutral-400">当前推荐 · {selectedBpm} BPM 偏好</p>}</div>
-              <Button variant="glass" size="sm" disabled={!radioTracks.length || radioLoading} onClick={() => playTracks(radioTracks)}><Play className="fill-current" /> 播放全部</Button>
-            </div>
-            {radioError && <ErrorMessage message={radioError} onRetry={requestRadio} disabled={radioLoading} />}
-            <TrackList tracks={radioTracks} loading={radioLoading} error={Boolean(radioError)} onPickTrack={onPickTrack} emptyText={selectedBpm == null ? "点击“获取推荐”开始节拍电台" : "这次没有找到推荐歌曲，试试其他 BPM"} />
-          </div>
-        </>}
-      </div>
-      <div id={`${tabId}-discover-panel`} role="tabpanel" aria-labelledby={`${tabId}-discover-tab`} hidden={activeTab !== "discover"} className={cn("mt-6 min-h-0 flex-1 flex-col gap-5 overflow-hidden", activeTab === "discover" ? "flex" : "hidden")}>
-        {activeTab === "discover" && <>
-          {discoveryError && <ErrorMessage message={discoveryError} onRetry={onRetryDiscovery} disabled={discoveryLoading} />}
-          {discoveryLoading && !discovery && <div className="flex min-h-40 items-center justify-center text-sm text-neutral-400"><LoaderCircle className="mr-2 size-4 animate-spin" /> 正在加载发现内容</div>}
-          {discovery && <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <section className="rounded-[1.25rem] border border-[var(--line)] bg-[var(--surface-muted)]/45 p-4 sm:p-5">
-              <div className="flex items-center gap-2"><Sparkles className="size-4 text-[var(--accent)]" /><h2 className="text-lg font-semibold">热搜趋势</h2><span className="text-xs text-neutral-400">点击搜索</span></div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {discovery.hotSearches.map((term, index) => <button key={`${term}-${index}`} type="button" className="rounded-full border border-[var(--line)] bg-[var(--surface)] px-3 py-1.5 text-sm transition hover:border-[var(--accent)] hover:text-[var(--accent)]" onClick={() => onSearchHot(term)}>{index < 3 && <span className="mr-1.5 text-xs text-[var(--accent)]">0{index + 1}</span>}{term}</button>)}
-                {!discovery.hotSearches.length && <p className="text-sm text-neutral-400">暂无热搜数据</p>}
-              </div>
-            </section>
-            <div className="mt-5 grid min-h-0 gap-5 xl:grid-cols-2">
-              <DiscoveryPlaylistSection title="实时榜单" icon={<Trophy className="size-4" />} playlists={discovery.rankings} onOpenPlaylist={onOpenPlaylist} emptyText="暂无榜单数据" />
-              <DiscoveryPlaylistSection title="歌单广场" icon={<ListMusic className="size-4" />} playlists={discovery.playlists} onOpenPlaylist={onOpenPlaylist} emptyText="暂无歌单数据" />
-            </div>
-          </div>}
-        </>}
+          </>
+        )}
       </div>
     </section>
   );
@@ -301,31 +361,66 @@ export function ExploreSurface({
 
 function DiscoveryPlaylistSection({
   title,
+  subtitle,
   icon,
   playlists,
   onOpenPlaylist,
   emptyText,
 }: {
   title: string;
+  subtitle: string;
   icon: ReactNode;
   playlists: ProviderPlaylist[];
   onOpenPlaylist: (playlist: ProviderPlaylist) => void;
   emptyText: string;
 }) {
-  return <section className="min-h-0 rounded-[1.25rem] border border-[var(--line)] bg-[var(--surface-muted)]/45 p-4 sm:p-5">
-    <div className="flex items-center gap-2"><span className="text-neutral-400">{icon}</span><h2 className="text-lg font-semibold">{title}</h2><span className="text-xs text-neutral-400">{playlists.length} 个</span></div>
-    <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-      {playlists.map((playlist) => <button key={playlist.id} type="button" className="group min-w-0 text-left" onClick={() => onOpenPlaylist(playlist)} title={playlist.name}>
-        <ArtworkImage src={playlist.coverUrl} alt="" className="aspect-square w-full rounded-xl object-cover shadow-sm transition group-hover:scale-[1.02]" />
-        <span className="mt-2 block truncate text-sm font-semibold">{playlist.name}</span>
-        <span className="mt-0.5 block truncate text-xs text-neutral-400">{playlist.description || `${playlist.trackCount} 首歌曲`}</span>
-      </button>)}
-      {!playlists.length && <p className="col-span-full py-6 text-center text-sm text-neutral-400">{emptyText}</p>}
-    </div>
-  </section>;
+  return (
+    <section className="explore-section min-h-0 rounded-2xl border p-4 sm:p-5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="explore-icon-pill">{icon}</span>
+          <div>
+            <h2 className="text-base font-semibold leading-tight">{title}</h2>
+            <p className="text-[11px] text-neutral-400">{subtitle}</p>
+          </div>
+        </div>
+        <Badge>{playlists.length} 个</Badge>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
+        {playlists.map((playlist) => (
+          <button
+            key={playlist.id}
+            type="button"
+            className="explore-playlist-card group flex min-w-0 flex-col rounded-2xl border p-2 text-left transition"
+            onClick={() => onOpenPlaylist(playlist)}
+            title={playlist.name}
+          >
+            <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-neutral-900/5">
+              <ArtworkImage
+                src={playlist.coverUrl}
+                alt=""
+                className="size-full object-cover transition duration-300 group-hover:scale-105"
+              />
+              <span className="explore-card-play pointer-events-none absolute bottom-2 right-2 flex size-8 items-center justify-center rounded-full shadow-lg opacity-0 transition duration-200 group-hover:opacity-100">
+                <Play className="size-3.5 fill-current" />
+              </span>
+            </div>
+            <span className="mt-2.5 line-clamp-2 min-h-[2.25rem] text-xs font-semibold leading-snug">
+              {playlist.name}
+            </span>
+            <span className="mt-1 truncate text-[11px] text-neutral-400">
+              {playlist.trackCount > 0 ? `${playlist.trackCount} 首歌曲` : playlist.description || "精选推荐"}
+            </span>
+          </button>
+        ))}
+        {!playlists.length && <p className="col-span-full py-6 text-center text-sm text-neutral-400">{emptyText}</p>}
+      </div>
+    </section>
+  );
 }
 
-function TrackList({
+function ExploreTrackList({
   tracks,
   loading,
   error,
@@ -338,7 +433,7 @@ function TrackList({
   onPickTrack: (id: string, queue?: Track[]) => void;
   emptyText: string;
 }) {
-  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 72, overscan: 8 });
+  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 70, overscan: 8 });
   const firstTrackId = tracks[0]?.id;
 
   useEffect(() => {
@@ -346,31 +441,42 @@ function TrackList({
   }, [firstTrackId, virtual.containerRef]);
 
   return (
-    <div ref={virtual.containerRef} className="no-scrollbar min-h-0 flex-1 overflow-y-auto p-2 sm:p-3" aria-busy={loading}>
-      {loading && !tracks.length && <div className="flex min-h-40 items-center justify-center text-sm text-neutral-400"><LoaderCircle className="mr-2 size-4 animate-spin" /> 正在加载</div>}
+    <div ref={virtual.containerRef} className="no-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3" aria-busy={loading}>
+      {loading && !tracks.length && (
+        <div className="flex min-h-40 items-center justify-center text-sm text-neutral-400">
+          <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在加载曲风歌曲…
+        </div>
+      )}
       {!loading && !error && !tracks.length && <EmptyState text={emptyText} />}
       <div className="relative" style={{ height: virtual.totalHeight }}>
         {virtual.rows.map(({ index, offsetTop }) => {
           const track = tracks[index];
           if (!track) return null;
           return (
-          <button
-            key={`${track.id}-${index}`}
-            type="button"
-            aria-label={`播放 ${track.title}`}
-            style={{ top: offsetTop }}
-            className="group absolute inset-x-0 grid h-[72px] grid-cols-[1.5rem_3.5rem_minmax(0,1fr)_auto_1rem] items-center gap-3 rounded-xl px-2 py-1.5 text-left transition hover:bg-[var(--surface)]"
-            onClick={() => onPickTrack(track.id, tracks)}
-          >
-            <span className="text-center text-xs text-neutral-400">{index + 1}</span>
-            <CoverArt track={track} className="size-12 rounded-xl" />
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold"><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></span>
-              <span className="mt-1 block truncate text-xs text-neutral-500"><CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText></span>
-            </span>
-            <span className="hidden max-w-28 truncate text-xs text-neutral-400 sm:block">{formatAudioDetail(track)}</span>
-            <ChevronRight className="size-4 text-neutral-300 transition group-hover:translate-x-0.5 group-hover:text-neutral-600" />
-          </button>
+            <button
+              key={`${track.id}-${index}`}
+              type="button"
+              aria-label={`播放 ${track.title}`}
+              style={{ top: offsetTop }}
+              className="explore-track-row group absolute inset-x-0 grid h-[64px] grid-cols-[1.75rem_3rem_minmax(0,1fr)_auto_1rem] items-center gap-3 rounded-xl px-2.5 py-1.5 text-left transition"
+              onClick={() => onPickTrack(track.id, tracks)}
+            >
+              <span className="text-center text-xs tabular-nums text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
+              <CoverArt track={track} className="size-11 rounded-xl" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold" title={track.title}>
+                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-neutral-500">
+                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+                  {track.album && track.album !== track.title ? (
+                    <span className="text-neutral-400"> · {track.album}</span>
+                  ) : null}
+                </span>
+              </span>
+              <Badge className="shrink-0 whitespace-nowrap">{formatAudioDetail(track)}</Badge>
+              <ChevronRight className="size-4 text-neutral-300 transition group-hover:translate-x-0.5 group-hover:text-neutral-600" />
+            </button>
           );
         })}
       </div>
@@ -379,5 +485,10 @@ function TrackList({
 }
 
 function ErrorMessage({ message, onRetry, disabled }: { message: string; onRetry: () => void; disabled: boolean }) {
-  return <div role="alert" className="mx-3 mt-3 flex shrink-0 items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"><p className="min-w-0">{message}</p><Button variant="ghost" size="sm" disabled={disabled} onClick={onRetry}>重试</Button></div>;
+  return (
+    <div role="alert" className="mx-3 mt-3 flex shrink-0 items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+      <p className="min-w-0">{message}</p>
+      <Button variant="ghost" size="sm" disabled={disabled} onClick={onRetry}>重试</Button>
+    </div>
+  );
 }

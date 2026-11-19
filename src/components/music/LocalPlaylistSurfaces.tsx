@@ -9,10 +9,11 @@ import { createLocalTrackSearchIndex, searchLocalTrackIndex } from "@/lib/localS
 import type { LocalPlaylist, LocalPlaylistRemoteRef } from "@/lib/localPlaylists";
 import { resolveLocalPlaylistTracks } from "@/lib/localPlaylists";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
-import { sourceLabel } from "@/lib/trackLabels";
+import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
 import { CoverArt, EmptyState } from "./shared";
+import { SourceBadge } from "./SourceLogos";
 
 export type LocalPlaylistSurfaceProps = {
   playlists: LocalPlaylist[];
@@ -243,9 +244,14 @@ function LocalPlaylistDetail({
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0">
                   <p className="truncate font-semibold" title={track.title}>{track.title}</p>
-                  <p className="truncate text-sm text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album} <span className="text-neutral-400">· {sourceLabel[track.source]}</span></p>
+                  <p className="truncate text-sm text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album}</p>
                 </div>
-                <div className="flex items-center gap-2"><span className="hidden text-sm text-neutral-500 sm:inline">{track.duration}</span><Button variant="ghost" size="icon" aria-label={`从歌单移除 ${track.title}`} onClick={(event) => { event.stopPropagation(); onRemove(playlist.id, [track]); }}><X /></Button></div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <SourceBadge source={track.source} compact />
+                  <Badge className="hidden shrink-0 whitespace-nowrap md:inline-flex">{formatAudioDetail(track)}</Badge>
+                  <span className="hidden shrink-0 text-sm tabular-nums text-neutral-500 sm:inline">{track.duration}</span>
+                  <Button variant="ghost" size="icon" aria-label={`从歌单移除 ${track.title}`} onClick={(event) => { event.stopPropagation(); onRemove(playlist.id, [track]); }}><X /></Button>
+                </div>
               </div>
             );
           })}
@@ -432,8 +438,8 @@ function LocalTrackPickerDialog({ tracks, existingIds, onClose, onAdd }: {
               return (
                 <button type="button" key={track.id} disabled={existing} aria-pressed={checked} onClick={() => toggle(track)} className={cn("absolute inset-x-0 grid h-16 grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-white px-3 py-2 text-left transition hover:bg-violet-50 disabled:opacity-60", checked && "bg-violet-50")} style={{ top: offsetTop }}>
                   <CoverArt track={track} className="size-11 rounded-lg" />
-                  <span className="min-w-0"><span className="block truncate text-sm font-semibold" title={track.title}>{track.title}</span><span className="block truncate text-xs text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album} · {sourceLabel[track.source]}</span></span>
-                  <span className="flex items-center gap-2 text-xs text-neutral-500">{existing && "已添加"}<span className={cn("flex size-5 items-center justify-center rounded border", checked ? "border-violet-500 bg-violet-500 text-white" : "border-neutral-300")}>{checked && <Check className="size-3" />}</span></span>
+                  <span className="min-w-0"><span className="block truncate text-sm font-semibold" title={track.title}>{track.title}</span><span className="block truncate text-xs text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album}</span></span>
+                  <span className="flex shrink-0 items-center gap-2 text-xs text-neutral-500"><SourceBadge source={track.source} compact />{existing && "已添加"}<span className={cn("flex size-5 items-center justify-center rounded border", checked ? "border-violet-500 bg-violet-500 text-white" : "border-neutral-300")}>{checked && <Check className="size-3" />}</span></span>
                 </button>
               );
             })}

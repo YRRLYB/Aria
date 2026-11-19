@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  analyzeEqualizerResponse,
+  computeEqualizerFrequencyResponse,
+  computePeakingMagnitudeDb,
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
   equalizerBandsMatch,
+  equalizerBodePaths,
   equalizerCurvePath,
   equalizerFrequencies,
   equalizerPresetBands,
@@ -140,5 +144,26 @@ describe("custom equalizer presets", () => {
     const base = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     expect(equalizerBandsMatch(base, base.map((gain) => gain + 0.04))).toBe(true);
     expect(equalizerBandsMatch(base, base.map((gain) => gain + 0.1))).toBe(false);
+  });
+
+  it("computes accurate RBJ biquad peaking response, headroom telemetry, and Bode SVG paths", () => {
+    expect(computePeakingMagnitudeDb(1000, 1000, 0)).toBe(0);
+    expect(computePeakingMagnitudeDb(1000, 1000, 6)).toBeCloseTo(6, 2);
+    expect(computePeakingMagnitudeDb(1000, 1000, -4.5)).toBeCloseTo(-4.5, 2);
+
+    const flatResp = computeEqualizerFrequencyResponse(equalizerPresetBands("flat"), 64);
+    expect(flatResp.every((pt) => pt.db === 0)).toBe(true);
+
+    // Adjacent +6 dB bands sum to more than +6 dB peak due to filter overlap.
+    const boosted = [6, 6, 0, 0, 0, 0, 0, 0, 0, 0];
+    const telemetry = analyzeEqualizerResponse(boosted, true);
+    expect(telemetry.peakBoostDb).toBeGreaterThan(6.5);
+    expect(telemetry.headroomStatus).toBe("clipRisk");
+    expect(telemetry.recommendedPreampDb).toBeLessThan(-6.5);
+
+    const bode = equalizerBodePaths(computeEqualizerFrequencyResponse(boosted, 80), 720, 192, 20, 12);
+    expect(bode.linePath.startsWith("M ")).toBe(true);
+    expect(bode.positiveAreaPath.endsWith(" Z")).toBe(true);
+    expect(bode.negativeAreaPath.endsWith(" Z")).toBe(true);
   });
 });

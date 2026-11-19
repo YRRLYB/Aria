@@ -444,9 +444,10 @@ class MpvAudioEngine {
         const nextPosition = Math.max(0, message.data);
         this.state.position = nextPosition;
         const now = Date.now();
-        const minIntervalMs = this.windowVisible === false ? 1500 : 240;
+        const minIntervalMs = this.windowVisible === false ? 1500 : 80;
+        const minDeltaSec = this.windowVisible === false ? 0.24 : 0.08;
         if (
-          Math.abs(nextPosition - this.lastEmittedPosition) < 0.24 &&
+          Math.abs(nextPosition - this.lastEmittedPosition) < minDeltaSec &&
           now - this.lastProgressEmitAt < minIntervalMs
         ) {
           return;

@@ -94,7 +94,7 @@ export function useAudioEngine(options: {
     const url = new URL(resolvedUrl, window.location.href);
     url.searchParams.set("level", options.effectiveQualityLevel);
     return url.href;
-  }, [activeTrack, options.effectiveQualityLevel]);
+  }, [activeTrack.streamUrl, activeTrack.source, options.effectiveQualityLevel]);
 
   const analyserLevel = useMemo(() => {
     if (!nativePlaybackEnabled || analyserFallbackEnabled) return options.effectiveQualityLevel;
@@ -119,7 +119,17 @@ export function useAudioEngine(options: {
     // so use the smallest real stream to avoid doubling decoder memory.
     url.searchParams.set("level", nativePlaybackEnabled ? analyserLevel : options.effectiveQualityLevel);
     return url.href;
-  }, [activeTrack, analyserLevel, nativePlaybackEnabled, options.effectiveQualityLevel]);
+  }, [
+    activeTrack.streamUrl,
+    activeTrack.requiresNativePlayback,
+    activeTrack.source,
+    analyserLevel,
+    nativePlaybackEnabled,
+    options.effectiveQualityLevel,
+  ]);
+  // 系统输出模式下 `<audio>` 就是实际出声主体；切到歌手页 / 列表页时
+  // `options.analyserEnabled` 会变 false，绝不能因此扰动 `<audio>` 或挂起 AudioContext。
+  const effectiveAnalyserEnabled = nativePlaybackEnabled ? options.analyserEnabled : true;
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -351,12 +361,13 @@ export function useAudioEngine(options: {
       return;
     }
 
-    nativeAnalyserDelayUntilRef.current = performance.now() + 220;
+    const startupDelay = options.activeTrack.source === "local" ? 30 : 60;
+    nativeAnalyserDelayUntilRef.current = performance.now() + startupDelay;
     const timer = window.setTimeout(() => {
       setNativeAnalyserWakeToken((value) => value + 1);
-    }, 260);
+    }, startupDelay + 10);
     return () => window.clearTimeout(timer);
-  }, [options.activeTrack.id, activeStreamUrl, options.audioOutputMode, nativePlaybackRequested, selectedSinkId]);
+  }, [options.activeTrack.id, options.activeTrack.source, activeStreamUrl, options.audioOutputMode, nativePlaybackRequested, selectedSinkId]);
 
   useEffect(() => {
     if (!audioOutputDevices.length) return;
@@ -382,7 +393,7 @@ export function useAudioEngine(options: {
     // lightweight analyser source, so avoid pre-buffering the whole stream.
     audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : "metadata";
 
-    if (!audioElementStreamUrl || !nativeAnalyserReady || (nativePlaybackEnabled && !options.analyserEnabled)) {
+    if (!audioElementStreamUrl || !nativeAnalyserReady || (nativePlaybackEnabled && !effectiveAnalyserEnabled)) {
       audio.pause();
       if (nativePlaybackEnabled && audio.src) {
         audio.removeAttribute("src");
@@ -390,6 +401,20 @@ export function useAudioEngine(options: {
       }
       return;
     }
+
+    const alignNativeAnalyser = () => {
+      if (!nativePlaybackEnabled || audio.readyState < 1) return;
+      const target = Math.max(0, getPlaybackTime() + (options.playing ? 0.04 : 0));
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : target;
+      const clampedTarget = Math.min(target, duration);
+      if (Math.abs(audio.currentTime - clampedTarget) >= 0.08) {
+        try {
+          audio.currentTime = clampedTarget;
+        } catch {
+          // Will sync once native metadata/ranges arrive.
+        }
+      }
+    };
 
     const nextSrc = new URL(audioElementStreamUrl, window.location.href).href;
     if (audio.src !== nextSrc) {
@@ -403,22 +428,31 @@ export function useAudioEngine(options: {
       if (!nativePlaybackEnabled) options.setDurationSeconds(0);
     }
 
+    if (nativePlaybackEnabled) {
+      audio.addEventListener("loadedmetadata", alignNativeAnalyser, { once: true });
+      alignNativeAnalyser();
+    }
+
+    let cancelPlayback: (() => void) | undefined;
     if (options.playing) {
-      return requestMediaPlayback(audio, () => {
+      cancelPlayback = requestMediaPlayback(audio, () => {
         if (!nativePlaybackEnabled) options.setPlaying(() => false);
       });
     } else {
       audio.pause();
     }
+    return () => {
+      audio.removeEventListener("loadedmetadata", alignNativeAnalyser);
+      cancelPlayback?.();
+    };
   }, [
     audioElementStreamUrl,
     options.activeTrack.id,
-    options.hifiEnabled,
     nativeAudioState?.active,
     nativeAudioState?.trackId,
     nativeAnalyserWakeToken,
     nativePlaybackEnabled,
-    options.analyserEnabled,
+    effectiveAnalyserEnabled,
     options.volume,
     options.playing,
   ]);
@@ -722,7 +756,7 @@ export function useAudioEngine(options: {
       !options.playing ||
       !audioElementStreamUrl ||
       (!options.pageVisible && !options.normalizationEnabled) ||
-      (nativePlaybackEnabled && !options.analyserEnabled);
+      (nativePlaybackEnabled && !effectiveAnalyserEnabled);
     if (!audioSourceRef.current && shouldSleepGraph) {
       return;
     }
@@ -856,7 +890,7 @@ export function useAudioEngine(options: {
     audioElementStreamUrl,
     options.activeTrack.id,
     nativePlaybackEnabled,
-    options.analyserEnabled,
+    effectiveAnalyserEnabled,
     options.pageVisible,
     options.playing,
     options.normalizationEnabled,

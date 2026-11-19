@@ -26,7 +26,7 @@ const noiseGate = 0.008;
 
 export function configureSpectrumAnalyser(analyser: AnalyserNode) {
   analyser.fftSize = 2048;
-  analyser.smoothingTimeConstant = 0.16;
+  analyser.smoothingTimeConstant = 0.06;
   analyser.minDecibels = -100;
   analyser.maxDecibels = -8;
 }
@@ -102,14 +102,14 @@ export class RealtimeSpectrumEngine {
     this.silentFrames = 0;
     const loudness = Math.max(0.012, dynamics.rms * 1.8 + frequencyEnergy.signal * 0.86 + dynamics.peak * 0.18);
     const targetGain = clamp(0.44 / loudness, 0.78, 4.2);
-    this.autoGain += (targetGain - this.autoGain) * 0.026;
+    this.autoGain += (targetGain - this.autoGain) * 0.06;
 
     const visualVolume = Math.pow(clamp(options.outputVolume / 100, 0, 1), 0.72);
     const outputScale = 0.18 + visualVolume * 0.82;
     const modeCompensation = options.outputMode === "system" ? 0.98 : 1.04;
-    const attack = 1 - Math.pow(0.26, deltaMs / 16.7);
-    const release = 1 - Math.pow(0.78, deltaMs / 16.7);
-    const peakRelease = 0.18 * (deltaMs / 16.7);
+    const attack = 1 - Math.pow(0.06, deltaMs / 16.7);
+    const release = 1 - Math.pow(0.58, deltaMs / 16.7);
+    const peakRelease = 0.22 * (deltaMs / 16.7);
 
     for (let index = 0; index < spectrumBandCount; index += 1) {
       const voiceLift = this.bandVoiceLift[index];

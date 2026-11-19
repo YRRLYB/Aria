@@ -62,7 +62,7 @@ export function FloatingNav({
     >
       <button
         type="button"
-        className="pointer-events-auto absolute z-30 flex size-[4.5rem] items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_18px_50px_rgba(47,55,76,0.16)] [&_*]:pointer-events-none"
+        className="floating-nav-orb pointer-events-auto absolute z-30 flex size-[4.5rem] items-center justify-center rounded-full border shadow-[0_18px_50px_rgba(47,55,76,0.16)] [&_*]:pointer-events-none"
         style={{ left: center.x - 36, top: center.y - 36 }}
         aria-label="副导航"
         aria-expanded={open}
@@ -73,7 +73,7 @@ export function FloatingNav({
         <AriaIcon
           name="nav-orb"
           className={cn(
-            "size-9 text-neutral-950 transition duration-200",
+            "size-9 transition duration-200",
             open && "rotate-45 scale-[0.9]",
           )}
         />
@@ -122,9 +122,9 @@ export function FloatingNav({
               key={item.id}
               type="button"
               className={cn(
-                "group absolute z-20 flex size-12 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-950 shadow-[0_14px_34px_rgba(47,55,76,0.13)] transition duration-200 hover:border-neutral-300 hover:bg-neutral-50 [&_*]:pointer-events-none",
+                "floating-nav-node group absolute z-20 flex size-12 items-center justify-center rounded-full border shadow-[0_14px_34px_rgba(47,55,76,0.13)] transition duration-200 [&_*]:pointer-events-none",
                 open ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-50 opacity-0",
-                active && "!bg-neutral-950 !text-white [--aria-glint:#171717] hover:!bg-neutral-900",
+                active && "is-active",
               )}
               style={{
                 left: pos.x - 24,
@@ -135,14 +135,8 @@ export function FloatingNav({
               tabIndex={open ? 0 : -1}
               onClick={() => onPick(item.id)}
             >
-              {item.id === "artists" ? (
-                <span className="relative flex size-9 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7bd9c7] via-[#f5f7ff] to-[#f0a0c9] text-neutral-950">
-                  <AriaIcon name={iconName} className="size-6" />
-                </span>
-              ) : (
-                <AriaIcon name={iconName} className={cn("size-6", active && "size-[1.65rem]")} />
-              )}
-              <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-visible:opacity-100">
+              <AriaIcon name={iconName} className={cn("size-6", active && "size-[1.65rem]")} />
+              <span className="floating-nav-tooltip pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-visible:opacity-100">
                 {item.label}
                 {item.id === "artists" ? (
                   <span className="ml-1.5 text-white/55">多源</span>

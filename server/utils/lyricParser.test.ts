@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseLrcEntries, parseNeteaseLyrics, parseYrcEntries } from "./lyricParser";
+import { normalizeBilingualLyrics } from "../../src/lib/lyricNormalize";
 
 describe("word-level lyric parsing", () => {
   it("preserves absolute word timing, spaces and line timing while excluding metadata", () => {
@@ -47,5 +48,61 @@ describe("word-level lyric parsing", () => {
         { time: "00:01", startTime: 1.25, text: "Repeat", timingVersion: 1 },
         { time: "01:01", startTime: 61.8, text: "Repeat", timingVersion: 1 },
       ]);
+  });
+
+  it("pairs same-timestamp bilingual LRC lines onto one row instead of splitting English and Chinese", () => {
+    const lines = parseNeteaseLyrics({
+      lrc: {
+        lyric: [
+          "[00:12.34]I see the city lights tonight",
+          "[00:12.34]今晚我看见城市的灯火",
+          "[00:18.90]Keep holding on to me",
+          "[00:18.92]请紧紧握住我的手",
+        ].join("\n"),
+      },
+    });
+    expect(lines).toEqual([
+      {
+        time: "00:12",
+        startTime: 12.34,
+        text: "I see the city lights tonight",
+        translation: "今晚我看见城市的灯火",
+        timingVersion: 1,
+      },
+      {
+        time: "00:18",
+        startTime: 18.9,
+        text: "Keep holding on to me",
+        translation: "请紧紧握住我的手",
+        timingVersion: 1,
+      },
+    ]);
+  });
+
+  it("strips QQ/LRC '//' placeholder translations and keeps distinct lines separate", () => {
+    const lines = parseNeteaseLyrics({
+      lrc: {
+        lyric: "[00:05.00]Oh yeah\n[00:10.00]Take my hand",
+      },
+      tlyric: {
+        lyric: "[00:05.00]//\n[00:10.00]牵起我的手",
+      },
+    });
+    expect(lines).toEqual([
+      { time: "00:05", startTime: 5, text: "Oh yeah", timingVersion: 1 },
+      { time: "00:10", startTime: 10, text: "Take my hand", translation: "牵起我的手", timingVersion: 1 },
+    ]);
+    expect(normalizeBilingualLyrics(lines)).toEqual(lines);
+  });
+
+  it("prefers CJK translation over romaji in 3-line same-timestamp lyrics", () => {
+    const merged = normalizeBilingualLyrics([
+      { time: "00:08", startTime: 8, text: "さよなら", timingVersion: 1 },
+      { time: "00:08", startTime: 8, text: "sayonara", timingVersion: 1 },
+      { time: "00:08", startTime: 8, text: "再见吧", timingVersion: 1 },
+    ]);
+    expect(merged).toEqual([
+      { time: "00:08", startTime: 8, text: "さよなら", translation: "再见吧", timingVersion: 1 },
+    ]);
   });
 });

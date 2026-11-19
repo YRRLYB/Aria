@@ -17,13 +17,13 @@ import {
   type ProviderUser,
 } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
-import { sourceLabel } from "@/lib/trackLabels";
 import {
   ArtistAvatar,
   CopyableTrackText,
   CoverArt,
   EmptyState,
 } from "./shared";
+import { SourceBadge } from "./SourceLogos";
 import { ArtworkImage } from "./ArtworkImage";
 import { AddToPlaylistButton, usePlaylistActions } from "./PlaylistActions";
 
@@ -236,7 +236,7 @@ export function DiscoveryTrackRow({
           )}
         </span>
         <span className="ml-2 flex shrink-0 flex-col items-end gap-1 text-xs text-neutral-400">
-          <span className="flex items-center gap-1.5">
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
             {track.vip && (
               <span
                 className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
@@ -245,10 +245,11 @@ export function DiscoveryTrackRow({
                 VIP
               </span>
             )}
-            {formatAudioDetail(track)}
+            <span className="shrink-0 whitespace-nowrap">{formatAudioDetail(track)}</span>
           </span>
-          <span>
-            {sourceLabel[track.source]} · {track.duration}
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+            <SourceBadge source={track.source} compact />
+            <span>{track.duration}</span>
           </span>
         </span>
       </div>

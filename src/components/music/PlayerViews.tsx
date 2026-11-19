@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { lazy, Suspense } from "react";
 import {
@@ -18,6 +18,7 @@ import { AriaIcon, ariaVolumeIcon } from "@/components/icons/aria";
 import { AddToPlaylistButton } from "./PlaylistActions";
 import { WordLyricText } from "./WordLyricText";
 import { getLyricStartTime } from "@/lib/lyricTiming";
+import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
 import { SpectrumCanvas } from "@/components/music/SpectrumCanvas";
 import { CopyableTrackText, CoverArt } from "@/components/music/shared";
 import { VideoStage } from "@/components/music/VideoStage";
@@ -25,18 +26,20 @@ import type { VideoControl } from "@/hooks/useVideoPlayback";
 import type { Track } from "@/data/music";
 import { copyArtworkToClipboard } from "@/lib/clipboard";
 import {
+  adaptPaletteForTheme,
   colorWithAlpha,
   formatAudioDetail,
   formatDuration,
   getActiveLyricIndex,
   parseDuration,
   qualityOptions,
+  readableForegroundForAccent,
   type AudioOutputMode,
   type CoverPalette,
   type QualityLevel,
 } from "@/lib/playerPresentation";
 import { sourceLabel } from "@/lib/trackLabels";
-import { BILIBILI_VIDEO_ENABLED, canPlayTrackVideo } from "@/lib/features";
+import { BILIBILI_LYRICS_ENABLED, BILIBILI_VIDEO_ENABLED, canPlayTrackVideo } from "@/lib/features";
 import { getPlaybackTime, subscribePlaybackTime, usePlaybackTime } from "@/lib/playbackClock";
 import { cn } from "@/lib/utils";
 const SongEncyclopediaDialog = lazy(() => import("./SongEncyclopediaDialog"));
@@ -97,7 +100,7 @@ function PlayerTransportCluster({
           <AriaIcon name="prev" className="size-5" />
         </Button>
         <Button
-          className="player-play-button text-white"
+          className="player-play-button"
           size="iconLg"
           aria-label={playing ? "暂停" : "播放"}
           title={playing ? "暂停" : "播放"}
@@ -177,6 +180,18 @@ const videoAudioLevelLabels: Record<string, string> = {
   standard: "64K",
 };
 
+const bilibiliQualityOptions: Array<{ value: QualityLevel; label: string }> = [
+  { value: "standard", label: "64K" },
+  { value: "higher", label: "132K" },
+  { value: "exhigh", label: "192K" },
+  { value: "lossless", label: "杜比" },
+  { value: "hires", label: "Hi-Res" },
+];
+
+function sourceQualityOptionsForTrack(source: Track["source"]) {
+  return source === "bilibili" ? bilibiliQualityOptions : qualityOptions;
+}
+
 function MvAudioQualitySelect({
   activeTrack,
   qualityLevel,
@@ -201,8 +216,10 @@ function MvAudioQualitySelect({
   if (onQualityLevelChange && qualitySwitchableSource) {
     const availableLevels = activeTrack.availableLevels ?? [];
     const hasKnown = availableLevels.length > 0;
-    const options = qualityOptions
-      .filter((option) => !hasKnown || option.value === "standard" || availableLevels.includes(option.value))
+    const baseOptions = sourceQualityOptionsForTrack(activeTrack.source);
+    const filtered = baseOptions
+      .filter((option) => !hasKnown || option.value === "standard" || availableLevels.includes(option.value));
+    const options = (filtered.length ? filtered : baseOptions)
       .map((option) => ({ value: option.value, label: `音质 · ${option.label}` }));
     return (
       <AriaSelect
@@ -215,7 +232,7 @@ function MvAudioQualitySelect({
           const nextLevel = value as QualityLevel;
           onQualityLevelChange(nextLevel);
           if (onVideoAudioLevelChange) {
-            onVideoAudioLevelChange(videoAudioLevels.includes(nextLevel) ? nextLevel : null);
+            onVideoAudioLevelChange(nextLevel);
           }
         }}
         options={options}
@@ -245,6 +262,7 @@ function PlayerVideoCurtain({
   activeTrack,
   palette,
   playing,
+  immersive = false,
   volume,
   onVolumeChange,
   liked,
@@ -275,11 +293,13 @@ function PlayerVideoCurtain({
   onPrevious,
   onNext,
   onOpenImmersive,
+  onCloseImmersive,
   onCloseVideo,
 }: {
   activeTrack: Track;
   palette: CoverPalette;
   playing: boolean;
+  immersive?: boolean;
   volume: number;
   onVolumeChange: (volume: number) => void;
   liked: boolean;
@@ -310,9 +330,48 @@ function PlayerVideoCurtain({
   onPrevious: () => void;
   onNext: () => void;
   onOpenImmersive: () => void;
+  onCloseImmersive?: () => void;
   onCloseVideo: () => void;
 }) {
   const pipSupported = typeof document !== "undefined" && Boolean(document.pictureInPictureEnabled);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
+  const chromeHoveredRef = useRef(false);
+  const [chromeVisible, setChromeVisible] = useState(true);
+
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHideChrome = useCallback(() => {
+    clearHideTimer();
+    if (!immersive || !playing || chromeHoveredRef.current) return;
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      if (chromeHoveredRef.current) return;
+      if (stageRef.current?.querySelector('[role="listbox"]')) return;
+      setChromeVisible(false);
+    }, 2600);
+  }, [clearHideTimer, immersive, playing]);
+
+  const wakeChrome = useCallback(() => {
+    setChromeVisible(true);
+    scheduleHideChrome();
+  }, [scheduleHideChrome]);
+
+  useEffect(() => {
+    if (!immersive || !playing) {
+      clearHideTimer();
+      setChromeVisible(true);
+      return;
+    }
+    setChromeVisible(true);
+    scheduleHideChrome();
+    return clearHideTimer;
+  }, [clearHideTimer, immersive, playing, scheduleHideChrome]);
 
   async function togglePictureInPicture() {
     try {
@@ -328,45 +387,79 @@ function PlayerVideoCurtain({
     }
   }
 
+  const activeCurtainPalette = useMemo(
+    () => (immersive ? adaptPaletteForTheme(palette, true) : palette),
+    [immersive, palette],
+  );
+  const audioDetailText = formatAudioDetail(activeTrack);
+  const selectVariant = immersive ? "dark" : "glass";
+  const controlsDimmed = immersive && playing && !chromeVisible;
+
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.985 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.985 }}
+      ref={stageRef}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-      style={{
-        ["--track-accent" as string]: palette.primary,
-        backgroundImage: `linear-gradient(155deg, var(--player-panel-sheen), ${colorWithAlpha(palette.primary, 0.14)} 48%, ${colorWithAlpha(palette.secondary, 0.22)})`,
-      } as CSSProperties}
-      className="aria-mv-stage video-stage absolute inset-0 z-20 grid h-full max-h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden p-4 pb-7 sm:p-6 sm:pb-9 2xl:p-7 2xl:pb-10"
+      style={
+        immersive
+          ? ({
+              ["--track-accent" as string]: activeCurtainPalette.primary,
+              ["--track-accent-fg" as string]: readableForegroundForAccent(activeCurtainPalette.primary),
+            } as CSSProperties)
+          : ({
+              ["--track-accent" as string]: activeCurtainPalette.primary,
+              ["--track-accent-fg" as string]: readableForegroundForAccent(activeCurtainPalette.primary),
+              backgroundImage: `linear-gradient(155deg, var(--player-panel-sheen), ${colorWithAlpha(activeCurtainPalette.primary, 0.14)} 48%, ${colorWithAlpha(activeCurtainPalette.secondary, 0.22)})`,
+            } as CSSProperties)
+      }
+      onPointerMove={immersive ? wakeChrome : undefined}
+      onPointerDown={immersive ? wakeChrome : undefined}
+      className={cn(
+        immersive
+          ? "aria-immersive aria-mv-stage aria-mv-immersive fixed inset-0 z-[80] overflow-hidden bg-black text-white"
+          : "aria-mv-stage video-stage absolute inset-0 z-20 grid h-full max-h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden p-4 pb-7 sm:p-6 sm:pb-9 2xl:p-7 2xl:pb-10",
+        controlsDimmed && "cursor-none",
+      )}
       aria-label="B站实时视频舞台"
     >
-      <div
-        className="pointer-events-none absolute inset-0 opacity-85"
-        aria-hidden="true"
-        style={{
-          background: `radial-gradient(circle at 22% 24%, ${palette.primary}34, transparent 26rem), radial-gradient(circle at 82% 78%, ${palette.secondary}28, transparent 22rem)`,
-        }}
-      />
+      {!immersive && (
+        <div
+          className="pointer-events-none absolute inset-0 opacity-85"
+          aria-hidden="true"
+          style={{
+            background: `radial-gradient(circle at 22% 24%, ${palette.primary}34, transparent 26rem), radial-gradient(circle at 82% 78%, ${palette.secondary}28, transparent 22rem)`,
+          }}
+        />
+      )}
 
       {/* Top header */}
-      <div className="relative z-20 flex flex-wrap items-center justify-between gap-3">
+      <div
+        onPointerEnter={immersive ? () => { chromeHoveredRef.current = true; clearHideTimer(); setChromeVisible(true); } : undefined}
+        onPointerLeave={immersive ? () => { chromeHoveredRef.current = false; scheduleHideChrome(); } : undefined}
+        className={cn(
+          "relative z-20 flex flex-wrap items-start justify-between gap-3",
+          immersive && "absolute inset-x-0 top-0 bg-gradient-to-b from-black/78 via-black/38 to-transparent p-5 transition-all duration-300 ease-out sm:p-7",
+          controlsDimmed && "pointer-events-none -translate-y-2 opacity-0",
+        )}
+      >
         <div className="min-w-0 flex-1">
-          <p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">
+          <p className={cn("flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em]", immersive ? "text-white/60" : "text-neutral-500")}>
             <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: palette.primary }} />
-            <span>
-              {sourceLabel[activeTrack.source]} · MV 实时画面 · {exclusiveMode ? "直通播放" : "独立音频输出"}
+            <span className="truncate">
+              {sourceLabel[activeTrack.source]} · MV {immersive ? "沉浸画面" : "实时画面"} · {exclusiveMode ? "直通播放" : "独立音频输出"}
             </span>
           </p>
-          <div className="mt-1 flex min-w-0 items-baseline gap-2.5">
-            <h2 className="truncate text-base font-semibold text-neutral-950 sm:text-lg" title={activeTrack.title}>
-              {activeTrack.title}
-            </h2>
-            <span className="truncate text-xs font-medium text-neutral-500 sm:text-sm">
+          <h2 className={cn("mt-1 truncate text-base font-semibold sm:text-lg", immersive ? "text-white" : "text-neutral-950")} title={activeTrack.title}>
+            {activeTrack.title}
+          </h2>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs">
+            <span className={cn("min-w-0 truncate font-medium", immersive ? "text-white/65" : "text-neutral-500")}>
               {activeTrack.artist}
             </span>
-            <span className="hidden shrink-0 text-xs text-neutral-400 xl:inline">
-              · {formatAudioDetail(activeTrack)}
+            <span className={cn("shrink-0 whitespace-nowrap", immersive ? "text-white/55" : "text-neutral-400")}>
+              · {audioDetailText}
             </span>
           </div>
         </div>
@@ -375,6 +468,7 @@ function PlayerVideoCurtain({
           {onVideoQualityChange && (
             <AriaSelect
               ariaLabel="视频画质"
+              variant={selectVariant}
               size="sm"
               align="right"
               value={videoQualityId !== null ? String(videoQualityId) : ""}
@@ -396,12 +490,13 @@ function PlayerVideoCurtain({
             videoAudioLevels={videoAudioLevels}
             videoAudioQuality={videoAudioQuality}
             onVideoAudioLevelChange={onVideoAudioLevelChange}
+            variant={selectVariant}
           />
           {pipSupported && (
             <Button
-              variant="glass"
+              variant={immersive ? "ghost" : "glass"}
               size="sm"
-              className="size-8 px-0"
+              className={cn("size-8 px-0", immersive && "bg-white/12 text-white hover:bg-white/20")}
               aria-label="画中画悬浮窗"
               title="弹出画中画小窗（切页面也可继续观看）"
               onClick={() => void togglePictureInPicture()}
@@ -409,41 +504,77 @@ function PlayerVideoCurtain({
               <PictureInPicture2 className="size-3.5" />
             </Button>
           )}
-          <Button
-            variant="glass"
-            size="sm"
-            className="size-8 px-0"
-            aria-label="沉浸全屏观看"
-            title="进入沉浸全屏观看"
-            onClick={onOpenImmersive}
-          >
-            <AriaIcon name="immersive" className="size-4" />
-          </Button>
-          <Button
-            variant="glass"
-            size="sm"
-            className="size-8 px-0"
-            aria-label="收起实时视频"
-            title="收起视频画面，返回专辑封面（音乐不中断）"
-            onClick={onCloseVideo}
-          >
-            <AriaIcon name="close" className="size-4" />
-          </Button>
+          {immersive ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-8 bg-white/12 px-0 text-white hover:bg-white/20"
+                aria-label="切回封面与音频模式"
+                title="切回封面与音频模式"
+                onClick={onCloseVideo}
+              >
+                <ImageIcon className="size-4" />
+              </Button>
+              <Button
+                className="size-8 bg-white px-0 text-neutral-950 hover:bg-white/90"
+                size="sm"
+                aria-label="退出沉浸全屏"
+                title="退出沉浸全屏 (Esc)"
+                onClick={() => (onCloseImmersive ?? onCloseVideo)()}
+              >
+                <AriaIcon name="close" className="size-4" />
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="glass"
+                size="sm"
+                className="size-8 px-0"
+                aria-label="沉浸全屏观看"
+                title="进入沉浸全屏观看"
+                onClick={onOpenImmersive}
+              >
+                <AriaIcon name="immersive" className="size-4" />
+              </Button>
+              <Button
+                variant="glass"
+                size="sm"
+                className="size-8 px-0"
+                aria-label="收起实时视频"
+                title="收起视频画面，返回专辑封面（音乐不中断）"
+                onClick={onCloseVideo}
+              >
+                <AriaIcon name="close" className="size-4" />
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Centered 16:9 video viewport */}
-      <div className="player-video-area relative z-10 min-h-0 min-w-0">
-        <div className="player-video-frame">
+      {/* Preserved 3-div wrapper structure around VideoStage so windowed <-> immersive never unmounts <video> */}
+      <div className={immersive ? "absolute inset-0 z-10" : "player-video-area relative z-10 min-h-0 min-w-0"}>
+        <div className={immersive ? "size-full" : "player-video-frame"}>
           <div
-            onClick={onTogglePlay}
-            onDoubleClick={onOpenImmersive}
-            className="aria-mv-viewport relative max-h-full cursor-pointer overflow-hidden rounded-[1.25rem] border border-white/65 bg-black shadow-[0_22px_60px_rgba(31,35,58,0.18)]"
+            onClick={() => {
+              onTogglePlay();
+              if (immersive) wakeChrome();
+            }}
+            onDoubleClick={immersive ? (onCloseImmersive ?? onCloseVideo) : onOpenImmersive}
+            className={
+              immersive
+                ? "relative size-full cursor-pointer overflow-hidden bg-black"
+                : "aria-mv-viewport relative max-h-full cursor-pointer overflow-hidden rounded-[1.25rem] border border-white/65 bg-black shadow-[0_22px_60px_rgba(31,35,58,0.18)]"
+            }
           >
-            <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-              <CoverArt track={activeTrack} className="size-full scale-110 opacity-35 blur-2xl" fit="cover" large />
-            </div>
+            {!immersive && (
+              <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+                <CoverArt track={activeTrack} className="size-full scale-110 opacity-35 blur-2xl" fit="cover" large />
+              </div>
+            )}
             <VideoStage
+              key="active-video-stage"
               track={activeTrack}
               src={videoUrl}
               active={videoActive}
@@ -453,15 +584,33 @@ function PlayerVideoCurtain({
               onDuration={onVideoDuration}
               onEnded={onVideoEnded}
               onError={onVideoError}
-              className="relative z-10 size-full bg-transparent"
+              className={immersive ? "relative z-10 size-full bg-black object-contain" : "relative z-10 size-full bg-transparent"}
             />
           </div>
         </div>
       </div>
 
       {/* Bottom Aria progress & transport dock */}
-      <div className="aria-mv-dock relative z-10 space-y-2.5 pb-1 sm:pb-1.5">
-        <div className="mx-auto w-full max-w-[40rem] space-y-2.5">
+      <div
+        onPointerEnter={immersive ? () => { chromeHoveredRef.current = true; clearHideTimer(); setChromeVisible(true); } : undefined}
+        onPointerLeave={immersive ? () => { chromeHoveredRef.current = false; scheduleHideChrome(); } : undefined}
+        aria-hidden={controlsDimmed}
+        className={cn(
+          "aria-mv-dock relative z-20",
+          immersive
+            ? "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/82 via-black/38 to-transparent p-4 pb-6 transition-all duration-300 ease-out sm:p-6 sm:pb-8"
+            : "z-10 space-y-2.5 pb-1 sm:pb-1.5",
+          controlsDimmed && "pointer-events-none translate-y-3 opacity-0",
+        )}
+      >
+        <div
+          className={cn(
+            "mx-auto w-full space-y-2.5",
+            immersive
+              ? "max-w-[44rem] space-y-3 rounded-[1.5rem] border border-white/12 bg-black/52 p-4 backdrop-blur-xl"
+              : "max-w-[40rem]",
+          )}
+        >
           <PlaybackProgress
             palette={palette}
             durationSeconds={durationSeconds}
@@ -469,6 +618,7 @@ function PlayerVideoCurtain({
             onSeek={onSeek}
             label="视频进度"
             compact
+            timeClassName={immersive ? "text-white/60" : undefined}
           />
           <PlayerTransportCluster
             playing={playing}
@@ -508,6 +658,8 @@ export function PlayerSurface({
   onNext,
   onPrevious,
   onOpenImmersive,
+  immersive = false,
+  onCloseImmersive,
   videoMode,
   onToggleVideoMode,
   videoUrlOverride,
@@ -557,6 +709,8 @@ export function PlayerSurface({
   onNext: () => void;
   onPrevious: () => void;
   onOpenImmersive: () => void;
+  immersive?: boolean;
+  onCloseImmersive?: () => void;
   videoMode: boolean;
   onToggleVideoMode: () => void;
   videoUrlOverride?: string;
@@ -647,11 +801,14 @@ export function PlayerSurface({
     await onReplaceLocalArtwork(activeTrack.id, file);
   }
 
+  const accentForeground = readableForegroundForAccent(palette.primary);
+
   return (
     <div
       className="player-surface relative grid h-full max-h-full min-h-0 overflow-hidden rounded-[1.5rem] border border-white/55 shadow-[0_22px_70px_rgba(47,55,76,0.12)]"
       style={{
         ["--track-accent" as string]: palette.primary,
+        ["--track-accent-fg" as string]: accentForeground,
         background: `linear-gradient(135deg, ${themePrimary}, var(--player-sheen) 42%, ${themeSecondary})`,
       }}
     >
@@ -740,11 +897,11 @@ export function PlayerSurface({
         >
           <div className="min-w-0 shrink-0">
             <div className="flex items-start gap-3">
-              <div className="min-w-0 py-1">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {exclusiveMode ? "直通播放" : "正在播放"}</p>
-                <p className="mt-1 text-xs font-medium leading-5 text-neutral-600">{formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
+              <div className="min-w-0 flex-1 py-1">
+                <p className="truncate text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {exclusiveMode ? "直通播放" : "正在播放"}</p>
+                <p className="mt-1 whitespace-nowrap text-xs font-medium leading-5 text-neutral-600">{formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
               </div>
-              <div className="ml-auto flex items-center gap-2">
+              <div className="player-header-actions ml-auto flex shrink-0 items-center gap-2">
                 {activeTrack.source === "netease" && /^\d{1,20}$/.test(activeTrack.providerId ?? activeTrack.id.replace(/^netease:/, "")) && <Button variant="glass" size="icon" aria-label="歌曲百科" title="歌曲百科与制作人员" onClick={() => setEncyclopediaOpen(true)}><BookOpen /></Button>}
                 <AddToPlaylistButton track={activeTrack} />
                 <div className="relative">
@@ -903,7 +1060,7 @@ export function PlayerSurface({
                 <div className="flex items-center gap-2">
                   {hifiEnabled && <Badge>HiFi 优先</Badge>}
                   <div className="player-quality-group flex flex-wrap gap-1 rounded-full bg-white/60 p-1">
-                  {qualityOptions.map((option) => (
+                  {sourceQualityOptionsForTrack(activeTrack.source).map((option) => (
                     <button
                       key={option.value}
                       aria-pressed={resolvedQualityLevel === option.value}
@@ -937,6 +1094,7 @@ export function PlayerSurface({
               activeTrack={activeTrack}
               palette={palette}
               playing={playing}
+              immersive={immersive}
               volume={volume}
               onVolumeChange={onVolumeChange}
               liked={liked}
@@ -967,6 +1125,7 @@ export function PlayerSurface({
               onPrevious={onPrevious}
               onNext={onNext}
               onOpenImmersive={onOpenImmersive}
+              onCloseImmersive={onCloseImmersive}
               onCloseVideo={onToggleVideoMode}
             />
           )}
@@ -1019,6 +1178,7 @@ export function ImmersivePlayerView({
   onVideoEnded,
   onVideoError,
   videoActive,
+  lyricDisplayMode = "bilingual",
 }: {
   activeTrack: Track;
   palette: CoverPalette;
@@ -1059,8 +1219,15 @@ export function ImmersivePlayerView({
   onVideoEnded: () => void;
   onVideoError: (message: string) => void;
   videoActive: boolean;
+  lyricDisplayMode?: "original" | "bilingual";
 }) {
-  const lyrics = activeTrack.lyrics.length ? activeTrack.lyrics : DEFAULT_IMMERSIVE_LYRICS;
+  const lyrics = useMemo(() => {
+    if (activeTrack.source === "bilibili" && !BILIBILI_LYRICS_ENABLED) {
+      return DEFAULT_IMMERSIVE_LYRICS;
+    }
+    const normalized = normalizeBilingualLyrics(activeTrack.lyrics);
+    return normalized.length ? normalized : DEFAULT_IMMERSIVE_LYRICS;
+  }, [activeTrack.lyrics, activeTrack.source]);
   const activeLyricIndex = useSyncExternalStore(
     subscribePlaybackTime,
     () => getActiveLyricIndex(lyrics, getPlaybackTime()),
@@ -1072,7 +1239,10 @@ export function ImmersivePlayerView({
   return (
     <motion.div
       className="aria-immersive fixed inset-0 z-[80] overflow-hidden bg-[#07080c] text-white"
-      style={{ ["--track-accent" as string]: palette.primary } as CSSProperties}
+      style={{
+        ["--track-accent" as string]: palette.primary,
+        ["--track-accent-fg" as string]: readableForegroundForAccent(palette.primary),
+      } as CSSProperties}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -1106,6 +1276,7 @@ export function ImmersivePlayerView({
               </h1>
               <p className="mt-1 truncate text-sm text-white/55">{activeTrack.artist} · {activeTrack.album}</p>
               <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                <span className="shrink-0 whitespace-nowrap rounded-full bg-white/10 px-2 py-0.5 text-white/75">{formatAudioDetail(activeTrack)}</span>
                 {activeTrack.videoQuality && <span className="rounded-full bg-white/10 px-2 py-0.5 text-white/75">{activeTrack.videoQuality}</span>}
                 {videoAudioQuality && <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-emerald-200">{videoAudioQuality} 音轨</span>}
               </div>
@@ -1194,7 +1365,7 @@ export function ImmersivePlayerView({
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/40">Immersive</p>
-                <p className="mt-1 truncate text-sm text-white/55">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
+                <p className="mt-1 whitespace-nowrap text-sm text-white/55">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {BILIBILI_VIDEO_ENABLED && activeTrack.videoUrl && (
@@ -1260,7 +1431,7 @@ export function ImmersivePlayerView({
                           </span>
                           <span className={cn("min-w-0 whitespace-pre-wrap break-words", active ? "text-lg font-semibold leading-7 sm:text-xl sm:leading-8" : "text-sm leading-6")}>
                             <WordLyricText line={line} active={active} playing={playing} color="#ffffff" pendingColor="rgba(255,255,255,0.38)" />
-                            {line.translation && (
+                            {lyricDisplayMode === "bilingual" && line.translation && (
                               <span className={cn("mt-1 block text-xs font-medium leading-5", active ? "text-white/55" : "text-white/30")}>
                                 {line.translation}
                               </span>

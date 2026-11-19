@@ -1,5 +1,6 @@
 import type { Track } from "@/data/music";
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
+import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
 import { readCachedLyrics } from "@/lib/playerPresentation";
 
 export type PlayHistoryEntry = {
@@ -22,8 +23,13 @@ export function createPlayerCacheSnapshot(track: Track): Track {
 
 function hydrateHistoryTrack(track: Track): Track {
   const artworkOverride = readCachedArtworkOverride(track.id);
-  const cachedLyrics = readCachedLyrics(track.id);
   const withArtwork = artworkOverride && !track.coverUrl ? { ...track, coverUrl: artworkOverride } : track;
+  if (!BILIBILI_LYRICS_ENABLED && withArtwork.source === "bilibili") {
+    return withArtwork.lyrics?.length || withArtwork.lyricStatus !== "missing"
+      ? { ...withArtwork, lyrics: [], lyricStatus: "missing" }
+      : withArtwork;
+  }
+  const cachedLyrics = readCachedLyrics(track.id);
   if (!cachedLyrics.length) return withArtwork;
   const hasLyrics = withArtwork.lyrics.some((line) => line.text.trim().length > 0);
   if (hasLyrics) return withArtwork;

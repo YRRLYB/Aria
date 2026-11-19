@@ -1,4 +1,4 @@
-import { useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { Track } from "@/data/music";
 import { useVideoPlayback, type VideoControl } from "@/hooks/useVideoPlayback";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,12 @@ export function VideoStage({
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [hasFrame, setHasFrame] = useState(false);
+
+  useEffect(() => {
+    setHasFrame(false);
+  }, [track.id]);
+
   useVideoPlayback({
     videoRef,
     active,
@@ -48,7 +54,8 @@ export function VideoStage({
       muted
       playsInline
       preload="auto"
-      poster={track.coverUrl}
+      poster={hasFrame ? undefined : track.coverUrl}
+      onLoadedData={() => setHasFrame(true)}
       className={cn("size-full bg-black object-contain", className)}
       aria-label={`${track.title} 实时视频画面`}
     />

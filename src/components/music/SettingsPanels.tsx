@@ -503,13 +503,7 @@ export function SettingsPanel({
 
           <QqSourceCard onAccountChange={onSourceAccountChange} />
 
-          <BilibiliSourceCard
-            onAccountChange={onSourceAccountChange}
-            defaultVideoQn={bilibiliDefaultVideoQn}
-            onDefaultVideoQnChange={onBilibiliDefaultVideoQnChange}
-            defaultAudioLevel={bilibiliDefaultAudioLevel}
-            onDefaultAudioLevelChange={onBilibiliDefaultAudioLevelChange}
-          />
+          <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
 
           <SourceEnableCard />
 
@@ -1964,16 +1958,8 @@ function BilibiliDefaultQualityControls({
 /** Bilibili source row: QR/cookie login + live account state from /api/sources/bilibili. */
 function BilibiliSourceCard({
   onAccountChange,
-  defaultVideoQn = 120,
-  onDefaultVideoQnChange,
-  defaultAudioLevel = "hires",
-  onDefaultAudioLevelChange,
 }: {
   onAccountChange?: () => void;
-  defaultVideoQn?: BilibiliDefaultVideoQn;
-  onDefaultVideoQnChange?: (qn: BilibiliDefaultVideoQn) => void;
-  defaultAudioLevel?: BilibiliDefaultAudioLevel;
-  onDefaultAudioLevelChange?: (level: BilibiliDefaultAudioLevel) => void;
 }) {
   const [account, setAccount] = useState<SourceAccountSummary | null>(null);
   const [hasStoredCookie, setHasStoredCookie] = useState(false);
@@ -2173,15 +2159,6 @@ function BilibiliSourceCard({
             </Button>
           </div>
         </div>
-      )}
-      {(onDefaultVideoQnChange || onDefaultAudioLevelChange) && (
-        <BilibiliDefaultQualityControls
-          className="mt-3"
-          defaultVideoQn={defaultVideoQn}
-          onDefaultVideoQnChange={onDefaultVideoQnChange}
-          defaultAudioLevel={defaultAudioLevel}
-          onDefaultAudioLevelChange={onDefaultAudioLevelChange}
-        />
       )}
       {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
       {!account?.connected && (

@@ -1,4 +1,5 @@
 import type { LyricLine, LyricWord } from "../../src/lib/lyricTypes";
+import { isPlaceholderTranslation, normalizeBilingualLyrics } from "../../src/lib/lyricNormalize";
 
 export type NeteaseLyricBody = {
   code?: number;
@@ -49,17 +50,60 @@ export function parseYrcEntries(lyric: string): LyricLine[] {
   return lines.sort((a, b) => a.startTime! - b.startTime!);
 }
 
+function findMatchingTranslation(
+  targetTime: number,
+  translation: LyricLine[],
+  usedIndices: Set<number>,
+): { index: number; text: string } | null {
+  let bestIndex = -1;
+  let bestDiff = Infinity;
+
+  for (let index = 0; index < translation.length; index += 1) {
+    if (usedIndices.has(index)) continue;
+    const item = translation[index];
+    const diff = Math.abs(item.startTime! - targetTime);
+    if (diff < 0.001) {
+      return { index, text: item.text };
+    }
+    if (diff <= 0.8 && diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex >= 0 ? { index: bestIndex, text: translation[bestIndex].text } : null;
+}
+
 export function parseNeteaseLyrics(body: NeteaseLyricBody): LyricLine[] {
-  const words = parseYrcEntries(body.yrc?.lyric ?? "");
-  const lines = words.length ? words : parseLrcEntries(body.lrc?.lyric ?? "");
-  const translation = parseLrcEntries((words.length ? body.ytlrc?.lyric : undefined) || body.tlyric?.lyric || "");
+  const rawWords = parseYrcEntries(body.yrc?.lyric ?? "");
+  const rawLrc = parseLrcEntries(body.lrc?.lyric ?? "");
+  const inlinePairedWords = normalizeBilingualLyrics(rawWords);
+  const inlinePairedLrc = normalizeBilingualLyrics(rawLrc);
+
+  const usingWords = inlinePairedWords.length > 0;
+  const lines = usingWords ? inlinePairedWords : inlinePairedLrc;
+  const rawTranslation = parseLrcEntries(
+    (usingWords ? body.ytlrc?.lyric : undefined) || body.tlyric?.lyric || "",
+  );
+  const translation = rawTranslation.filter((item) => !isPlaceholderTranslation(item.text));
+  const usedTranslationIndices = new Set<number>();
+
   return lines.map((line) => {
-    const translated = translation.find((item) => Math.abs(item.startTime! - line.startTime!) < 0.001)
-      ?? translation.reduce<LyricLine | undefined>((closest, item) => {
-        const difference = Math.abs(item.startTime! - line.startTime!);
-        if (difference > 0.8 || (closest && difference >= Math.abs(closest.startTime! - line.startTime!))) return closest;
-        return item;
-      }, undefined);
-    return translated ? { ...line, translation: translated.text } : line;
+    const matched = findMatchingTranslation(line.startTime!, translation, usedTranslationIndices);
+    if (matched) {
+      usedTranslationIndices.add(matched.index);
+      if (!isPlaceholderTranslation(matched.text)) {
+        return { ...line, translation: matched.text };
+      }
+    }
+    if (usingWords && !line.translation && inlinePairedLrc.length) {
+      const lrcFallback = inlinePairedLrc.find(
+        (item) => Boolean(item.translation) && Math.abs((item.startTime ?? 0) - (line.startTime ?? 0)) < 0.6,
+      );
+      if (lrcFallback?.translation) {
+        return { ...line, translation: lrcFallback.translation };
+      }
+    }
+    return line;
   });
 }

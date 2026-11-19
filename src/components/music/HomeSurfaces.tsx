@@ -1,14 +1,16 @@
-import { useMemo } from "react";
-import { BarChart3, CalendarDays, Headphones, History } from "lucide-react";
+import { useMemo, useState } from "react";
+import { BarChart3, CalendarDays, Headphones, History, Play, Search, X } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyableTrackText, CoverArt, EmptyState, StatTile } from "@/components/music/shared";
+import { SourceBadge, SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { sourceLabel } from "@/lib/trackLabels";
 import type { Track } from "@/data/music";
 import { useVirtualRows } from "@/lib/virtualRows";
+import { cn } from "@/lib/utils";
 
 export function HomeSidePanel({
   tracks,
@@ -265,73 +267,239 @@ export function HomeSurface({
   );
 }
 
+type HistorySourceFilter = "all" | SourceLogoOption;
+
+function formatHistoryTimestamp(timestamp: number) {
+  const date = new Date(timestamp);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayMs = startOfToday.getTime();
+  const clock = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (timestamp >= todayMs) return `今天 ${clock}`;
+  if (timestamp >= todayMs - 86_400_000) return `昨天 ${clock}`;
+  return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
+function cleanAlbumSubtitle(track: Track) {
+  const album = track.album?.trim();
+  if (!album || album === "Aria" || album === track.title.trim()) return null;
+  return album;
+}
+
 export function HistorySurface({
   history,
+  activeTrackId,
+  playing = false,
   onPickTrack,
 }: {
   history: PlayHistoryEntry[];
-  onPickTrack: (id: string) => void;
+  activeTrackId?: string;
+  playing?: boolean;
+  onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
-  const totalPlays = history.reduce((sum, entry) => sum + entry.count, 0);
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const todayCount = history.filter((entry) => entry.playedAt >= todayStart.getTime()).length;
+  const [sourceFilter, setSourceFilter] = useState<HistorySourceFilter>("all");
+  const [filterQuery, setFilterQuery] = useState("");
+
+  const { totalPlays, todayCount, sourceCounts } = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayMs = todayStart.getTime();
+    let plays = 0;
+    let today = 0;
+    const counts: Record<SourceLogoOption, number> = { local: 0, cloud: 0, netease: 0, qq: 0, bilibili: 0 };
+    for (const entry of history) {
+      plays += entry.count;
+      if (entry.playedAt >= todayMs) today += 1;
+      counts[entry.track.source] += 1;
+    }
+    return { totalPlays: plays, todayCount: today, sourceCounts: counts };
+  }, [history]);
+
+  const filteredHistory = useMemo(() => {
+    const q = filterQuery.trim().toLowerCase();
+    return history.filter((entry) => {
+      if (sourceFilter !== "all" && entry.track.source !== sourceFilter) return false;
+      if (!q) return true;
+      const track = entry.track;
+      return (
+        track.title.toLowerCase().includes(q) ||
+        track.artist.toLowerCase().includes(q) ||
+        track.album.toLowerCase().includes(q)
+      );
+    });
+  }, [filterQuery, history, sourceFilter]);
+
+  const filteredQueue = useMemo(() => filteredHistory.map((entry) => entry.track), [filteredHistory]);
 
   return (
-    <div className="glass h-full min-h-[620px] overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Badge>History</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">播放历史</h1>
-          <p className="mt-3 text-neutral-500">最近听过的歌曲会按播放时间保留在这里。</p>
+    <section
+      className="history-surface glass flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7"
+      aria-label="播放历史"
+    >
+      <header className="flex shrink-0 flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="history-eyebrow">LISTENING JOURNAL</span>
+            <span className="text-xs text-neutral-400">
+              共 {history.length} 首 · 累计 {totalPlays} 次 · 今日 {todayCount} 首
+            </span>
+          </div>
+          <h1 className="mt-2 truncate text-2xl font-semibold tracking-tight sm:text-3xl">播放历史</h1>
         </div>
-        <div className="grid w-full gap-3 sm:w-auto sm:grid-cols-3">
-          <StatTile label="记录" value={String(history.length)} />
-          <StatTile label="播放" value={String(totalPlays)} />
-          <StatTile label="今天" value={String(todayCount)} />
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <label className="history-search flex h-9 min-w-[200px] items-center gap-2 rounded-full border px-3 text-xs sm:w-64">
+            <Search className="size-3.5 shrink-0 text-neutral-400" />
+            <input
+              value={filterQuery}
+              onChange={(event) => setFilterQuery(event.target.value)}
+              placeholder="搜索历史歌曲、歌手或专辑"
+              aria-label="搜索播放历史"
+              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-neutral-400"
+            />
+            {filterQuery && (
+              <button
+                type="button"
+                aria-label="清空历史筛选"
+                className="rounded-full p-0.5 text-neutral-400 transition hover:text-neutral-800"
+                onClick={() => setFilterQuery("")}
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </label>
+          <Button
+            size="sm"
+            disabled={!filteredQueue.length}
+            onClick={() => {
+              const first = filteredQueue[0];
+              if (first) onPickTrack(first.id, filteredQueue);
+            }}
+          >
+            <Play className="size-3.5 fill-current" />
+            从最近播放
+          </Button>
         </div>
+      </header>
+
+      <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="按音源筛选历史">
+          {(
+            [
+              ["all", "全部", history.length, null],
+              ["local", "本地", sourceCounts.local, "local"],
+              ["netease", "网易云", sourceCounts.netease, "netease"],
+              ["qq", "QQ 音乐", sourceCounts.qq, "qq"],
+              ["bilibili", "B站", sourceCounts.bilibili, "bilibili"],
+              ...(sourceCounts.cloud > 0 ? [["cloud", "云盘", sourceCounts.cloud, "cloud"] as const] : []),
+            ] as const
+          ).map(([source, label, count, logo]) => {
+            const active = sourceFilter === source;
+            return (
+              <button
+                key={source}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setSourceFilter(source)}
+                className={cn(
+                  "history-filter-pill inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                  active && "is-active",
+                )}
+              >
+                {logo && <SourceLogo source={logo} className="size-3.5" />}
+                <span>{label}</span>
+                <span className="opacity-65 tabular-nums">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        {(sourceFilter !== "all" || filterQuery.trim()) && (
+          <span className="text-xs text-neutral-400">显示 {filteredHistory.length} 条记录</span>
+        )}
       </div>
 
-      <VirtualHistoryList history={history} onPickTrack={onPickTrack} />
-    </div>
+      <VirtualHistoryList
+        history={filteredHistory}
+        queue={filteredQueue}
+        activeTrackId={activeTrackId}
+        playing={playing}
+        filtered={sourceFilter !== "all" || filterQuery.trim().length > 0}
+        onPickTrack={onPickTrack}
+      />
+    </section>
   );
 }
 
-function VirtualHistoryList({ history, onPickTrack }: { history: PlayHistoryEntry[]; onPickTrack: (id: string) => void }) {
-  const virtual = useVirtualRows({ count: history.length, rowHeight: 92, overscan: 8 });
+function VirtualHistoryList({
+  history,
+  queue,
+  activeTrackId,
+  playing,
+  filtered,
+  onPickTrack,
+}: {
+  history: PlayHistoryEntry[];
+  queue: Track[];
+  activeTrackId?: string;
+  playing: boolean;
+  filtered: boolean;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+}) {
+  const virtual = useVirtualRows({ count: history.length, rowHeight: 74, overscan: 8 });
 
   if (!history.length) {
-    return <div className="mt-8"><EmptyState text="还没有播放历史，播放一首歌后这里会开始记录。" /></div>;
+    return (
+      <div className="mt-6 flex min-h-0 flex-1 items-center justify-center">
+        <EmptyState text={filtered ? "当前筛选条件下没有匹配的播放记录。" : "还没有播放历史，播放一首歌后这里会开始记录。"} />
+      </div>
+    );
   }
 
   return (
-    <div ref={virtual.containerRef} className="no-scrollbar mt-8 max-h-[calc(100%-10rem)] overflow-y-auto pr-1">
+    <div ref={virtual.containerRef} className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
       <div className="relative" style={{ height: virtual.totalHeight }}>
         {virtual.rows.map(({ index, offsetTop }) => {
           const entry = history[index];
+          if (!entry) return null;
+          const isCurrent = activeTrackId === entry.track.id;
+          const albumText = cleanAlbumSubtitle(entry.track);
+          const audioDetail = formatAudioDetail(entry.track);
           return (
             <button
               key={`${entry.track.id}-${entry.playedAt}`}
-              className="absolute left-0 right-0 grid h-[84px] grid-cols-[2.5rem_3.75rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.35rem] bg-white/48 p-3 text-left shadow-sm transition hover:bg-white/78"
+              type="button"
               style={{ top: offsetTop }}
-              onClick={() => onPickTrack(entry.track.id)}
+              onClick={() => onPickTrack(entry.track.id, queue)}
+              className={cn(
+                "history-row group absolute left-0 right-0 grid h-[68px] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3.5 rounded-2xl border px-3 text-left transition",
+                isCurrent && "is-current",
+              )}
             >
-              <span className="text-center text-sm font-semibold text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
-              <CoverArt track={entry.track} className="size-14 rounded-2xl" />
-              <span className="min-w-0">
-                <span className="block truncate font-semibold">
+              <span className="flex items-center justify-center text-xs font-medium tabular-nums text-neutral-400">
+                {isCurrent && playing ? (
+                  <AriaIcon name="playing" className="size-4 text-[var(--accent)]" />
+                ) : (
+                  String(index + 1).padStart(2, "0")
+                )}
+              </span>
+              <CoverArt track={entry.track} className="size-12 rounded-xl" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold" title={entry.track.title}>
                   <CopyableTrackText track={entry.track} field="title">{entry.track.title}</CopyableTrackText>
+                </p>
+                <p className="mt-0.5 truncate text-xs text-neutral-500">
+                  <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText>
+                  {albumText ? <span className="text-neutral-400"> · {albumText}</span> : null}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2.5">
+                <SourceBadge source={entry.track.source} compact />
+                <Badge className="shrink-0 whitespace-nowrap">{audioDetail}</Badge>
+                <span className="hidden min-w-[4.75rem] flex-col items-end text-right tabular-nums sm:flex">
+                  <span className="text-[11px] font-medium text-neutral-600">{formatHistoryTimestamp(entry.playedAt)}</span>
+                  <span className="text-[10px] text-neutral-400">{entry.count} 次</span>
                 </span>
-                <span className="mt-1 block truncate text-sm text-neutral-500">
-                  <CopyableTrackText track={entry.track} field="artist">{entry.track.artist}</CopyableTrackText> · {entry.track.album}
-                </span>
-              </span>
-              <span className="hidden flex-col items-end gap-2 sm:flex">
-                <Badge>{sourceLabel[entry.track.source]}</Badge>
-                <span className="text-xs text-neutral-500">
-                  {new Date(entry.playedAt).toLocaleString()} · {entry.count} 次
-                </span>
-              </span>
+              </div>
             </button>
           );
         })}

@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties } 
 import { ArrowDown, ArrowUp, ListEnd, Trash2 } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
+import { SourceLogo } from "@/components/music/SourceLogos";
 import type { Track } from "@/data/music";
+import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
+import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
 import { getPlaybackTime, subscribePlaybackTime } from "@/lib/playbackClock";
 import {
   colorWithAlpha,
@@ -56,11 +59,12 @@ export function QueueList({
               <p className="line-clamp-2 min-w-0 break-words text-sm font-semibold leading-5" title={track.title}>
                 <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
               </p>
-              <p className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-xs text-neutral-500">
+              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-neutral-500">
+                <SourceLogo source={track.source} className="size-3.5 shrink-0" />
                 <span className="min-w-0 truncate">
                   <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
                 </span>
-                <span className="shrink-0 text-neutral-400" title={formatAudioDetail(track)}>· {formatAudioDetail(track)}</span>
+                <span className="shrink-0 whitespace-nowrap text-neutral-400" title={formatAudioDetail(track)}>· {formatAudioDetail(track)}</span>
               </p>
             </div>
             {activeTrackId === track.id && playing && (
@@ -222,13 +226,17 @@ function SidebarLyrics({
   playing: boolean;
   onSeek: (time: number) => void;
 }) {
+  const bilibiliLyricsOff = track.source === "bilibili" && !BILIBILI_LYRICS_ENABLED;
+  const lines = useMemo(
+    () => (bilibiliLyricsOff ? [] : normalizeBilingualLyrics(track.lyrics)),
+    [bilibiliLyricsOff, track.lyrics],
+  );
   const activeLyricIndex = useSyncExternalStore(
     subscribePlaybackTime,
-    () => getActiveLyricIndex(track.lyrics, getPlaybackTime()),
-    () => getActiveLyricIndex(track.lyrics, getPlaybackTime()),
+    () => getActiveLyricIndex(lines, getPlaybackTime()),
+    () => getActiveLyricIndex(lines, getPlaybackTime()),
   );
-  const lines = track.lyrics;
-  const showPlaceholderLyrics = !(track.source === "bilibili" && track.lyricStatus !== "linked");
+  const showPlaceholderLyrics = !(track.source === "bilibili" && (!BILIBILI_LYRICS_ENABLED || track.lyricStatus !== "linked"));
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const manualScrollUntilRef = useRef(0);
 
@@ -251,57 +259,59 @@ function SidebarLyrics({
           <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
         </p>
       </div>
-      {track.source === "bilibili" && track.lyricStatus !== "linked" && (
-        <p className="relative z-10 mb-3 rounded-xl bg-sky-50 px-3 py-2 text-[11px] leading-5 text-sky-700">
-          还没有读取到 CC 字幕。该视频需要自带 CC/AI 字幕；登录B站后会重新尝试。
-        </p>
-      )}
-      <div
-        className="aria-lyric-scroll no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
-        onWheel={holdManualScroll}
-        onTouchStart={holdManualScroll}
-        onPointerDown={holdManualScroll}
-      >
-        <div className="h-14 shrink-0" />
-        {showPlaceholderLyrics && track.lyrics.map((line, index) => {
-          const active = index === activeLyricIndex;
-          const distance = activeLyricIndex >= 0 ? Math.abs(index - activeLyricIndex) : 0;
-          const depthStyle: CSSProperties | undefined = active
-            ? { backgroundColor: `${palette.primary}18` }
-            : activeLyricIndex >= 0
-              ? { opacity: distance === 1 ? 0.72 : distance === 2 ? 0.48 : 0.28 }
-              : undefined;
-          return (
-            <button
-              key={`${track.id}-${line.time}-${line.text}-${index}`}
-              ref={(node) => {
-                lineRefs.current[index] = node;
-              }}
-              className={cn(
-                "aria-lyric-line grid grid-cols-[3.25rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left text-neutral-500 hover:bg-neutral-950/[0.04]",
-                active && "is-active text-neutral-950 shadow-sm",
-              )}
-              style={depthStyle}
-              onClick={() => {
-                manualScrollUntilRef.current = 0;
-                onSeek(getLyricStartTime(line));
-              }}
-            >
-              <span className="pt-0.5 text-xs font-medium tabular-nums text-neutral-400">{line.time}</span>
-              <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7 transition-all duration-200", active ? "text-2xl font-semibold" : "text-base")}>
-                <WordLyricText line={line} active={active} playing={playing} color={palette.primary} />
-                {lyricDisplayMode === "bilingual" && line.translation && (
-                  <span className={cn("mt-1 block text-sm font-medium leading-6", active ? "text-neutral-600" : "text-neutral-400")}>
-                    {line.translation}
-                  </span>
+      {bilibiliLyricsOff ? (
+        <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 text-center">
+          <p className="text-sm font-medium text-neutral-500">B站曲目默认不加载歌词</p>
+          <p className="mt-1.5 text-xs text-neutral-400">可点击右上角「下一首」查看待播队列，或点左上角摄像机开启实时视频。</p>
+        </div>
+      ) : (
+        <div
+          className="aria-lyric-scroll no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
+          onWheel={holdManualScroll}
+          onTouchStart={holdManualScroll}
+          onPointerDown={holdManualScroll}
+        >
+          <div className="h-14 shrink-0" />
+          {showPlaceholderLyrics && lines.map((line, index) => {
+            const active = index === activeLyricIndex;
+            const distance = activeLyricIndex >= 0 ? Math.abs(index - activeLyricIndex) : 0;
+            const depthStyle: CSSProperties | undefined = active
+              ? { backgroundColor: `${palette.primary}18` }
+              : activeLyricIndex >= 0
+                ? { opacity: distance === 1 ? 0.72 : distance === 2 ? 0.48 : 0.28 }
+                : undefined;
+            return (
+              <button
+                key={`${track.id}-${line.time}-${line.text}-${index}`}
+                ref={(node) => {
+                  lineRefs.current[index] = node;
+                }}
+                className={cn(
+                  "aria-lyric-line grid grid-cols-[3.25rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left text-neutral-500 hover:bg-neutral-950/[0.04]",
+                  active && "is-active text-neutral-950 shadow-sm",
                 )}
-              </span>
-            </button>
-          );
-        })}
-        {!lines.length && <p className="text-center text-sm text-neutral-500">歌词同步中</p>}
-        <div className="h-14 shrink-0" />
-      </div>
+                style={depthStyle}
+                onClick={() => {
+                  manualScrollUntilRef.current = 0;
+                  onSeek(getLyricStartTime(line));
+                }}
+              >
+                <span className="pt-0.5 text-xs font-medium tabular-nums text-neutral-400">{line.time}</span>
+                <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7 transition-all duration-200", active ? "text-2xl font-semibold" : "text-base")}>
+                  <WordLyricText line={line} active={active} playing={playing} color={palette.primary} />
+                  {lyricDisplayMode === "bilingual" && line.translation && (
+                    <span className={cn("mt-1 block text-sm font-medium leading-6", active ? "text-neutral-600" : "text-neutral-400")}>
+                      {line.translation}
+                    </span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+          {!lines.length && <p className="text-center text-sm text-neutral-500">歌词同步中</p>}
+          <div className="h-14 shrink-0" />
+        </div>
+      )}
     </div>
   );
 }

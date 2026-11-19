@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Cloud, Heart, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { Clock3, Cloud, Disc3, Heart, LoaderCircle, Play, Plus, Radio, RefreshCw, Sparkles } from "lucide-react";
+import { AriaIcon } from "@/components/icons/aria";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
+import { computeListeningInsights, formatListeningDuration } from "@/lib/listeningStats";
+import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatAudioDetail, mergeTracks } from "@/lib/playerPresentation";
-import { sourceLabel } from "@/lib/trackLabels";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
-import { SourceLogo, SourceToggle, type SourceToggleOption } from "./SourceLogos";
+import { SourceBadge, SourceLogo, SourceToggle, type SourceToggleOption } from "./SourceLogos";
 import { ArtworkImage } from "./ArtworkImage";
 import { PlaylistDetail } from "./PlaylistDetail";
 import { AddToPlaylistButton } from "./PlaylistActions";
@@ -111,6 +113,7 @@ export function LikedSurface({
   bilibiliError = null,
   refreshing = false,
   onRefresh,
+  onVisibleTracksChange,
   onPickTrack,
 }: {
   localTracks: Track[];
@@ -123,6 +126,7 @@ export function LikedSurface({
   bilibiliError?: string | null;
   refreshing?: boolean;
   onRefresh?: (source: LikedSource) => void;
+  onVisibleTracksChange?: (tracks: Track[]) => void;
   onPickTrack: (id: string) => void;
 }) {
   // 全部来源聚合是默认视图；来源按钮仍可单独查看。
@@ -242,7 +246,14 @@ export function LikedSurface({
       )}
 
       <div className="mt-5 grid min-h-0 flex-1">
-        <LikedColumn title={active.title} subtitle={active.subtitle} emptyText={active.emptyText} tracks={active.tracks} onPickTrack={onPickTrack} />
+        <LikedColumn
+          title={active.title}
+          subtitle={active.subtitle}
+          emptyText={active.emptyText}
+          tracks={active.tracks}
+          onVisibleTracksChange={onVisibleTracksChange}
+          onPickTrack={onPickTrack}
+        />
       </div>
     </div>
   );
@@ -253,15 +264,32 @@ function LikedColumn({
   subtitle,
   emptyText,
   tracks,
+  onVisibleTracksChange,
   onPickTrack,
 }: {
   title: string;
   subtitle: string;
   emptyText: string;
   tracks: Track[];
+  onVisibleTracksChange?: (tracks: Track[]) => void;
   onPickTrack: (id: string) => void;
 }) {
   const virtual = useVirtualRows({ count: tracks.length, rowHeight: 72, overscan: 10 });
+  const visibleTracks = useMemo(
+    () => virtual.rows.map(({ index }) => tracks[index]).filter((track): track is Track => Boolean(track)),
+    [tracks, virtual.rows],
+  );
+  const visibleSignature = useMemo(
+    () => visibleTracks.map((track) => `${track.id}:${track.bitrate ?? ""}`).join("|"),
+    [visibleTracks],
+  );
+  const onVisibleTracksChangeRef = useRef(onVisibleTracksChange);
+  onVisibleTracksChangeRef.current = onVisibleTracksChange;
+  useEffect(() => {
+    if (!visibleTracks.length) return;
+    onVisibleTracksChangeRef.current?.(visibleTracks);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleSignature]);
 
   return (
     <section className="flex min-h-0 flex-col rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
@@ -286,15 +314,17 @@ function LikedColumn({
               >
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">
+                  <p className="truncate text-sm font-semibold" title={track.title}>
                     <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
                   </p>
-                  <p className="truncate text-xs text-neutral-500">
+                  <p className="mt-0.5 truncate text-xs text-neutral-500">
                     <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-                    <span className="text-neutral-400"> · {sourceLabel[track.source]}</span>
                   </p>
                 </div>
-                <Badge className="hidden sm:inline-flex">{formatAudioDetail(track)}</Badge>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <SourceBadge source={track.source} compact />
+                  <Badge className="inline-flex shrink-0 whitespace-nowrap">{formatAudioDetail(track)}</Badge>
+                </span>
                 <span className="flex size-7 items-center justify-center rounded-full bg-white/70">
                   <Heart className="size-4 fill-neutral-950" />
                 </span>
@@ -601,76 +631,330 @@ function SourceTabs({ playlistSource, onSelect }: {
   );
 }
 
-export function StatsSurface({ tracks, playCounts }: { tracks: Track[]; playCounts: Record<string, number> }) {
-  const mostPlayed = useMemo(
-    () =>
-      [...tracks]
-        .filter((track) => (playCounts[track.id] ?? 0) > 0)
-        .sort((left, right) => (playCounts[right.id] ?? 0) - (playCounts[left.id] ?? 0))
-        .slice(0, 20),
-    [playCounts, tracks],
+export function StatsSurface({
+  tracks,
+  playCounts,
+  playHistory = [],
+  activeTrackId,
+  playing = false,
+  onPickTrack,
+}: {
+  tracks: Track[];
+  playCounts: Record<string, number>;
+  playHistory?: PlayHistoryEntry[];
+  activeTrackId?: string;
+  playing?: boolean;
+  onPickTrack?: (id: string, queue?: Track[]) => void;
+}) {
+  const insights = useMemo(
+    () => computeListeningInsights(tracks, playCounts, playHistory),
+    [tracks, playCounts, playHistory],
   );
-  const localCount = useMemo(() => tracks.filter((track) => track.source === "local").length, [tracks]);
-  const neteaseCount = useMemo(() => tracks.filter((track) => track.source === "netease").length, [tracks]);
-  const playedTrackCount = useMemo(
-    () => tracks.filter((track) => (playCounts[track.id] ?? 0) > 0).length,
-    [playCounts, tracks],
-  );
-  const totalPlays = useMemo(
-    () => tracks.reduce((sum, track) => sum + (playCounts[track.id] ?? 0), 0),
-    [playCounts, tracks],
-  );
-  const firstLocal = tracks.find((track) => track.source === "local")?.title ?? "暂无歌曲";
-  const firstNetease = tracks.find((track) => track.source === "netease")?.title ?? "暂无歌曲";
+  const topTracksQueue = useMemo(() => insights.topTracks.map((item) => item.track), [insights.topTracks]);
+  const leadArtist = insights.topArtists[0] ?? null;
 
   return (
-    <div className="glass h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <Badge>Stats</Badge>
-      <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">听歌统计</h1>
-      <div className="mt-10 grid gap-3">
-        {[
-          ["累计播放", String(totalPlays), mostPlayed[0]?.title ?? "暂无记录"],
-          ["听过曲目", String(playedTrackCount), `${playedTrackCount} 首有播放记录`],
-          ["全部", String(tracks.length), tracks[0]?.title ?? "暂无歌曲"],
-          ["本地", String(localCount), firstLocal],
-          ["网易云", String(neteaseCount), firstNetease],
-        ].map(([label, count, top]) => (
-          <div
-            key={label}
-            className="grid grid-cols-[5rem_1fr] gap-4 rounded-[1.75rem] bg-white/54 p-5 shadow-sm sm:grid-cols-[7rem_1fr_auto]"
-          >
-            <p className="font-semibold">{label}</p>
-            <p className="text-neutral-500">{top}</p>
-            <p className="text-3xl font-semibold">{count}</p>
-          </div>
-        ))}
+    <div className="stats-surface glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-[var(--accent)]">Listening Insights</p>
+          <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">听歌洞察</h1>
+          <p className="mt-2 text-sm text-[var(--text-secondary)]">{insights.personaDetail}</p>
+        </div>
+        <div className="stats-persona-pill inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--surface)] px-4 py-2 text-xs font-semibold shadow-sm">
+          <Sparkles className="size-3.5 text-[var(--accent)]" />
+          <span>{insights.personaLabel}</span>
+          {insights.activeDays > 0 && (
+            <span className="text-[var(--text-secondary)]">· 活跃 {insights.activeDays} 天</span>
+          )}
+        </div>
       </div>
-      <div className="mt-8 rounded-[1.5rem] bg-white/54 p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-xl font-semibold">常听排行</h2>
-          <Badge>{mostPlayed.length} 首</Badge>
+
+      <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="stats-kpi-card rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+          <div className="flex items-center justify-between text-xs font-medium text-[var(--text-secondary)]">
+            <span>累计聆听时长</span>
+            <Clock3 className="size-3.5 text-[var(--accent)]" />
+          </div>
+          <p className="mt-2.5 truncate text-2xl font-semibold tracking-tight tabular-nums">
+            {formatListeningDuration(insights.estimatedSeconds)}
+          </p>
+          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
+            {insights.uniquePlayedTracks > 0 ? `涵盖 ${insights.uniquePlayedTracks} 首曲目` : "播放后开始估算"}
+          </p>
         </div>
-        <div className="mt-4 grid gap-3">
-          {mostPlayed.map((track, index) => (
-            <div
-              key={track.id}
-              className="grid grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.15rem] bg-white/72 p-3"
-            >
-              <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
-              <CoverArt track={track} className="size-12 rounded-xl" />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">
-                  <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-                </p>
-                <p className="truncate text-xs text-neutral-500">
-                  <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-                </p>
-              </div>
-              <span className="text-sm font-medium text-neutral-500">{playCounts[track.id] ?? 0} 次</span>
+
+        <div className="stats-kpi-card rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+          <div className="flex items-center justify-between text-xs font-medium text-[var(--text-secondary)]">
+            <span>总播放次数</span>
+            <Play className="size-3.5 text-[var(--accent)]" />
+          </div>
+          <p className="mt-2.5 truncate text-2xl font-semibold tracking-tight tabular-nums">
+            {insights.totalPlays} <span className="text-sm font-medium text-[var(--text-secondary)]">次</span>
+          </p>
+          <p className="mt-1 truncate text-[11px] text-[var(--text-secondary)]">
+            {insights.topTracks[0] ? `最常循环：${insights.topTracks[0].track.title}` : `曲库共 ${insights.libraryTotal} 首`}
+          </p>
+        </div>
+
+        <div className="stats-kpi-card rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+          <div className="flex items-center justify-between text-xs font-medium text-[var(--text-secondary)]">
+            <span>偏爱歌手</span>
+            <Disc3 className="size-3.5 text-[var(--accent)]" />
+          </div>
+          <p className="mt-2.5 truncate text-2xl font-semibold tracking-tight">
+            {leadArtist ? (
+              <CopyableTrackText track={leadArtist.leadTrack} field="artist">
+                {leadArtist.name}
+              </CopyableTrackText>
+            ) : (
+              "暂无数据"
+            )}
+          </p>
+          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
+            {leadArtist ? `${leadArtist.playCount} 次播放 · ${leadArtist.trackCount} 首作品` : "等待你的第一张常听清单"}
+          </p>
+        </div>
+
+        <div className="stats-kpi-card rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+          <div className="flex items-center justify-between text-xs font-medium text-[var(--text-secondary)]">
+            <span>多音源曲库</span>
+            <Radio className="size-3.5 text-[var(--accent)]" />
+          </div>
+          <p className="mt-2.5 truncate text-2xl font-semibold tracking-tight tabular-nums">
+            {insights.libraryTotal} <span className="text-sm font-medium text-[var(--text-secondary)]">首</span>
+          </p>
+          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
+            横跨 {insights.activeSourceCount} 个在线 / 本地音源
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        <section className="stats-panel rounded-[1.35rem] border border-[var(--line)] bg-[var(--surface)] p-5" aria-label="24 小时听歌节律">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold">24 小时听歌节律</h2>
+              <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                {insights.peakHour !== null
+                  ? `最活跃时段 ${String(insights.peakHour).padStart(2, "0")}:00 – ${String((insights.peakHour + 1) % 24).padStart(2, "0")}:00`
+                  : "按一天 24 小时统计你的活跃波峰"}
+              </p>
             </div>
-          ))}
-          {!mostPlayed.length && <EmptyState text="先播放几首歌，统计就会开始累计。" />}
-        </div>
+            <Badge className="tabular-nums">
+              {insights.peakHour !== null ? `${String(insights.peakHour).padStart(2, "0")}:00 PEAK` : "00–24H"}
+            </Badge>
+          </div>
+
+          <div className="stats-rhythm-bars mt-5 flex h-28 items-end gap-1" role="list">
+            {insights.hourly.map((bucket) => {
+              const isPeak = insights.peakHour === bucket.hour && bucket.count > 0;
+              const heightPct = bucket.count > 0 ? Math.max(12, Math.round(bucket.intensity * 100)) : 6;
+              return (
+                <div
+                  key={bucket.hour}
+                  role="listitem"
+                  title={`${bucket.label} · ${bucket.count} 次`}
+                  className="group relative flex h-full flex-1 items-end"
+                >
+                  <div
+                    className={cn(
+                      "w-full rounded-t-md transition-all duration-300",
+                      bucket.count === 0
+                        ? "bg-[var(--line)] opacity-60"
+                        : isPeak
+                          ? "bg-[var(--accent)] shadow-[0_0_12px_rgba(124,92,230,0.45)]"
+                          : "bg-[var(--accent)]/45 group-hover:bg-[var(--accent)]/80",
+                    )}
+                    style={{ height: `${heightPct}%` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex items-center justify-between text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">
+            <span>00:00</span>
+            <span>06:00</span>
+            <span>12:00</span>
+            <span>18:00</span>
+            <span>24:00</span>
+          </div>
+        </section>
+
+        <section className="stats-panel rounded-[1.35rem] border border-[var(--line)] bg-[var(--surface)] p-5" aria-label="多音源聆听版图">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold">多音源聆听版图</h2>
+              <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                {insights.totalPlays > 0 ? "按真实播放次数加权统计各音源占比" : "当前展示曲库分布，播放后自动切换为聆听占比"}
+              </p>
+            </div>
+            <Badge>{insights.activeSourceCount} 源</Badge>
+          </div>
+
+          <div className="mt-5 flex h-3 w-full overflow-hidden rounded-full bg-[var(--surface-muted)]">
+            {insights.sources.map((item) =>
+              item.share > 0 ? (
+                <div
+                  key={item.source}
+                  title={`${item.label} ${Math.round(item.share)}%`}
+                  style={{ width: `${item.share}%`, backgroundColor: item.color }}
+                  className="h-full transition-all duration-300 first:rounded-l-full last:rounded-r-full"
+                />
+              ) : null,
+            )}
+          </div>
+
+          <div className="mt-4 grid gap-2">
+            {insights.sources.map((item) => (
+              <div
+                key={item.source}
+                className="flex items-center gap-3 rounded-xl bg-[var(--surface-muted)]/60 px-3 py-2 text-xs"
+              >
+                <SourceLogo source={item.source} className="size-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
+                <span className="tabular-nums text-[var(--text-secondary)]">曲库 {item.libraryCount} 首</span>
+                <span className="w-20 text-right font-semibold tabular-nums">
+                  {item.playCount > 0 ? `${item.playCount} 次 (${Math.round(item.share)}%)` : `${Math.round(item.share)}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <div className="mt-6 grid gap-4 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+        <section className="stats-panel rounded-[1.35rem] border border-[var(--line)] bg-[var(--surface)] p-5">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold">常听歌手榜</h2>
+            <Badge>{insights.topArtists.length} 位</Badge>
+          </div>
+          {insights.topArtists.length ? (
+            <div className="mt-4 space-y-2.5">
+              {insights.topArtists.map((artist, index) => (
+                <div
+                  key={artist.name}
+                  className="rounded-xl bg-[var(--surface-muted)]/60 p-3 transition hover:bg-[var(--surface-muted)]"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span
+                        className={cn(
+                          "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold tabular-nums",
+                          index === 0
+                            ? "bg-[var(--accent)] text-white"
+                            : "bg-[var(--surface)] text-[var(--text-secondary)]",
+                        )}
+                      >
+                        {index + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">
+                          <CopyableTrackText track={artist.leadTrack} field="artist">
+                            {artist.name}
+                          </CopyableTrackText>
+                        </p>
+                        <p className="truncate text-[11px] text-[var(--text-secondary)]">
+                          覆盖 {artist.trackCount} 首 · 代表：{artist.leadTrack.title}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-xs font-semibold tabular-nums text-[var(--text-secondary)]">
+                      {artist.playCount} 次
+                    </span>
+                  </div>
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--line)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--accent)]/80"
+                      style={{ width: `${Math.max(8, Math.round(artist.share * 100))}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-4">
+              <EmptyState text="还没有歌手聆听记录，播几首歌这里就会立体起来。" />
+            </div>
+          )}
+        </section>
+
+        <section className="stats-panel rounded-[1.35rem] border border-[var(--line)] bg-[var(--surface)] p-5">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold">单曲循环榜</h2>
+            <Badge>{insights.topTracks.length} 首</Badge>
+          </div>
+          {insights.topTracks.length ? (
+            <div className="mt-4 space-y-2">
+              {insights.topTracks.map((item, index) => {
+                const isActive = activeTrackId === item.track.id;
+                return (
+                  <button
+                    key={item.track.id}
+                    type="button"
+                    onClick={() => onPickTrack?.(item.track.id, topTracksQueue)}
+                    className={cn(
+                      "group grid w-full grid-cols-[1.6rem_2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 py-2 text-left transition",
+                      isActive ? "bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]/35" : "hover:bg-[var(--surface-muted)]",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "text-center text-xs font-bold tabular-nums",
+                        index < 3 ? "text-[var(--accent)]" : "text-[var(--text-secondary)]",
+                      )}
+                    >
+                      {index + 1}
+                    </span>
+                    <CoverArt track={item.track} className="size-11 rounded-lg" />
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 truncate text-sm font-semibold">
+                          <CopyableTrackText track={item.track} field="title">
+                            {item.track.title}
+                          </CopyableTrackText>
+                        </span>
+                        <SourceBadge source={item.track.source} compact />
+                      </div>
+                      <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-[var(--text-secondary)]">
+                        <span className="truncate">
+                          <CopyableTrackText track={item.track} field="artist">
+                            {item.track.artist}
+                          </CopyableTrackText>
+                        </span>
+                        {item.audioDetail && (
+                          <span className="shrink-0 whitespace-nowrap opacity-70">· {item.audioDetail}</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="hidden w-16 sm:block">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--line)]">
+                          <div
+                            className="h-full rounded-full bg-[var(--accent)]"
+                            style={{ width: `${Math.max(10, Math.round(item.share * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className="w-12 text-right text-xs font-semibold tabular-nums text-[var(--text-secondary)]">
+                        {item.playCount} 次
+                      </span>
+                      {isActive && playing ? (
+                        <AriaIcon name="playing" className="size-4 shrink-0 text-[var(--accent)]" />
+                      ) : (
+                        <Play className="size-3.5 shrink-0 opacity-0 transition group-hover:opacity-80" />
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-4">
+              <EmptyState text="先播放几首歌，单曲循环榜和听歌时间画像就会在这里呈现。" />
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -717,7 +1001,7 @@ function VirtualTrackList({
                   <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
                 </p>
               </div>
-              <span className="flex flex-wrap justify-end gap-2">{renderMeta ? renderMeta(track) : <Badge>{formatAudioDetail(track)}</Badge>}<AddToPlaylistButton track={track} /></span>
+              <span className="flex shrink-0 flex-nowrap items-center justify-end gap-2">{renderMeta ? renderMeta(track) : <Badge className="shrink-0 whitespace-nowrap">{formatAudioDetail(track)}</Badge>}<AddToPlaylistButton track={track} /></span>
             </div>
           );
         })}

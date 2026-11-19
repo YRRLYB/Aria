@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  adaptPaletteForTheme,
+  contrastRatio,
   createCachedQueueSnapshots,
   formatAudioDetail,
   formatBitrate,
   formatDuration,
   formatSampleRate,
   hasSyncedLyrics,
+  mergeTrackRecord,
   mergeTracks,
   normalizeQuality,
   parseDuration,
   readCachedAudioSettings,
   readCachedPlayerState,
+  readableForegroundForAccent,
   restoreTrackLyrics,
   selectPlaybackQuality,
   trimTrackCache,
@@ -213,5 +217,83 @@ describe("playerPresentation", () => {
     expect(restoreTrackLyrics(placeholder, cachedLyrics)).toMatchObject({ lyrics: cachedLyrics, lyricStatus: "linked" });
     const synced = { ...placeholder, lyrics: [{ time: "00:01", text: "Fresh lyric" }], lyricStatus: "linked" as const };
     expect(restoreTrackLyrics(synced, cachedLyrics)).toBe(synced);
+  });
+
+  it("allows manual Bilibili quality switching and formats accurate Bilibili tier labels", () => {
+    const biliTrack = {
+      source: "bilibili" as const,
+      quality: "320K" as const,
+      currentLevel: "exhigh" as const,
+      availableLevels: ["standard", "higher", "exhigh", "hires"] as const,
+      bitrate: 192_000,
+      sampleRate: 48_000,
+    };
+    expect(
+      selectPlaybackQuality(
+        { source: "bilibili", availableLevels: [...biliTrack.availableLevels] },
+        { qualityLevel: "standard", hifiEnabled: false, masterQualityEnabled: false, bilibiliDefaultAudioLevel: "hires" },
+      ),
+    ).toBe("standard");
+    expect(
+      selectPlaybackQuality(
+        { source: "bilibili", availableLevels: ["standard", "exhigh", "hires"] },
+        { qualityLevel: "lossless", hifiEnabled: false, masterQualityEnabled: false, bilibiliDefaultAudioLevel: "hires" },
+      ),
+    ).toBe("exhigh");
+    const formatted = formatAudioDetail({ ...biliTrack, availableLevels: [...biliTrack.availableLevels] } as Parameters<typeof formatAudioDetail>[0]);
+    expect(formatted).toContain("192K");
+    expect(formatted).not.toContain("320K");
+  });
+
+  it("lifts very dark album cover accents in dark mode for crisp control contrast", () => {
+    const pitchBlack = adaptPaletteForTheme({ primary: "#141418", secondary: "#0e1116" }, true);
+    expect(contrastRatio(pitchBlack.primary, "#14141d")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(pitchBlack.secondary, "#14141d")).toBeGreaterThanOrEqual(4.5);
+    const fg = readableForegroundForAccent(pitchBlack.primary);
+    expect(contrastRatio(pitchBlack.primary, fg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("preserves runtime stream metadata and pins the active track across cache merges", () => {
+    const richTrack = {
+      id: "netease:active-1",
+      title: "Active",
+      artist: "Artist",
+      album: "Album",
+      duration: "03:45",
+      quality: "Hi-Res" as const,
+      source: "netease" as const,
+      streamUrl: "/stream/active",
+      cover: "#111",
+      accent: "#7c5ce6",
+      waveform: [],
+      availableLevels: ["standard", "exhigh", "lossless", "hires"] as const,
+      currentLevel: "hires" as const,
+      bitrate: 1_900_000,
+      lyrics: [{ time: "00:01", text: "Hello" }],
+      lyricStatus: "linked" as const,
+    };
+    const shallowIncoming = {
+      ...richTrack,
+      availableLevels: [],
+      currentLevel: null,
+      bitrate: null,
+      lyrics: [],
+      lyricStatus: "searchable" as const,
+    };
+    const merged = mergeTrackRecord(
+      richTrack as unknown as Parameters<typeof mergeTrackRecord>[0],
+      shallowIncoming as unknown as Parameters<typeof mergeTrackRecord>[1],
+    );
+    expect(merged.availableLevels).toEqual(["standard", "exhigh", "lossless", "hires"]);
+    expect(merged.bitrate).toBe(1_900_000);
+    expect(merged.lyricStatus).toBe("linked");
+
+    const filler = Array.from({ length: 10 }, (_, idx) => ({ ...shallowIncoming, id: `netease:f-${idx}` }));
+    const trimmed = trimTrackCache(
+      [richTrack, ...filler] as unknown as Parameters<typeof trimTrackCache>[0],
+      4,
+      richTrack.id,
+    );
+    expect(trimmed.some((item) => item.id === richTrack.id)).toBe(true);
   });
 });

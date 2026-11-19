@@ -7,7 +7,10 @@ import { promisify } from "node:util";
 import { parseFile } from "music-metadata";
 import { readOriginalTracksForRoot } from "./libraryStore";
 import { quantizeBitrate } from "./utils/bitrate";
+import { recoverJapaneseAlbumName, stripTrackPrefix } from "./utils/japaneseTags";
 import type { ScannedTrack } from "./types";
+
+export { recoverJapaneseAlbumName };
 
 const execFileAsync = promisify(execFile);
 
@@ -171,6 +174,8 @@ async function readTrackMetadata(
   try {
     const resolvedFilePath = path.resolve(filePath);
     const fileStat = await stat(filePath);
+    const folder = path.basename(path.dirname(resolvedFilePath));
+    const filename = path.basename(filePath, path.extname(filePath));
     const cached = existingByPath?.get(resolvedFilePath);
     if (
       cached &&
@@ -178,8 +183,12 @@ async function readTrackMetadata(
       typeof cached.mtimeMs === "number" &&
       Math.abs(cached.mtimeMs - fileStat.mtimeMs) < 1
     ) {
+      const recoveredAlbum = recoverJapaneseAlbumName(cached.album, folder);
+      const nextTitle = recoveredAlbum !== cached.album ? stripTrackPrefix(filename) : cached.title;
       return {
         ...cached,
+        album: recoveredAlbum,
+        title: nextTitle,
         libraryRoot,
         mtimeMs: fileStat.mtimeMs,
       };
@@ -188,14 +197,16 @@ async function readTrackMetadata(
     const metadata = await parseFile(filePath);
     const common = metadata.common;
     const format = metadata.format;
-    const filename = path.basename(filePath, path.extname(filePath));
+    const rawAlbum = common.album || "Unknown Album";
+    const album = recoverJapaneseAlbumName(rawAlbum, folder);
+    const title = album !== rawAlbum ? stripTrackPrefix(filename) : common.title || filename;
 
     return {
       id: createHash("sha1").update(filePath).digest("hex"),
       path: filePath,
-      title: common.title || filename,
+      title,
       artist: common.artist || common.albumartist || "Unknown Artist",
-      album: common.album || "Unknown Album",
+      album,
       albumArtist: common.albumartist || common.artist || null,
       duration: typeof format.duration === "number" ? format.duration : null,
       quality: detectQuality(filePath, {

@@ -36,4 +36,32 @@ describe("native playback presentation", () => {
     syncNativePlaybackClock({ ...state, position: 76 }, null);
     expect(getPlaybackTime()).toBe(76);
   });
+
+  it("tightly phase-locks the bypass analyser to native progress ticks", () => {
+    resetPlaybackTime();
+    const analyser = {
+      currentTime: 10,
+      playbackRate: 1,
+      paused: false,
+    };
+
+    // Within 0.035s of target (10 + 0.04 lookahead = 10.04): holds 1.0x speed.
+    syncNativePlaybackClock({ ...state, position: 9.97, kind: "progress" }, analyser);
+    expect(analyser.currentTime).toBe(10);
+    expect(analyser.playbackRate).toBe(1);
+
+    // Moderate drift (0.035s..0.18s): micro-nudges playbackRate instead of audible seek jitter.
+    syncNativePlaybackClock({ ...state, position: 10.08, kind: "progress" }, analyser);
+    expect(analyser.currentTime).toBe(10);
+    expect(analyser.playbackRate).toBe(1.06);
+
+    syncNativePlaybackClock({ ...state, position: 9.9, kind: "progress" }, analyser);
+    expect(analyser.currentTime).toBe(10);
+    expect(analyser.playbackRate).toBe(0.94);
+
+    // Larger drift (>= 0.18s): hard-seeks to target and resets playbackRate to 1.
+    syncNativePlaybackClock({ ...state, position: 10.5, kind: "progress" }, analyser);
+    expect(analyser.currentTime).toBeCloseTo(10.54, 4);
+    expect(analyser.playbackRate).toBe(1);
+  });
 });

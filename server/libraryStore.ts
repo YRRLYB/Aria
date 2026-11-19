@@ -4,6 +4,7 @@ import path from "node:path";
 import type { LocalMetadataOverride } from "../src/lib/localMetadata";
 import type { ScannedTrack } from "./types";
 import { dataDir } from "./utils/paths";
+import { recoverJapaneseAlbumName, stripTrackPrefix } from "./utils/japaneseTags";
 import { localMetadataStore } from "./localMetadataStore";
 import { readStore } from "./store";
 
@@ -82,11 +83,17 @@ async function resolveLibraryWithIndex(): Promise<{ library: LibraryIndex; byId:
     if (override?.lyrics?.length && store.lyricBindings[track.id] !== (override.lyricCandidateId ?? override.candidateId)) {
       override = { ...override, lyrics: undefined };
     }
+    const folder = track.path && track.mediaKind !== "audio-cd" ? path.basename(path.dirname(track.path)) : "";
+    const recoveredAlbum = folder ? recoverJapaneseAlbumName(track.album, folder) : track.album;
+    const recoveredTitle =
+      recoveredAlbum !== track.album && track.path
+        ? stripTrackPrefix(path.basename(track.path, path.extname(track.path)))
+        : track.title;
     const merged: ScannedTrack = {
       ...track,
-      title: override?.title ?? track.title,
+      title: override?.title ?? recoveredTitle,
       artist: override?.artist ?? track.artist,
-      album: override?.album ?? track.album,
+      album: override?.album ?? recoveredAlbum,
       metadata: override,
     };
     byId.set(merged.id, merged);

@@ -1,4 +1,6 @@
 import { navItems, type LyricLine, type Track, type ViewId } from "@/data/music";
+import { BILIBILI_LYRICS_ENABLED } from "./features";
+import { normalizeBilingualLyrics } from "./lyricNormalize";
 import { getLyricStartTime } from "./lyricTiming";
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 
@@ -64,6 +66,15 @@ const qualityLevelLabels: Record<QualityLevel, string> = {
   jymaster: "臻品",
 };
 
+const bilibiliQualityLevelLabels: Record<QualityLevel, string> = {
+  standard: "64K",
+  higher: "132K",
+  exhigh: "192K",
+  lossless: "杜比",
+  hires: "Hi-Res",
+  jymaster: "Hi-Res",
+};
+
 export type PlaybackQualitySettings = {
   qualityLevel: QualityLevel;
   hifiEnabled: boolean;
@@ -93,15 +104,17 @@ export function selectPlaybackQuality(
   if (track && track.source === "bilibili") {
     const levels = track.availableLevels ?? [];
     const preferredOrder: QualityLevel[] = ["standard", "higher", "exhigh", "lossless", "hires"];
-    if (settings.bilibiliDefaultAudioLevel) {
-      const maxIndex = preferredOrder.indexOf(settings.bilibiliDefaultAudioLevel);
-      const allowed = maxIndex >= 0 ? preferredOrder.slice(0, maxIndex + 1) : preferredOrder;
-      const reachable = allowed.filter((level) => !levels.length || levels.includes(level));
-      return reachable.at(-1) ?? settings.bilibiliDefaultAudioLevel;
+    if (!settings.hifiEnabled) {
+      if (!levels.length || levels.includes(originalPreference)) return originalPreference;
+      const requestedIndex = preferredOrder.indexOf(originalPreference);
+      const below = requestedIndex < 0 ? [] : preferredOrder.slice(0, requestedIndex + 1).filter((level) => levels.includes(level));
+      return below.at(-1) ?? preferredOrder.find((level) => levels.includes(level)) ?? originalPreference;
     }
-    if (!settings.hifiEnabled) return originalPreference;
-    const reachable = preferredOrder.filter((level) => !levels.length || levels.includes(level));
-    return reachable.at(-1) ?? "exhigh";
+    const ceilingLevel = settings.bilibiliDefaultAudioLevel ?? "hires";
+    const maxIndex = preferredOrder.indexOf(ceilingLevel);
+    const allowed = maxIndex >= 0 ? preferredOrder.slice(0, maxIndex + 1) : preferredOrder;
+    const reachable = allowed.filter((level) => !levels.length || levels.includes(level));
+    return reachable.at(-1) ?? ceilingLevel;
   }
   if (track && track.source !== "netease") return originalPreference;
   const available = track?.availableLevels ?? [];
@@ -238,6 +251,11 @@ export function createCachedQueueSnapshots(
 
 function hydrateTrackLyrics(track?: Track): Track | undefined {
   if (!track) return undefined;
+  if (!BILIBILI_LYRICS_ENABLED && track.source === "bilibili") {
+    return track.lyrics.length || track.lyricStatus !== "missing"
+      ? { ...track, lyrics: [], lyricStatus: "missing" }
+      : track;
+  }
   return restoreTrackLyrics(track, readCachedLyrics(track.id));
 }
 
@@ -320,14 +338,17 @@ function readLyricsCache(): Record<string, LyricLine[]> {
 
 export function readCachedLyrics(trackId?: string) {
   if (!trackId) return [];
+  if (!BILIBILI_LYRICS_ENABLED && trackId.startsWith("bilibili:")) return [];
   const cached = readLyricsCache()[trackId];
-  return Array.isArray(cached) ? cached : [];
+  return Array.isArray(cached) ? normalizeBilingualLyrics(cached) : [];
 }
 
 export function writeCachedLyrics(trackId: string, lyrics: LyricLine[]) {
-  if (!lyrics.length) return;
+  if (!BILIBILI_LYRICS_ENABLED && trackId.startsWith("bilibili:")) return;
+  const normalized = normalizeBilingualLyrics(lyrics);
+  if (!normalized.length) return;
   try {
-    const cache = Object.fromEntries(Object.entries({ ...readLyricsCache(), [trackId]: lyrics }).slice(-80));
+    const cache = Object.fromEntries(Object.entries({ ...readLyricsCache(), [trackId]: normalized }).slice(-80));
     lyricsCacheState = cache;
     window.localStorage.setItem(lyricCacheKey, JSON.stringify(cache));
   } catch {
@@ -347,7 +368,7 @@ export function removeCachedLyrics(trackId: string) {
  * subtitle for a different video. Older builds cached that result as real CC.
  * Clear those caches once so the WBI-first subtitle path is used instead.
  */
-const bilibiliLyricsMigrationKey = "aria-bilibili-cc-migration-v3";
+const bilibiliLyricsMigrationKey = "aria-bilibili-cc-migration-v4";
 
 export function migrateBilibiliLyricsCache() {
   try {
@@ -366,7 +387,7 @@ export function migrateBilibiliLyricsCache() {
       if (!track || typeof track !== "object") return track;
       const candidate = track as Partial<Track>;
       if (candidate.source !== "bilibili") return track;
-      return { ...candidate, lyrics: [], lyricStatus: "searchable" as const };
+      return { ...candidate, lyrics: [], lyricStatus: (BILIBILI_LYRICS_ENABLED ? "searchable" : "missing") as Track["lyricStatus"] };
     };
     const playerRaw = window.localStorage.getItem(playerCacheKey);
     if (playerRaw) {
@@ -556,12 +577,111 @@ function colorDistance(first: string, second: string) {
 }
 
 function hexToRgb(hex: string) {
-  const normalized = hex.replace("#", "");
-  return {
-    red: Number.parseInt(normalized.slice(0, 2), 16),
-    green: Number.parseInt(normalized.slice(2, 4), 16),
-    blue: Number.parseInt(normalized.slice(4, 6), 16),
+  const raw = hex.trim().replace("#", "");
+  const normalized =
+    raw.length === 3
+      ? raw.split("").map((char) => `${char}${char}`).join("")
+      : raw.length === 6
+        ? raw
+        : "7b8494";
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  if ([red, green, blue].some((value) => Number.isNaN(value))) {
+    return { red: 123, green: 132, blue: 148 };
+  }
+  return { red, green, blue };
+}
+
+function rgbToHsl(red: number, green: number, blue: number) {
+  const r = red / 255;
+  const g = green / 255;
+  const b = blue / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  if (max === min) return { hue: 0, saturation: 0, lightness };
+  const delta = max - min;
+  const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  let hue = 0;
+  if (max === r) hue = (g - b) / delta + (g < b ? 6 : 0);
+  else if (max === g) hue = (b - r) / delta + 2;
+  else hue = (r - g) / delta + 4;
+  return { hue: hue / 6, saturation, lightness };
+}
+
+function hslToHex(hue: number, saturation: number, lightness: number) {
+  const h = ((hue % 1) + 1) % 1;
+  const s = Math.max(0, Math.min(1, saturation));
+  const l = Math.max(0, Math.min(1, lightness));
+  if (s === 0) {
+    const channel = Math.round(l * 255);
+    return rgbToHex(channel, channel, channel);
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const toChannel = (t: number) => {
+    let wrapped = t;
+    if (wrapped < 0) wrapped += 1;
+    if (wrapped > 1) wrapped -= 1;
+    if (wrapped < 1 / 6) return Math.round((p + (q - p) * 6 * wrapped) * 255);
+    if (wrapped < 1 / 2) return Math.round(q * 255);
+    if (wrapped < 2 / 3) return Math.round((p + (q - p) * (2 / 3 - wrapped) * 6) * 255);
+    return Math.round(p * 255);
   };
+  return rgbToHex(toChannel(h + 1 / 3), toChannel(h), toChannel(h - 1 / 3));
+}
+
+export function relativeLuminance(hex: string): number {
+  const { red, green, blue } = hexToRgb(hex);
+  const linearize = (value: number) => {
+    const c = value / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue);
+}
+
+export function contrastRatio(hexA: string, hexB: string): number {
+  const lumA = relativeLuminance(hexA);
+  const lumB = relativeLuminance(hexB);
+  const brightest = Math.max(lumA, lumB);
+  const darkest = Math.min(lumA, lumB);
+  return (brightest + 0.05) / (darkest + 0.05);
+}
+
+/**
+ * 保证专辑取色作为控制按钮 / 进度条强调色时在对应深浅背景上清晰可见：
+ * 暗黑封面在夜间模式下不再变成黑底黑钮，浅白封面在日间模式下不会发虚。
+ */
+export function adaptColorForSurface(hex: string, darkSurface: boolean): string {
+  const { red, green, blue } = hexToRgb(hex);
+  const { hue, saturation, lightness } = rgbToHsl(red, green, blue);
+  if (darkSurface) {
+    if (saturation < 0.14 && lightness < 0.56) {
+      // 无彩极暗/黑白封面在夜间模式下映射为柔和月光紫银，既保留高级黑白气质又保证 > 7:1 对比度
+      return hslToHex(252 / 360, 0.34, 0.68);
+    }
+    const targetLightness = Math.max(0.58, Math.min(0.74, lightness < 0.56 ? 0.62 : lightness));
+    const targetSaturation = Math.max(0.28, Math.min(0.76, saturation));
+    return hslToHex(hue, targetSaturation, targetLightness);
+  }
+  if (lightness > 0.72) {
+    return hslToHex(hue, Math.min(0.72, Math.max(saturation, 0.22)), 0.44);
+  }
+  return rgbToHex(red, green, blue);
+}
+
+export function adaptPaletteForTheme(palette: CoverPalette, darkSurface: boolean): CoverPalette {
+  return {
+    primary: adaptColorForSurface(palette.primary, darkSurface),
+    secondary: adaptColorForSurface(palette.secondary, darkSurface),
+  };
+}
+
+export function readableForegroundForAccent(hex: string): "#ffffff" | "#111118" {
+  const darkContrast = contrastRatio(hex, "#111118");
+  const lightContrast = contrastRatio(hex, "#ffffff");
+  return darkContrast >= lightContrast ? "#111118" : "#ffffff";
 }
 
 export function colorWithAlpha(hex: string, alpha: number) {
@@ -590,7 +710,8 @@ export function formatSampleRate(value?: number | null, compact = false) {
 
 export function formatAudioDetail(track: Track, level?: QualityLevel, compact = true) {
   const resolvedLevel = track.currentLevel ?? level ?? null;
-  const qualityLabel = resolvedLevel ? qualityLevelLabels[resolvedLevel] : track.quality;
+  const labels = track.source === "bilibili" ? bilibiliQualityLevelLabels : qualityLevelLabels;
+  const qualityLabel = resolvedLevel ? labels[resolvedLevel] : track.quality;
   const bitrate = track.bitrate ? formatBitrate(track.bitrate, compact) : null;
   const sampleRate = formatSampleRate(track.sampleRate, compact);
   return [qualityLabel, bitrate, sampleRate].filter(Boolean).join(" · ");
@@ -612,16 +733,46 @@ export function mergeTracks(tracksToMerge: Track[]) {
   });
 }
 
-export function trimTrackCache(tracksToMerge: Track[], maxItems = 360) {
-  // Later entries usually come from a fresh provider response. Keep the
-  // first-seen ordering for stable lists, but let the newer copy replace a
-  // stale snapshot of the same track so it picks up stream metadata.
+export function mergeTrackRecord(existing: Track, incoming: Track): Track {
+  const existingLyrics = existing.lyrics ?? [];
+  const incomingLyrics = incoming.lyrics ?? [];
+  const keepLinkedLyrics =
+    existing.lyricStatus === "linked" &&
+    existingLyrics.length > 0 &&
+    (incoming.lyricStatus !== "linked" || incomingLyrics.length === 0);
+  return {
+    ...existing,
+    ...incoming,
+    streamUrl: incoming.streamUrl || existing.streamUrl,
+    videoUrl: incoming.videoUrl ?? existing.videoUrl,
+    hasVideo: incoming.hasVideo || existing.hasVideo,
+    videoQuality: incoming.videoQuality ?? existing.videoQuality,
+    coverUrl: incoming.coverUrl ?? existing.coverUrl,
+    artistIds: incoming.artistIds?.length ? incoming.artistIds : existing.artistIds,
+    availableLevels: incoming.availableLevels?.length ? incoming.availableLevels : existing.availableLevels,
+    currentLevel: incoming.currentLevel ?? existing.currentLevel,
+    bitrate: incoming.bitrate ?? existing.bitrate,
+    sampleRate: incoming.sampleRate ?? existing.sampleRate,
+    lyrics: keepLinkedLyrics ? existingLyrics : incomingLyrics.length ? incomingLyrics : existingLyrics,
+    lyricStatus: keepLinkedLyrics ? existing.lyricStatus : incoming.lyricStatus ?? existing.lyricStatus,
+  };
+}
+
+export function trimTrackCache(tracksToMerge: Track[], maxItems = 360, pinnedTrackId?: string) {
+  // Later entries usually come from a fresh provider response. Merge rich
+  // runtime fields (availableLevels, bitrate, linked lyrics, streamUrl) instead
+  // of blindly letting a summary snapshot wipe them out and restart playback.
   const byId = new Map<string, Track>();
   for (const track of tracksToMerge) {
     const existing = byId.get(track.id);
-    if (existing && existing.streamUrl && !track.streamUrl) continue;
-    byId.set(track.id, track);
+    byId.set(track.id, existing ? mergeTrackRecord(existing, track) : track);
   }
   const merged = [...byId.values()];
-  return merged.length > maxItems ? merged.slice(merged.length - maxItems) : merged;
+  if (merged.length <= maxItems) return merged;
+  const sliced = merged.slice(merged.length - maxItems);
+  if (pinnedTrackId && !sliced.some((track) => track.id === pinnedTrackId)) {
+    const pinned = byId.get(pinnedTrackId);
+    if (pinned) return [pinned, ...sliced.slice(1)];
+  }
+  return sliced;
 }

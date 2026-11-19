@@ -41,8 +41,8 @@ type BiliPlayData = {
   accept_description?: string[];
   dash?: {
     audio?: BiliAudio[];
-    dolby?: { type?: number; audio?: BiliAudio | null };
-    flac?: { display?: boolean; audio?: BiliAudio | null };
+    dolby?: { type?: number; audio?: BiliAudio | BiliAudio[] | null };
+    flac?: { display?: boolean; audio?: BiliAudio | BiliAudio[] | null };
     video?: Array<{
       id?: number;
       baseUrl?: string;
@@ -77,12 +77,13 @@ const AUDIO_LEVELS: Array<{
   level: AriaLevel;
   quality: ProviderTrack["quality"];
   label: string;
+  defaultBitrate?: number;
 }> = [
   { id: 30251, level: "hires", quality: "Hi-Res", label: "Hi-Res" },
   { id: 30250, level: "lossless", quality: "Lossless", label: "杜比全景声" },
-  { id: 30280, level: "exhigh", quality: "320K", label: "192K" },
-  { id: 30232, level: "higher", quality: "128K", label: "132K" },
-  { id: 30216, level: "standard", quality: "AAC", label: "64K" },
+  { id: 30280, level: "exhigh", quality: "320K", label: "192K", defaultBitrate: 192_000 },
+  { id: 30232, level: "higher", quality: "128K", label: "132K", defaultBitrate: 132_000 },
+  { id: 30216, level: "standard", quality: "AAC", label: "64K", defaultBitrate: 64_000 },
 ];
 
 const RISK_CODES = new Set([-352, -412, -509, -799]);
@@ -212,6 +213,14 @@ let ariaFolderCreatePromise: Promise<BiliFavFolder | null> | null = null;
 let wbiKeysCache: { imgKey: string; subKey: string; at: number } | null = null;
 const streamMetaCache = new Map<string, { at: number; meta: SourceStreamMeta }>();
 const videoMetaCache = new Map<string, { at: number; meta: SourceVideoMeta }>();
+type CachedTrackAudioMeta = {
+  bitrate: number | null;
+  quality: ProviderTrack["quality"];
+  currentLevel: AriaLevel;
+  availableLevels: AriaLevel[];
+};
+const trackAudioMetaCache = new Map<string, CachedTrackAudioMeta>();
+const MAX_TRACK_AUDIO_META = 500;
 const MEDIA_META_CACHE_MS = 10 * 60_000;
 const qrSessions = new Map<string, BiliQrSession>();
 
@@ -386,6 +395,7 @@ function clearBilibiliAuthCaches() {
   ariaFolderCreatePromise = null;
   streamMetaCache.clear();
   videoMetaCache.clear();
+  trackAudioMetaCache.clear();
 }
 
 export async function saveBilibiliCookie(cookie: string): Promise<SourceAccount> {
@@ -630,23 +640,24 @@ function mapBilibiliFavMedia(media: BiliFavMedia, folderTitle: string): Provider
   // attr 0 is a normal video; deleted/private favourites carry other flags.
   if (media.attr !== undefined && media.attr !== 0) return null;
   const title = stripHtml(String(media.title ?? "B站视频")).trim();
+  const cachedAudio = trackAudioMetaCache.get(bvid);
   return {
     id: bvid,
     title: title || "B站视频",
     artist: stripHtml(String(media.upper?.name ?? "B站 UP 主")),
     album: folderTitle ? `B站 · ${folderTitle}` : "B站收藏",
     duration: Number(media.duration ?? 0) || 0,
-    quality: "320K",
+    quality: cachedAudio?.quality ?? "320K",
     source: "bilibili",
     streamUrl: `/api/sources/bilibili/tracks/${encodeURIComponent(bvid)}/stream`,
     videoUrl: `/api/sources/bilibili/tracks/${encodeURIComponent(bvid)}/video`,
     hasVideo: true,
     videoQuality: null,
     coverUrl: normalizeCover(media.cover),
-    bitrate: null,
+    bitrate: cachedAudio?.bitrate ?? null,
     sampleRate: null,
-    currentLevel: null,
-    availableLevels: ["standard", "higher", "exhigh", "lossless", "hires"],
+    currentLevel: cachedAudio?.currentLevel ?? null,
+    availableLevels: cachedAudio?.availableLevels ?? ["standard", "higher", "exhigh", "lossless", "hires"],
     vip: false,
     bpm: null,
     likedAt: media.fav_time ? media.fav_time * 1000 : null,
@@ -1129,33 +1140,81 @@ function audioMatchesEntry(audio: BiliAudio, entry: (typeof AUDIO_LEVELS)[number
   return false;
 }
 
+function collectDashAudios(dash: BiliPlayData["dash"] | undefined): BiliAudio[] {
+  const audios: BiliAudio[] = [...(dash?.audio ?? [])];
+  const pushSpecial = (
+    raw: BiliAudio | BiliAudio[] | null | undefined,
+    kind: "flac" | "dolby",
+    fallbackId: number,
+  ) => {
+    const items = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    for (const item of items) {
+      if (item && audioBaseUrl(item)) {
+        audios.push({ ...item, id: item.id || fallbackId, kind });
+      }
+    }
+  };
+  pushSpecial(dash?.flac?.audio, "flac", 30251);
+  pushSpecial(dash?.dolby?.audio, "dolby", 30250);
+  return audios.filter((audio) => Boolean(audioBaseUrl(audio)));
+}
+
 function chooseAudio(audios: BiliAudio[], level: AriaLevel | undefined) {
   const requested = requestedLevel(level);
   const requestedIndex = AUDIO_LEVELS.findIndex((entry) => entry.level === requested);
   const present = AUDIO_LEVELS.filter((entry) => audios.some((audio) => audioMatchesEntry(audio, entry)));
   if (!present.length) return null;
-  const find = (entry: (typeof AUDIO_LEVELS)[number]) => audios.find((audio) => audioMatchesEntry(audio, entry))!;
+  const pickBestStream = (entry: (typeof AUDIO_LEVELS)[number]) =>
+    audios
+      .filter((audio) => audioMatchesEntry(audio, entry))
+      .sort((left, right) => (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0]!;
   const exact = present.find((entry) => entry.level === requested);
-  if (exact) return { entry: exact, audio: find(exact) };
-  // Graceful degradation: prefer the highest format at or below the request,
-  // then the lowest available format above it.
+  if (exact) return { entry: exact, audio: pickBestStream(exact) };
+  // Graceful degradation: AUDIO_LEVELS is ordered highest (0) -> lowest (4).
+  // Prefer the highest available format at or below the requested tier
+  // (index >= requestedIndex), otherwise the lowest available tier above it.
   const ordered = [...present].sort((left, right) => AUDIO_LEVELS.indexOf(left) - AUDIO_LEVELS.indexOf(right));
-  const lower = requestedIndex < 0 ? [] : ordered.filter((entry) => AUDIO_LEVELS.indexOf(entry) <= requestedIndex);
-  const entry = lower.at(-1) ?? ordered[0];
-  return { entry, audio: find(entry) };
+  const atOrBelow = requestedIndex < 0 ? [] : ordered.filter((entry) => AUDIO_LEVELS.indexOf(entry) >= requestedIndex);
+  const entry = atOrBelow[0] ?? ordered.at(-1)!;
+  return { entry, audio: pickBestStream(entry) };
 }
 
 async function playurl(
   trackId: string,
   fnval: number,
-  level: AriaLevel | undefined,
+  _level: AriaLevel | undefined,
   signal?: AbortSignal,
   qnOverride?: number,
 ) {
   const view = await getBilibiliView(trackId, signal);
-  const requestedQn = qnOverride ?? (level === "standard" ? 64 : 120);
+  const requestedQn = qnOverride ?? 120;
+  const keys = await getBilibiliWbiKeys(signal);
+  if (keys) {
+    try {
+      const signed = signWbiQuery(
+        {
+          bvid: view.bvid,
+          cid: String(view.cid),
+          fnval: String(fnval),
+          fnver: "0",
+          fourk: "1",
+          qn: String(requestedQn),
+          try_look: "1",
+        },
+        keys.imgKey,
+        keys.subKey,
+      );
+      const data = await biliJson<BiliPlayData>(
+        `https://api.bilibili.com/x/player/wbi/playurl?${signed}`,
+        signal,
+      );
+      return { view, data };
+    } catch {
+      // Fall back to the legacy playurl endpoint below if WBI rejects the request.
+    }
+  }
   const data = await biliJson<BiliPlayData>(
-    `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(view.bvid)}&cid=${view.cid}&fnval=${fnval}&fnver=0&fourk=1&qn=${requestedQn}`,
+    `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(view.bvid)}&cid=${view.cid}&fnval=${fnval}&fnver=0&fourk=1&qn=${requestedQn}&try_look=1`,
     signal,
   );
   return { view, data };
@@ -1172,11 +1231,7 @@ export async function resolveBilibiliStreamMeta(
     return cached.meta;
   }
   const { data } = await playurl(trackId, 4048, options.level, signal);
-  const audios: BiliAudio[] = [...(data?.dash?.audio ?? [])];
-  const flacAudio = data?.dash?.flac?.audio;
-  if (flacAudio) audios.push({ ...flacAudio, id: flacAudio.id || 30251, kind: "flac" });
-  const dolbyAudio = data?.dash?.dolby?.audio;
-  if (dolbyAudio) audios.push({ ...dolbyAudio, id: dolbyAudio.id || 30250, kind: "dolby" });
+  const audios = collectDashAudios(data?.dash);
   const chosen = chooseAudio(audios, options.level);
   const durl = data?.durl?.[0]?.url;
   const url = chosen ? audioBaseUrl(chosen.audio) : durl;
@@ -1186,6 +1241,12 @@ export async function resolveBilibiliStreamMeta(
   const availableLevels = AUDIO_LEVELS
     .filter((entry) => audios.some((audio) => audioMatchesEntry(audio, entry)))
     .map((entry) => entry.level);
+  const resolvedLevels = availableLevels.length ? availableLevels : (["standard", "higher", "exhigh"] as AriaLevel[]);
+  const resolvedBitrate = (chosen?.audio.bandwidth && chosen.audio.bandwidth > 0 ? chosen.audio.bandwidth : null)
+    ?? chosen?.entry.defaultBitrate
+    ?? null;
+  const resolvedQuality = chosen?.entry.quality ?? "320K";
+  const resolvedLevel = chosen?.entry.level ?? "exhigh";
   const meta: SourceStreamMeta = {
     url: url.startsWith("//") ? `https:${url}` : url,
     headers: {
@@ -1194,13 +1255,24 @@ export async function resolveBilibiliStreamMeta(
       Cookie: await requestCookie(),
     },
     mimeType: chosen ? audioMime(chosen.audio) : "audio/mp4",
-    bitrate: chosen?.audio.bandwidth ?? null,
+    bitrate: resolvedBitrate,
     sampleRate: null,
-    quality: chosen?.entry.quality ?? "320K",
-    currentLevel: chosen?.entry.level ?? "exhigh",
-    availableLevels: availableLevels.length ? availableLevels : ["standard", "higher", "exhigh"],
+    quality: resolvedQuality,
+    currentLevel: resolvedLevel,
+    availableLevels: resolvedLevels,
     expiresAt: Date.now() + STREAM_URL_TTL_MS,
   };
+  const baseBvid = parseBilibiliTrackId(trackId).bvid;
+  trackAudioMetaCache.set(baseBvid, {
+    bitrate: resolvedBitrate,
+    quality: resolvedQuality,
+    currentLevel: resolvedLevel,
+    availableLevels: resolvedLevels,
+  });
+  if (trackAudioMetaCache.size > MAX_TRACK_AUDIO_META) {
+    const oldest = trackAudioMetaCache.keys().next().value;
+    if (oldest) trackAudioMetaCache.delete(oldest);
+  }
   streamMetaCache.set(cacheKey, { at: Date.now(), meta });
   if (streamMetaCache.size > 240) {
     const oldest = streamMetaCache.keys().next().value;
@@ -1282,11 +1354,7 @@ export async function resolveBilibiliVideoMeta(
       };
     });
 
-    const audios: BiliAudio[] = [...(data?.dash?.audio ?? [])];
-    const flacAudio = data?.dash?.flac?.audio;
-    if (flacAudio) audios.push({ ...flacAudio, id: flacAudio.id || 30251, kind: "flac" });
-    const dolbyAudio = data?.dash?.dolby?.audio;
-    if (dolbyAudio) audios.push({ ...dolbyAudio, id: dolbyAudio.id || 30250, kind: "dolby" });
+    const audios = collectDashAudios(data?.dash);
     const chosenAudio = chooseAudio(audios, options.level ?? "exhigh");
     const url = videoBaseUrl(selected);
     const audioUrl = chosenAudio ? audioBaseUrl(chosenAudio.audio) : null;
@@ -1462,5 +1530,6 @@ export function resetBilibiliStateForTests() {
   wbiKeysCache = null;
   streamMetaCache.clear();
   videoMetaCache.clear();
+  trackAudioMetaCache.clear();
   qrSessions.clear();
 }

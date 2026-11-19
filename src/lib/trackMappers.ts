@@ -1,5 +1,6 @@
 import type { ApiScannedTrack, ProviderPlaylist, ProviderTrack } from "@/lib/api";
 import { api } from "@/lib/api";
+import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
 import { formatDuration, normalizeQuality, readCachedLyrics } from "@/lib/playerPresentation";
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 import type { Track } from "@/data/music";
@@ -101,7 +102,8 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
       ? track.source
       : "netease";
   const trackKey = `${source}:${track.id}`;
-  const cachedLyrics = readCachedLyrics(trackKey);
+  const lyricsEnabled = source !== "bilibili" || BILIBILI_LYRICS_ENABLED;
+  const cachedLyrics = lyricsEnabled ? readCachedLyrics(trackKey) : [];
 
   return {
     id: trackKey,
@@ -142,8 +144,8 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     cover: palette,
     accent,
     waveform: PROVIDER_DEFAULT_WAVEFORM,
-    lyricStatus: cachedLyrics.length ? "linked" : "searchable",
-    lyrics: cachedLyrics.length ? cachedLyrics : PROVIDER_PLACEHOLDER_LYRICS[source],
+    lyricStatus: !lyricsEnabled ? "missing" : cachedLyrics.length ? "linked" : "searchable",
+    lyrics: !lyricsEnabled ? [] : cachedLyrics.length ? cachedLyrics : PROVIDER_PLACEHOLDER_LYRICS[source],
   };
 }
 

@@ -3,13 +3,37 @@ import { commitPlaybackTime } from "./playbackClock";
 
 // The Chromium audio element is an optional, silent analyser copy during
 // native playback. Its seekability must never gate the authoritative clock.
-export function syncNativePlaybackClock(state: NativeAudioState, analyserAudio: Pick<HTMLAudioElement, "currentTime"> | null) {
+const ANALYSER_PLAYING_LOOKAHEAD_SEC = 0.04;
+const ANALYSER_HARD_SEEK_DRIFT_SEC = 0.18;
+const ANALYSER_MICRO_SYNC_DRIFT_SEC = 0.035;
+
+export function syncNativePlaybackClock(
+  state: NativeAudioState,
+  analyserAudio: (Pick<HTMLAudioElement, "currentTime"> & Partial<Pick<HTMLAudioElement, "playbackRate" | "paused">>) | null,
+) {
   if (!Number.isFinite(state.position)) return;
   const position = Math.max(0, state.position);
   commitPlaybackTime(position, ["loaded", "advanced", "seek", "ended"].includes(state.kind ?? ""));
   if (!analyserAudio) return;
   try {
-    if (Math.abs(analyserAudio.currentTime - position) >= 0.45) analyserAudio.currentTime = position;
+    const target = !state.paused && state.kind === "progress"
+      ? position + ANALYSER_PLAYING_LOOKAHEAD_SEC
+      : position;
+    const drift = target - analyserAudio.currentTime;
+    if (!Number.isFinite(drift) || Math.abs(drift) >= ANALYSER_HARD_SEEK_DRIFT_SEC) {
+      analyserAudio.currentTime = target;
+      if (typeof analyserAudio.playbackRate === "number" && analyserAudio.playbackRate !== 1) {
+        analyserAudio.playbackRate = 1;
+      }
+      return;
+    }
+    if (typeof analyserAudio.playbackRate === "number") {
+      if (!state.paused && analyserAudio.paused !== true && Math.abs(drift) >= ANALYSER_MICRO_SYNC_DRIFT_SEC) {
+        analyserAudio.playbackRate = drift > 0 ? 1.06 : 0.94;
+      } else if (analyserAudio.playbackRate !== 1) {
+        analyserAudio.playbackRate = 1;
+      }
+    }
   } catch {
     // Metadata/seekable ranges may lag the native decoder after a drag. The
     // next progress event can retry the analyser without freezing the UI.

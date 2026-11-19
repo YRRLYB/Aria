@@ -109,7 +109,7 @@ export function CloudSurface({
                   <CoverArt track={track} className="size-12 rounded-lg" />
                   <div className="min-w-0"><p className="truncate text-sm font-semibold"><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></p><p className="mt-1 truncate text-xs text-neutral-500"><CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText></p></div>
                   <div className="min-w-0 text-xs text-neutral-400"><p className="truncate" title={file?.fileName}>{file?.fileName || track.album}</p><p className="mt-1 truncate">{formatBytes(file?.fileSize)}{file?.uploadedAt ? ` · ${new Date(file.uploadedAt).toLocaleDateString("zh-CN")}` : ""}</p></div>
-                  <span className="flex items-center gap-2"><Badge className="max-w-36 truncate">{formatAudioDetail(track)}</Badge><AddToPlaylistButton track={track} /></span>
+                  <span className="flex shrink-0 items-center gap-2"><Badge className="shrink-0 whitespace-nowrap">{formatAudioDetail(track)}</Badge><AddToPlaylistButton track={track} /></span>
                 </div>;
               })}
             </div>

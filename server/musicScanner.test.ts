@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ vi.mock("music-metadata", () => ({
   parseFile: parseFileMock,
 }));
 
-import { scanMusicFolder } from "./musicScanner";
+import { recoverJapaneseAlbumName, scanMusicFolder } from "./musicScanner";
 import type { ScannedTrack } from "./types";
 
 let tempRoot: string | null = null;
@@ -60,5 +60,42 @@ describe("incremental music scanner", () => {
     await utimes(unchangedPath, nextTime, nextTime);
     await scanMusicFolder(tempRoot, undefined, result);
     expect(parseFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers Japanese album names from ISO-2022-JP tags and updates filename-derived titles", async () => {
+    expect(recoverJapaneseAlbumName("disc1 pianoIzQ]W`", "disc1 piano生演奏")).toBe("disc1 piano生演奏");
+    expect(recoverJapaneseAlbumName("\x1b$B$R$i$,$J\x1b(B", "other")).toBe("ひらがな");
+    expect(recoverJapaneseAlbumName("album $R$i$,$J", "album ひらがな")).toBe("album ひらがな");
+    expect(recoverJapaneseAlbumName("Normal Album", "other")).toBe("Normal Album");
+
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), "aria-jp-scan-"));
+    const albumDir = path.join(tempRoot, "disc1 piano生演奏");
+    await mkdir(albumDir, { recursive: true });
+    const trackPath = path.join(albumDir, "03 - 夜のピアノ.flac");
+    await writeFile(trackPath, "fake-jp-flac");
+    const fileStat = await stat(trackPath);
+
+    parseFileMock.mockResolvedValue({
+      common: { title: "Garbled", artist: "Artist", album: "disc1 pianoIzQ]W`", track: { no: 3 } },
+      format: { duration: 190, container: "FLAC", lossless: true, sampleRate: 44_100, bitsPerSample: 16 },
+    });
+
+    const fresh = await scanMusicFolder(tempRoot);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0].album).toBe("disc1 piano生演奏");
+    expect(fresh[0].title).toBe("夜のピアノ");
+
+    // Verify incremental cache hits also recover previously scanned garbled albums.
+    const staleCached: ScannedTrack = {
+      ...fresh[0],
+      album: "disc1 pianoIzQ]W`",
+      title: "Garbled",
+      size: fileStat.size,
+      mtimeMs: fileStat.mtimeMs,
+    };
+    const recoveredFromCache = await scanMusicFolder(tempRoot, undefined, [staleCached]);
+    expect(parseFileMock).toHaveBeenCalledTimes(1);
+    expect(recoveredFromCache[0].album).toBe("disc1 piano生演奏");
+    expect(recoveredFromCache[0].title).toBe("夜のピアノ");
   });
 });

@@ -981,7 +981,7 @@ export class NeteaseClient {
   }
 
   private async getLyricsCached(songId: string | number) {
-    return rememberPersistent(`netease:lyrics:v3:${songId}`, weekTtl, () => fetchNeteaseLyrics(songId));
+    return rememberPersistent(`netease:lyrics:v4:${songId}`, weekTtl, () => fetchNeteaseLyrics(songId));
   }
 
   private async getSongUrlCached(

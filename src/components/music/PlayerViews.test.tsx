@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { tracks } from "@/data/music";
-import { PlayerSurface } from "./PlayerViews";
+import { ImmersivePlayerView, PlayerSurface } from "./PlayerViews";
 import { AddToPlaylistDialog } from "./PlaylistActions";
 
 describe("player and playlist surfaces", () => {
@@ -61,5 +61,109 @@ describe("player and playlist surfaces", () => {
     expect(markup).not.toContain(">收起</span>");
     expect(markup).toContain('data-taskbar-anchor="player-cover"');
     expect(markup).toContain(">Hi-Res</button>");
+  });
+
+  it("promotes the unified MV curtain in-place when immersive=true without hiding audio bitrate on long titles", () => {
+    const longTitleTrack = {
+      ...tracks[0],
+      id: "bilibili:BV1longtitle99",
+      title: "An Extremely Long Classical Symphony Title That Would Otherwise Push Out Bitrate Badges In Flex Containers",
+      artist: "Some Very Long Orchestra Name",
+      source: "bilibili" as const,
+      videoUrl: "/api/sources/bilibili/tracks/BV1longtitle99/video",
+      quality: "Hi-Res" as const,
+      currentLevel: "hires" as const,
+      bitrate: 1_920_000,
+      sampleRate: 96_000,
+      availableLevels: ["standard", "hires"] as const,
+    };
+    const markup = renderToStaticMarkup(<PlayerSurface
+      activeTrack={{ ...longTitleTrack, availableLevels: [...longTitleTrack.availableLevels] }}
+      palette={{ primary: "#7b61df", secondary: "#e06c9f" }}
+      playing visualizerPlaying visualizerActive shuffleEnabled={false} repeatMode="all"
+      onTogglePlay={vi.fn()} onToggleShuffle={vi.fn()} onCycleRepeatMode={vi.fn()} onNext={vi.fn()} onPrevious={vi.fn()}
+      onOpenImmersive={vi.fn()} immersive onCloseImmersive={vi.fn()}
+      videoMode onToggleVideoMode={vi.fn()} videoActive videoControlRef={{ current: null }} onVideoDuration={vi.fn()} onVideoEnded={vi.fn()} onVideoError={vi.fn()}
+      equalizerEnabled={false} onOpenEqualizer={vi.fn()} onReplaceLocalArtwork={vi.fn(async () => undefined)} liked={false} onToggleLike={vi.fn()}
+      volume={80} onVolumeChange={vi.fn()} qualityLevel="hires" onQualityLevelChange={vi.fn()} hifiEnabled masterQualityEnabled={false}
+      onMasterQualityEnabledChange={vi.fn()} exclusiveMode={false} durationSeconds={266} analyserRef={{ current: null }} visualizerMode="system"
+      lyricDisplayMode="bilingual" onLyricDisplayModeChange={vi.fn()} onSeek={vi.fn()} />);
+
+    expect(markup).toContain("aria-mv-immersive");
+    expect(markup).toContain('aria-label="退出沉浸全屏"');
+    expect(markup).toContain("1920k");
+    expect(markup).toContain("96kHz");
+    expect(markup).not.toContain("hidden shrink-0 text-xs text-neutral-400 xl:inline");
+  });
+
+  it("respects lyricDisplayMode in ImmersivePlayerView and pairs bilingual translations cleanly", () => {
+    const bilingualTrack = {
+      ...tracks[0],
+      source: "netease" as const,
+      lyricStatus: "linked" as const,
+      lyrics: [
+        { time: "00:10", startTime: 10, text: "Take my hand tonight", translation: "今晚牵起我的手" },
+      ],
+    };
+
+    const bilingualMarkup = renderToStaticMarkup(
+      <ImmersivePlayerView
+        activeTrack={bilingualTrack}
+        palette={{ primary: "#7b61df", secondary: "#e06c9f" }}
+        playing={false}
+        visualizerPlaying={false}
+        durationSeconds={200}
+        analyserRef={{ current: null }}
+        visualizerMode="system"
+        volume={60}
+        onVolumeChange={vi.fn()}
+        visualizerActive={false}
+        lyricDisplayMode="bilingual"
+        onClose={vi.fn()}
+        onTogglePlay={vi.fn()}
+        onNext={vi.fn()}
+        onPrevious={vi.fn()}
+        onSeek={vi.fn()}
+        videoMode={false}
+        onToggleVideoMode={vi.fn()}
+        videoControlRef={{ current: null }}
+        onVideoDuration={vi.fn()}
+        onVideoEnded={vi.fn()}
+        onVideoError={vi.fn()}
+        videoActive={false}
+      />,
+    );
+    expect(bilingualMarkup).toContain("Take my hand tonight");
+    expect(bilingualMarkup).toContain("今晚牵起我的手");
+
+    const originalOnlyMarkup = renderToStaticMarkup(
+      <ImmersivePlayerView
+        activeTrack={bilingualTrack}
+        palette={{ primary: "#7b61df", secondary: "#e06c9f" }}
+        playing={false}
+        visualizerPlaying={false}
+        durationSeconds={200}
+        analyserRef={{ current: null }}
+        visualizerMode="system"
+        volume={60}
+        onVolumeChange={vi.fn()}
+        visualizerActive={false}
+        lyricDisplayMode="original"
+        onClose={vi.fn()}
+        onTogglePlay={vi.fn()}
+        onNext={vi.fn()}
+        onPrevious={vi.fn()}
+        onSeek={vi.fn()}
+        videoMode={false}
+        onToggleVideoMode={vi.fn()}
+        videoControlRef={{ current: null }}
+        onVideoDuration={vi.fn()}
+        onVideoEnded={vi.fn()}
+        onVideoError={vi.fn()}
+        videoActive={false}
+      />,
+    );
+    expect(originalOnlyMarkup).toContain("Take my hand tonight");
+    expect(originalOnlyMarkup).not.toContain("今晚牵起我的手");
   });
 });

@@ -1,6 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
+import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
+import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
 import { hasSyncedLyrics, writeCachedLyrics } from "@/lib/playerPresentation";
 import { idleTrack } from "@/lib/trackMappers";
 import { selectAutomaticMetadataCandidate } from "@/lib/localMetadata";
@@ -28,13 +30,14 @@ export function useLyricsSync(options: {
   const [lyricRetryTick, setLyricRetryTick] = useState(0);
 
   function applyLyricsToTrack(trackId: string, lyrics: Track["lyrics"], candidateId?: string) {
-    if (!lyrics.length) return;
+    const normalized = normalizeBilingualLyrics(lyrics);
+    if (!normalized.length) return;
     if (candidateId) {
       lyricBindingsRef.current = { ...lyricBindingsRef.current, [trackId]: candidateId };
       setLyricBindings((current) => ({ ...current, [trackId]: candidateId }));
     }
-    writeCachedLyrics(trackId, lyrics);
-    applyTrackUpdate(trackId, (track) => (track.id === trackId ? { ...track, lyrics, lyricStatus: "linked" as const } : track), {
+    writeCachedLyrics(trackId, normalized);
+    applyTrackUpdate(trackId, (track) => (track.id === trackId ? { ...track, lyrics: normalized, lyricStatus: "linked" as const } : track), {
       includeHistory: true,
     });
   }
@@ -43,19 +46,20 @@ export function useLyricsSync(options: {
     const providerId = track.providerId ?? (track.id.startsWith(`${track.source}:`) ? track.id.slice(track.source.length + 1) : undefined);
     if (track.source === "qq" && providerId) {
       const result = await api.getSourceLyrics("qq", providerId);
-      if (!result.lyrics.length) return false;
+      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics);
       return true;
     }
-    if (track.source === "bilibili" && providerId) {
+    if (track.source === "bilibili") {
+      if (!BILIBILI_LYRICS_ENABLED || !providerId) return false;
       const result = await api.getSourceLyrics("bilibili", providerId);
-      if (!result.lyrics.length) return false;
+      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics);
       return true;
     }
     if (track.source === "netease" && providerId) {
       const result = await api.getNeteaseLyrics(providerId);
-      if (!result.lyrics.length) return false;
+      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics);
       return true;
     }
@@ -65,7 +69,7 @@ export function useLyricsSync(options: {
       if (binding) {
         const result = await api.bindLyric(track.id, binding, binding);
         if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
-        if (!result.lyrics.length) return false;
+        if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
         applyLyricsToTrack(track.id, result.lyrics);
         return true;
       }
@@ -78,7 +82,7 @@ export function useLyricsSync(options: {
       if (!best || lyricBindingsRef.current[track.id] !== binding) return false;
       const result = await api.bindLyric(track.id, best.id, binding ?? null);
       if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
-      if (!result.lyrics.length) return false;
+      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
       applyLyricsToTrack(track.id, result.lyrics, best.id);
       return true;
     }
@@ -138,6 +142,7 @@ export function useLyricsSync(options: {
 
   const syncActiveTrackLyrics = useEffectEvent(() => {
     const activeTrack = options.activeTrack;
+    if (activeTrack.source === "bilibili" && !BILIBILI_LYRICS_ENABLED) return;
     const hasLyrics = hasSyncedLyrics(activeTrack);
     const needsTranslation = activeTrack.source === "netease" && !activeTrack.lyrics.some((line) => Boolean(line.translation));
     const canRefreshTiming = activeTrack.source === "netease" || (activeTrack.source === "local" && Boolean(lyricBindings[activeTrack.id]));

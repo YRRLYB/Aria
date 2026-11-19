@@ -4,6 +4,7 @@ import type { Track } from "@/data/music";
  * Feature switches and transition rules for source-specific playback features.
  */
 export const BILIBILI_VIDEO_ENABLED = true;
+export const BILIBILI_LYRICS_ENABLED = false;
 
 export function canPlayTrackVideo(
   track: Pick<Track, "source" | "videoUrl">,

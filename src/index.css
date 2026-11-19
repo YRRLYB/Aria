@@ -330,6 +330,10 @@ textarea::selection,
   background-color: rgba(250, 249, 253, 0.96);
 }
 
+.aria-mv-stage.aria-mv-immersive {
+  background-color: #000000;
+}
+
 .aria-immersive .player-controls,
 .aria-immersive .player-volume {
   border-color: rgba(255, 255, 255, 0.14);
@@ -605,10 +609,14 @@ textarea::selection,
   border: none;
   border-radius: 999px;
   background: var(--track-accent, #171717);
-  color: #ffffff;
+  color: var(--track-accent-fg, #ffffff);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 10px 22px rgba(23, 23, 27, 0.16);
   transition:
     transform 150ms ease,
-    filter 150ms ease;
+    filter 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .player-play-button > svg,

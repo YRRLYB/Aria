@@ -115,6 +115,15 @@ describe("Bilibili client", () => {
       .mockResolvedValueOnce(jsonResponse({
         code: 0,
         data: {
+          wbi_img: {
+            img_url: "https://i0.hdslb.com/bfs/wbi/abcdef.png",
+            sub_url: "https://i0.hdslb.com/bfs/wbi/123456.png",
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
           quality: 80,
           accept_quality: [80, 64, 32, 16],
           accept_description: ["高清 1080P", "高清 720P", "清晰 480P", "流畅 360P"],
@@ -145,6 +154,9 @@ describe("Bilibili client", () => {
       availableLevels: ["exhigh", "standard"],
     });
     expect(audio.headers?.Referer).toBe("https://www.bilibili.com/");
+    const audioCallUrl = fetchMock.mock.calls.find(([url]) => String(url).includes("/x/player/wbi/playurl"))?.[0];
+    expect(String(audioCallUrl)).toContain("w_rid=");
+    expect(String(audioCallUrl)).toContain("try_look=1");
 
     const video = await resolveBilibiliVideoMeta("BV1xx411c7mD", { level: "hires" });
     expect(video).toMatchObject({
@@ -563,6 +575,167 @@ describe("Bilibili client", () => {
       kind: "playlist",
       title: "别人的合集",
       tracks: [{ id: "BV1xx411c7mD", album: "B站 · 别人的合集", artist: "B站合集" }],
+    });
+  });
+
+  it("propagates cached bitrate and falls back to nominal tier bitrate for Bilibili liked tracks", async () => {
+    storeMocks.readStore.mockResolvedValue({ bilibiliCookie: "SESSDATA=ok; bili_jct=csrf" });
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          wbi_img: {
+            img_url: "https://i0.hdslb.com/bfs/wbi/abcdef.png",
+            sub_url: "https://i0.hdslb.com/bfs/wbi/123456.png",
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          dash: {
+            audio: [{ id: 30280, baseUrl: "https://cdn.example/audio.m4s" }],
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { isLogin: true, mid: 1001, uname: "B站用户", face: "//i0.hdslb.com/face.jpg" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { list: [{ id: 99, title: "Aria", media_count: 1 }] },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          has_more: false,
+          medias: [{
+            type: 2,
+            attr: 0,
+            bvid: "BV1xx411c7mD",
+            title: "收藏测试曲目",
+            cover: "//i0.hdslb.com/fav.jpg",
+            duration: 240,
+            fav_time: 1_700_000_000,
+            upper: { name: "测试UP" },
+          }],
+        },
+      }))
+      .mockImplementation(async () => jsonResponse({ code: 0, data: { medias: [], has_more: false } }));
+
+    const meta = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "exhigh" });
+    expect(meta.bitrate).toBe(192_000);
+    expect(meta.quality).toBe("320K");
+
+    const liked = await getBilibiliLikedTracks();
+    expect(liked).toHaveLength(1);
+    expect(liked[0]).toMatchObject({
+      id: "BV1xx411c7mD",
+      bitrate: 192_000,
+      quality: "320K",
+      currentLevel: "exhigh",
+    });
+  });
+
+  it("degrades Bilibili audio tiers downward cleanly and parses dolby.audio arrays", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          wbi_img: {
+            img_url: "https://i0.hdslb.com/bfs/wbi/abcdef.png",
+            sub_url: "https://i0.hdslb.com/bfs/wbi/123456.png",
+          },
+        },
+      }))
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("web-interface/view")) return jsonResponse({ code: 0, data: viewData });
+        return jsonResponse({
+          code: 0,
+          data: {
+            dash: {
+              audio: [
+                { id: 30216, baseUrl: "https://cdn.test/audio-64.m4s", bandwidth: 66_000, codecs: "mp4a.40.2" },
+                { id: 30280, baseUrl: "https://cdn.test/audio-192-low.m4s", bandwidth: 190_000, codecs: "mp4a.40.2" },
+                { id: 30280, baseUrl: "https://cdn.test/audio-192-high.m4s", bandwidth: 320_000, codecs: "mp4a.40.2" },
+              ],
+              flac: {
+                display: true,
+                audio: { id: 30251, baseUrl: "https://cdn.test/audio-hires.flac", bandwidth: 960_000, codecs: "fLaC" },
+              },
+            },
+          },
+        });
+      });
+
+    // Requesting "lossless" when only hires / exhigh / standard exist must degrade to exhigh (not upgrade to hires),
+    // and pick the highest-bandwidth stream within exhigh.
+    const losslessFallback = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "lossless" });
+    expect(losslessFallback).toMatchObject({
+      url: "https://cdn.test/audio-192-high.m4s",
+      currentLevel: "exhigh",
+      bitrate: 320_000,
+    });
+
+    // Requesting "higher" when only hires / exhigh / standard exist must degrade to standard (not upgrade to exhigh).
+    const higherFallback = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "higher" });
+    expect(higherFallback).toMatchObject({
+      url: "https://cdn.test/audio-64.m4s",
+      currentLevel: "standard",
+      bitrate: 66_000,
+    });
+
+    // Requesting "hires" returns the FLAC stream, and even standard requests keep qn=120 so higher audio isn't stripped.
+    const hires = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "hires" });
+    expect(hires).toMatchObject({
+      url: "https://cdn.test/audio-hires.flac",
+      currentLevel: "hires",
+      bitrate: 960_000,
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("playurl") && String(url).includes("qn=64"))).toBe(false);
+
+    // Array dolby.audio payload (as returned by live Bilibili API) is also parsed cleanly.
+    resetBilibiliStateForTests();
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: viewData }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { wbi_img: { img_url: "https://i0.hdslb.com/bfs/wbi/abcdef.png", sub_url: "https://i0.hdslb.com/bfs/wbi/123456.png" } },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          dash: {
+            audio: [{ id: 30216, baseUrl: "https://cdn.test/audio-64.m4s", bandwidth: 66_000 }],
+            dolby: {
+              type: 2,
+              audio: [{ id: 30250, baseUrl: "https://cdn.test/dolby-ec3.m4s", bandwidth: 384_000, codecs: "ec-3" }],
+            },
+          },
+        },
+      }));
+    const dolbyArray = await resolveBilibiliStreamMeta("BV1xx411c7mD", { level: "lossless" });
+    expect(dolbyArray).toMatchObject({
+      url: "https://cdn.test/dolby-ec3.m4s",
+      currentLevel: "lossless",
+      bitrate: 384_000,
     });
   });
 });

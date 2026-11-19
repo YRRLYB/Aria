@@ -144,7 +144,7 @@ export function useNeteaseData(options: {
     const updateTrack = (track: Track) => {
       if (track.id !== trackId) return track;
       if (!authoritative && track.bitrate != null) {
-        const nextLevels = meta.availableLevels;
+        const nextLevels = meta.availableLevels ?? [];
         if (!nextLevels.length || nextLevels.join("|") === (track.availableLevels ?? []).join("|")) {
           return track;
         }
@@ -156,7 +156,7 @@ export function useNeteaseData(options: {
         bitrate: meta.bitrate ?? track.bitrate,
         sampleRate: meta.sampleRate ?? track.sampleRate,
         currentLevel: meta.currentLevel ?? track.currentLevel ?? null,
-        availableLevels: meta.availableLevels.length ? meta.availableLevels : track.availableLevels,
+        availableLevels: meta.availableLevels?.length ? meta.availableLevels : track.availableLevels,
       };
     };
     applyTrackUpdate(trackId, updateTrack, { includeHistory: false });
