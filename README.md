@@ -40,7 +40,7 @@
 - **网易云音乐**：扫码登录、头像昵称、红心喜欢、每日推荐、私人漫游、云盘检索分页和实时榜单 / 精选歌单 / 曲风漫游都有，启动先秒开上次缓存再悄悄在后台同步。
 - **QQ 音乐**：完整搜索、无损与 Hi-Res 音质、逐行/双语歌词以及手机 QQ 扫码登录。
 - **B站音源 & 剧场模式**：免登录可搜，登录后自动同步个人私密「Aria」收藏夹与「我的收藏夹」歌单，WBI 音画流解析支持大会员 FLAC / Dolby / 高码率音轨；切到 MV 或沉浸全屏时复用同一路画面不闪封面，鼠标停一会会自动淡出底部控制栏。
-- **YouTube Music**：免登录搜索与播放，AAC / Opus 档位自动适配；在设置里单独为它配一个代理端口（如 `7890`）即可——代理只作用于 YouTube，网易云 / QQ / B站永远直连，国内体验不受影响。登录走「设备码登录」（智能电视同款 RFC 8628 通道）：手机扫码输入代码确认，Aria 全程不接触 Google 登录页，从结构上绕开「此浏览器或应用可能不安全」的嵌入浏览器拦截；登录后即可在「歌单」页的 YouTube 标签里同步你的音乐歌单（喜欢的音乐置顶），「窗口登录」保留为备用路径。
+- **YouTube Music**：免登录搜索与播放，AAC / Opus 档位自动适配；在设置里单独为它配一个代理端口（如 `7890`）即可——代理只作用于 YouTube，网易云 / QQ / B站永远直连，国内体验不受影响。登录支持设备码扫码授权，用手机浏览器输入代码确认就能完成，避开嵌入浏览器登录拦截；登录后即可在「歌单」页同步你的 YouTube 音乐歌单（「喜欢的音乐」置顶），同时也保留窗口登录作为备用。
 - **B站歌单**：登录后自动同步你账号里的收藏夹，别人的公开收藏夹 / 合集粘贴链接即可引入成可刷新的镜像歌单；刷新只替换 B站部分，手动混进来的其它来源歌曲不会丢。
 - **官方品牌图标与真实码率**：喜欢列表、队列、歌单和发现页统一用网易云 / QQ / B站 / YouTube 官方矢量图标 + 彩色徽章区分来源，歌名再长也不会把后面的码率挤掉。
 
@@ -60,7 +60,7 @@
 ## 📦 去哪下载安装
 
 - **Windows 版**：直接去 [Releases 发布页](https://github.com/YRRLYB/Aria/releases/latest) 下最新的 `Aria-x.x.x-x64.exe`；装好之后在应用里打开「设置 → 版本与更新」就能直接检查并自动升级。
-- **macOS（Intel / Apple Silicon）**：两个架构都已经各自配好 DMG 打包流程，具体的构建和安装细节可以翻 [这篇 macOS 双架构说明](docs/macos-x64-arm64.md)。
+- **macOS（Intel / Apple Silicon）**：两个架构都已经配好 DMG 打包流程，可以直接去 Releases 下载对应架构的安装包，或者拉下代码后通过 `npm run dist:mac:x64` / `npm run dist:mac:arm64` 本地构建。
 
 ---
 
@@ -106,8 +106,6 @@ npm run dist:mac        # 打出 macOS DMG（自动按架构准备 mpv）
 - `aria-icons/` & `build/`：应用图标套件与打包资源
 - `scripts/`：构建、mpv 准备和安装包制作脚本
 - **更多延伸阅读**：
-  - [多音源是如何聚合设计的（架构笔记）](docs/multi-source-plan-0.6.0.md)
-  - [macOS x64 / arm64 构建说明](docs/macos-x64-arm64.md)
   - [完整版本更新日志（CHANGELOG）](CHANGELOG.md)
   - [安卓伙伴 Aria-Mobile（GitHub 仓库）](https://github.com/YRRLYB/Aria-Mobile)
 
@@ -122,11 +120,11 @@ npm run dist:mac        # 打出 macOS DMG（自动按架构准备 mpv）
 <table align="center">
   <tr>
     <td align="center" width="260">
-      <img src="./docs/sponsor-wechat.png" width="220" alt="微信收款码" /><br />
+      <img src="./assets/sponsor-wechat.png" width="220" alt="微信收款码" /><br />
       <strong>💚 微信赞赏</strong>
     </td>
     <td align="center" width="260">
-      <img src="./docs/sponsor-alipay.jpg" width="220" alt="支付宝收款码" /><br />
+      <img src="./assets/sponsor-alipay.jpg" width="220" alt="支付宝收款码" /><br />
       <strong>💙 支付宝收款</strong>
     </td>
   </tr>

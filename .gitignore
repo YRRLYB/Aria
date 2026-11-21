@@ -12,5 +12,3 @@ electron/native/**/build/
 electron/native/**/*.node
 electron/updater.bundle.cjs
 /main.cjs
-.zcode/
-.tools/
