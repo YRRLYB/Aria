@@ -1,0 +1,30 @@
+Aria
+Copyright (c) 2026 YRRLYB (https://github.com/YRRLYB/Aria)
+
+This repository and its original source code are licensed under the
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+Public License (CC BY-NC-SA 4.0). See the LICENSE file for full legal text.
+
+Summary of Required Terms / 补充开源与使用声明：
+
+1. Fork 与二次开发（Fork & Derivatives Allowed）：
+   欢迎自由学习、Fork 本仓库代码并进行二次开发与非商业分享。
+
+2. 禁止盈利（Strictly NonCommercial）：
+   严禁将本项目或其任何修改、打包或衍生版本用于商业用途或盈利行为，包括但不限于：
+   付费售卖软件/源码、付费分发安装包、会员收费服务、捆绑广告引流变现或任何形式的直接/间接商业营利。
+
+3. 必须显著标识原项目（Mandatory Attribution）：
+   任何使用、修改或基于本项目二次开发的项目与分发包，均须在显著位置（包括但不限于项目 README、
+   应用内的设置/关于页面以及发行说明）清晰标注原项目名称、原作者与原仓库地址：
+     - Project: Aria
+     - Author: YRRLYB
+     - Repository: https://github.com/YRRLYB/Aria
+   并简要说明相比原版本所做的改动。
+
+4. 相同方式共享（ShareAlike）：
+   基于本项目修改并对外发布、分发的衍生作品，必须继续以 CC BY-NC-SA 4.0 协议开放源代码。
+
+5. 第三方组件说明（Third-Party Components）：
+   桌面版可选调用的外部独立音频后端进程 `mpv`（如果用户或构建脚本包含其发行二进制）
+   遵循其各自原有的开源协议（GPLv2+ / LGPLv2.1+），不包含在本项目的非商业限制之中。

@@ -1,4 +1,5 @@
 import type { LyricCandidate, LyricLine } from "@/data/music";
+import type { KeyboardShortcuts } from "./keyboardShortcuts";
 import type { LocalMetadataApplyOptions, LocalMetadataOverride, LocalMetadataPreview } from "./localMetadata";
 
 declare global {
@@ -78,12 +79,14 @@ declare global {
       toggleMaximizeWindow?: () => void;
       closeWindow?: () => void;
       onWindowVisibilityChange?: (callback: (visible: boolean) => void) => () => void;
-      onPlaybackCommand?: (callback: (command: "toggle" | "play" | "pause" | "previous" | "next") => void) => () => void;
+      onPlaybackCommand?: (callback: (command: "toggle" | "play" | "pause" | "previous" | "next" | "volumeUp" | "volumeDown" | "mute" | "like" | "mode" | "equalizer") => void) => () => void;
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       chooseMusicFolder?: () => Promise<string | null>;
       qqLoginWindow?: () => Promise<{ ok: boolean; cookie?: string; message?: string }>;
+      /** 应用内 YouTube 登录窗口；代理字符串（http://host:port）随窗口会话生效。 */
+      youtubeLoginWindow?: (proxy?: string) => Promise<{ ok: boolean; cookie?: string; message?: string }>;
       getRemoteAccess?: () => Promise<{ enabled: boolean; token: string; port: number; addresses: string[] }>;
       setRemoteAccess?: (enabled: boolean) => Promise<{ enabled: boolean; token: string }>;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
@@ -100,7 +103,7 @@ declare global {
         install: () => Promise<boolean>;
         onState: (callback: (state: UpdateState) => void) => () => void;
       };
-      configureGlobalShortcuts?: (payload: Record<"toggle" | "previous" | "next" | "show", string>) => Promise<unknown>;
+      configureGlobalShortcuts?: (payload: KeyboardShortcuts) => Promise<unknown>;
       copyImageToClipboard?: (payload: { url?: string; dataUrl?: string }) => Promise<boolean>;
       log?: (payload: {
         level?: "debug" | "info" | "warn" | "error";
@@ -289,7 +292,7 @@ export type ProviderStylePage = {
 export type ProviderPlaylist = {
   id: string;
   name: string;
-  source?: "netease" | "qq";
+  source?: "netease" | "qq" | "bilibili" | "youtube";
   trackCount: number;
   subscribed: boolean;
   ownerId?: string | null;
@@ -628,11 +631,24 @@ export const api = {
       hasNeteaseCookie: boolean;
       hasQqCookie?: boolean;
       hasBilibiliCookie?: boolean;
+      hasYoutubeCookie?: boolean;
       neteaseAccount: NeteaseAccountSummary;
       /** Opt-in mainland egress IP used for NetEase's 460 mitigation. */
       neteaseRealIp?: string | null;
+      /** YouTube-only HTTP proxy (host:port); other sources stay direct. */
+      youtubeProxy?: string | null;
       lyricBindings: Record<string, string>;
     }>("/api/settings");
+  },
+  /**
+   * Saves the proxy used exclusively by the YouTube source. Accepts a bare
+   * port ("7890"), host:port, or a full URL; pass an empty string to clear.
+   */
+  saveYoutubeProxy(proxy: string) {
+    return request<{ ok: boolean; youtubeProxy: string | null }>("/api/settings/youtube-proxy", {
+      method: "PUT",
+      body: JSON.stringify({ proxy }),
+    });
   },
   getNeteaseAccount() {
     return request<{ account: NeteaseAccountSummary }>("/api/settings/netease-account");
@@ -957,6 +973,16 @@ export const api = {
   getSourceLikedTracks(sourceId: string) {
     return request<{ tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/liked`);
   },
+  /** 账号自己的歌单（B站收藏夹）。 */
+  getSourcePlaylists(sourceId: string) {
+    return request<{ playlists: ProviderPlaylist[] }>(`/api/sources/${encodeURIComponent(sourceId)}/playlists`);
+  },
+  /** B站歌单曲目详情；playlistId 形如 folder:<id> / season:<mid>:<seasonId>。 */
+  getSourcePlaylistTracks(sourceId: string, playlistId: string) {
+    return request<{ title?: string; tracks: ProviderTrack[] }>(
+      `/api/sources/${encodeURIComponent(sourceId)}/playlists/${encodeURIComponent(playlistId)}/tracks`,
+    );
+  },
   resolveSourceLink(sourceId: string, url: string) {
     return request<{ kind: "video" | "folder" | "playlist"; title?: string; tracks: ProviderTrack[] }>(
       `/api/sources/${encodeURIComponent(sourceId)}/resolve-link`,
@@ -976,10 +1002,17 @@ export const api = {
     );
   },
   startSourceQrLogin(sourceId: string) {
-    return request<{ key: string; qrImage: string; expiresIn: number }>(
-      `/api/sources/${encodeURIComponent(sourceId)}/qr/start`,
-      { method: "POST" },
-    );
+    return request<{
+      key: string;
+      qrImage: string;
+      expiresIn: number;
+      /** 设备码源（YouTube）：需要在手机上输入的短代码。 */
+      userCode?: string;
+      /** 设备码源：激活页网址（二维码内容）。 */
+      verificationUrl?: string;
+    }>(`/api/sources/${encodeURIComponent(sourceId)}/qr/start`, {
+      method: "POST",
+    });
   },
   checkSourceQrLogin(sourceId: string, key: string) {
     const params = new URLSearchParams({ key });

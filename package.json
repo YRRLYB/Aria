@@ -1,7 +1,8 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.7.4",
+  "version": "0.8.1",
+  "license": "CC-BY-NC-SA-4.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -42,6 +43,7 @@
     "sharp": "^0.34.5",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^4.1.11",
+    "undici": "^7.28.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

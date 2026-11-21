@@ -20,6 +20,13 @@ function isBilibiliArtworkSource(source: URL) {
       source.hostname === "bilivideo.com" || source.hostname.endsWith(".bilivideo.com"));
 }
 
+function isYoutubeArtworkSource(source: URL) {
+  return ["http:", "https:"].includes(source.protocol) && !source.username && !source.password && !source.port &&
+    ["ytimg.com", "ggpht.com", "googleusercontent.com"].some(
+      (host) => source.hostname === host || source.hostname.endsWith(`.${host}`),
+    );
+}
+
 // Keep NetEase artwork on Aria's persistent image cache, including raw URLs
 // restored from older snapshots. Sizes share the same keys across surfaces.
 export function cachedArtworkUrl(url: string | null | undefined, size = 320): string | undefined {
@@ -33,6 +40,9 @@ export function cachedArtworkUrl(url: string | null | undefined, size = 320): st
     }
     if (isBilibiliArtworkSource(source)) {
       return api.getSourceCoverUrl("bilibili", source.href);
+    }
+    if (isYoutubeArtworkSource(source)) {
+      return api.getSourceCoverUrl("youtube", source.href);
     }
   } catch {
     return url;
@@ -98,11 +108,23 @@ export function directArtworkUrl(url: string | null | undefined, size = 320): st
       original.protocol = "https:";
       return original.href;
     }
+    if (source.pathname === "/api/sources/youtube/cover") {
+      const upstream = source.searchParams.get("url");
+      if (!upstream) return undefined;
+      const original = new URL(upstream);
+      if (!isYoutubeArtworkSource(original)) return undefined;
+      original.protocol = "https:";
+      return original.href;
+    }
     if (isQqArtworkSource(source)) {
       source.protocol = "https:";
       return applyQqCdnSize(source, size).href;
     }
     if (isBilibiliArtworkSource(source)) {
+      source.protocol = "https:";
+      return source.href;
+    }
+    if (isYoutubeArtworkSource(source)) {
       source.protocol = "https:";
       return source.href;
     }

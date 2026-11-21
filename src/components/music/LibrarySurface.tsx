@@ -1,4 +1,4 @@
-﻿import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Album, ArrowLeft, Disc3, FolderOpen, Languages, ListMusic, RefreshCw, X } from "lucide-react";
 import type { LyricCandidate, Track } from "@/data/music";
@@ -136,12 +136,12 @@ export function LibrarySurface({
         )}
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">Backend Scan</p>
             <input
               value={scanPath}
               onChange={(event) => setScanPath(event.target.value)}
               placeholder="输入本机音乐目录路径，例如 E:\\Music"
-              className="mt-2 w-full rounded-full border border-white/70 bg-white/70 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+              aria-label="本地音乐目录路径"
+              className="w-full rounded-full border border-white/70 bg-white/70 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
             />
           </div>
           <Button onClick={submitScanPath} disabled={scanState === "scanning"}>
@@ -327,10 +327,7 @@ function AlbumDetailView({
 
       <section className="min-h-0 overflow-hidden rounded-[1.5rem] bg-white/50 p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Tracks</p>
-            <h3 className="mt-1 text-2xl font-semibold">歌曲</h3>
-          </div>
+          <h3 className="text-2xl font-semibold">歌曲</h3>
           <Badge>{album.tracks.length}</Badge>
         </div>
         <div
@@ -424,8 +421,7 @@ function CdLibraryView({
     <section className="mt-5 rounded-[1.35rem] bg-white/50 p-4 shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Audio CD</p>
-          <h2 className="mt-1 text-2xl font-semibold">光盘音乐</h2>
+          <h2 className="text-2xl font-semibold">光盘音乐</h2>
           <p className="mt-2 text-sm text-neutral-500">扫描光盘只会更新 CD 曲目，不会清空已有本地音乐。</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">读取质量</span>
@@ -618,8 +614,7 @@ function LyricLookupPanel({
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">Online Lyrics</p>
-          <h2 className="mt-1 truncate text-xl font-semibold">
+          <h2 className="truncate text-xl font-semibold">
             <CopyableTrackText track={track} field="title">
               {track.title}
             </CopyableTrackText>

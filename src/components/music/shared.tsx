@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { UserRound } from "lucide-react";
 import { ArtworkImage } from "./ArtworkImage";
 import type { Track } from "@/data/music";
@@ -302,19 +302,83 @@ export const ArtistNavigationContext = createContext<((track: Track) => void) | 
 export function CopyableTrackText({
   track,
   field = "summary",
+  marquee,
   className,
   children,
 }: {
   track: Track;
   field?: TrackCopyField;
+  marquee?: boolean;
   className?: string;
   children?: ReactNode;
 }) {
   const openArtist = useContext(ArtistNavigationContext);
   const canOpenArtist = field === "artist" && Boolean(openArtist);
+  const marqueeEnabled = marquee ?? field === "title";
+  const content =
+    children ??
+    (field === "artist"
+      ? track.artist
+      : field === "album"
+        ? track.album
+        : field === "title"
+          ? track.title
+          : `${track.title} - ${track.artist}`);
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [scrollDuration, setScrollDuration] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!marqueeEnabled) {
+      setScrollDuration(null);
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) {
+      setScrollDuration(null);
+      return;
+    }
+
+    const update = () => {
+      const available = container.clientWidth;
+      const textWidth = measureRef.current
+        ? Math.ceil(measureRef.current.getBoundingClientRect().width)
+        : container.scrollWidth;
+      if (available > 12 && textWidth > available + 2) {
+        const travel = textWidth + 44;
+        setScrollDuration(Math.max(20, Math.round(travel / 13)));
+      } else {
+        setScrollDuration(null);
+      }
+    };
+
+    update();
+    const timer = window.setTimeout(update, 180);
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(update);
+      observer.observe(container);
+      if (measureRef.current) observer.observe(measureRef.current);
+      return () => {
+        window.clearTimeout(timer);
+        observer.disconnect();
+      };
+    }
+    window.addEventListener("resize", update);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", update);
+    };
+  }, [marqueeEnabled, track.id, track.title, scrollDuration !== null]);
+
   return (
     <span
-      className={cn(canOpenArtist ? "cursor-pointer" : "cursor-copy", className)}
+      ref={containerRef}
+      className={cn(
+        marqueeEnabled && "aria-slow-marquee",
+        marqueeEnabled && scrollDuration !== null && "is-scrolling",
+        canOpenArtist ? "cursor-pointer" : "cursor-copy",
+        className,
+      )}
       title={canOpenArtist ? "左键打开歌手，右键复制" : undefined}
       role={canOpenArtist ? "button" : undefined}
       tabIndex={canOpenArtist ? 0 : undefined}
@@ -343,7 +407,21 @@ export function CopyableTrackText({
         void copyTrackTextToClipboard(track, field);
       }}
     >
-      {children ?? (field === "artist" ? track.artist : field === "album" ? track.album : field === "title" ? track.title : `${track.title} - ${track.artist}`)}
+      {marqueeEnabled && scrollDuration !== null ? (
+        <span
+          className="aria-slow-marquee-track"
+          style={{ "--marquee-duration": `${scrollDuration}s` } as CSSProperties}
+        >
+          <span ref={measureRef} className="aria-slow-marquee-copy">
+            {content}
+          </span>
+          <span className="aria-slow-marquee-copy" aria-hidden="true">
+            {content}
+          </span>
+        </span>
+      ) : (
+        content
+      )}
     </span>
   );
 }

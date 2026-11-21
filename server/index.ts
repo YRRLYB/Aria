@@ -26,6 +26,7 @@ import { SourceError } from "./sources/contract";
 import { getSource } from "./sources/registry";
 import { proxyAudioStream } from "./sources/streamProxy";
 import { createSourcesRouter } from "./routes/sources";
+import { normalizeYoutubeProxyInput, youtubeCoverFetcher } from "./sources/youtube/client";
 import { HttpError } from "./utils/httpError";
 import { RemoteCoverCache } from "./remoteCoverCache";
 import {
@@ -53,6 +54,15 @@ const bilibiliCoverCache = new RemoteCoverCache({
   sizing: null,
   errorPrefix: "BILIBILI_COVER",
 });
+// YouTube covers (i.ytimg.com) go through the user's optional proxy; the
+// fetcher re-reads the proxy setting on every call, so changes apply live.
+const youtubeCoverCache = new RemoteCoverCache({
+  directory: path.join(cacheDir, "covers-youtube"),
+  allowedHosts: ["ytimg.com", "ggpht.com", "usercontent.goog"],
+  sizing: null,
+  errorPrefix: "YOUTUBE_COVER",
+  fetcher: youtubeCoverFetcher,
+});
 
 // Cover responses are binary assets and can be several megabytes each. Keep
 // the on-disk cache bounded so repeated browsing cannot grow memory/disk use
@@ -61,6 +71,7 @@ const pruneRemoteCoverCache = () => {
   remoteCoverCache.prune();
   qqCoverCache.prune();
   bilibiliCoverCache.prune();
+  youtubeCoverCache.prune();
 };
 void pruneRemoteCoverCache();
 const remoteCoverPruneTimer = setInterval(pruneRemoteCoverCache, 15 * 60_000);
@@ -106,7 +117,7 @@ app.use("/api/library", createLibraryRouter());
 app.use("/api/library/metadata", createLocalMetadataRouter());
 app.use(
   "/api/sources",
-  createSourcesRouter({ coverCaches: { netease: remoteCoverCache, qq: qqCoverCache, bilibili: bilibiliCoverCache } }),
+  createSourcesRouter({ coverCaches: { netease: remoteCoverCache, qq: qqCoverCache, bilibili: bilibiliCoverCache, youtube: youtubeCoverCache } }),
 );
 
 app.get("/api/settings", async (_req, res, next) => {
@@ -118,13 +129,35 @@ app.get("/api/settings", async (_req, res, next) => {
       // session expired — the settings card distinguishes this from signed-out.
       hasQqCookie: Boolean(store.qqCookie),
       hasBilibiliCookie: Boolean(store.bilibiliCookie),
+      hasYoutubeCookie: Boolean(store.youtubeCookie),
       // Never block the first renderer paint on a provider round trip. The
       // account endpoint below validates the cookie in the background.
       neteaseAccount: await peekNeteaseAccountSummary(),
       // Opt-in mainland egress IP for NetEase's 460/"环境异常" mitigation.
       neteaseRealIp: store.neteaseRealIp ?? null,
+      // YouTube-only proxy (host:port); other sources always stay direct.
+      youtubeProxy: store.youtubeProxy ?? null,
       lyricBindings: store.lyricBindings,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const youtubeProxyBody = z.object({
+  // Accepts "7890", "127.0.0.1:7890" or a full http(s) URL; empty clears it.
+  proxy: z.string().trim().max(200),
+});
+
+app.put("/api/settings/youtube-proxy", async (req, res, next) => {
+  try {
+    const body = youtubeProxyBody.parse(req.body);
+    const normalized = normalizeYoutubeProxyInput(body.proxy);
+    if (body.proxy && !normalized) {
+      throw new HttpError(400, "代理格式不正确：请填写端口（如 7890）、host:port 或 http:// 地址；目前仅支持 HTTP 代理", "YOUTUBE_PROXY_INVALID");
+    }
+    await updateStore((store) => ({ ...store, youtubeProxy: normalized }));
+    res.json({ ok: true, youtubeProxy: normalized });
   } catch (error) {
     next(error);
   }

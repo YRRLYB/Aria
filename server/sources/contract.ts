@@ -100,6 +100,13 @@ export type SourceQrLoginStart = {
   qrImage: string;
   /** Seconds until the QR expires; the caller should offer regeneration. */
   expiresIn: number;
+  /**
+   * Device-code flows only (YouTube RFC 8628): the short code the user must
+   * enter on their phone after scanning; QR-only sources leave this unset.
+   */
+  userCode?: string;
+  /** Device-code flows only: the verification page URL (also in the QR). */
+  verificationUrl?: string;
 };
 
 export type SourceQrLoginStatus = "waiting" | "scanned" | "expired" | "success";
@@ -130,6 +137,12 @@ export type SourceStreamMeta = {
   availableLevels?: AriaLevel[];
   /** Unix ms after which the URL is assumed stale; proxies re-resolve past it. */
   expiresAt?: number | null;
+  /**
+   * Optional per-source upstream fetcher (in-process only; never serialized to
+   * the renderer). Sources whose CDN must be reached through the same egress
+   * that resolved the URL (YouTube via user proxy) provide their own.
+   */
+  fetcher?: (url: string, init?: RequestInit) => Promise<Response>;
 };
 
 export type SourceVideoQuality = {
@@ -164,6 +177,12 @@ export type SourceVideoMeta = {
   width?: number | null;
   height?: number | null;
   expiresAt?: number | null;
+  /**
+   * Optional per-source upstream fetcher (in-process only; never serialized to
+   * the renderer). Sources whose CDN must be reached through the same egress
+   * that resolved the URL (YouTube via user proxy) provide their own.
+   */
+  fetcher?: (url: string, init?: RequestInit) => Promise<Response>;
 };
 
 export type SourceManifest = {
@@ -234,6 +253,10 @@ export type MusicSource = {
   getAccount?(signal?: AbortSignal): Promise<SourceAccount>;
   /** Account-owned favourites/liked tracks, when the source can read them. */
   getLikedTracks?(): Promise<ProviderTrack[]>;
+  /** 账号自己的歌单（B站收藏夹）；只读能力，UI 按 playlistsRead 显示入口。 */
+  getPlaylists?(): Promise<ProviderPlaylist[]>;
+  /** 歌单曲目详情。B站 playlistId 形如 folder:<id> / season:<mid>:<seasonId>。 */
+  getPlaylistTracks?(playlistId: string): Promise<{ title?: string; tracks: ProviderTrack[] }>;
   /** Resolve a pasted platform link (video, album, favourite folder, ...). */
   resolveLink?(url: string): Promise<{ kind: "video" | "folder" | "playlist"; title?: string; tracks: ProviderTrack[] }>;
   /** 收藏/取消收藏（QQ 红心、B站默认收藏夹等）；未实现的源不提供该入口。 */

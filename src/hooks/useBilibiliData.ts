@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Track } from "@/data/music";
-import { api } from "@/lib/api";
+import { api, type ProviderPlaylist } from "@/lib/api";
 import { normalizeQuality, type QualityLevel } from "@/lib/playerPresentation";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 
@@ -88,7 +88,17 @@ export function useBilibiliData(options: {
   const [likedTracks, setLikedTracks] = useState<Track[]>([]);
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  // 账号自己的收藏夹歌单（B站歌单页的「我的收藏夹」，登录后自动同步）。
+  const [playlists, setPlaylists] = useState<ProviderPlaylist[]>([]);
+  const [playlistsLoading, setPlaylistsLoading] = useState(false);
+  const [playlistsError, setPlaylistsError] = useState<string | null>(null);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<ProviderPlaylist | null>(null);
+  const [playlistTracks, setPlaylistTracks] = useState<Track[]>([]);
+  const [playlistLoading, setPlaylistLoading] = useState(false);
+  const [playlistError, setPlaylistError] = useState<string | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
+  const playlistsRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const playlistSessionTokenRef = useRef(0);
   const sessionTokenRef = useRef(0);
   const accountEpochRef = useRef(0);
   const likedTracksRef = useRef<Track[]>(likedTracks);
@@ -146,13 +156,84 @@ export function useBilibiliData(options: {
     accountEpochRef.current += 1;
     sessionTokenRef.current += 1;
     refreshPromiseRef.current = null;
+    playlistsRefreshPromiseRef.current = null;
+    playlistSessionTokenRef.current += 1;
     probedKeysRef.current.clear();
     inFlightKeysRef.current.clear();
     pendingQueueRef.current = [];
     setLikedTracks([]);
     setListLoading(false);
     setListError(null);
+    setPlaylists([]);
+    setPlaylistsLoading(false);
+    setPlaylistsError(null);
+    setSelectedPlaylist(null);
+    setPlaylistTracks([]);
+    setPlaylistLoading(false);
+    setPlaylistError(null);
   }, [options.connected]);
+
+  /** 拉取账号自己的收藏夹歌单列表（并发合并，切账号自动作废）。 */
+  const refreshPlaylists = useCallback(() => {
+    if (playlistsRefreshPromiseRef.current) return playlistsRefreshPromiseRef.current;
+    const sessionToken = ++playlistSessionTokenRef.current;
+    setPlaylistsLoading(true);
+    const task = api
+      .getSourcePlaylists("bilibili")
+      .then(({ playlists: nextPlaylists }) => {
+        if (sessionToken !== playlistSessionTokenRef.current) return;
+        setPlaylists(nextPlaylists);
+        setPlaylistsError(null);
+      })
+      .catch((error: unknown) => {
+        if (sessionToken !== playlistSessionTokenRef.current) return;
+        setPlaylistsError(error instanceof Error ? error.message : "B站收藏夹读取失败，请稍后重试");
+      })
+      .finally(() => {
+        if (sessionToken === playlistSessionTokenRef.current) setPlaylistsLoading(false);
+      });
+    playlistsRefreshPromiseRef.current = task.finally(() => {
+      if (sessionToken === playlistSessionTokenRef.current) playlistsRefreshPromiseRef.current = null;
+    });
+    return playlistsRefreshPromiseRef.current;
+  }, []);
+
+  // 登录后自动同步一次收藏夹歌单；未登录时保持空列表。
+  useEffect(() => {
+    if (!options.connected) return;
+    void refreshPlaylists();
+  }, [options.connected, refreshPlaylists]);
+
+  const openPlaylist = useCallback((playlist: ProviderPlaylist) => {
+    const sessionToken = ++playlistSessionTokenRef.current;
+    setSelectedPlaylist(playlist);
+    setPlaylistTracks([]);
+    setPlaylistError(null);
+    setPlaylistLoading(true);
+    api
+      .getSourcePlaylistTracks("bilibili", playlist.id)
+      .then(({ tracks }) => {
+        if (sessionToken !== playlistSessionTokenRef.current) return;
+        const cacheStore = readAudioMetaStore();
+        setPlaylistTracks(tracks.map((rawTrack, index) => mergeCachedAudioMeta(providerTrackToUiTrack(rawTrack, index), cacheStore)));
+        setPlaylistError(null);
+      })
+      .catch((error: unknown) => {
+        if (sessionToken !== playlistSessionTokenRef.current) return;
+        setPlaylistError(error instanceof Error ? error.message : "读取B站歌单曲目失败，请稍后重试");
+      })
+      .finally(() => {
+        if (sessionToken === playlistSessionTokenRef.current) setPlaylistLoading(false);
+      });
+  }, []);
+
+  const closePlaylist = useCallback(() => {
+    playlistSessionTokenRef.current += 1;
+    setSelectedPlaylist(null);
+    setPlaylistTracks([]);
+    setPlaylistLoading(false);
+    setPlaylistError(null);
+  }, []);
 
   const drainHydrationQueue = useCallback(() => {
     const pump = async () => {
@@ -288,5 +369,15 @@ export function useBilibiliData(options: {
     hydrateTracks,
     toggleLike,
     setLikedTracks,
+    playlists,
+    playlistsLoading,
+    playlistsError,
+    refreshPlaylists,
+    selectedPlaylist,
+    playlistTracks,
+    playlistLoading,
+    playlistError,
+    openPlaylist,
+    closePlaylist,
   };
 }

@@ -13,7 +13,7 @@ const LOCAL_PLACEHOLDER_LYRICS: Track["lyrics"] = [
   { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
   { time: "00:30", text: "绑定后会保存到本地索引" },
 ];
-const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili", Track["lyrics"]> = {
+const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili" | "youtube", Track["lyrics"]> = {
   netease: [
     { time: "00:00", text: "歌词等待同步" },
     { time: "00:15", text: "网易云歌曲已接入真实账号数据" },
@@ -28,6 +28,11 @@ const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili", Track["
     { time: "00:00", text: "歌词等待同步" },
     { time: "00:15", text: "B站视频字幕会在播放时自动获取" },
     { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
+  ],
+  youtube: [
+    { time: "00:00", text: "歌词等待同步" },
+    { time: "00:15", text: "YouTube 曲目暂不提供歌词" },
+    { time: "00:30", text: "可以尝试在本地歌单中绑定歌词" },
   ],
 };
 const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
@@ -98,7 +103,7 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
   // The id convention is "<source>:<externalId>" for every provider; NetEase
   // keys keep their historical format so snapshots restore unchanged.
   const source: Track["source"] =
-    track.source === "qq" || track.source === "bilibili"
+    track.source === "qq" || track.source === "bilibili" || track.source === "youtube"
       ? track.source
       : "netease";
   const trackKey = `${source}:${track.id}`;
@@ -122,16 +127,18 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
       ? api.resolveUrl(track.streamUrl)
       : source === "bilibili"
         ? api.getSourceStreamUrl("bilibili", track.id)
-        : undefined,
+        : source === "youtube"
+          ? api.getSourceStreamUrl("youtube", track.id)
+          : undefined,
     videoUrl: track.videoUrl
       ? api.resolveUrl(track.videoUrl)
-      : source === "bilibili"
-        ? api.getSourceVideoUrl("bilibili", track.id)
+      : source === "bilibili" || source === "youtube"
+        ? api.getSourceVideoUrl(source, track.id)
         : undefined,
-    hasVideo: track.hasVideo ?? source === "bilibili",
+    hasVideo: track.hasVideo ?? (source === "bilibili" || source === "youtube"),
     videoQuality: track.videoQuality ?? null,
     coverUrl: track.coverUrl
-      ? source === "qq" || source === "bilibili"
+      ? source === "qq" || source === "bilibili" || source === "youtube"
         ? api.getSourceCoverUrl(source, track.coverUrl)
         : api.getNeteaseCoverUrl(track.coverUrl)
       : undefined,

@@ -1,5 +1,32 @@
 # 更新记录
 
+## 0.8.1（YouTube 登录重构 · 播放修复 · 极简设置与 CC BY-NC-SA 4.0 协议）
+
+- **YouTube 播放稳定化与高码率/高清流机会主义探测**：调整 `PLAYER_CLIENTS` 顺序优先使用 `ANDROID`，对无 PO Token 被 `403` 拦截的曲目自动回退 `itag 18`（AAC 128k / 360p progressive MP4）确保秒播不卡死；对未受限曲目在解析阶段探测可读性，自动升级至更高码率音频（Opus ~160k / Premium 256k `itag 141`/`774`）及最高 1080P H.264 DASH 视频 + 独立高码率音轨；播放前在曲目信息中即展示真实 AAC 码率与采样率。
+- **YouTube「我喜欢」突破 100 首分页上限**：`collectShelfRows` 支持第 2 页起返回的 `appendContinuationItemsAction.continuationItems` 增量切片，`BROWSE_MAX_PAGES` 提至 50 并加入 `seenTokens` 防循环保护。
+- **播放页统一 6 档标准音质条**：统一展示网易云标准 6 档（`标准` / `较高` / `极高` / `无损` / `Hi-Res` / `臻品`），B站 / YouTube 不支持的档位以虚线弱化空档呈现。
+- **设置页与首页视觉减负**：移除设置页左侧导航栏，改为顶栏轻量分段标签；去除四个音源账号下冗长的同步说明副标题；播放设备列表右上角新增「刷新设备」按钮；首页「年度声迹」改为按行铺满卡片宽度的 15–16 列紧凑网格，消除左右大块留白；同步优化深色模式下的提示横幅、输入框与扫码二维码白底对比度；移除网易云「网络环境补偿」、网易云扫码按钮改用二维码图标、移除 QQ「窗口扫码登录」。
+- **新增 CC BY-NC-SA 4.0 开源协议与署名声明**：仓库根目录新增 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)，`package.json` 声明 `"license": "CC-BY-NC-SA-4.0"`（允许 Fork 与二次开发、禁止任何盈利行为、要求在衍生项目中清晰标识原项目 **Aria** 及原仓库链接）。
+- **新增「设备码登录」（YouTube 主登录路径，RFC 8628 智能电视同款授权通道）**：`设置 → 播放源 → YouTube → 设备码登录` 生成二维码与短代码，用手机浏览器打开激活页输入代码确认——凭据输入发生在用户自己的浏览器里，Aria 全程不接触 Google 登录页，**从结构上绕开「此浏览器或应用可能不安全」的嵌入浏览器风控**，交互与 QQ/B站扫码同一范式。实现：`POST oauth2.googleapis.com/device/code`（TV 客户端凭证优先从 YouTube TV base.js 现抓、失败回退内置常量，与 SmartTube/yt-dlp 同源）→ 复用 QQ/B站的泛型 `/api/sources/:id/qr/*` 路由与 `startQrLogin/checkQrLogin` 契约（扩展 `userCode`/`verificationUrl` 展示字段）→ 授权后经 `OAuthLogin?issueuberauth=1` → `MergeSession` 逐跳收集 Set-Cookie 换取标准 youtube.com 会话 Cookie（SID/SAPISID/LOGIN_INFO，与窗口登录捕获同种），直接走现有 `saveYoutubeCookie` 账号管线；`.google.com` 过渡 Cookie 不混入；换取失败给出明确文案并终止轮询。全链路经 `youtubeRawFetch` 走用户配置的 YouTube 代理。**真机冒烟**：经用户本机代理对生产 Google 实测，`/qr/start` 返回真实 `userCode` 与二维码、`/qr/check` 正确返回 waiting。
+- **修复 YouTube 登录被 Google 拦截（「此浏览器或应用可能不安全」）**：根因两层。其一，0.8.0 登录窗口 UA 硬编码 `Chrome/131`（2024 旧版），与 Client Hints 上报的真实内核（Electron 43 的 Chromium **150.0.7871.46**）矛盾，被判定为伪装浏览器；其二，对齐 UA 版本后经 accounts.google.com 实测与社区同月独立实测（ostia #669，2026-10）确认：Google 现行风控拦截的正是「宣称自己是 Chrome 但其它信号对不上」的会话，而对**如实标识的 Electron 默认 UA** 放行并路由到允许登录的 WebLiteSignIn 流程。最终方案：**登录窗口不再覆盖 UA**（保留诚实默认 UA）。CDP 全保真自测：经真实 IPC 触发窗口登录，登录页在用户真实账号上正常走至密码步骤、无拦截。
+- **登录窗口改用全新内存会话 + 诚实 UA**：Google 风控 Cookie 按会话粘性标记，旧持久化分区（persist:aria-youtube-login）里 0.8.0 时代反复被拦的残留状态会在指纹修复后继续触发拦截——登录分区改为不带 persist 的内存分区，每次从零开始，Google 侧永远是干净首登；登录中 Cookie 仍经 session API 正常捕获，无需跨启动保留。
+- **登录链路对齐 YouTube Music 网页版官方入口**：`ServiceLogin` 由 `passive=true` 简化入口改为 `ltmpl=music` 经 `www.youtube.com/signin` 跳回 music.youtube.com 的真实浏览器链路（与 pear-desktop / th-ch YouTube Music 同款，逐字符一致），降低嵌入式环境触发拦截的概率。
+- **登录窗口放行 Google 域弹窗**：账号选择器 / passkey 确认 / 部分二次验证需要真实弹出的子窗口，此前一律拒绝并强制同窗导航会卡死流程（也是 Google 判定浏览器不安全的次要信号）；现在 `*.google.com` / `*.googleusercontent.com` / `*.youtube.com` 的弹窗以同会话子窗口打开（共享登录 Cookie 与 UA），其余弹窗维持同窗导航，登录完成或窗口关闭时统一回收子窗口。
+- 验证：`npx tsc -b` 通过；61 个测试文件 / **392 项单元测试通过**（新增设备码登录 8 项：凭证抓取与兜底、pending/denied/expired 状态映射、OAuthLogin→MergeSession 逐跳 Cookie 收集与域过滤、残缺会话报错）；**真机三重验证**：① accounts.google.com 双探针（经用户本机代理）——全新会话 + 诚实 Electron UA → 登录表单正常、无拦截文案、走 WebLiteSignIn 放行流程，旧持久化分区（用户实测）→ 拦截仍在，证明风控残留即剩余元凶；② 设备码全链路对生产 Google 冒烟——`/qr/start` 返回真实 `userCode` 与二维码、`/qr/check` 正确返回 waiting；③ CDP 全保真自测——经真实 IPC 触发窗口登录，登录页在用户真实账号上正常走至密码步骤、无拦截。**Windows 安装包 `Aria-0.8.1-x64.exe` 已构建（SHA256 `0A8D8C28843FD0F762C27BE2CF5396120F5917962BFF7FB91F958FA9992B4361`），asar 前后端字符串校验确认设备码登录全部在包**（按钮/扫码面板/复制代码 UI、device/code + token 端点、OAuthLogin 换会话、TV 凭证兜底、qr 泛型路由、内存登录分区）。
+
+## 0.8.0（跨越的一代：YouTube Music 第四音源 · 按源代理 · B站歌单 · 年度声迹重做）
+
+- **新增 YouTube Music 音源**：搜索走 music.youtube.com 官方 innertube API（WEB_REMIX），结果与本地、网易云、QQ、B站并列统一搜索池并可单源筛选；播放走 `player` 接口多客户端上下文回退链（IOS → ANDROID → WEB_EMBEDDED_PLAYER），取纯音频自适应格式，支持 AAC 128K / Opus 160K 档位选择与自动降级；曲目身份沿用 0.6.0 预留的 `youtube:<videoId>`，队列/历史/Aria 歌单零迁移即可混入。
+- **YouTube 账号与统一歌单页**：**窗口登录**（主路径，与 QQ 窗口扫码同一交互范式）——应用内打开真实 Chromium 窗口，像平时一样登录 Google 账号后自动提取会话 Cookie（窗口会话绑定用户配置的 YouTube 代理），Cookie 粘贴仅作备用；登录态经 player 响应 `loggedin` 标记探测。右上角头像账号面板加入 YouTube 卡片。登录后「歌单」页新增统一的 **YouTube 标签**——账号音乐播放列表只读同步，「喜欢的音乐」固定置顶，详情自动跟随 continuation 翻页，与 B站收藏夹同一套交互范式。
+- **首页锁定为固定画布**：`overflow: hidden` 绝不允许纵向拖动（此前短窗口会被顶出滚动条）；年度声迹月份预览改用固定小方格（略大于 0.7.4 的自适应格、居中展示），修复月份只有 5-6 列时方格被拉满整卡宽度变得巨大的问题；悬浮方块可见当天日期与播放次数。
+- **按源代理（核心设计）**：设置 → 播放源 → YouTube 新增代理端口（支持 `7890` / `host:port` / `http://` 三种写法，目前仅支持 HTTP 代理），基于 `undici ProxyAgent` 实现；**只有 YouTube 的搜索、播放地址解析、封面与音频流走代理**，网易云 / QQ / B站请求代码一行未动、永远直连，国内使用体验不受影响。googlevideo 流地址绑定解析出口，取流通过新增的进程内 `fetcher` 字段走同一代理；代理设置每次请求现查，改完立即生效。设置卡片附「测试连接」按钮与明确的双态错误文案（未配置代理直连失败 / 代理端口未运行 6ms 快速失败）。冒烟验证：死代理端口搜索 6ms 内失败并返回代理专属文案，证明请求确实经过 ProxyAgent。
+- **B站歌单正式加入歌单页**：歌单来源新增「B站」标签。登录后自动同步账号全部收藏夹（私密可读、只读播放，「Aria」红心收藏夹不重复列出）；「引入B站歌单」粘贴公开收藏夹/合集/b23.tv 短链生成可刷新镜像（上限提至 500 条、登录态 5 页并发读取）。底层新增通用源路由 `GET /api/sources/:id/playlists` 与 `/:playlistId/tracks`，manifest 声明 `playlistsRead`。
+- **镜像同步不再吞歌**：刷新引用歌单只替换 B站部分，手动混入的本地/网易云/QQ 歌曲保留在列表尾部（`mergeReferenceSync` 纯函数）。
+- **歌单交互重构**：移除 Aria 歌单页冗余的「网易云/本地」迷你切换；B站歌曲行内「加入歌单」恢复；从B站标签点开镜像直接跳 Aria 歌单详情（新增带 nonce 的命令式来源切换请求）；视图后退栈完整保留 B站标签与收藏夹详情。
+- **年度声迹重做（修复两个 bug）**：放大后严格显示 **1月1日–12月31日**（此前是"过去 53 周"跨年滚动窗口却标着"全年"），支持 ‹ 年份切换 ›；首页不点开时只显示**当前一个月**（此前是"近 18 周"）；新增按天聆听日志 `aria-daily-activity`（一年约 365 键、保留 3 年、首次升级自动回填），修复旧"最近播放"80 条去重导致全年热力图失真的根因；日期步进改用日历日（DST 安全），补位空格与月份标签全部按日历对齐。
+- 新增依赖 `undici@^7.28.0`（服务端代理 HTTP 栈，纯 JS 直接打包）。
+- 探索与验证：`npx tsc -b` 通过；60 个测试文件 / **378 项单元测试通过**（新增 39 项：YouTube 客户端 16、registry 四源 4、每日日志 9、年度网格与月切片 7、B站收藏夹 3、镜像合并 2、B站/YouTube 歌单页渲染 2 等）；`build:web` / `build:server` 通过；本地后端冒烟验证 YouTube 注册与能力上报、代理规范化/校验/清除、死代理快速失败、Cookie 登录保存/拒绝/退出与登录态探测、B站新路由鉴权文案与分页读取；**Windows 安装包 `Aria-0.8.0-x64.exe` 已构建（SHA256 `BFE6A724B835E4973FB08A26A4BE501880ABF0FB7110AC4C23538A8D84F44581`），asar 内已确认含窗口登录 IPC，打包版桌面集成测试全绿**（本地封面提取、响度开关、系统/共享/独占 WASAPI 输出、无缝切歌、单曲循环），发布说明见 `docs/release-notes-0.8.0.md`。
+
 ## 0.7.4（官方矢量图标 / 科学 Hi-Fi EQ / 听歌洞察 / B站 WBI 与低延迟交互）
 
 - 官方音源图标与混合来源辨识：引入网易云音乐、QQ 音乐、B站官方矢量 SVG 图标，并在“我喜欢”、播放队列、Aria 歌单与发现列表中通过彩色 `SourceBadge` 区分来源；同步修复超长歌名挤压音频码率标签的问题，各场景稳定展示真实码率。

@@ -75,6 +75,15 @@ const bilibiliQualityLevelLabels: Record<QualityLevel, string> = {
   jymaster: "Hi-Res",
 };
 
+const youtubeQualityLevelLabels: Record<QualityLevel, string> = {
+  standard: "AAC",
+  higher: "Opus",
+  exhigh: "Opus",
+  lossless: "Opus",
+  hires: "Opus",
+  jymaster: "Opus",
+};
+
 export type PlaybackQualitySettings = {
   qualityLevel: QualityLevel;
   hifiEnabled: boolean;
@@ -115,6 +124,19 @@ export function selectPlaybackQuality(
     const allowed = maxIndex >= 0 ? preferredOrder.slice(0, maxIndex + 1) : preferredOrder;
     const reachable = allowed.filter((level) => !levels.length || levels.includes(level));
     return reachable.at(-1) ?? ceilingLevel;
+  }
+  if (track && track.source === "youtube") {
+    const ytOrder: QualityLevel[] = ["standard", "higher", "exhigh"];
+    const ytLevels = track.availableLevels ?? ytOrder;
+    if (settings.hifiEnabled) {
+      const reachable = [...ytOrder].reverse().filter((level) => ytLevels.includes(level));
+      return reachable[0] ?? "exhigh";
+    }
+    if (ytLevels.includes(originalPreference)) return originalPreference;
+    const reqIdx = ytOrder.indexOf(originalPreference);
+    if (reqIdx < 0) return ytLevels.at(-1) ?? "exhigh";
+    const atOrBelow = ytOrder.slice(0, reqIdx + 1).filter((level) => ytLevels.includes(level));
+    return atOrBelow.at(-1) ?? ytLevels[0] ?? "exhigh";
   }
   if (track && track.source !== "netease") return originalPreference;
   const available = track?.availableLevels ?? [];
@@ -278,7 +300,7 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
       track.quality === "臻品" || track.quality === "Hi-Res" || track.quality === "FLAC" || track.quality === "Lossless" || track.quality === "320K" || track.quality === "128K" || track.quality === "AAC"
         ? track.quality
         : "320K",
-    source: track.source === "netease" || track.source === "cloud" || track.source === "qq" || track.source === "bilibili" || track.source === "local" ? track.source : "local",
+    source: track.source === "netease" || track.source === "cloud" || track.source === "qq" || track.source === "bilibili" || track.source === "youtube" || track.source === "local" ? track.source : "local",
     streamUrl: typeof track.streamUrl === "string" ? track.streamUrl : undefined,
     videoUrl: typeof track.videoUrl === "string" ? track.videoUrl : undefined,
     hasVideo: track.hasVideo === true,
@@ -710,8 +732,18 @@ export function formatSampleRate(value?: number | null, compact = false) {
 
 export function formatAudioDetail(track: Track, level?: QualityLevel, compact = true) {
   const resolvedLevel = track.currentLevel ?? level ?? null;
-  const labels = track.source === "bilibili" ? bilibiliQualityLevelLabels : qualityLevelLabels;
-  const qualityLabel = resolvedLevel ? labels[resolvedLevel] : track.quality;
+  const labels =
+    track.source === "bilibili"
+      ? bilibiliQualityLevelLabels
+      : track.source === "youtube"
+        ? youtubeQualityLevelLabels
+        : qualityLevelLabels;
+  const qualityLabel =
+    track.source === "youtube" && resolvedLevel === "exhigh" && track.sampleRate === 44_100
+      ? "AAC"
+      : resolvedLevel
+        ? labels[resolvedLevel]
+        : track.quality;
   const bitrate = track.bitrate ? formatBitrate(track.bitrate, compact) : null;
   const sampleRate = formatSampleRate(track.sampleRate, compact);
   return [qualityLabel, bitrate, sampleRate].filter(Boolean).join(" · ");

@@ -1,4 +1,4 @@
-﻿import { AriaIcon, type AriaIconName } from "@/components/icons/aria";
+import { AriaIcon, type AriaIconName } from "@/components/icons/aria";
 import { navItems, type ViewId } from "@/data/music";
 import { cn } from "@/lib/utils";
 

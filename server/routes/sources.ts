@@ -143,9 +143,11 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
       const source = await getSource(req.params.sourceId);
       const level = parseLevelQuery(req.query.level);
       const meta = await source.resolveStreamMeta(req.params.trackId, { level });
-      // Upstream headers may contain cookies; they are proxy-only secrets.
-      const { headers, ...publicMeta } = meta;
+      // Upstream headers may contain cookies and the fetcher is an in-process
+      // callback; both are proxy-only secrets and never reach the renderer.
+      const { headers, fetcher, ...publicMeta } = meta;
       void headers;
+      void fetcher;
       res.json(publicMeta);
     } catch (error) {
       next(error);
@@ -177,9 +179,10 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
       const level = parseLevelQuery(req.query.level);
       const qn = parseQnQuery(req.query.qn);
       const meta = await source.resolveVideoMeta(req.params.trackId, { level, qn });
-      const { headers, audioUrl, ...publicMeta } = meta;
+      const { headers, audioUrl, fetcher, ...publicMeta } = meta;
       void headers;
       void audioUrl;
+      void fetcher;
       res.json({ ...publicMeta, hasSeparateAudio: Boolean(meta.audioUrl) });
     } catch (error) {
       next(error);
@@ -222,7 +225,10 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
           refresh: attempt > 0,
         });
         if (!meta.audioUrl) {
-          throw new SourceError("UNAVAILABLE", "该B站视频没有独立音轨", { source: "bilibili" });
+          if (meta.mode === "muxed" && meta.url) {
+            return { ...meta, url: meta.url, mimeType: "audio/mp4" };
+          }
+          throw new SourceError("UNAVAILABLE", `${source.manifest.name}视频没有独立音轨`, { source: source.manifest.id });
         }
         return { ...meta, url: meta.audioUrl, mimeType: /flac/i.test(meta.audioCodecs ?? "") ? "audio/flac" : meta.mimeType?.startsWith("audio/") ? meta.mimeType : "audio/mp4" };
       });
@@ -250,6 +256,30 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
         throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持同步收藏`, { source: source.manifest.id });
       }
       res.json({ tracks: await source.getLikedTracks() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/playlists", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getPlaylists) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持账号歌单`, { source: source.manifest.id });
+      }
+      res.json({ playlists: await source.getPlaylists() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sourceId/playlists/:playlistId/tracks", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getPlaylistTracks) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持歌单曲目`, { source: source.manifest.id });
+      }
+      res.json(await source.getPlaylistTracks(req.params.playlistId));
     } catch (error) {
       next(error);
     }
@@ -385,7 +415,7 @@ function parseLevelQuery(value: unknown): AriaLevel | undefined {
 function parseQnQuery(value: unknown): number | undefined {
   if (value == null || value === "") return undefined;
   const qn = Number(value);
-  if (!Number.isInteger(qn) || qn < 1 || qn > 120) {
+  if (!Number.isInteger(qn) || qn < 1 || qn > 4320) {
     throw new SourceError("UNSUPPORTED", `无效的视频画质: ${String(value)}`);
   }
   return qn;

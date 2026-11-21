@@ -125,6 +125,46 @@ export function sanitizeLocalPlaylists(value: unknown): LocalPlaylist[] {
   });
 }
 
+/**
+ * 镜像同步的合并规则：B站来源的部分整体替换为远端最新列表；用户手动
+ * 混入的本地/网易云/QQ 音乐歌曲保留在列表末尾，不会被刷新冲掉。
+ * 手动加进来的B站歌曲视为镜像内容的一部分（与收藏夹远端合并去重）。
+ */
+export function mergeReferenceSync(
+  playlist: LocalPlaylist,
+  tracksToSync: Track[],
+  title: string | undefined,
+  now: number = Date.now(),
+): LocalPlaylist {
+  const snapshots = createPlaylistTrackSnapshots(tracksToSync);
+  const trimmedTitle = title?.trim().slice(0, 120);
+  const syncedIds = new Set(tracksToSync.map((track) => track.id));
+  const manualTracks = playlist.trackIds
+    .filter((trackId) => !syncedIds.has(trackId))
+    .filter((trackId) => {
+      const snapshot = playlist.trackSnapshots?.[trackId];
+      const source = snapshot?.source ?? (trackId.split(":")[0] as Track["source"]);
+      return source !== "bilibili";
+    });
+  const manualSnapshots = manualTracks.length && playlist.trackSnapshots
+    ? Object.fromEntries(Object.entries(playlist.trackSnapshots).filter(([trackId]) => manualTracks.includes(trackId)))
+    : {};
+  return {
+    ...playlist,
+    name: trimmedTitle || playlist.name,
+    trackIds: [...syncedIds, ...manualTracks],
+    trackSnapshots: { ...snapshots, ...manualSnapshots },
+    remoteRef: playlist.remoteRef
+      ? {
+          ...playlist.remoteRef,
+          ...(trimmedTitle ? { title: trimmedTitle } : {}),
+          syncedAt: now,
+        }
+      : undefined,
+    updatedAt: now,
+  };
+}
+
 export function readLocalPlaylists(storage: PlaylistStorage | null = defaultStorage()): LocalPlaylist[] {
   if (!storage) return [];
   try {

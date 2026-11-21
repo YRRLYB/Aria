@@ -18,7 +18,9 @@ export function usePlaylistActions() { return useContext(PlaylistActionsContext)
 
 export function AddToPlaylistButton({ track, compact = true }: { track: Track; compact?: boolean }) {
   const actions = usePlaylistActions();
-  if (!actions || track.source === "bilibili" || track.id === "idle") return null;
+  // B站歌曲只能进本机 Aria 歌单（对话框里的网易云区块会说明这一点），
+  // 但入口本身应该保留——之前直接隐藏会让 B站搜索结果无从加入歌单。
+  if (!actions || track.id === "idle") return null;
   return <Button type="button" variant="ghost" size={compact ? "icon" : "sm"} aria-label={`将 ${track.title} 加入歌单`} title="加入歌单" onClick={(event) => {
     event.stopPropagation();
     actions.openAdd([track]);

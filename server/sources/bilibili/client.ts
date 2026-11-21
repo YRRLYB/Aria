@@ -1,4 +1,4 @@
-import type { ProviderTrack } from "../../providers/musicProvider";
+import type { ProviderPlaylist, ProviderTrack } from "../../providers/musicProvider";
 import type {
   AriaLevel,
   SourceAccount,
@@ -393,6 +393,7 @@ function clearBilibiliAuthCaches() {
   likedCache = null;
   ariaFolderCache = null;
   ariaFolderCreatePromise = null;
+  favPlaylistsCache = null;
   streamMetaCache.clear();
   videoMetaCache.clear();
   trackAudioMetaCache.clear();
@@ -821,7 +822,7 @@ export async function resolveBilibiliLink(input: string): Promise<{
   throw new SourceError("UNAVAILABLE", "无法识别B站链接，请粘贴视频或收藏夹链接", { source: "bilibili" });
 }
 
-async function loadBilibiliFavFolder(mediaId: number): Promise<{
+async function loadBilibiliFavFolder(mediaId: number, options: { authed?: boolean } = {}): Promise<{
   kind: "folder";
   title?: string;
   tracks: ProviderTrack[];
@@ -831,17 +832,30 @@ async function loadBilibiliFavFolder(mediaId: number): Promise<{
   let folderTitle = "";
   let page = 1;
   let hasMore = true;
-  while (hasMore && page <= 10) {
-    const data = await fetchBilibiliPublicFavPage(mediaId, page);
-    folderTitle = folderTitle || String(data?.info?.title ?? "").trim();
-    for (const media of data?.medias ?? []) {
-      const track = mapBilibiliFavMedia(media, folderTitle);
-      if (!track || seen.has(track.id)) continue;
-      seen.add(track.id);
-      tracks.push(track);
+  const maxPages = options.authed ? FAV_MAX_PAGES : 10;
+  while (hasMore && page <= maxPages) {
+    // Authed reads (the user's own favlists, possibly private) page in
+    // batches of five like the liked mirror; anonymous link imports stay
+    // sequential to stay gentle on Bilibili's risk control.
+    const batchSize = options.authed ? Math.min(5, maxPages - page + 1) : 1;
+    const pages = await Promise.all(
+      Array.from({ length: batchSize }, (_, index) =>
+        options.authed
+          ? fetchBilibiliFavPage(mediaId, page + index)
+          : fetchBilibiliPublicFavPage(mediaId, page + index),
+      ),
+    );
+    for (const data of pages) {
+      folderTitle = folderTitle || String(data?.info?.title ?? "").trim();
+      for (const media of data?.medias ?? []) {
+        const track = mapBilibiliFavMedia(media, folderTitle);
+        if (!track || seen.has(track.id)) continue;
+        seen.add(track.id);
+        tracks.push(track);
+      }
     }
-    hasMore = data?.has_more === true;
-    page += 1;
+    hasMore = (batchSize > 1 ? pages.at(-1)?.has_more === true : pages[0]?.has_more === true);
+    page += batchSize;
   }
   if (!tracks.length) {
     throw new SourceError("UNAVAILABLE", "该B站收藏夹为空、不可见，或需要登录后访问", { source: "bilibili" });
@@ -923,6 +937,74 @@ export async function getBilibiliLikedTracks(): Promise<ProviderTrack[]> {
   tracks.sort((left, right) => (right.likedAt ?? 0) - (left.likedAt ?? 0));
   likedCache = { cookie: auth, at: Date.now(), tracks };
   return tracks;
+}
+
+let favPlaylistsCache: { cookie: string; at: number; playlists: ProviderPlaylist[] } | null = null;
+
+/**
+ * 登录账号自己的收藏夹清单（B站「歌单」）。默认收藏夹「Aria」不在此列——
+ * 它是红心喜欢（我喜欢页）的镜像，重复展示只会造成混淆。
+ */
+export async function getBilibiliFavPlaylists(): Promise<ProviderPlaylist[]> {
+  const auth = await readAuthCookie();
+  if (!auth) {
+    throw new SourceError("AUTH_REQUIRED", "登录B站后可同步收藏夹歌单", { source: "bilibili" });
+  }
+  if (favPlaylistsCache?.cookie === auth && Date.now() - favPlaylistsCache.at < LIKED_CACHE_MS) {
+    return favPlaylistsCache.playlists;
+  }
+  const account = await getBilibiliAccount();
+  if (!account.connected || !account.userId) {
+    throw new SourceError("AUTH_REQUIRED", "B站登录已过期，请重新登录", { source: "bilibili" });
+  }
+  const folders = await listBilibiliFavFolders(account.userId);
+  const playlists: ProviderPlaylist[] = folders
+    .filter((folder) => !isAriaFavFolder(folder))
+    .map((folder) => ({
+      id: `folder:${folder.id}`,
+      name: folder.title?.trim() || "未命名收藏夹",
+      source: "bilibili",
+      trackCount: Number(folder.media_count ?? 0),
+      subscribed: false,
+      ownerId: account.userId,
+      owned: true,
+      canEdit: false,
+      coverColor: "#00AEEC",
+      coverUrl: null,
+      description: "B站收藏夹 · 登录账号实时读取",
+      creatorName: account.nickname ?? undefined,
+    }));
+  favPlaylistsCache = { cookie: auth, at: Date.now(), playlists };
+  return playlists;
+}
+
+/**
+ * B站歌单曲目详情。playlistId 形如：
+ * - `folder:<mediaId>` 收藏夹（自己的默认走登录态读取，支持私密）
+ * - `season:<mid>:<seasonId>` 合集
+ */
+export async function getBilibiliPlaylistTracks(playlistId: string): Promise<{
+  title?: string;
+  tracks: ProviderTrack[];
+}> {
+  if (playlistId.startsWith("folder:")) {
+    const mediaId = Number(playlistId.slice("folder:".length));
+    if (!Number.isFinite(mediaId) || mediaId <= 0) {
+      throw new SourceError("UNAVAILABLE", "B站收藏夹编号不正确", { source: "bilibili" });
+    }
+    // 私密收藏夹只有登录账号能读取；登录态请求对公开收藏夹同样有效。
+    const folder = await loadBilibiliFavFolder(mediaId, { authed: true });
+    return { title: folder.title, tracks: folder.tracks };
+  }
+  if (playlistId.startsWith("season:")) {
+    const [mid, seasonId] = playlistId.slice("season:".length).split(":").map(Number);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(seasonId) || seasonId <= 0) {
+      throw new SourceError("UNAVAILABLE", "B站合集编号不正确", { source: "bilibili" });
+    }
+    const season = await loadBilibiliSeason(mid, seasonId);
+    return { title: season.title, tracks: season.tracks };
+  }
+  throw new SourceError("UNAVAILABLE", "无法识别B站歌单编号", { source: "bilibili" });
 }
 
 export async function setBilibiliLike(trackId: string, liked: boolean): Promise<{ ok: boolean; liked: boolean }> {
@@ -1527,6 +1609,7 @@ export function resetBilibiliStateForTests() {
   likedCache = null;
   ariaFolderCache = null;
   ariaFolderCreatePromise = null;
+  favPlaylistsCache = null;
   wbiKeysCache = null;
   streamMetaCache.clear();
   videoMetaCache.clear();

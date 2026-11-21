@@ -6,19 +6,21 @@
   color: var(--text-primary);
   background: var(--page);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", "Microsoft YaHei", sans-serif;
+    "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
+    "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+  /* Windows 上必须交给 ClearType 子像素渲染：强制 antialiased 会把小字
+     灰化发糊（尤其 125%/150% DPI 缩放下），这是“字有点糊”的头号元凶。 */
+  -webkit-font-smoothing: auto;
   --page: #fbfbfd;
   --ink: #17171b;
-  --muted: #777681;
+  --muted: #5a5966;
   --surface: #ffffff;
   --surface-muted: #f5f3fa;
   --line: #e7e5ef;
   --text-primary: #17171b;
-  --text-secondary: #777681;
+  --text-secondary: #5a5966;
   --accent: #9a80df;
   --accent-soft: #f0ebff;
   --aria-accent: #9b83e8;
@@ -494,16 +496,14 @@ textarea::selection,
 }
 
 .player-track-title {
-  display: -webkit-box;
+  display: block;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  /* Room for Latin descenders and accents before applying the two-line clamp. */
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: clamp(1.75rem, 8cqi, 4.3rem);
   line-height: 1.3;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .player-track-title-immersive {
@@ -801,6 +801,52 @@ textarea::selection,
   animation: aria-eq-c 0.86s ease-in-out -0.48s infinite;
 }
 
+.aria-slow-marquee {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.aria-slow-marquee.is-scrolling {
+  text-overflow: clip;
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 16px), transparent 100%);
+}
+
+.aria-slow-marquee-track {
+  display: inline-flex;
+  width: max-content;
+  align-items: baseline;
+  gap: 44px;
+  padding-right: 44px;
+  white-space: nowrap;
+  animation: aria-slow-title-scroll var(--marquee-duration, 24s) linear infinite;
+}
+
+.aria-slow-marquee-copy {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.aria-slow-marquee:hover .aria-slow-marquee-track,
+.aria-slow-marquee:focus-within .aria-slow-marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes aria-slow-title-scroll {
+  0%,
+  22% {
+    transform: translate3d(0, 0, 0);
+  }
+  90%,
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aria-fruit-wash {
     animation: none;
@@ -809,4 +855,90 @@ textarea::selection,
   [data-cover-ready="false"]::before {
     animation: none;
   }
+
+  .aria-slow-marquee-track {
+    animation: none;
+  }
+}
+
+/* Minimalist desktop settings surface (light mode clarity without box stacking) */
+.settings-shell {
+  border: 1px solid rgba(23, 23, 27, 0.07);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 20px 60px rgba(47, 55, 76, 0.08);
+}
+
+.settings-header {
+  border-bottom: 1px solid rgba(23, 23, 27, 0.07);
+}
+
+.settings-section {
+  border-bottom: 1px solid rgba(23, 23, 27, 0.07);
+}
+
+.settings-section:last-child {
+  border-bottom: 0;
+}
+
+.settings-row-divider {
+  border-color: rgba(23, 23, 27, 0.06);
+}
+
+.settings-segment {
+  border: 1px solid rgba(23, 23, 27, 0.08);
+  background: rgba(23, 23, 27, 0.035);
+}
+
+.settings-segment-item {
+  color: #5b5e71;
+}
+
+.settings-segment-item:hover:not(:disabled) {
+  color: #17171b;
+}
+
+.settings-segment-item.is-active {
+  background: #ffffff;
+  color: #17171b;
+  box-shadow: 0 1px 4px rgba(23, 23, 27, 0.08);
+}
+
+.settings-inline-well {
+  border: 1px solid rgba(23, 23, 27, 0.07);
+  background: rgba(23, 23, 27, 0.025);
+}
+
+.settings-status-banner {
+  border: 1px solid rgba(109, 40, 217, 0.18);
+  background: rgba(124, 92, 230, 0.08);
+  color: #4c2db3;
+}
+
+.settings-status-banner.is-error {
+  border-color: rgba(225, 29, 72, 0.2);
+  background: rgba(244, 63, 94, 0.08);
+  color: #be123c;
+}
+
+.settings-divider > :not(:first-child) {
+  border-top: 1px solid rgba(23, 23, 27, 0.06);
+}
+
+.settings-input {
+  border: 1px solid rgba(23, 23, 27, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  color: #17171b;
+}
+
+.settings-input::placeholder {
+  color: #9ca3af;
+}
+
+.settings-input:focus {
+  border-color: rgba(124, 92, 230, 0.55);
+}
+
+.settings-qr-box {
+  background: #ffffff;
+  padding: 6px;
 }

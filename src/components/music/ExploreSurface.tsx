@@ -305,8 +305,7 @@ export function ExploreSurface({
             <div className="explore-section flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border">
               <div className="explore-style-banner flex shrink-0 flex-wrap items-center justify-between gap-4 border-b px-4 py-3.5 sm:px-5">
                 <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">GENRE CURATION</p>
-                  <h2 className="mt-0.5 truncate text-lg font-semibold">{selectedStyle?.name ?? "选择一个曲风"}</h2>
+                  <h2 className="truncate text-lg font-semibold">{selectedStyle?.name ?? "选择一个曲风"}</h2>
                   {selectedStyle?.description && (
                     <p className="mt-0.5 line-clamp-1 text-xs text-neutral-500" title={selectedStyle.description}>
                       {selectedStyle.description}

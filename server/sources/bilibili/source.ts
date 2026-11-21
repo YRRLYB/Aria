@@ -3,8 +3,10 @@ import {
   checkBilibiliQrLogin,
   clearBilibiliCookie,
   getBilibiliAccount,
+  getBilibiliFavPlaylists,
   getBilibiliLikedTracks,
   getBilibiliLyrics,
+  getBilibiliPlaylistTracks,
   resolveBilibiliStreamMeta,
   resolveBilibiliVideoMeta,
   resolveBilibiliLink,
@@ -52,6 +54,14 @@ export const bilibiliSource: MusicSource = {
 
   getLikedTracks() {
     return getBilibiliLikedTracks();
+  },
+
+  getPlaylists() {
+    return getBilibiliFavPlaylists();
+  },
+
+  getPlaylistTracks(playlistId) {
+    return getBilibiliPlaylistTracks(playlistId);
   },
 
   resolveLink(url) {

@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
   chooseMusicFolder: () => ipcRenderer.invoke("aria:choose-music-folder"),
   qqLoginWindow: () => ipcRenderer.invoke("aria:qq-login-window"),
+  youtubeLoginWindow: (proxy) => ipcRenderer.invoke("aria:youtube-login-window", { proxy: typeof proxy === "string" ? proxy : "" }),
   getRemoteAccess: () => ipcRenderer.invoke("aria:get-remote-access"),
   setRemoteAccess: (enabled) => ipcRenderer.invoke("aria:set-remote-access", { enabled: Boolean(enabled) }),
   updateTaskbarPlayback: (payload) => ipcRenderer.invoke("aria:update-taskbar-playback", payload || {}),

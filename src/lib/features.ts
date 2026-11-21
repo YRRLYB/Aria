@@ -10,7 +10,7 @@ export function canPlayTrackVideo(
   track: Pick<Track, "source" | "videoUrl">,
   enabled = BILIBILI_VIDEO_ENABLED,
 ): boolean {
-  return Boolean(enabled && track.source === "bilibili" && track.videoUrl);
+  return Boolean(enabled && (track.source === "bilibili" || track.source === "youtube") && track.videoUrl);
 }
 
 /**

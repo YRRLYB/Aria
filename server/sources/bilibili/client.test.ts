@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   checkBilibiliQrLogin,
   getBilibiliAccount,
+  getBilibiliFavPlaylists,
   getBilibiliLikedTracks,
   getBilibiliLyrics,
+  getBilibiliPlaylistTracks,
   parseBilibiliDuration,
   parseBilibiliTrackId,
   resetBilibiliStateForTests,
@@ -498,8 +500,99 @@ describe("Bilibili client", () => {
     expect(headers?.Cookie).toContain("SESSDATA=test-sess");
   });
 
-  it("resolves pasted Bilibili video and favourite-folder links", async () => {
+  it("lists the account's favourite folders as read-only playlists, hiding the Aria folder", async () => {
+    storeMocks.readStore.mockResolvedValue({
+      bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
+    });
     fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: { isLogin: true, mid: 42, uname: "测试用户", face: "//i0.hdslb.com/face.jpg" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          list: [
+            { id: 123, title: "Aria", media_count: 9 },
+            { id: 456, title: "夜行歌单", media_count: 12 },
+            { id: 789, title: "通勤电台", media_count: 3 },
+          ],
+        },
+      }));
+
+    const playlists = await getBilibiliFavPlaylists();
+    expect(playlists.map((playlist) => playlist.id)).toEqual(["folder:456", "folder:789"]);
+    expect(playlists[0]).toMatchObject({
+      name: "夜行歌单",
+      source: "bilibili",
+      trackCount: 12,
+      owned: true,
+      canEdit: false,
+      coverColor: "#00AEEC",
+      creatorName: "测试用户",
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("fav/folder/created/list-all"))).toBe(true);
+  });
+
+  it("reads a favourite-folder playlist with the auth cookie and pages until has_more ends", async () => {
+    storeMocks.readStore.mockResolvedValue({
+      bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
+    });
+    fetchMock
+      .mockResolvedValueOnce(new Response("<html></html>", {
+        status: 200,
+        headers: { "set-cookie": "buvid3=test-buvid; Path=/" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ code: 0, data: { isLogin: true, mid: 42 } }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          info: { title: "夜行歌单", media_count: 2 },
+          medias: [
+            { type: 2, attr: 0, bvid: "BV1first", title: "第一首", duration: 200, upper: { name: "UP甲" } },
+          ],
+          has_more: true,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        data: {
+          info: { title: "夜行歌单", media_count: 2 },
+          medias: [
+            { type: 2, attr: 0, bvid: "BV1second", title: "第二首", duration: 300, upper: { name: "UP乙" } },
+          ],
+          has_more: false,
+        },
+      }));
+    // 登录态批量取页一次推进 5 页，未提供 mock 的空页统一回空列表。
+    fetchMock.mockImplementation(async () => jsonResponse({ code: 0, data: { medias: [], has_more: false } }));
+
+    const { title, tracks } = await getBilibiliPlaylistTracks("folder:456");
+    expect(title).toBe("夜行歌单");
+    expect(tracks.map((track) => track.id)).toEqual(["BV1first", "BV1second"]);
+    expect(tracks[0]).toMatchObject({ album: "B站 · 夜行歌单", source: "bilibili", hasVideo: true });
+    const resourceCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("fav/resource/list"));
+    // 批量推进：pn=1..5 一起请求，批末 has_more=false 停止翻页。
+    expect(resourceCalls.length).toBeGreaterThanOrEqual(2);
+    expect(String(resourceCalls[0]?.[0])).toContain("media_id=456");
+    expect(String(resourceCalls[0]?.[0])).toContain("pn=1");
+    expect(String(resourceCalls[1]?.[0])).toContain("pn=2");
+  });
+
+  it("rejects malformed Bilibili playlist ids without touching the network", async () => {
+    storeMocks.readStore.mockResolvedValue({
+      bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
+    });
+    await expect(getBilibiliPlaylistTracks("folder:abc")).rejects.toThrow(/收藏夹编号/);
+    await expect(getBilibiliPlaylistTracks("whatever:1")).rejects.toThrow(/无法识别B站歌单/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves pasted Bilibili video and favourite-folder links", async () => {    fetchMock
       .mockResolvedValueOnce(new Response("<html></html>", {
         status: 200,
         headers: { "set-cookie": "buvid3=test-buvid; Path=/" },

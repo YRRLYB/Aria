@@ -4,6 +4,7 @@ import {
   LOCAL_PLAYLISTS_STORAGE_KEY,
   createLocalPlaylist,
   createPlaylistTrackSnapshots,
+  mergeReferenceSync,
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
   sanitizeLocalPlaylists,
@@ -86,6 +87,55 @@ describe("local playlists", () => {
       ...playlist,
       remoteRef: { source: "bilibili", url: "  ", kind: "playlist" },
     }])[0].remoteRef).toBeUndefined();
+  });
+
+  it("re-syncs the Bilibili mirror while keeping manually mixed non-Bilibili tracks", () => {
+    const neteaseTrack = { id: "netease:700", source: "netease", title: "云村曲" } as Track;
+    const localTrack = { id: "local:abc", source: "local", title: "本地曲" } as Track;
+    const playlist = createLocalPlaylist(
+      "引用的歌单",
+      ["bilibili:BV1old", "netease:700", "local:abc"],
+      10,
+      {
+        "netease:700": neteaseTrack,
+        "local:abc": localTrack,
+      },
+      { source: "bilibili", url: "https://b23.tv/xyz", kind: "folder", title: "引用的歌单", syncedAt: 10 },
+    );
+
+    const freshMirror = [
+      { id: "bilibili:BV1new", source: "bilibili", title: "新收藏" } as Track,
+      { id: "bilibili:BV1old", source: "bilibili", title: "旧收藏" } as Track,
+    ];
+    const merged = mergeReferenceSync(playlist, freshMirror, "远端新名字", 99);
+
+    // B站部分整体替换为远端顺序，手动加入的云村/本地歌曲保留在尾部。
+    expect(merged.trackIds).toEqual(["bilibili:BV1new", "bilibili:BV1old", "netease:700", "local:abc"]);
+    expect(merged.name).toBe("远端新名字");
+    expect(merged.remoteRef).toMatchObject({ syncedAt: 99, title: "远端新名字" });
+    expect(merged.trackSnapshots?.["netease:700"]).toBe(neteaseTrack);
+    expect(merged.trackSnapshots?.["local:abc"]).toBe(localTrack);
+    expect(merged.trackSnapshots?.["bilibili:BV1new"]?.title).toBe("新收藏");
+  });
+
+  it("drops stale Bilibili tracks that disappeared from the remote folder on re-sync", () => {
+    const staleBilibili = { id: "bilibili:BV1gone", source: "bilibili", title: "已被UP删除" } as Track;
+    const playlist = createLocalPlaylist(
+      "引用的歌单",
+      ["bilibili:BV1gone", "bilibili:BV1kept"],
+      10,
+      { "bilibili:BV1gone": staleBilibili },
+      { source: "bilibili", url: "https://b23.tv/xyz", kind: "folder" },
+    );
+    const merged = mergeReferenceSync(
+      playlist,
+      [{ id: "bilibili:BV1kept", source: "bilibili", title: "还在" } as Track],
+      undefined,
+      5,
+    );
+    expect(merged.trackIds).toEqual(["bilibili:BV1kept"]);
+    expect(merged.trackSnapshots?.["bilibili:BV1gone"]).toBeUndefined();
+    expect(merged.remoteRef?.syncedAt).toBe(5);
   });
 
   it("keeps compact remote snapshots so mixed playlists survive a restart", () => {

@@ -13,7 +13,7 @@ export const bilibiliManifest: SourceManifest = {
     wordLyrics: false,
     account: true,
     liked: true,
-    playlistsRead: false,
+    playlistsRead: true,
     playlistsWrite: false,
     recommendations: false,
     artistDetail: false,

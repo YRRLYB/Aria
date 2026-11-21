@@ -53,6 +53,7 @@ const SOURCE_CONFIG: Array<{ source: Track["source"]; label: string; color: stri
   { source: "netease", label: "网易云音乐", color: "#E60026" },
   { source: "qq", label: "QQ 音乐", color: "#0DAF52" },
   { source: "bilibili", label: "哔哩哔哩", color: "#00AEEC" },
+  { source: "youtube", label: "YouTube Music", color: "#FF0033" },
   { source: "local", label: "本地无损库", color: "#7C5CE6" },
   { source: "cloud", label: "音乐云盘", color: "#4F6EF7" },
 ];

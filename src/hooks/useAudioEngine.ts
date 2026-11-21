@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import { nativePlaybackStateChanged, syncNativePlaybackClock } from "@/lib/nativePlaybackState";
@@ -89,7 +89,14 @@ export function useAudioEngine(options: {
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease" && activeTrack.source !== "qq" && activeTrack.source !== "bilibili") return resolvedUrl;
+    if (
+      activeTrack.source !== "netease" &&
+      activeTrack.source !== "qq" &&
+      activeTrack.source !== "bilibili" &&
+      activeTrack.source !== "youtube"
+    ) {
+      return resolvedUrl;
+    }
 
     const url = new URL(resolvedUrl, window.location.href);
     url.searchParams.set("level", options.effectiveQualityLevel);
@@ -110,7 +117,12 @@ export function useAudioEngine(options: {
   const audioElementStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
-    if (activeTrack.source !== "netease" && activeTrack.source !== "qq" && activeTrack.source !== "bilibili") {
+    if (
+      activeTrack.source !== "netease" &&
+      activeTrack.source !== "qq" &&
+      activeTrack.source !== "bilibili" &&
+      activeTrack.source !== "youtube"
+    ) {
       return resolvedUrl;
     }
 
@@ -285,57 +297,49 @@ export function useAudioEngine(options: {
     });
   }, [nativePlaybackEnabled, selectedSinkId]);
 
-  useEffect(() => {
+  const refreshAudioOutputDevices = useCallback(async () => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (nativeAudio?.supported && options.audioOutputMode !== "system") {
-      let cancelled = false;
-      nativeAudio
-        .isSupported?.()
-        .then((supported) => {
-          if (cancelled) return [];
-          setNativeAudioSupported(Boolean(supported));
-          if (!supported) return [];
-          return nativeAudio.listDevices?.() ?? [];
-        })
-        .then((devices) => {
-          if (!cancelled && Array.isArray(devices) && devices.length) {
-            setAudioOutputDevices(devices);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) setNativeAudioSupported(false);
-        });
-      return () => { cancelled = true; };
+      try {
+        const supported = Boolean(await nativeAudio.isSupported?.());
+        setNativeAudioSupported(supported);
+        if (!supported) return;
+        const devices = await nativeAudio.listDevices?.();
+        if (Array.isArray(devices) && devices.length) {
+          setAudioOutputDevices(devices);
+        }
+      } catch {
+        setNativeAudioSupported(false);
+      }
+      return;
     }
 
     if (!navigator.mediaDevices?.enumerateDevices) return;
-
-    let cancelled = false;
-    const refreshDevices = () => {
-      navigator.mediaDevices
-        .enumerateDevices()
-        .then((devices) => {
-          if (cancelled) return;
-          const outputs = devices
-            .filter((device) => device.kind === "audiooutput")
-            .map((device, index) => ({
-              id: device.deviceId || `output-${index}`,
-              label: device.label || `播放设备 ${index + 1}`,
-            }));
-          setAudioOutputDevices([{ id: "default", label: "系统默认" }, ...outputs.filter((device) => device.id !== "default")]);
-        })
-        .catch(() => {
-          if (!cancelled) setAudioOutputDevices([{ id: "default", label: "系统默认" }]);
-        });
-    };
-
-    refreshDevices();
-    navigator.mediaDevices.addEventListener?.("devicechange", refreshDevices);
-    return () => {
-      cancelled = true;
-      navigator.mediaDevices.removeEventListener?.("devicechange", refreshDevices);
-    };
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices
+        .filter((device) => device.kind === "audiooutput")
+        .map((device, index) => ({
+          id: device.deviceId || `output-${index}`,
+          label: device.label || `播放设备 ${index + 1}`,
+        }));
+      setAudioOutputDevices([{ id: "default", label: "系统默认" }, ...outputs.filter((device) => device.id !== "default")]);
+    } catch {
+      setAudioOutputDevices([{ id: "default", label: "系统默认" }]);
+    }
   }, [options.audioOutputMode]);
+
+  useEffect(() => {
+    void refreshAudioOutputDevices();
+    if (!navigator.mediaDevices?.addEventListener) return;
+    const handleDeviceChange = () => {
+      void refreshAudioOutputDevices();
+    };
+    navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+    };
+  }, [refreshAudioOutputDevices]);
 
   useEffect(() => {
     const existing = readCachedAudioSettings();
@@ -1006,6 +1010,7 @@ export function useAudioEngine(options: {
     audioRef,
     analyserRef,
     audioOutputDevices,
+    refreshAudioOutputDevices,
     nativeAudioSupported,
     nativeAudioState,
     selectedSinkId,

@@ -8,9 +8,11 @@ export type ViewHistorySnapshot = {
   artist: ArtistSummary | null;
   album: ProviderAlbum | null;
   user: ProviderUser | null;
-  playlistSource: "netease" | "local" | "qq" | null;
+  playlistSource: "netease" | "local" | "qq" | "bilibili" | "youtube" | null;
   neteasePlaylist: ProviderPlaylist | null;
   qqPlaylist: ProviderPlaylist | null;
+  bilibiliPlaylist: ProviderPlaylist | null;
+  youtubePlaylist: ProviderPlaylist | null;
   localPlaylistId: string | null;
 };
 
@@ -29,6 +31,8 @@ export function sameViewSnapshot(left: ViewHistorySnapshot, right: ViewHistorySn
     (left.playlistSource ?? null) === (right.playlistSource ?? null) &&
     (left.neteasePlaylist?.id ?? null) === (right.neteasePlaylist?.id ?? null) &&
     (left.qqPlaylist?.id ?? null) === (right.qqPlaylist?.id ?? null) &&
+    (left.bilibiliPlaylist?.id ?? null) === (right.bilibiliPlaylist?.id ?? null) &&
+    (left.youtubePlaylist?.id ?? null) === (right.youtubePlaylist?.id ?? null) &&
     (left.localPlaylistId ?? null) === (right.localPlaylistId ?? null)
   );
 }

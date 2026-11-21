@@ -16,6 +16,8 @@ function snap(overrides: Partial<ViewHistorySnapshot> = {}): ViewHistorySnapshot
     playlistSource: null,
     neteasePlaylist: null,
     qqPlaylist: null,
+    bilibiliPlaylist: null,
+    youtubePlaylist: null,
     localPlaylistId: null,
     ...overrides,
   };

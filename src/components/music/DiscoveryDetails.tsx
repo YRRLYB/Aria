@@ -239,7 +239,7 @@ export function DiscoveryTrackRow({
           <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
             {track.vip && (
               <span
-                className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+                className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700"
                 title="需要开通会员（VIP）才能播放整首歌；仅高音质受限的歌曲不会标记 VIP"
               >
                 VIP

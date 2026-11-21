@@ -63,6 +63,14 @@ export type AppStore = {
    */
   neteaseRealIp?: string | null;
   /**
+   * Optional HTTP proxy (host:port or URL) used ONLY by the YouTube source:
+   * search, player resolution, covers and audio streaming. NetEase/QQ/
+   * Bilibili always connect directly so domestic playback is never detoured.
+   */
+  youtubeProxy?: string | null;
+  /** Raw YouTube/Google cookie header (SID/HSID/SSID/SAPISID/…); innertube auth. */
+  youtubeCookie?: string | null;
+  /**
    * Per-source switches. A source missing from this record is enabled, so
    * existing stores keep working after an upgrade adds a new source.
    */

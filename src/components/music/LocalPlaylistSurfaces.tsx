@@ -12,7 +12,7 @@ import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
-import { CoverArt, EmptyState } from "./shared";
+import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 import { SourceBadge } from "./SourceLogos";
 
 export type LocalPlaylistSurfaceProps = {
@@ -32,20 +32,11 @@ export type LocalPlaylistSurfaceProps = {
   onPickTrack: (id: string, queue?: Track[]) => void;
 };
 
-export function LocalPlaylistSurface(props: LocalPlaylistSurfaceProps & { onOpenNetease: () => void }) {
+export function LocalPlaylistSurface(props: LocalPlaylistSurfaceProps) {
   if (props.selectedPlaylist) {
     return <LocalPlaylistDetail {...props} playlist={props.selectedPlaylist} />;
   }
   return <LocalPlaylistGallery {...props} />;
-}
-
-function SourceTabs({ onOpenNetease }: { onOpenNetease: () => void }) {
-  return (
-    <div className="flex w-fit rounded-full border border-white/70 bg-white/52 p-1 shadow-sm" aria-label="歌单来源">
-      <button type="button" className="rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition hover:bg-white" onClick={onOpenNetease}>网易云</button>
-      <button type="button" aria-current="page" className="rounded-full bg-neutral-950 px-4 py-2 text-sm font-medium text-white">本地</button>
-    </div>
-  );
 }
 
 function LocalPlaylistGallery({
@@ -55,8 +46,7 @@ function LocalPlaylistGallery({
   onOpen,
   onCreate,
   onDelete,
-  onOpenNetease,
-}: LocalPlaylistSurfaceProps & { onOpenNetease: () => void }) {
+}: LocalPlaylistSurfaceProps) {
   const [name, setName] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [referenceOpen, setReferenceOpen] = useState(false);
@@ -88,7 +78,6 @@ function LocalPlaylistGallery({
           </Button>
         </div>
       </div>
-      <div className="mt-6"><SourceTabs onOpenNetease={onOpenNetease} /></div>
       {storageError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">浏览器存储空间不足，本次修改可能无法在重启后保留。</p>}
       {createOpen && (
         <form id="create-local-playlist-form" className="mt-5 flex flex-col gap-3 rounded-2xl border border-white/70 bg-white/65 p-4 sm:flex-row" onSubmit={submit}>
@@ -148,7 +137,7 @@ function LocalPlaylistGallery({
   );
 }
 
-function LocalPlaylistDetail({
+export function LocalPlaylistDetail({
   playlist,
   allTracks,
   selectedTracks,
@@ -159,8 +148,8 @@ function LocalPlaylistDetail({
   onRemove,
   onSyncReference,
   onPickTrack,
-  onOpenNetease,
-}: LocalPlaylistSurfaceProps & { playlist: LocalPlaylist; onOpenNetease: () => void }) {
+  backLabel = "返回 Aria 歌单",
+}: LocalPlaylistSurfaceProps & { playlist: LocalPlaylist; backLabel?: string }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [bilibiliImportOpen, setBilibiliImportOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -198,8 +187,7 @@ function LocalPlaylistDetail({
     <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
       <div className="flex shrink-0 flex-col gap-4">
         <div className="flex items-center justify-between gap-3">
-          <Button variant="ghost" size="sm" onClick={onClose}><ArrowLeft />返回 Aria 歌单</Button>
-          <SourceTabs onOpenNetease={onOpenNetease} />
+          <Button variant="ghost" size="sm" onClick={onClose}><ArrowLeft />{backLabel}</Button>
         </div>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex min-w-0 items-center gap-4">
@@ -243,7 +231,7 @@ function LocalPlaylistDetail({
                 <span className="text-center text-sm text-neutral-400">{index + 1}</span>
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0">
-                  <p className="truncate font-semibold" title={track.title}>{track.title}</p>
+                  <p className="truncate font-semibold" title={track.title}><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></p>
                   <p className="truncate text-sm text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -272,7 +260,7 @@ function LocalPlaylistDetail({
   );
 }
 
-function BilibiliLinkDialog({ onClose, onAdd, onReference, mode = "add" }: {
+export function BilibiliLinkDialog({ onClose, onAdd, onReference, mode = "add" }: {
   onClose: () => void;
   onAdd?: (tracks: Track[]) => void;
   onReference?: (resolved: { url: string; kind: "folder" | "playlist"; title?: string; tracks: Track[] }) => void;

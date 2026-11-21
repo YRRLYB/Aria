@@ -53,6 +53,7 @@ import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
 import { useQqData } from "@/hooks/useQqData";
 import { saveBilibiliAudioMeta, useBilibiliData } from "@/hooks/useBilibiliData";
+import { useYoutubeData } from "@/hooks/useYoutubeData";
 import {
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
@@ -74,6 +75,13 @@ import {
 } from "@/lib/theme";
 import { memoryLimits, trimStringSet } from "@/lib/memoryCache";
 import {
+  readDailyActivity,
+  recordDailyPlay,
+  seedDailyActivityFromHistory,
+  writeDailyActivity,
+  type DailyActivityLog,
+} from "@/lib/dailyActivity";
+import {
   createPlayerCacheSnapshot,
   readPlayHistory,
   writePlayHistory,
@@ -91,6 +99,7 @@ import {
   mergeTrackRecord,
   mergeTracks,
   normalizeQuality,
+  parseDuration,
   readCachedAudioSettings,
   readCachedPlayerState,
   migrateBilibiliLyricsCache,
@@ -117,7 +126,8 @@ import {
 import { ArtistNavigationContext } from "@/components/music/shared";
 import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
-import { matchesShortcut, readKeyboardShortcuts, writeKeyboardShortcuts, type KeyboardShortcuts } from "@/lib/keyboardShortcuts";
+import { matchesShortcut, readKeyboardShortcuts, shortcutDefinitions, writeKeyboardShortcuts, type KeyboardShortcuts, type ShortcutCommand } from "@/lib/keyboardShortcuts";
+import { cachedArtworkUrl, directArtworkUrl } from "@/lib/coverUrl";
 import { sourceLabel } from "@/lib/trackLabels";
 import { updateTracksById } from "@/lib/trackUpdates";
 import { createDebouncedTask } from "@/lib/debouncedTask";
@@ -131,22 +141,54 @@ const noDragRegionStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
 const panelVariants = {
   initial: { opacity: 0, y: 18 },
-  animate: { opacity: 1, y: 0 },
+  animate: { opacity: 1, y: 0, transitionEnd: { transform: "none" } },
   exit: { opacity: 0, y: -16 },
 };
 
+async function loadCoverBitmapWithFallback(url: string, signal: AbortSignal): Promise<ImageBitmap | null> {
+  const candidates = [...new Set([cachedArtworkUrl(url, 320), directArtworkUrl(url, 320), url].filter((u): u is string => Boolean(u)))];
+  const tryOnce = async (): Promise<ImageBitmap | null> => {
+    for (const candidate of candidates) {
+      if (signal.aborted) return null;
+      try {
+        const resolved = (await getBoundedCoverUrl(candidate, 320)) ?? candidate;
+        const response = await fetch(resolved, { mode: "cors", signal });
+        if (!response.ok) continue;
+        const blob = await response.blob();
+        if (signal.aborted) return null;
+        return await createImageBitmap(blob);
+      } catch {
+        // Try the next artwork candidate or direct CDN fallback.
+      }
+    }
+    return null;
+  };
+  const first = await tryOnce();
+  if (first || signal.aborted) return first;
+  await new Promise<void>((resolve) => {
+    const timer = window.setTimeout(resolve, 900);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+  if (signal.aborted) return null;
+  return await tryOnce();
+}
+
 async function createMediaSessionArtwork(url: string, signal: AbortSignal): Promise<string | null> {
   try {
-    const boundedUrl = await getBoundedCoverUrl(url);
-    if (!boundedUrl) return null;
-    const response = await fetch(boundedUrl, { signal });
-    if (!response.ok) return boundedUrl;
-    const bitmap = await createImageBitmap(await response.blob());
+    const bitmap = await loadCoverBitmapWithFallback(url, signal);
+    if (!bitmap) return null;
     try {
       const side = 256;
       const canvas = new OffscreenCanvas(side, side);
       const context = canvas.getContext("2d");
-      if (!context) return boundedUrl;
+      if (!context) return null;
       const scale = Math.max(side / bitmap.width, side / bitmap.height);
       const width = bitmap.width * scale;
       const height = bitmap.height * scale;
@@ -188,11 +230,24 @@ export default function App() {
   const [videoAudioLevels, setVideoAudioLevels] = useState<string[]>([]);
   const videoControlRef = useRef<VideoControl | null>(null);
   const [volume, setVolume] = useState(initialPlayerCache.volume ?? 72);
+  const lastNonZeroVolumeRef = useRef(volume > 0 ? volume : 65);
+  useEffect(() => {
+    if (volume > 0) lastNonZeroVolumeRef.current = volume;
+  }, [volume]);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [shuffleEnabled, setShuffleEnabled] = useState(initialPlayerCache.shuffleEnabled ?? false);
   const [repeatMode, setRepeatMode] = useState<"all" | "one">(initialPlayerCache.repeatMode ?? "all");
   const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
   const [playHistory, setPlayHistory] = useState<PlayHistoryEntry[]>(readPlayHistory);
+  // 年度声迹按天日志：升级首次启动时日志为空，就用旧的「最近播放」历史尽力回填，
+  // 保证热力图不会从零开始。
+  const [dailyActivity, setDailyActivity] = useState<DailyActivityLog>(() => {
+    const existing = readDailyActivity();
+    if (Object.keys(existing).length) return existing;
+    const seeded = seedDailyActivityFromHistory(readPlayHistory());
+    if (Object.keys(seeded).length) writeDailyActivity(seeded);
+    return seeded;
+  });
   const [likedTrackIds, setLikedTrackIds] = useState<Record<string, true>>({});
   const [activePalette, setActivePalette] = useState<CoverPalette>({ primary: idleTrack.accent, secondary: "#aeb7c6" });
   const [qualityLevel, setQualityLevel] = useState<QualityLevel>(
@@ -203,11 +258,18 @@ export default function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
   // 从搜索/探索直接打开歌单时，PlaylistSurface 需要知道初始看哪个来源。
-  const [playlistSourceIntent, setPlaylistSourceIntent] = useState<"netease" | "local" | "qq" | null>(null);
+  const [playlistSourceIntent, setPlaylistSourceIntent] = useState<"netease" | "local" | "qq" | "bilibili" | "youtube" | null>(null);
+  // 歌单页停留期间的即时来源切换请求（B站标签点开镜像后跳回 Aria 歌单详情）。
+  const [playlistSourceRequest, setPlaylistSourceRequest] = useState<{ source: "netease" | "local" | "qq" | "bilibili" | "youtube"; nonce: number } | null>(null);
+  const requestPlaylistSource = (source: "netease" | "local" | "qq" | "bilibili" | "youtube") => {
+    setPlaylistSourceIntent(source);
+    setPlaylistSourceRequest({ source, nonce: Date.now() });
+  };
   // Non-NetEase sources live behind /api/sources/<id>/account; keep the QQ
   // snapshot in App so the header can show the login state everywhere.
   const [qqAccount, setQqAccount] = useState<SourceAccountSummary | null>(null);
   const [bilibiliAccount, setBilibiliAccount] = useState<SourceAccountSummary | null>(null);
+  const [youtubeAccount, setYoutubeAccount] = useState<SourceAccountSummary | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(() => {
     try {
       const completed = window.localStorage.getItem("aria-onboarding-complete") === "1";
@@ -258,6 +320,8 @@ export default function App() {
       playlistSource: null,
       neteasePlaylist: null,
       qqPlaylist: null,
+      bilibiliPlaylist: null,
+      youtubePlaylist: null,
       localPlaylistId: null,
     }),
   );
@@ -361,7 +425,7 @@ export default function App() {
       setHifiEnabled(false);
       setMasterQualityEnabled(false);
     }
-    if (activeTrack.source === "bilibili") {
+    if (activeTrack.source === "bilibili" || activeTrack.source === "youtube") {
       setVideoAudioLevel(level);
     }
   }
@@ -481,6 +545,7 @@ export default function App() {
   // resolve the qq: id through allTracks/queues like every other source.
   const [qqSearchTracks, setQqSearchTracks] = useState<Track[]>([]);
   const [bilibiliSearchTracks, setBilibiliSearchTracks] = useState<Track[]>([]);
+  const [youtubeSearchTracks, setYoutubeSearchTracks] = useState<Track[]>([]);
   const [libraryWatchState, setLibraryWatchState] = useState<ApiLibraryWatchState | null>(null);
 
   const {
@@ -535,8 +600,17 @@ export default function App() {
   const neteaseConnected = Boolean(neteaseAccount?.connected);
   const qqConnected = Boolean(qqAccount?.connected);
   const bilibiliConnected = Boolean(bilibiliAccount?.connected);
+  const youtubeConnected = Boolean(youtubeAccount?.connected);
   // The header shows a single account chip; NetEase wins when multiple sources are signed in.
-  const primaryAccount = neteaseConnected ? neteaseAccount : qqConnected ? qqAccount : bilibiliConnected ? bilibiliAccount : null;
+  const primaryAccount = neteaseConnected
+    ? neteaseAccount
+    : qqConnected
+      ? qqAccount
+      : bilibiliConnected
+        ? bilibiliAccount
+        : youtubeConnected
+          ? youtubeAccount
+          : null;
   const lastAccountRefreshAtRef = useRef(0);
   const refreshQqAccount = useEffectEvent(() => {
     api
@@ -550,6 +624,12 @@ export default function App() {
       .then(({ account }) => setBilibiliAccount(account))
       .catch(() => undefined);
   });
+  const refreshYoutubeAccount = useEffectEvent(() => {
+    api
+      .getSourceAccount("youtube")
+      .then(({ account }) => setYoutubeAccount(account))
+      .catch(() => undefined);
+  });
 
   useEffect(() => {
     const now = Date.now();
@@ -557,10 +637,25 @@ export default function App() {
     lastAccountRefreshAtRef.current = now;
     refreshQqAccount();
     refreshBilibiliAccount();
+    refreshYoutubeAccount();
   }, [activeView]);
+
+  // 源卡片（如 YouTube Cookie 登录/退出）广播 aria-sources-changed 时，
+  // 立即刷新各账号态，不等 60 秒节流窗口。
+  useEffect(() => {
+    const refreshAccounts = () => {
+      refreshQqAccount();
+      refreshBilibiliAccount();
+      refreshYoutubeAccount();
+    };
+    window.addEventListener("aria-sources-changed", refreshAccounts);
+    return () => window.removeEventListener("aria-sources-changed", refreshAccounts);
+  }, []);
 
   const qqData = useQqData({ connected: qqConnected, applyTrackUpdate });
   const bilibiliData = useBilibiliData({ connected: bilibiliConnected, applyTrackUpdate });
+  // YouTube 歌单（账号播放列表 + 喜欢的音乐）随登录状态自动同步/清空。
+  const youtubeData = useYoutubeData({ connected: youtubeConnected });
   // Reload the QQ liked/playlists whenever the account connects (mount, login,
   // or re-login from settings); disconnect clears inside the hook.
   useEffect(() => {
@@ -575,22 +670,25 @@ export default function App() {
     const onFocus = () => {
       refreshQqAccount();
       refreshBilibiliAccount();
+      refreshYoutubeAccount();
       // 手机端在在线音源里点了红心后，切回 Aria 时顺手刷新一次，
       // 不必等到下一次进入「我喜欢」页面。
       if (qqConnected) void qqData.refresh();
       if (bilibiliConnected) void bilibiliData.refresh();
+      if (youtubeConnected) void youtubeData.refresh();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qqConnected, bilibiliConnected]);
+  }, [qqConnected, bilibiliConnected, youtubeConnected]);
   // 进入「我喜欢」时重新拉一次在线收藏，手机端刚点过的红心不必重启应用。
   useEffect(() => {
     if (activeView !== "liked") return;
     if (qqConnected) void qqData.refresh();
     if (bilibiliConnected) void bilibiliData.refresh();
+    if (youtubeConnected) void youtubeData.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, qqConnected, bilibiliConnected]);
+  }, [activeView, qqConnected, bilibiliConnected, youtubeConnected]);
   // 推荐视图的来源切换:每日推荐/私人漫游都支持网易云与 QQ 两套数据。
   const [recommendSource, setRecommendSource] = useState<"netease" | "qq">("netease");
   const recentQqRoamExcludes = () =>
@@ -700,8 +798,43 @@ export default function App() {
   );
   const bilibiliLibraryTracks = bilibiliData.likedTracks;
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqSearchTracks, ...bilibiliSearchTracks, ...qqLibraryTracks, ...bilibiliLibraryTracks, ...roamTracks, ...playlistTracks, ...cloudTracks, ...exploreTracks]),
-    [localTracks, neteaseTracks, qqSearchTracks, bilibiliSearchTracks, qqLibraryTracks, bilibiliLibraryTracks, roamTracks, playlistTracks, cloudTracks, exploreTracks],
+    () =>
+      mergeTracks([
+        ...localTracks,
+        ...neteaseTracks,
+        ...neteaseLikedTracks,
+        ...dailyTracks,
+        ...qqSearchTracks,
+        ...bilibiliSearchTracks,
+        ...youtubeSearchTracks,
+        ...qqLibraryTracks,
+        ...bilibiliLibraryTracks,
+        ...bilibiliData.playlistTracks,
+        ...youtubeData.likedTracks,
+        ...youtubeData.playlistTracks,
+        ...roamTracks,
+        ...playlistTracks,
+        ...cloudTracks,
+        ...exploreTracks,
+      ]),
+    [
+      localTracks,
+      neteaseTracks,
+      neteaseLikedTracks,
+      dailyTracks,
+      qqSearchTracks,
+      bilibiliSearchTracks,
+      youtubeSearchTracks,
+      qqLibraryTracks,
+      bilibiliLibraryTracks,
+      bilibiliData.playlistTracks,
+      youtubeData.likedTracks,
+      youtubeData.playlistTracks,
+      roamTracks,
+      playlistTracks,
+      cloudTracks,
+      exploreTracks,
+    ],
   );
   // Mixed playlists resolve live tracks first, then compact remote snapshots.
   const localPlaylists = useLocalPlaylists(allTracks);
@@ -811,7 +944,8 @@ export default function App() {
     });
   }, [bilibiliDefaultVideoQn, bilibiliDefaultAudioLevel]);
   const activeVideoUrl = useMemo(() => {
-    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili" || !videoQn) return activeTrack.videoUrl;
+    const isVideoSource = activeTrack.source === "bilibili" || activeTrack.source === "youtube";
+    if (!activeTrack.videoUrl || !isVideoSource || !videoQn) return activeTrack.videoUrl;
     try {
       const url = new URL(api.resolveUrl(activeTrack.videoUrl));
       url.searchParams.set("qn", String(videoQn));
@@ -820,11 +954,11 @@ export default function App() {
       return activeTrack.videoUrl;
     }
   }, [activeTrack.videoUrl, activeTrack.source, videoQn]);
-  // Bilibili's high-quality path is DASH: the video element receives a
-  // video-only stream and this parallel route supplies the audio track
-  // (AAC / Dolby / FLAC). Muxed fallbacks simply play their own audio.
+  // Bilibili / YouTube DASH video path: the video element plays the video stream
+  // and Aria's audio engine keeps ownership of the audio stream.
   const activeVideoAudioUrl = useMemo(() => {
-    if (!activeTrack.videoUrl || activeTrack.source !== "bilibili") return undefined;
+    const isVideoSource = activeTrack.source === "bilibili" || activeTrack.source === "youtube";
+    if (!activeTrack.videoUrl || !isVideoSource) return undefined;
     try {
       const url = new URL(api.resolveUrl(activeTrack.videoUrl));
       url.pathname = url.pathname.replace(/\/video$/, "/video-audio");
@@ -844,7 +978,7 @@ export default function App() {
     [activeTrack.availableLevels, activeTrack.source, hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel],
   );
   useEffect(() => {
-    if ((activeTrack.source !== "bilibili" && activeTrack.source !== "qq") || !activeTrack.providerId) return;
+    if ((activeTrack.source !== "bilibili" && activeTrack.source !== "qq" && activeTrack.source !== "youtube") || !activeTrack.providerId) return;
     let cancelled = false;
     api
       .getSourceStreamMeta(activeTrack.source, activeTrack.providerId, effectiveQualityLevel)
@@ -872,14 +1006,13 @@ export default function App() {
       cancelled = true;
     };
   }, [activeTrack.id, activeTrack.providerId, activeTrack.source, effectiveQualityLevel]);
-  // Resolve the muxed video quality lazily when video mode opens. The video
-  // proxy resolves its own URL; this only fills the badge/menu with the
-  // quality Bilibili actually granted (360P anonymous, 1080P after login).
+  // Resolve the video quality lazily when video mode opens (for both Bilibili and YouTube).
   useEffect(() => {
-    if (!BILIBILI_VIDEO_ENABLED || !videoMode || activeTrack.source !== "bilibili" || !activeTrack.providerId) return;
+    const isVideoSource = activeTrack.source === "bilibili" || activeTrack.source === "youtube";
+    if (!BILIBILI_VIDEO_ENABLED || !videoMode || !isVideoSource || !activeTrack.providerId) return;
     let cancelled = false;
     api
-      .getSourceVideoMeta("bilibili", activeTrack.providerId, videoAudioLevel ?? undefined, videoQn)
+      .getSourceVideoMeta(activeTrack.source, activeTrack.providerId, videoAudioLevel ?? undefined, videoQn)
       .then((meta) => {
         if (cancelled) return;
         setVideoQualities(meta.availableQualities ?? []);
@@ -929,8 +1062,15 @@ export default function App() {
     [neteaseLikedTracks],
   );
   const likedDisplayTracks = useMemo(
-    () => mergeTracks([...localLikedTracks, ...neteaseLikedDisplayTracks]),
-    [localLikedTracks, neteaseLikedDisplayTracks],
+    () =>
+      mergeTracks([
+        ...localLikedTracks,
+        ...neteaseLikedDisplayTracks,
+        ...qqData.likedTracks,
+        ...bilibiliData.likedTracks,
+        ...youtubeData.likedTracks,
+      ]),
+    [localLikedTracks, neteaseLikedDisplayTracks, qqData.likedTracks, bilibiliData.likedTracks, youtubeData.likedTracks],
   );
   const linkedLyricCount = useMemo(
     () => allTracks.filter((track) => track.lyricStatus === "linked").length,
@@ -968,11 +1108,13 @@ export default function App() {
     searchError,
     searchQqError,
     searchBilibiliError,
+    searchYoutubeError,
     searchSuggestions,
     searchTotal,
     searchMore,
     searchQqMore,
     searchBilibiliMore,
+    searchYoutubeMore,
     loadMoreSearch,
     retrySearch,
     selectedArtist,
@@ -994,6 +1136,7 @@ export default function App() {
     onMergeNeteaseTracks: setNeteaseTracks,
     onMergeQqTracks: setQqSearchTracks,
     onMergeBilibiliTracks: setBilibiliSearchTracks,
+    onMergeYoutubeTracks: setYoutubeSearchTracks,
   });
 
   const {
@@ -1051,6 +1194,8 @@ export default function App() {
       playlistSource: playlistSourceIntent,
       neteasePlaylist: selectedPlaylist,
       qqPlaylist: qqData.selectedPlaylist,
+      bilibiliPlaylist: bilibiliData.selectedPlaylist,
+      youtubePlaylist: youtubeData.selectedPlaylist,
       localPlaylistId: localPlaylists.selectedPlaylist?.id ?? null,
     }),
     [
@@ -1062,6 +1207,8 @@ export default function App() {
       playlistSourceIntent,
       selectedPlaylist,
       qqData.selectedPlaylist,
+      bilibiliData.selectedPlaylist,
+      youtubeData.selectedPlaylist,
       localPlaylists.selectedPlaylist?.id,
     ],
   );
@@ -1100,6 +1247,16 @@ export default function App() {
       if (qqData.selectedPlaylist?.id !== target.qqPlaylist.id) void qqData.openPlaylist(target.qqPlaylist);
     } else if (qqData.selectedPlaylist) {
       qqData.closePlaylist();
+    }
+    if (target.bilibiliPlaylist) {
+      if (bilibiliData.selectedPlaylist?.id !== target.bilibiliPlaylist.id) bilibiliData.openPlaylist(target.bilibiliPlaylist);
+    } else if (bilibiliData.selectedPlaylist) {
+      bilibiliData.closePlaylist();
+    }
+    if (target.youtubePlaylist) {
+      if (youtubeData.selectedPlaylist?.id !== target.youtubePlaylist.id) youtubeData.openPlaylist(target.youtubePlaylist);
+    } else if (youtubeData.selectedPlaylist) {
+      youtubeData.closePlaylist();
     }
     localPlaylists.setSelectedId(target.localPlaylistId);
     return true;
@@ -1152,7 +1309,7 @@ export default function App() {
     const resolveUrl = (track: Track): string | null => {
       if (!track.streamUrl || track.requiresNativePlayback) return null;
       const resolvedUrl = api.resolveUrl(track.streamUrl);
-      if (track.source !== "netease" && track.source !== "qq" && track.source !== "bilibili") return resolvedUrl;
+      if (track.source !== "netease" && track.source !== "qq" && track.source !== "bilibili" && track.source !== "youtube") return resolvedUrl;
       const url = new URL(resolvedUrl, window.location.href);
       url.searchParams.set("level", selectPlaybackQuality(track, { hifiEnabled, masterQualityEnabled, qualityLevel, bilibiliDefaultAudioLevel }));
       return url.href;
@@ -1179,6 +1336,7 @@ export default function App() {
     audioRef,
     analyserRef,
     audioOutputDevices,
+    refreshAudioOutputDevices,
     nativeAudioSupported,
     nativeAudioState,
     selectedSinkId,
@@ -1431,7 +1589,13 @@ export default function App() {
       qqData.playlistTracks,
       qqData.likedTracks,
       bilibiliSearchTracks,
+      bilibiliData.likedTracks,
+      bilibiliData.playlistTracks,
+      youtubeSearchTracks,
+      youtubeData.likedTracks,
+      youtubeData.playlistTracks,
       localPlaylists.selectedTracks,
+      artistTracks,
       cloudTracks,
       neteaseLikedDisplayTracks,
       visibleLocalTracks,
@@ -1465,9 +1629,13 @@ export default function App() {
       setQqSearchTracks((current) => trimTrackCache([...current, targetTrack], 360, trackId));
     } else if (targetTrack.source === "bilibili") {
       setBilibiliSearchTracks((current) => trimTrackCache([...current, targetTrack], 360, trackId));
+    } else if (targetTrack.source === "youtube") {
+      setYoutubeSearchTracks((current) => trimTrackCache([...current, targetTrack], 360, trackId));
     }
 
-    const playableIds = materializeQueueIds(queue.length ? queue : [targetTrack], trackId, shuffleEnabled);
+    const effectiveQueue = queue.length ? queue : [targetTrack];
+    setCachedQueueSnapshots(effectiveQueue);
+    const playableIds = materializeQueueIds(effectiveQueue, trackId, shuffleEnabled);
     if (playableIds.length) setPlayQueueIds(playableIds);
     setPlaybackError(null);
     pendingSeekRef.current = 0;
@@ -1504,6 +1672,12 @@ export default function App() {
       });
       return;
     }
+    if (track?.source === "youtube") {
+      void youtubeData.toggleLike(track).catch((error: unknown) => {
+        setPlaybackNotice(error instanceof Error ? error.message : "YouTube 喜欢同步失败，请稍后再试");
+      });
+      return;
+    }
     setLikedTrackIds((current) => {
       if (current[trackId]) {
         const next = { ...current };
@@ -1524,6 +1698,7 @@ export default function App() {
     setNeteaseTracks(applyTo);
     setQqSearchTracks(applyTo);
     setBilibiliSearchTracks(applyTo);
+    setYoutubeSearchTracks(applyTo);
     setDailyTracks(applyTo);
     setRoamTracks(applyTo);
     setNeteaseLikedTracks(applyTo);
@@ -1549,7 +1724,7 @@ export default function App() {
     }
   };
 
-  const handlePlaybackCommand = useEffectEvent((command: "toggle" | "play" | "pause" | "previous" | "next") => {
+  const handlePlaybackCommand = useEffectEvent((command: "toggle" | "play" | "pause" | "previous" | "next" | Exclude<ShortcutCommand, "show">) => {
     if (command === "pause") {
       setPlaying(false);
       return;
@@ -1567,7 +1742,54 @@ export default function App() {
       pickRelativeTrack(-1);
       return;
     }
-    pickRelativeTrack(1);
+    if (command === "next") {
+      pickRelativeTrack(1);
+      return;
+    }
+    if (command === "volumeUp") {
+      setVolume((current) => Math.min(100, Math.round(current + 5)));
+      return;
+    }
+    if (command === "volumeDown") {
+      setVolume((current) => Math.max(0, Math.round(current - 5)));
+      return;
+    }
+    if (command === "mute") {
+      if (volume > 0) {
+        lastNonZeroVolumeRef.current = volume;
+        setVolume(0);
+      } else {
+        setVolume(lastNonZeroVolumeRef.current || 65);
+      }
+      return;
+    }
+    if (command === "like") {
+      if (hasActiveTrack) toggleLikeTrack(activeTrack.id);
+      return;
+    }
+    if (command === "mode") {
+      if (repeatMode === "one") {
+        setRepeatMode("all");
+        if (shuffleEnabled) toggleShuffleQueue();
+      } else if (shuffleEnabled) {
+        toggleShuffleQueue();
+        setRepeatMode("one");
+      } else {
+        toggleShuffleQueue();
+      }
+      return;
+    }
+    if (command === "equalizer") {
+      if (activeView === "player") {
+        setEqualizerOpen((open) => !open);
+      } else {
+        clearSearchState();
+        setSelectedUser(null);
+        setSelectedAlbum(null);
+        setActiveView("player");
+        setEqualizerOpen(true);
+      }
+    }
   });
 
   useEffect(() => {
@@ -1806,13 +2028,15 @@ export default function App() {
     };
   }, [activeView, activeTrack.id, immersiveOpen, pageVisible]);
 
+  const lastTaskbarCoverTrackIdRef = useRef<string | null>(null);
+
   // Feed a bounded 220x220 cover bitmap to the native DWM taskbar thumbnail.
   useEffect(() => {
     const setThumb = window.ariaDesktop?.setTaskbarIconicThumb;
     const clearThumb = window.ariaDesktop?.clearTaskbarIconicThumb;
     if (!setThumb) return;
 
-    let cancelled = false;
+    const controller = new AbortController();
     let sending = false;
     let sendQueued = false;
     const thumbnail = document.createElement("canvas");
@@ -1822,29 +2046,26 @@ export default function App() {
     if (!thumbnailContext) return;
 
     if (!hasActiveTrack) {
+      lastTaskbarCoverTrackIdRef.current = null;
       void clearThumb?.().catch(() => undefined);
       return;
     }
 
-    const drawCover = (context: CanvasRenderingContext2D, width: number, height: number, image: HTMLImageElement | null) => {
+    const drawCover = (context: CanvasRenderingContext2D, width: number, height: number, image: CanvasImageSource | null, naturalWidth = 0, naturalHeight = 0) => {
       const fallback = context.createLinearGradient(0, 0, width, height);
       fallback.addColorStop(0, activeTrack.accent || "#343844");
       fallback.addColorStop(1, "#171717");
       context.fillStyle = fallback;
       context.fillRect(0, 0, width, height);
-      if (!image || !image.naturalWidth || !image.naturalHeight) return;
-      const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
-      const drawWidth = image.naturalWidth * scale;
-      const drawHeight = image.naturalHeight * scale;
+      if (!image || !naturalWidth || !naturalHeight) return;
+      const scale = Math.max(width / naturalWidth, height / naturalHeight);
+      const drawWidth = naturalWidth * scale;
+      const drawHeight = naturalHeight * scale;
       context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
     };
 
-    const drawFrame = (image: HTMLImageElement | null) => {
-      drawCover(thumbnailContext, thumbnail.width, thumbnail.height, image);
-    };
-
     const send = () => {
-      if (cancelled) return;
+      if (controller.signal.aborted) return;
       if (sending) {
         sendQueued = true;
         return;
@@ -1859,7 +2080,7 @@ export default function App() {
           .catch(() => undefined)
           .finally(() => {
             sending = false;
-            if (sendQueued) {
+            if (sendQueued && !controller.signal.aborted) {
               sendQueued = false;
               send();
             }
@@ -1870,41 +2091,76 @@ export default function App() {
       }
     };
 
-    drawFrame(null);
-    send();
-
-    const imageElement = new Image();
-    imageElement.crossOrigin = "anonymous";
-    imageElement.decoding = "async";
-    const releaseImage = () => {
-      imageElement.onload = null;
-      imageElement.onerror = null;
-      imageElement.removeAttribute("src");
-    };
-    imageElement.onload = () => {
-      if (cancelled) {
-        releaseImage();
-        return;
-      }
-      drawFrame(imageElement);
+    // Only emit the gradient placeholder on a track change; never clobber an
+    // already-painted cover for the current track when accent/metadata updates.
+    if (lastTaskbarCoverTrackIdRef.current !== activeTrack.id) {
+      drawCover(thumbnailContext, thumbnail.width, thumbnail.height, null);
       send();
-      releaseImage();
+    }
+
+    const paintFromBitmap = (bitmap: ImageBitmap | null) => {
+      if (!bitmap || controller.signal.aborted) {
+        bitmap?.close();
+        return false;
+      }
+      try {
+        drawCover(thumbnailContext, thumbnail.width, thumbnail.height, bitmap, bitmap.width, bitmap.height);
+        lastTaskbarCoverTrackIdRef.current = activeTrack.id;
+        send();
+        return true;
+      } finally {
+        bitmap.close();
+      }
     };
-    imageElement.onerror = releaseImage;
-    if (activeTrack.coverUrl) {
-      const previewCoverUrl = activeTrack.coverUrl.includes("/api/providers/netease/cover")
-        ? `${activeTrack.coverUrl}${activeTrack.coverUrl.includes("?") ? "&" : "?"}size=320y320`
-        : activeTrack.coverUrl;
-      void getBoundedCoverUrl(previewCoverUrl, 320).then((resolvedUrl) => {
-        if (!cancelled && resolvedUrl) imageElement.src = resolvedUrl;
+
+    const paintViaImageElement = (src: string) => {
+      if (controller.signal.aborted) return;
+      const imageElement = new Image();
+      imageElement.crossOrigin = "anonymous";
+      imageElement.decoding = "async";
+      const releaseImage = () => {
+        imageElement.onload = null;
+        imageElement.onerror = null;
+        imageElement.removeAttribute("src");
+      };
+      controller.signal.addEventListener("abort", releaseImage, { once: true });
+      imageElement.onload = () => {
+        if (!controller.signal.aborted && imageElement.naturalWidth && imageElement.naturalHeight) {
+          drawCover(thumbnailContext, thumbnail.width, thumbnail.height, imageElement, imageElement.naturalWidth, imageElement.naturalHeight);
+          lastTaskbarCoverTrackIdRef.current = activeTrack.id;
+          send();
+        }
+        releaseImage();
+      };
+      imageElement.onerror = releaseImage;
+      imageElement.src = src;
+    };
+
+    if (mediaSessionArtwork) {
+      void fetch(mediaSessionArtwork, { signal: controller.signal })
+        .then((response) => (response.ok ? response.blob() : null))
+        .then((blob) => (blob && !controller.signal.aborted ? createImageBitmap(blob) : null))
+        .then((bitmap) => {
+          if (!paintFromBitmap(bitmap) && !controller.signal.aborted && activeTrack.coverUrl) {
+            paintViaImageElement(mediaSessionArtwork);
+          }
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) paintViaImageElement(mediaSessionArtwork);
+        });
+    } else if (activeTrack.coverUrl) {
+      void loadCoverBitmapWithFallback(activeTrack.coverUrl, controller.signal).then((bitmap) => {
+        if (!paintFromBitmap(bitmap) && !controller.signal.aborted && activeTrack.coverUrl) {
+          const fallbackUrl = cachedArtworkUrl(activeTrack.coverUrl, 320) ?? activeTrack.coverUrl;
+          paintViaImageElement(fallbackUrl);
+        }
       });
     }
 
     return () => {
-      cancelled = true;
-      releaseImage();
+      controller.abort();
     };
-  }, [activeTrack.accent, activeTrack.coverUrl, activeTrack.id, hasActiveTrack]);
+  }, [activeTrack.accent, activeTrack.coverUrl, activeTrack.id, hasActiveTrack, mediaSessionArtwork]);
 
   function commitActiveVideoTime() {
     // Audio engine owns the authoritative clock even while muted video is open.
@@ -1997,19 +2253,13 @@ export default function App() {
         return;
       }
       if (!window.ariaDesktop?.configureGlobalShortcuts) {
-        if (matchesShortcut(event, keyboardShortcuts.toggle)) {
-          event.preventDefault();
-          handlePlaybackCommand("toggle");
-          return;
-        }
-        if (matchesShortcut(event, keyboardShortcuts.previous)) {
-          event.preventDefault();
-          handlePlaybackCommand("previous");
-          return;
-        }
-        if (matchesShortcut(event, keyboardShortcuts.next)) {
-          event.preventDefault();
-          handlePlaybackCommand("next");
+        for (const { command } of shortcutDefinitions) {
+          if (command === "show") continue;
+          if (matchesShortcut(event, keyboardShortcuts[command])) {
+            event.preventDefault();
+            handlePlaybackCommand(command);
+            return;
+          }
         }
       }
     };
@@ -2158,6 +2408,13 @@ export default function App() {
     }, 5000);
     return () => window.clearTimeout(timer);
   }, [playHistory]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      writeDailyActivity(dailyActivity);
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [dailyActivity]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2349,6 +2606,7 @@ export default function App() {
       ...current,
       [activeTrack.id]: (current[activeTrack.id] ?? 0) + 1,
     }));
+    setDailyActivity((current) => recordDailyPlay(current, Date.now(), parseDuration(activeTrack.duration)));
     setPlayHistory((current) => {
       const existing = current.find((entry) => entry.track.id === activeTrack.id);
       const nextEntry = {
@@ -2358,7 +2616,7 @@ export default function App() {
       };
       return [nextEntry, ...current.filter((entry) => entry.track.id !== activeTrack.id)].slice(0, 80);
     });
-  }, [activeTrack.id, activeTrackId, playing]);
+  }, [activeTrack, activeTrack.id, activeTrackId, playing]);
 
   useEffect(() => {
     const candidates = localTracks.filter((track) => !track.coverUrl && !artworkSyncingRef.current.has(track.id)).slice(0, 24);
@@ -2451,6 +2709,7 @@ export default function App() {
               aria-label="Aria 主页"
               onClick={() => {
                 clearSearchState();
+                setSelectedArtist(null);
                 setSelectedUser(null);
                 setSelectedAlbum(null);
                 setActiveView("home");
@@ -2484,7 +2743,7 @@ export default function App() {
           </div>
 
           <div className="app-nav-slot">
-            <AppNavigation activeView={activeView} onPick={(id) => { clearSearchState(); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); } setActiveView(id); }} />
+            <AppNavigation activeView={activeView} onPick={(id) => { clearSearchState(); setSelectedArtist(null); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); setPlaylistSourceRequest(null); } setActiveView(id); }} />
           </div>
 
           <div
@@ -2608,7 +2867,7 @@ export default function App() {
             <span
               className={cn(
                 "absolute right-0 top-0 size-2.5 rounded-full ring-2 ring-white",
-                neteaseConnected || qqConnected || bilibiliConnected ? "bg-[#28c840]" : "bg-neutral-300",
+                neteaseConnected || qqConnected || bilibiliConnected || youtubeConnected ? "bg-[#28c840]" : "bg-neutral-300",
               )}
             />
             <AnimatePresence>
@@ -2636,6 +2895,13 @@ export default function App() {
                         connected: bilibiliConnected,
                         nickname: bilibiliAccount?.nickname ?? null,
                         avatarUrl: bilibiliAccount?.nickname ? bilibiliAccount.avatarUrl ?? null : bilibiliAccount?.avatarUrl ?? null,
+                      },
+                      {
+                        id: "youtube",
+                        label: "YouTube Music",
+                        connected: youtubeConnected,
+                        nickname: youtubeAccount?.nickname ?? null,
+                        avatarUrl: youtubeAccount?.avatarUrl ?? null,
                       },
                     ]}
                     onManageSources={() => {
@@ -2752,7 +3018,9 @@ export default function App() {
                         ? Boolean(qqData.likedIds[activeTrack.id])
                         : activeTrack.source === "bilibili"
                           ? Boolean(bilibiliData.likedIds[activeTrack.id])
-                          : Boolean(likedTrackIds[activeTrack.id])
+                          : activeTrack.source === "youtube"
+                            ? Boolean(youtubeData.likedIds[activeTrack.id])
+                            : Boolean(likedTrackIds[activeTrack.id])
                   }
                   onToggleLike={() => toggleLikeTrack(activeTrack.id)}
                   volume={volume}
@@ -2806,7 +3074,6 @@ export default function App() {
                 activeView === "home" && !query.trim() && "app-view-home",
                 activeView === "player" && !searchActive && "hidden",
               )}
-              style={{ willChange: "transform, opacity" }}
             >
               {selectedAlbum ? (
                 <AlbumDetailSurface album={albumDetail ?? selectedAlbum} tracks={albumTracks} loading={albumLoading} error={albumError}
@@ -2830,8 +3097,10 @@ export default function App() {
                   neteaseTracks={searchBundle.neteaseTracks}
                   qqTracks={searchBundle.qqTracks}
                   bilibiliTracks={searchBundle.bilibiliTracks}
+                  youtubeTracks={searchBundle.youtubeTracks}
                   qqError={searchQqError}
                   bilibiliError={searchBilibiliError}
+                  youtubeError={searchYoutubeError}
                   artists={searchBundle.artists}
                   playlists={searchBundle.playlists}
                   users={searchBundle.users}
@@ -2843,6 +3112,7 @@ export default function App() {
                   more={searchMore}
                   qqMore={searchQqMore}
                   bilibiliMore={searchBilibiliMore}
+                  youtubeMore={searchYoutubeMore}
                   onRetry={retrySearch}
                   onLoadMore={() => void loadMoreSearch()}
                   onPickUser={setSelectedUser}
@@ -2874,6 +3144,7 @@ export default function App() {
                 <HomeSurface
                   activeTrack={activeTrack}
                   playHistory={displayHistory}
+                  dailyActivity={dailyActivity}
                   playing={playing}
                   onTogglePlay={togglePlayback}
                   onPickTrack={chooseTrack}
@@ -2910,15 +3181,19 @@ export default function App() {
                   neteaseTracks={neteaseLikedDisplayTracks}
                   qqTracks={qqData.likedTracks}
                   bilibiliTracks={bilibiliData.likedTracks}
+                  youtubeTracks={youtubeData.likedTracks}
                   neteaseConnected={neteaseConnected}
                   qqConnected={qqConnected}
                   bilibiliConnected={bilibiliConnected}
+                  youtubeConnected={youtubeConnected}
                   bilibiliError={bilibiliData.listError}
-                  refreshing={qqData.listLoading || bilibiliData.listLoading}
+                  youtubeError={youtubeData.listError}
+                  refreshing={qqData.listLoading || bilibiliData.listLoading || youtubeData.listLoading}
                   onRefresh={(source) => {
                     if (source === "netease" || source === "all") void refreshNeteaseData();
                     if (source === "qq" || source === "all") void qqData.refresh();
                     if (source === "bilibili" || source === "all") void bilibiliData.refresh();
+                    if (source === "youtube" || source === "all") void youtubeData.refresh();
                   }}
                   onVisibleTracksChange={(tracks) => bilibiliData.hydrateTracks(tracks, bilibiliDefaultAudioLevel)}
                   onPickTrack={chooseTrack}
@@ -3002,7 +3277,54 @@ export default function App() {
                     },
                     onPickTrack: chooseTrack,
                   }}
+                  bilibili={{
+                    connected: bilibiliConnected,
+                    playlists: bilibiliData.playlists,
+                    loading: bilibiliData.playlistsLoading,
+                    error: bilibiliData.playlistsError,
+                    selectedPlaylist: bilibiliData.selectedPlaylist,
+                    tracks: bilibiliData.playlistTracks,
+                    tracksLoading: bilibiliData.playlistLoading,
+                    tracksError: bilibiliData.playlistError,
+                    playCounts,
+                    referencedPlaylists: localPlaylists.playlists.filter((playlist) => playlist.remoteRef),
+                    onOpen: (playlist) => void bilibiliData.openPlaylist(playlist),
+                    onClose: () => bilibiliData.closePlaylist(),
+                    onRefresh: () => void bilibiliData.refreshPlaylists(),
+                    onPickTrack: chooseTrack,
+                    onRequireLogin: () => {
+                      setSettingsReturnView("playlists");
+                      setActiveView("settings");
+                    },
+                    onCreateReference: localPlaylists.create,
+                    onSyncReference: localPlaylists.syncReference,
+                    onOpenReferenced: (id) => {
+                      // 镜像歌单的详情视图由 Aria 歌单页承载，切过去直接展示。
+                      localPlaylists.setSelectedId(id);
+                      requestPlaylistSource("local");
+                    },
+                    onDeleteReferenced: localPlaylists.remove,
+                  }}
+                  youtube={{
+                    connected: youtubeConnected,
+                    playlists: youtubeData.playlists,
+                    loading: youtubeData.playlistsLoading,
+                    error: youtubeData.playlistsError,
+                    selectedPlaylist: youtubeData.selectedPlaylist,
+                    tracks: youtubeData.playlistTracks,
+                    tracksLoading: youtubeData.playlistLoading,
+                    tracksError: youtubeData.playlistError,
+                    onOpen: (playlist) => youtubeData.openPlaylist(playlist),
+                    onClose: () => youtubeData.closePlaylist(),
+                    onRefresh: () => void youtubeData.refreshPlaylists(),
+                    onPickTrack: chooseTrack,
+                    onRequireLogin: () => {
+                      setSettingsReturnView("playlists");
+                      setActiveView("settings");
+                    },
+                  }}
                   initialSource={playlistSourceIntent}
+                  sourceRequest={playlistSourceRequest}
                 />
               )}
               {activeView === "daily" && (
@@ -3133,6 +3455,7 @@ export default function App() {
                     volume={volume}
                     onVolumeChange={setVolume}
                     audioOutputDevices={audioOutputDevices}
+                    onRefreshAudioOutputDevices={refreshAudioOutputDevices}
                     selectedSinkId={selectedSinkId}
                     onSelectedSinkIdChange={setSelectedSinkId}
                     hifiEnabled={hifiEnabled}
@@ -3173,7 +3496,7 @@ export default function App() {
                         setVideoAudioLevel(level);
                       }
                     }}
-                    onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
+                    onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); refreshYoutubeAccount(); void qqData.refresh(); }}
                     onNeteaseAccountChange={(account) => {
                       setNeteaseAccount(account);
                       if (account.connected) void refreshNeteaseData();
@@ -3207,13 +3530,8 @@ export default function App() {
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 xl:flex">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">
-                  Queue
-                </p>
-                <h2 className="mt-1 text-xl font-semibold">下一首</h2>
-              </div>
+            <div className="flex items-center justify-between gap-3 border-b border-neutral-950/6 pb-3">
+              <h2 className="text-base font-semibold tracking-tight">下一首</h2>
               <Button variant="ghost" size="icon" aria-label="展开队列" onClick={() => setQueueOpen(true)}>
                 <AriaIcon name="queue" className="size-4" />
               </Button>
@@ -3264,7 +3582,9 @@ export default function App() {
                     ? Boolean(qqData.likedIds[activeTrack.id])
                     : activeTrack.source === "bilibili"
                       ? Boolean(bilibiliData.likedIds[activeTrack.id])
-                      : Boolean(likedTrackIds[activeTrack.id])
+                      : activeTrack.source === "youtube"
+                        ? Boolean(youtubeData.likedIds[activeTrack.id])
+                        : Boolean(likedTrackIds[activeTrack.id])
               }
               onToggleShuffle={toggleShuffleQueue}
               onCycleRepeatMode={() => setRepeatMode((current) => (current === "all" ? "one" : "all"))}
@@ -3329,7 +3649,7 @@ export default function App() {
                 setNeteaseAccount(account);
                 if (account.connected) void refreshNeteaseData();
               }}
-              onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); void qqData.refresh(); }}
+              onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); refreshYoutubeAccount(); void qqData.refresh(); }}
               qqAccount={qqAccount}
               bilibiliAccount={bilibiliAccount}
               onComplete={() => setOnboardingOpen(false)}
@@ -3370,10 +3690,11 @@ export default function App() {
               navCloseTimer.current = null;
             }
             clearSearchState();
+            setSelectedArtist(null);
             setSelectedUser(null);
             setSelectedAlbum(null);
             setQueueOpen(false);
-            if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); }
+            if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); setPlaylistSourceRequest(null); }
             if (id === "settings" && activeView !== "settings") setSettingsReturnView(activeView);
             setActiveView(id);
             setNavOpen(false);

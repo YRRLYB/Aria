@@ -1,13 +1,10 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { useRef } from "react";
+import { useEffect, useMemo, useState, useRef, type CSSProperties } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CheckCircle2, Cookie, Copy, Download, FolderPlus, FolderSearch, Globe, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, Sun, Trash2, UserRound, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, CheckCircle2, Cookie, Copy, Download, FolderPlus, FolderSearch, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Sun, Trash2, Volume2, X } from "lucide-react";
 import QRCode from "qrcode";
 import { AriaSelect } from "@/components/ui/aria-select";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Metric } from "@/components/music/shared";
-import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary, type SourceManifestInfo, type UpdateState } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary, type UpdateState } from "@/lib/api";
 import { SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import {
@@ -29,74 +26,6 @@ import {
 } from "@/lib/keyboardShortcuts";
 import { cn } from "@/lib/utils";
 import { ArtworkImage } from "./ArtworkImage";
-
-function SourceEnableCard() {
-  const [sources, setSources] = useState<SourceManifestInfo[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let alive = true;
-    api.listSources()
-      .then((result) => { if (alive) setSources(result.sources); })
-      .catch((reason: unknown) => { if (alive) setError(reason instanceof Error ? reason.message : "读取播放源失败"); });
-    return () => { alive = false; };
-  }, []);
-
-  async function toggle(source: SourceManifestInfo, enabled: boolean) {
-    setSources((current) => current.map((item) => item.id === source.id ? { ...item, enabled } : item));
-    try {
-      const result = await api.setSourceEnabled(source.id, enabled);
-      setSources(result.sources);
-      window.dispatchEvent(new Event("aria-sources-changed"));
-      setError(null);
-    } catch (reason) {
-      setSources((current) => current.map((item) => item.id === source.id ? { ...item, enabled: source.enabled } : item));
-      setError(reason instanceof Error ? reason.message : "切换播放源失败");
-    }
-  }
-
-  return (
-    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
-        <h3 className="mt-1 text-base font-semibold">播放源启用</h3>
-        <p className="mt-1 text-xs text-neutral-500">关闭的源不会出现在搜索里，也不会发起网络请求。</p>
-      </div>
-      <div className="mt-4 grid gap-2 sm:grid-cols-3">
-        {sources.map((source) => {
-          const enabled = source.enabled !== false;
-          const labels = [
-            source.capabilities.playback ? "播放" : null,
-            source.capabilities.lyrics ? "歌词" : null,
-            source.capabilities.videoPlayback ? "视频" : null,
-            source.capabilities.account ? "账号" : null,
-          ].filter(Boolean).join(" · ");
-          return (
-            <div key={source.id} className="flex items-center gap-3 rounded-xl border border-white/70 bg-white/70 p-3">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">
-                <SourceLogo source={source.id as SourceLogoOption} className="size-5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{source.name}</p>
-                <p className="truncate text-[11px] text-neutral-500">{labels || "基础播放"}{source.unavailableUntil ? " · 暂时不可用" : ""}</p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-label={`切换 ${source.name}`}
-                aria-checked={enabled}
-                onClick={() => void toggle(source, !enabled)}
-                className={cn("relative h-6 w-11 shrink-0 rounded-full bg-neutral-200 transition", enabled && "bg-neutral-950")}
-              >
-                <span className={cn("absolute left-0.5 top-0.5 size-5 rounded-full bg-white shadow-sm transition", enabled && "translate-x-5")} />
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      {error && <p role="alert" className="mt-3 text-xs text-rose-500">{error}</p>}
-    </section>
-  );
-}
 
 function UpdateCard() {
   const [state, setState] = useState<UpdateState | null>(null);
@@ -121,13 +50,12 @@ function UpdateCard() {
     }
   }
 
-  if (!window.ariaDesktop?.updates) {
+  if (typeof window === "undefined" || !window.ariaDesktop?.updates) {
     return (
-      <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Update</p>
-        <h3 className="mt-1 text-base font-semibold">版本与更新</h3>
-        <p className="mt-2 text-sm text-neutral-500">当前是浏览器模式；桌面安装包支持检查更新。</p>
-      </section>
+      <div className="py-4">
+        <p className="text-sm font-medium text-neutral-900">版本与更新</p>
+        <p className="mt-1 text-xs text-neutral-500">当前是浏览器模式；桌面安装包支持自动检查更新。</p>
+      </div>
     );
   }
 
@@ -144,16 +72,14 @@ function UpdateCard() {
   })();
 
   return (
-    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Update</p>
-          <h3 className="mt-1 text-base font-semibold">版本与更新</h3>
-          <p className="mt-1 text-sm text-neutral-500">当前版本 {state?.currentVersion ?? "—"} · {statusText}</p>
-          {state?.releaseNotes && <p className="mt-2 max-h-24 overflow-y-auto whitespace-pre-line rounded-xl bg-white/70 p-3 text-xs text-neutral-500">{state.releaseNotes}</p>}
+    <div className="py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-neutral-900">版本与更新</p>
+          <p className="mt-0.5 text-xs text-neutral-500">当前版本 {state?.currentVersion ?? "—"} · {statusText}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="glass" disabled={busy || !state?.supported || state.status === "downloading"} onClick={() => void run(() => window.ariaDesktop!.updates!.check())}>
+          <Button size="sm" variant="subtle" disabled={busy || !state?.supported || state.status === "downloading"} onClick={() => void run(() => window.ariaDesktop!.updates!.check())}>
             <RefreshCw className={cn((busy || state?.status === "checking") && "animate-spin")} />
             检查更新
           </Button>
@@ -169,12 +95,78 @@ function UpdateCard() {
           )}
         </div>
       </div>
+      {state?.releaseNotes && (
+        <p className="settings-inline-well mt-2.5 max-h-24 overflow-y-auto whitespace-pre-line rounded-lg px-3 py-2 text-xs text-neutral-500">
+          {state.releaseNotes}
+        </p>
+      )}
       {state?.status === "downloading" && (
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200">
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-neutral-200">
           <div className="h-full rounded-full bg-neutral-950 transition-all" style={{ width: `${Math.max(0, Math.min(100, state.percent ?? 0))}%` }} />
         </div>
       )}
-    </section>
+    </div>
+  );
+}
+
+type SettingsSection = "all" | "audio" | "sources" | "shortcuts" | "system";
+
+const settingsSections: Array<{ id: SettingsSection; label: string }> = [
+  { id: "all", label: "全部" },
+  { id: "audio", label: "音频与音质" },
+  { id: "sources", label: "播放源与账号" },
+  { id: "shortcuts", label: "快捷键与曲库" },
+  { id: "system", label: "系统与外观" },
+];
+
+function SettingRow({
+  title,
+  description,
+  children,
+  className,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("settings-row-divider flex items-center justify-between gap-4 border-b py-3.5 last:border-b-0", className)}>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-neutral-900">{title}</p>
+        {description && <p className="mt-0.5 text-xs leading-5 text-neutral-500">{description}</p>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function SettingSwitch({
+  checked,
+  onToggle,
+  ariaLabel,
+  disabled = false,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={onToggle}
+      className={cn(
+        "relative flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition disabled:cursor-not-allowed disabled:opacity-45",
+        checked ? "bg-neutral-950" : "bg-neutral-200",
+      )}
+    >
+      <span className={cn("size-5 rounded-full bg-white shadow-sm transition", checked && "translate-x-5")} />
+    </button>
   );
 }
 
@@ -194,6 +186,7 @@ export function SettingsPanel({
   volume,
   onVolumeChange,
   audioOutputDevices,
+  onRefreshAudioOutputDevices,
   selectedSinkId,
   onSelectedSinkIdChange,
   hifiEnabled,
@@ -237,6 +230,7 @@ export function SettingsPanel({
   volume: number;
   onVolumeChange: (value: number) => void;
   audioOutputDevices: Array<{ id: string; label: string }>;
+  onRefreshAudioOutputDevices?: () => Promise<void> | void;
   selectedSinkId: string;
   onSelectedSinkIdChange: (value: string) => void;
   hifiEnabled: boolean;
@@ -267,16 +261,39 @@ export function SettingsPanel({
   onSourceAccountChange?: () => void;
   onClose: () => void;
 }) {
+  const [section, setSection] = useState<SettingsSection>("all");
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
-  const desktopReady = Boolean(window.ariaDesktop);
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
+  const desktopReady = typeof window !== "undefined" && Boolean(window.ariaDesktop);
   const deviceSwitchSupported = audioOutputDevices.length > 0;
   const exclusiveReady = Boolean(exclusiveMode && nativeAudioSupported && nativeAudioState?.exclusive);
   // macOS reaches the native engine through a Homebrew/system mpv binary, so the
   // "only the browser engine works" case is normal there and needs an explicit
   // hint instead of three silently disabled buttons.
-  const isMac = document.documentElement.dataset.platform === "darwin";
+  const isMac = typeof document !== "undefined" && document.documentElement.dataset.platform === "darwin";
   const outputModeLabel =
     audioOutputMode === "exclusive" ? "WASAPI Exclusive" : audioOutputMode === "shared" ? "WASAPI Shared" : "System";
+  const showSection = (id: Exclude<SettingsSection, "all">) => section === "all" || section === id;
+  const qualityModeLabel = !hifiEnabled ? "标准 320K" : masterQualityEnabled ? "臻品母带优先" : "Hi-Res 无损优先";
+  const qualityStages = [
+    { label: "臻品母带 24bit/192kHz", active: hifiEnabled && masterQualityEnabled },
+    { label: "Hi-Res", active: hifiEnabled },
+    { label: "无损 FLAC", active: hifiEnabled },
+    { label: "320K", active: true },
+  ];
+
+  async function handleRefreshDevices() {
+    if (!onRefreshAudioOutputDevices || refreshingDevices) return;
+    setRefreshingDevices(true);
+    try {
+      await Promise.allSettled([
+        Promise.resolve(onRefreshAudioOutputDevices()),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 260)),
+      ]);
+    } finally {
+      setRefreshingDevices(false);
+    }
+  }
 
   function refreshApiState() {
     setApiState("checking");
@@ -303,501 +320,417 @@ export function SettingsPanel({
   }, []);
 
   return (
-    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] border border-white/75 shadow-[0_24px_80px_rgba(47,55,76,0.14)]">
-        <div className="flex items-center justify-between gap-3 border-b border-neutral-950/6 px-5 py-4 sm:px-7">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-neutral-400">Settings</p>
-            <h1 className="mt-1 text-2xl font-semibold sm:text-3xl">Aria 设置</h1>
-          </div>
-          <Button variant="glass" size="sm" aria-label="返回上一页" onClick={onClose}>
-            <ArrowLeft />
-            返回
+    <div className="glass settings-shell flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem]">
+      <header className="settings-header flex flex-wrap items-center justify-between gap-3 px-5 py-4 sm:px-8">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" aria-label="返回上一页" onClick={onClose} title="返回上一页">
+            <ArrowLeft className="size-4" />
           </Button>
+          <div>
+            <div className="flex items-baseline gap-2">
+              <h1 className="text-lg font-semibold tracking-tight text-neutral-950">设置</h1>
+              <span className="text-[11px] font-medium text-neutral-400">v{__APP_VERSION__}</span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-neutral-500">
+              {desktopReady ? "桌面端" : "网页端"} · {apiState === "online" ? "服务在线" : apiState === "offline" ? "服务离线" : "检测中"} · {outputModeLabel}
+            </p>
+          </div>
         </div>
 
-        <div className="no-scrollbar grid min-h-0 flex-1 auto-rows-max grid-cols-1 content-start gap-4 overflow-y-auto p-5 sm:p-7 lg:grid-cols-2">
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Runtime</p>
-                <h3 className="mt-1 text-base font-semibold">后台托管</h3>
-              </div>
+        <nav className="settings-segment inline-flex flex-wrap items-center gap-0.5 rounded-xl p-1" role="tablist" aria-label="设置分类">
+          {settingsSections.map((item) => {
+            const active = section === item.id;
+            return (
               <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setSection(item.id)}
                 className={cn(
-                  "flex h-8 w-14 items-center rounded-full p-1 transition",
-                  backgroundEnabled ? "bg-neutral-950" : "bg-neutral-200",
+                  "settings-segment-item rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                  active && "is-active",
                 )}
-                onClick={() => onBackgroundEnabledChange(!backgroundEnabled)}
-                aria-label="切换后台托管"
               >
-                <span
-                  className={cn(
-                    "size-6 rounded-full bg-white shadow-sm transition",
-                    backgroundEnabled && "translate-x-6",
-                  )}
-                />
+                {item.label}
               </button>
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
-              <Metric value={desktopReady ? "Desktop" : "Web"} label="模式" />
-              <Metric value={apiState === "online" ? "Online" : apiState === "offline" ? "Offline" : "..."} label="后端" />
-              <Metric value={backgroundEnabled ? "ON" : "OFF"} label="托管" />
-            </div>
-            <div className="mt-4 flex gap-2">
-              <Button
-                className="flex-1"
-                variant="subtle"
-                size="sm"
-                disabled={!desktopReady}
-                onClick={() => window.ariaDesktop?.minimizeToTray?.()}
-              >
-                <Settings2 />
-                托管到后台
-              </Button>
-              <Button
-                className="flex-1"
-                variant="ghost"
-                size="sm"
-                onClick={refreshApiState}
-              >
-                <RefreshCw />
-                刷新状态
-              </Button>
-            </div>
-          </section>
+            );
+          })}
+        </nav>
+      </header>
 
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Appearance</p>
-                <h3 className="mt-1 text-base font-semibold">外观主题</h3>
+      <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
+        <div className="mx-auto max-w-[820px] space-y-8">
+          {showSection("audio") && (
+            <section className="settings-section pb-7">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 pb-3">
+                <div>
+                  <h2 className="text-base font-semibold tracking-tight text-neutral-950">音频与音质</h2>
+                  <p className="mt-0.5 text-xs text-neutral-500">当前策略：{qualityModeLabel} · {exclusiveReady ? "独占直通" : outputModeLabel}</p>
+                </div>
+                <span className="text-xs font-medium text-neutral-500">音量 {volume}%</span>
               </div>
-              <Badge>{ariaThemeOptions.find((option) => option.value === theme)?.label ?? "跟随系统"}</Badge>
-            </div>
-            <p className="mt-2 text-xs text-neutral-500">深色模式会同步覆盖首页、播放页与设置页的底色、文字与面板阴影。</p>
-            <div className="mt-4 grid gap-2 sm:grid-cols-3">
-              {ariaThemeOptions.map((option) => {
-                const active = theme === option.value;
-                const Icon = option.value === "light" ? Sun : option.value === "dark" ? Moon : Monitor;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    aria-pressed={active}
-                    className={cn(
-                      "aria-theme-option flex min-h-24 flex-col justify-between rounded-[1.15rem] border p-3 text-left transition",
-                      active
-                        ? "is-active border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_34px_rgba(23,23,23,0.16)]"
-                        : "border-white/72 bg-white/72 text-neutral-950 hover:bg-white",
-                    )}
-                    onClick={() => onThemeChange(option.value)}
-                  >
-                    <span className="flex items-center justify-between gap-2">
+
+              <div className="settings-inline-well mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl px-3.5 py-2.5">
+                <span className="text-xs font-medium text-neutral-600">解析链路降级策略</span>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
+                  {qualityStages.map((stage, index) => (
+                    <div key={stage.label} className="flex items-center gap-1.5">
+                      {index > 0 && <ArrowRight className="size-3 text-neutral-400" />}
                       <span
                         className={cn(
-                          "flex size-9 items-center justify-center rounded-full",
-                          active ? "bg-white/14 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
+                          "rounded-md px-2 py-0.5 transition",
+                          stage.active
+                            ? "bg-neutral-950 text-white"
+                            : "text-neutral-400 line-through decoration-neutral-400/70",
                         )}
                       >
-                        <Icon className="size-4" />
+                        {stage.label}
                       </span>
-                      {active && <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-neutral-950">使用中</span>}
-                    </span>
-                    <span>
-                      <span className="block text-sm font-semibold">{option.label}</span>
-                      <span className={cn("mt-1 block text-xs", active ? "text-white/70" : "text-neutral-500")}>
-                        {option.description}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          <RemoteAccessSettings />
-
-          <KeyboardShortcutSettings
-            shortcuts={keyboardShortcuts}
-            onChange={onKeyboardShortcutsChange}
-          />
-
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Library</p>
-                <h3 className="mt-1 text-base font-semibold">本地音乐目录</h3>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <Badge>{libraryMeta.roots.length} 个目录</Badge>
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs text-neutral-500">
-              <Metric value={String(trackCount)} label="曲目" />
-              <Metric value={String(likedCount)} label="喜欢" />
-              <Metric value={`${lyricProgress}%`} label="歌词" />
-            </div>
-            <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-neutral-950/8">
-              <div className="h-full rounded-full bg-neutral-950/65" style={{ width: `${lyricProgress}%` }} />
-            </div>
 
-            <div className="mt-5 space-y-2">
-              {libraryMeta.roots.map((root) => (
-                <div key={root} className="flex items-center gap-3 rounded-[1rem] border border-white/70 bg-white/60 px-3 py-2.5 shadow-sm">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-neutral-950/[0.045] text-neutral-500">
-                    <FolderSearch className="size-4" />
-                  </span>
-                  <p className="min-w-0 flex-1 truncate text-sm font-medium" title={root}>{root}</p>
+              <div>
+                <SettingRow title="HiFi 优先" description="优先最高原始音质 Hi-Res，不支持时按上方阶梯自动降级。">
+                  <SettingSwitch
+                    checked={hifiEnabled}
+                    onToggle={() => {
+                      const nextEnabled = !hifiEnabled;
+                      onHifiEnabledChange(nextEnabled);
+                      if (!nextEnabled) onMasterQualityEnabledChange(false);
+                    }}
+                    ariaLabel="切换 HiFi 优先"
+                  />
+                </SettingRow>
+
+                {hifiEnabled && (
+                  <SettingRow title="臻品增强" description="独立开启臻品音质；不支持的歌曲使用原始最高音质。">
+                    <SettingSwitch
+                      checked={masterQualityEnabled}
+                      onToggle={() => onMasterQualityEnabledChange(!masterQualityEnabled)}
+                      ariaLabel="切换臻品增强"
+                    />
+                  </SettingRow>
+                )}
+
+                <SettingRow title="音量标准化" description="平衡不同曲目的响度差异，避免音量忽大忽小。">
+                  <SettingSwitch
+                    checked={normalizationEnabled}
+                    onToggle={() => onNormalizationEnabledChange(!normalizationEnabled)}
+                    ariaLabel="切换音量标准化"
+                  />
+                </SettingRow>
+                {normalizationError && <p role="alert" className="settings-status-banner is-error mb-2 rounded-lg px-3 py-1.5 text-xs">{normalizationError}</p>}
+
+                <SettingRow title="无缝衔接" description="提前预加载下一首，消除切歌时的空白停顿。">
+                  <SettingSwitch
+                    checked={gaplessEnabled}
+                    onToggle={() => onGaplessEnabledChange(!gaplessEnabled)}
+                    ariaLabel="切换无缝衔接"
+                  />
+                </SettingRow>
+
+                {(onBilibiliDefaultVideoQnChange || onBilibiliDefaultAudioLevelChange) && (
+                  <div className="settings-row-divider border-b py-3.5">
+                    <BilibiliDefaultQualityControls
+                      defaultVideoQn={bilibiliDefaultVideoQn}
+                      onDefaultVideoQnChange={onBilibiliDefaultVideoQnChange}
+                      defaultAudioLevel={bilibiliDefaultAudioLevel}
+                      onDefaultAudioLevelChange={onBilibiliDefaultAudioLevelChange}
+                    />
+                  </div>
+                )}
+
+                <div className="settings-row-divider border-b py-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-neutral-900">默认音量</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">应用启动或恢复播放时的输出电平</p>
+                    </div>
+                    <span className="w-10 text-right font-mono text-xs text-neutral-600 tabular-nums">{volume}%</span>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-3">
+                    <Volume2 className="size-4 shrink-0 text-neutral-500" />
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={volume}
+                      onChange={(event) => onVolumeChange(Number(event.target.value))}
+                      className="aria-range w-full"
+                      style={
+                        {
+                          "--range-color": "#171717",
+                          "--range-value": Math.min(1, Math.max(0, volume / 100)),
+                        } as CSSProperties
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="settings-row-divider border-b py-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-neutral-900">输出模式</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {audioOutputMode === "exclusive"
+                          ? "独占音频端点直通 DAC 或声卡"
+                          : audioOutputMode === "shared"
+                            ? "独立 Aria 音频会话，可与其它软件共用设备"
+                            : isMac
+                              ? "浏览器音频引擎，跟随 macOS 默认输出"
+                              : "WASAPI 共享混音输出，频谱直接跟随播放器"}
+                      </p>
+                    </div>
+                    <div className="settings-segment inline-flex rounded-xl p-1">
+                      {[
+                        { mode: "system" as const, label: "系统音频", Icon: Volume2 },
+                        { mode: "shared" as const, label: isMac ? "MPV 共享" : "WASAPI 共享", Icon: Radio },
+                        { mode: "exclusive" as const, label: isMac ? "MPV 独占" : "WASAPI 独占", Icon: Sparkles },
+                      ].map(({ mode, label, Icon }) => {
+                        const disabled = mode !== "system" && !nativeAudioSupported;
+                        const active = audioOutputMode === mode;
+                        return (
+                          <button
+                            key={mode}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => onAudioOutputModeChange(mode)}
+                            className={cn(
+                              "settings-segment-item inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
+                              active && "is-active",
+                            )}
+                          >
+                            <Icon className="size-3.5" />
+                            <span>{label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {!nativeAudioSupported && (
+                    <p className="settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs leading-relaxed">
+                      {isMac
+                        ? "未检测到 MPV：仅可使用浏览器音频引擎。执行 brew install mpv 后重启 Aria 即可解锁 MPV 输出。"
+                        : "未检测到 MPV：当前走浏览器音频引擎，共享与独占直通暂不可用。"}
+                    </p>
+                  )}
+                </div>
+
+                <div className="pt-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium text-neutral-900">播放设备</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {nativeAudioState?.deviceId ? `当前设备：${nativeAudioState.deviceId}` : "当前设备：系统默认输出"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-neutral-500">{deviceSwitchSupported ? "可切换" : "系统默认"}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label="刷新播放设备"
+                        onClick={() => void handleRefreshDevices()}
+                        disabled={refreshingDevices || !onRefreshAudioOutputDevices}
+                      >
+                        <RefreshCw className={cn("size-3.5", refreshingDevices && "animate-spin")} />
+                        刷新设备
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="settings-inline-well settings-divider no-scrollbar mt-2.5 max-h-44 overflow-y-auto rounded-xl">
+                    {audioOutputDevices.map((device) => {
+                      const active = selectedSinkId === device.id;
+                      return (
+                        <button
+                          key={device.id}
+                          type="button"
+                          disabled={!deviceSwitchSupported}
+                          onClick={() => onSelectedSinkIdChange(device.id)}
+                          className={cn(
+                            "flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs transition hover:bg-white/60 disabled:cursor-not-allowed disabled:opacity-50",
+                            active && "font-semibold text-neutral-950",
+                          )}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{device.label}</span>
+                          {active && <Check className="size-3.5 shrink-0 text-neutral-900" />}
+                        </button>
+                      );
+                    })}
+                    {!audioOutputDevices.length && (
+                      <div className="px-3 py-3 text-xs text-neutral-500">没有检测到可用输出设备。</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {showSection("sources") && (
+            <section className="settings-section pb-7">
+              <div className="pb-2">
+                <h2 className="text-base font-semibold tracking-tight text-neutral-950">播放源与账号</h2>
+                <p className="mt-0.5 text-xs text-neutral-500">管理在线音源登录状态与启用开关；关闭的音源不会参与搜索或请求。</p>
+              </div>
+              <div className="settings-divider">
+                <NeteaseSourceCard account={neteaseAccount} onAccountChange={onNeteaseAccountChange} />
+                <QqSourceCard onAccountChange={onSourceAccountChange} />
+                <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
+                <YoutubeSourceCard onAccountChange={onSourceAccountChange} />
+              </div>
+            </section>
+          )}
+
+          {showSection("shortcuts") && (
+            <section className="settings-section pb-7">
+              <KeyboardShortcutSettings
+                shortcuts={keyboardShortcuts}
+                onChange={onKeyboardShortcutsChange}
+              />
+
+              <div className="settings-row-divider mt-7 border-t pt-6">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-base font-semibold tracking-tight text-neutral-950">本地音乐目录</h2>
+                    <p className="mt-0.5 text-xs text-neutral-500">
+                      共 {trackCount} 首曲目 · {likedCount} 首喜欢 · {lyricProgress}% 已匹配歌词
+                    </p>
+                  </div>
                   <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`移除目录 ${root}`}
-                    title="从曲库移除（不会删除音频文件）"
-                    onClick={() => onRemoveLibraryRoot(root)}
+                    variant="subtle"
+                    size="sm"
+                    onClick={onAddLibraryFolder}
+                    disabled={typeof window === "undefined" || !window.ariaDesktop?.chooseMusicFolder}
                   >
-                    <Trash2 />
+                    <FolderPlus />
+                    添加文件夹
                   </Button>
                 </div>
-              ))}
-              {!libraryMeta.roots.length && (
-                <div className="rounded-[1rem] border border-dashed border-neutral-950/10 bg-white/40 px-4 py-5 text-sm text-neutral-500">
-                  还没有添加音乐目录。添加后 Aria 会扫描歌曲、封面和歌词信息。
-                </div>
-              )}
-            </div>
 
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <Button variant="subtle" size="sm" onClick={onAddLibraryFolder} disabled={!window.ariaDesktop?.chooseMusicFolder}>
-                <FolderPlus />
-                添加音乐文件夹
-              </Button>
-              <div className="flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] px-3 py-2 sm:justify-start">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">自动扫描新歌</p>
-                  <p className="mt-0.5 text-xs text-neutral-500">监视目录变化，新加入的文件会自动进入曲库。</p>
-                </div>
-                <button
-                  type="button"
-                  className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", libraryAutoScanEnabled ? "bg-neutral-950" : "bg-neutral-200")}
-                  onClick={() => onToggleLibraryAutoScan(!libraryAutoScanEnabled)}
-                  aria-label="切换自动扫描新歌"
-                  role="switch"
-                  aria-checked={libraryAutoScanEnabled}
-                >
-                  <span className={cn("size-6 rounded-full bg-white shadow-sm transition", libraryAutoScanEnabled && "translate-x-6")} />
-                </button>
-              </div>
-            </div>
-            <p className={cn("mt-3 min-h-4 text-xs", libraryWatchState?.lastError ? "text-rose-500" : "text-neutral-500")}>
-              {libraryWatchState?.scanningRoots.length
-                ? `正在扫描 ${libraryWatchState.scanningRoots.length} 个目录…`
-                : libraryWatchState?.lastError
-                  ? `自动扫描：${libraryWatchState.lastError}`
-                  : !libraryAutoScanEnabled
-                    ? "自动扫描已关闭，添加目录时仍会手动扫描一次。"
-                    : libraryWatchState?.lastScanAt
-                      ? `上次自动扫描：${new Date(libraryWatchState.lastScanAt).toLocaleString()}`
-                      : "自动扫描已开启，Aria 启动后会补扫离线期间新增的文件。"}
-            </p>
-          </section>
-
-          <NeteaseSourceCard account={neteaseAccount} onAccountChange={onNeteaseAccountChange} />
-
-          <QqSourceCard onAccountChange={onSourceAccountChange} />
-
-          <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
-
-          <SourceEnableCard />
-
-          <UpdateCard />
-
-          <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Audio</p>
-                <h3 className="mt-1 text-base font-semibold">默认音量</h3>
-              </div>
-              <Badge>{volume}</Badge>
-            </div>
-            <div className="mt-4 flex items-center gap-3">
-              <Volume2 className="size-4 shrink-0 text-neutral-500" />
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={volume}
-                onChange={(event) => onVolumeChange(Number(event.target.value))}
-                className="aria-range w-full"
-                style={
-                  {
-                    "--range-color": "#171717",
-                    "--range-value": Math.min(1, Math.max(0, volume / 100)),
-                  } as CSSProperties
-                }
-              />
-            </div>
-            <div className="mt-4 rounded-[1.15rem] border border-white/70 bg-white/54 p-3 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Output</p>
-                  <p className="mt-1 text-sm font-semibold">音频输出链路</p>
-                </div>
-                <Badge>{exclusiveReady ? "Locked" : outputModeLabel}</Badge>
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                {[
-                  isMac
-                    ? {
-                        mode: "system" as const,
-                        label: "系统音频",
-                        badge: "兼容",
-                        desc: "走浏览器音频引擎，跟随 macOS 默认输出设备。",
-                        Icon: Volume2,
-                      }
-                    : {
-                        mode: "system" as const,
-                        label: "系统音频",
-                        badge: "兼容",
-                        desc: "WASAPI 共享输出，频谱直接跟随播放器。",
-                        Icon: Volume2,
-                      },
-                  isMac
-                    ? {
-                        mode: "shared" as const,
-                        label: "MPV 共享",
-                        badge: nativeAudioSupported ? "兼容" : "未启用",
-                        desc: "由 MPV 单独打开音频会话，可与其它应用共用设备。",
-                        Icon: Radio,
-                      }
-                    : {
-                        mode: "shared" as const,
-                        label: "WASAPI 共享",
-                        badge: "兼容",
-                        desc: "独立 Aria 音频会话，适合 OOPZ 等应用共享。",
-                        Icon: Radio,
-                      },
-                  isMac
-                    ? {
-                        mode: "exclusive" as const,
-                        label: "MPV 独占",
-                        badge: exclusiveReady ? "Locked" : "直通",
-                        desc: "MPV 独占音频设备，适合外接 DAC 直连。",
-                        Icon: Sparkles,
-                      }
-                    : {
-                        mode: "exclusive" as const,
-                        label: "WASAPI 独占",
-                        badge: exclusiveReady ? "Locked" : "直通",
-                        desc: "独占端点，适合 DAC 或声卡直连。",
-                        Icon: Sparkles,
-                      },
-                ].map(({ mode, label, badge, desc, Icon }) => {
-                  const disabled = mode !== "system" && !nativeAudioSupported;
-                  const active = audioOutputMode === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      disabled={disabled}
-                      className={cn(
-                        "flex min-h-32 flex-col justify-between rounded-[1.15rem] border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-45",
-                        active
-                          ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_34px_rgba(23,23,23,0.16)]"
-                          : "border-white/72 bg-white/72 text-neutral-950 hover:bg-white",
-                      )}
-                      onClick={() => onAudioOutputModeChange(mode)}
-                    >
-                      <span className="flex items-center justify-between gap-2">
-                        <span
-                          className={cn(
-                            "flex size-10 items-center justify-center rounded-full",
-                            active ? "bg-white/14 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
-                          )}
+                {libraryMeta.roots.length > 0 ? (
+                  <div className="settings-inline-well settings-divider mt-3 rounded-xl">
+                    {libraryMeta.roots.map((root) => (
+                      <div key={root} className="flex items-center gap-2.5 px-3 py-2">
+                        <FolderSearch className="size-4 shrink-0 text-neutral-500" />
+                        <p className="min-w-0 flex-1 truncate text-xs font-medium text-neutral-800" title={root}>{root}</p>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`移除目录 ${root}`}
+                          title="从曲库移除（不会删除音频文件）"
+                          onClick={() => onRemoveLibraryRoot(root)}
                         >
-                          <Icon className="size-4" />
-                        </span>
-                        <span
-                          className={cn(
-                            "rounded-full px-2.5 py-1 text-xs font-semibold",
-                            active ? "bg-white text-neutral-950" : "bg-white/80 text-neutral-500 shadow-sm",
-                          )}
-                        >
-                          {badge}
-                        </span>
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold">{label}</span>
-                        <span className={cn("mt-1 block text-xs leading-5", active ? "text-white/62" : "text-neutral-500")}>
-                          {desc}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              {!nativeAudioSupported && (
-                <p className="mt-3 rounded-[0.9rem] bg-amber-50/80 p-3 text-xs leading-relaxed text-amber-800">
-                  {isMac
-                    ? "未检测到 MPV：选区（共享/独占）不可用，播放走浏览器音频引擎。执行 brew install mpv 后重启 Aria 即可解锁 MPV 输出。"
-                    : "未检测到 MPV：选区（共享/独占）不可用，播放走浏览器音频引擎。"}
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="settings-inline-well mt-3 rounded-xl px-3.5 py-3 text-xs text-neutral-500">
+                    还没有添加本地音乐目录。添加后 Aria 会自动扫描歌曲、封面与内嵌歌词。
+                  </p>
+                )}
+
+                <SettingRow title="自动扫描新歌" description="监听目录变化，新加入的文件会自动入库。">
+                  <SettingSwitch
+                    checked={libraryAutoScanEnabled}
+                    onToggle={() => onToggleLibraryAutoScan(!libraryAutoScanEnabled)}
+                    ariaLabel="切换自动扫描新歌"
+                  />
+                </SettingRow>
+                <p className={cn("pt-2 text-xs", libraryWatchState?.lastError ? "text-rose-500" : "text-neutral-500")}>
+                  {libraryWatchState?.scanningRoots.length
+                    ? `正在扫描 ${libraryWatchState.scanningRoots.length} 个目录…`
+                    : libraryWatchState?.lastError
+                      ? `自动扫描：${libraryWatchState.lastError}`
+                      : !libraryAutoScanEnabled
+                        ? "自动扫描已关闭，添加目录时仍会手动扫描一次。"
+                        : libraryWatchState?.lastScanAt
+                          ? `上次自动扫描：${new Date(libraryWatchState.lastScanAt).toLocaleString()}`
+                          : "自动扫描已开启，Aria 启动后会补扫离线期间新增的文件。"}
                 </p>
-              )}
-              <div className="mt-5 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">Device</p>
-                  <p className="mt-1 text-sm font-semibold">播放设备</p>
-                </div>
-                <Badge>{deviceSwitchSupported ? "可切换" : "系统默认"}</Badge>
               </div>
-              <div className="no-scrollbar mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
-                {audioOutputDevices.map((device) => {
-                  const active = selectedSinkId === device.id;
-                  return (
-                    <button
-                      key={device.id}
-                      type="button"
-                      disabled={!deviceSwitchSupported}
-                      onClick={() => onSelectedSinkIdChange(device.id)}
-                      className={cn(
-                        "grid w-full grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[0.95rem] border px-3 py-2.5 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-50",
-                        active
-                          ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_12px_30px_rgba(23,23,23,0.12)]"
-                          : "border-white/70 bg-white/70 hover:bg-white",
-                      )}
+            </section>
+          )}
+
+          {showSection("system") && (
+            <section className="settings-section pb-7">
+              <div className="pb-2">
+                <h2 className="text-base font-semibold tracking-tight text-neutral-950">系统与外观</h2>
+                <p className="mt-0.5 text-xs text-neutral-500">界面主题、后台托盘托管、局域网远程访问与版本更新。</p>
+              </div>
+
+              <div className="settings-divider">
+                <div className="py-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-neutral-900">外观主题</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">深色模式同步覆盖首页、播放页与设置页</p>
+                    </div>
+                    <div className="settings-segment inline-flex rounded-xl p-1">
+                      {ariaThemeOptions.map((option) => {
+                        const active = theme === option.value;
+                        const Icon = option.value === "light" ? Sun : option.value === "dark" ? Moon : Monitor;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => onThemeChange(option.value)}
+                            className={cn(
+                              "settings-segment-item inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                              active && "is-active",
+                            )}
+                          >
+                            <Icon className="size-3.5" />
+                            <span>{option.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 py-3.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-neutral-900">后台托盘托管</p>
+                    <p className="mt-0.5 text-xs text-neutral-500">
+                      {desktopReady ? "关闭窗口时保持托盘常驻与全局热键监听" : "当前为网页预览模式"} · 后端 {apiState === "online" ? "在线" : apiState === "offline" ? "离线" : "检测中"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="ghost" size="sm" onClick={refreshApiState}>
+                      <RefreshCw />
+                      刷新
+                    </Button>
+                    <Button
+                      variant="subtle"
+                      size="sm"
+                      disabled={!desktopReady}
+                      onClick={() => window.ariaDesktop?.minimizeToTray?.()}
                     >
-                      <span
-                        className={cn(
-                          "flex size-8 items-center justify-center rounded-full",
-                          active ? "bg-white/15 text-white" : "bg-neutral-950/[0.045] text-neutral-500",
-                        )}
-                      >
-                        <Volume2 className="size-4" />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium">{device.label}</span>
-                        <span className={cn("mt-0.5 block truncate text-xs", active ? "text-white/60" : "text-neutral-400")}>
-                          {device.id === "default" ? "跟随系统默认输出" : device.id}
-                        </span>
-                      </span>
-                      <span
-                        className={cn(
-                          "rounded-full px-2.5 py-1 text-xs font-semibold",
-                          active ? "bg-white text-neutral-950" : "bg-white/80 text-neutral-500 shadow-sm",
-                        )}
-                      >
-                        {active ? "当前" : "选择"}
-                      </span>
-                    </button>
-                  );
-                })}
-                {!audioOutputDevices.length && (
-                  <div className="rounded-[0.95rem] bg-white/65 px-3 py-4 text-sm text-neutral-500">没有检测到可用输出设备。</div>
-                )}
-              </div>
-              <p className="mt-2 truncate text-xs text-neutral-500">
-                {nativeAudioState?.deviceId ? `当前设备: ${nativeAudioState.deviceId}` : "当前设备: 默认输出"}
-              </p>
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div className="flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
-              <div>
-                <p className="text-sm font-semibold">HiFi 优先</p>
-                <p className="mt-1 text-xs text-neutral-500">优先最高原始音质 Hi-Res，不支持时自动降级。</p>
-              </div>
-              <button
-                className={cn(
-                  "flex h-8 w-14 items-center rounded-full p-1 transition",
-                  hifiEnabled ? "bg-neutral-950" : "bg-neutral-200",
-                )}
-                onClick={() => {
-                  const nextEnabled = !hifiEnabled;
-                  onHifiEnabledChange(nextEnabled);
-                  if (!nextEnabled) onMasterQualityEnabledChange(false);
-                }}
-                aria-label="切换 HiFi 优先"
-                role="switch"
-                aria-checked={hifiEnabled}
-              >
-                <span
-                  className={cn(
-                    "size-6 rounded-full bg-white shadow-sm transition",
-                    hifiEnabled && "translate-x-6",
-                  )}
-                />
-              </button>
-            </div>
-            {hifiEnabled && (
-              <div className="flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
-                <div>
-                  <p className="text-sm font-semibold">臻品增强</p>
-                  <p className="mt-1 text-xs text-neutral-500">独立开启臻品音质；不支持的歌曲使用原始音质。</p>
+                      <SlidersHorizontal />
+                      隐藏到托盘
+                    </Button>
+                    <SettingSwitch
+                      checked={backgroundEnabled}
+                      onToggle={() => onBackgroundEnabledChange(!backgroundEnabled)}
+                      ariaLabel="切换后台托管"
+                    />
+                  </div>
                 </div>
-                <button
-                  className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", masterQualityEnabled ? "bg-neutral-950" : "bg-neutral-200")}
-                  onClick={() => onMasterQualityEnabledChange(!masterQualityEnabled)}
-                  aria-label="切换臻品增强"
-                  role="switch"
-                  aria-checked={masterQualityEnabled}
-                >
-                  <span className={cn("size-6 rounded-full bg-white shadow-sm transition", masterQualityEnabled && "translate-x-6")} />
-                </button>
-              </div>
-            )}
-            </div>
-            {(onBilibiliDefaultVideoQnChange || onBilibiliDefaultAudioLevelChange) && (
-              <BilibiliDefaultQualityControls
-                className="mt-3"
-                defaultVideoQn={bilibiliDefaultVideoQn}
-                onDefaultVideoQnChange={onBilibiliDefaultVideoQnChange}
-                defaultAudioLevel={bilibiliDefaultAudioLevel}
-                onDefaultAudioLevelChange={onBilibiliDefaultAudioLevelChange}
-              />
-            )}
-            <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
-              <div>
-                <p className="text-sm font-semibold">音量标准化</p>
-                <p className="mt-1 text-xs text-neutral-500">平衡歌曲响度，减少忽大忽小。默认关闭，开启后会处理音频动态。</p>
-                {normalizationError && <p role="alert" className="mt-1 text-xs text-rose-600">{normalizationError}</p>}
-              </div>
-              <button
-                type="button"
-                className={cn("flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition", normalizationEnabled ? "bg-neutral-950" : "bg-neutral-200")}
-                onClick={() => onNormalizationEnabledChange(!normalizationEnabled)}
-                aria-label="切换音量标准化"
-                role="switch"
-                aria-checked={normalizationEnabled}
-              >
-                <span className={cn("size-6 rounded-full bg-white shadow-sm transition", normalizationEnabled && "translate-x-6")} />
-              </button>
-            </div>
-            <div className="mt-3 flex items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3">
-              <div>
-                <p className="text-sm font-semibold">无缝衔接</p>
-                <p className="mt-1 text-xs text-neutral-500">提前加载下一首，减少歌曲切换时的空隙。</p>
-              </div>
-              <button
-                className={cn(
-                  "flex h-8 w-14 items-center rounded-full p-1 transition",
-                  gaplessEnabled ? "bg-neutral-950" : "bg-neutral-200",
-                )}
-                onClick={() => onGaplessEnabledChange(!gaplessEnabled)}
-                aria-label="切换无缝衔接"
-                aria-pressed={gaplessEnabled}
-              >
-                <span
-                  className={cn(
-                    "size-6 rounded-full bg-white shadow-sm transition",
-                    gaplessEnabled && "translate-x-6",
-                  )}
-                />
-              </button>
-            </div>
-          </section>
 
+                <RemoteAccessSettings />
+
+                <UpdateCard />
+              </div>
+            </section>
+          )}
         </div>
-        <div className="flex items-center justify-between border-t border-neutral-950/6 px-5 py-3 text-xs text-neutral-400 sm:px-7">
-          <span>Aria Desktop</span>
-          <span>v{__APP_VERSION__}</span>
-        </div>
+      </div>
     </div>
   );
 }
@@ -843,46 +776,22 @@ function KeyboardShortcutSettings({
     return () => window.removeEventListener("keydown", captureShortcut, true);
   }, [onChange, recording, shortcuts]);
 
+  const inAppShortcuts = [
+    { key: "Space", action: "播放 / 暂停" },
+    { key: "Alt + ← / →", action: "上一首 / 下一首" },
+    { key: "I", action: "切换沉浸模式" },
+    { key: "Esc", action: "退出全屏 / 沉浸" },
+  ];
+
   return (
-    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Shortcuts</p>
-          <h3 className="mt-1 text-base font-semibold">全局快捷键</h3>
+          <h2 className="text-base font-semibold tracking-tight text-neutral-950">全局快捷键</h2>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            后台托管或切换到其他应用时依然生效，共 {shortcutDefinitions.length} 项；点击右侧按键即可录制修改。
+          </p>
         </div>
-        <Keyboard className="size-5 text-neutral-400" />
-      </div>
-      <p className="mt-2 text-xs leading-5 text-neutral-500">后台托管或切到其他软件时仍可使用。点击组合键后直接按新的按键。</p>
-      <div className="mt-3 space-y-2">
-        {shortcutDefinitions.map((definition) => {
-          const isRecording = recording === definition.command;
-          return (
-            <div key={definition.command} className="flex items-center gap-3 rounded-[1rem] bg-white/56 px-3 py-2.5 shadow-sm">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">{definition.label}</p>
-                <p className="mt-0.5 truncate text-xs text-neutral-500">{definition.description}</p>
-              </div>
-              <button
-                type="button"
-                className={cn(
-                  "min-w-28 rounded-xl border px-3 py-2 text-xs font-semibold transition",
-                  isRecording
-                    ? "border-neutral-950 bg-neutral-950 text-white shadow-[0_10px_22px_rgba(23,23,23,0.16)]"
-                    : "border-neutral-950/10 bg-white text-neutral-700 hover:border-neutral-950/30",
-                )}
-                onClick={() => {
-                  setRecording(definition.command);
-                  setMessage(null);
-                }}
-              >
-                {isRecording ? "按下组合键" : formatShortcut(shortcuts[definition.command])}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <p className="min-h-4 text-xs text-rose-500">{message}</p>
         <Button
           variant="ghost"
           size="sm"
@@ -896,7 +805,49 @@ function KeyboardShortcutSettings({
           恢复默认
         </Button>
       </div>
-    </section>
+
+      <div className="settings-inline-well mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-3.5 py-2 text-xs text-neutral-700">
+        <span className="font-medium text-neutral-900">应用内快捷键</span>
+        {inAppShortcuts.map((item) => (
+          <span key={item.key} className="inline-flex items-center gap-1.5">
+            <kbd className="rounded-md border border-neutral-950/10 bg-white px-1.5 py-0.5 font-mono text-[11px] font-medium text-neutral-800">
+              {item.key}
+            </kbd>
+            <span className="text-neutral-500">{item.action}</span>
+          </span>
+        ))}
+      </div>
+
+      <div className="mt-3 grid gap-x-6 sm:grid-cols-2">
+        {shortcutDefinitions.map((definition) => {
+          const isRecording = recording === definition.command;
+          return (
+            <div key={definition.command} className="settings-row-divider flex items-center justify-between gap-3 border-b py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-neutral-900">{definition.label}</p>
+                <p className="mt-0.5 truncate text-xs text-neutral-500">{definition.description}</p>
+              </div>
+              <button
+                type="button"
+                className={cn(
+                  "min-w-24 shrink-0 rounded-lg border px-2.5 py-1 font-mono text-xs font-medium transition",
+                  isRecording
+                    ? "border-neutral-950 bg-neutral-950 text-white"
+                    : "border-neutral-950/10 bg-white/80 text-neutral-800 hover:border-neutral-950/25",
+                )}
+                onClick={() => {
+                  setRecording(definition.command);
+                  setMessage(null);
+                }}
+              >
+                {isRecording ? "按下组合键" : formatShortcut(shortcuts[definition.command])}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {message && <p className="mt-2.5 text-xs font-medium text-rose-500">{message}</p>}
+    </div>
   );
 }
 
@@ -917,47 +868,37 @@ export function AccountPanel({
       transition={{ duration: 0.22 }}
       className="glass z-50 w-[min(25rem,calc(100vw-2rem))] rounded-[1.4rem] p-4 absolute right-0 top-14"
     >
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-neutral-400">Accounts</p>
-          <p className="mt-0.5 text-sm font-semibold">播放源账号</p>
-        </div>
+      <div className="flex items-center justify-between gap-3 pb-2">
+        <p className="text-sm font-semibold">播放源账号</p>
         <Button variant="ghost" size="icon" aria-label="关闭账号面板" onClick={onClose}>
           <X />
         </Button>
       </div>
 
-      {/* 两张卡片始终标明来源：头像只代表当前登录用户，logo + 名称才说明是哪个平台。 */}
-      <div className="mt-3 space-y-2">
+      {/* 头像与平台标识分离：头像代表当前账号，右下角小徽标标明所属平台。 */}
+      <div className="settings-divider mt-1">
         {sourceAccounts.map((source) => {
-          const logo = source.id === "qq" ? "qq" : source.id === "bilibili" ? "bilibili" : "netease";
+          const logo = source.id === "qq" ? "qq" : source.id === "bilibili" ? "bilibili" : source.id === "youtube" ? "youtube" : "netease";
           return (
-            <div
-              key={source.id}
-              className="flex items-center gap-3 rounded-[1.1rem] border border-white/70 bg-white/62 p-3 shadow-sm"
-            >
+            <div key={source.id} className="flex items-center gap-3 py-2.5">
               <div className="relative shrink-0">
                 {source.avatarUrl && source.connected ? (
-                  <ArtworkImage src={source.avatarUrl} cacheSize={128} alt="" draggable={false} className="size-12 rounded-full object-cover shadow-sm" />
+                  <ArtworkImage src={source.avatarUrl} cacheSize={128} alt="" draggable={false} className="size-10 rounded-full object-cover shadow-xs" />
                 ) : (
-                  <div className="flex size-12 items-center justify-center rounded-full bg-white shadow-inner">
-                    <SourceLogo source={logo} className="size-6" />
+                  <div className="flex size-10 items-center justify-center rounded-full bg-white/80 shadow-xs">
+                    <SourceLogo source={logo} className="size-5" />
                   </div>
                 )}
-                <span className="absolute -bottom-1 -right-1 flex size-5 items-center justify-center rounded-full bg-white shadow ring-1 ring-black/5">
-                  <SourceLogo source={logo} className="size-3.5" />
+                <span className="settings-qr-box absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full !p-0.5 shadow-xs ring-1 ring-black/5">
+                  <SourceLogo source={logo} className="size-3" />
                 </span>
               </div>
               <div className="min-w-0 flex-1">
-                <p className="flex items-center gap-1.5 text-xs font-semibold text-neutral-500">
-                  <SourceLogo source={logo} className="size-3.5 shrink-0" />
-                  {source.label}
-                </p>
-                <p className="mt-0.5 truncate text-sm font-semibold">
-                  {source.connected ? source.nickname ?? "已登录" : "未登录"}
+                <p className="truncate text-sm font-medium text-neutral-900">
+                  {source.connected ? source.nickname ?? "已登录" : source.label}
                 </p>
                 <p className={cn("mt-0.5 text-xs", source.connected ? "text-emerald-600" : "text-neutral-400")}>
-                  {source.connected ? "已登录并同步" : "前往设置登录"}
+                  {source.connected ? source.label : "未登录"}
                 </p>
               </div>
             </div>
@@ -965,9 +906,6 @@ export function AccountPanel({
         })}
       </div>
 
-      <p className="mt-4 rounded-[1rem] bg-neutral-950/[0.03] p-3 text-xs leading-relaxed text-neutral-500">
-        网易云音乐、QQ 音乐与 B站的扫码、Cookie 登录和退出都在「设置 → 播放源」里完成。
-      </p>
       {onManageSources && (
         <Button className="mt-3 w-full" size="sm" onClick={onManageSources}>
           <Settings2 />
@@ -978,7 +916,7 @@ export function AccountPanel({
   );
 }
 
-/** NetEase source card in Settings: QR/cookie login, account state and 460 mitigation. */
+/** NetEase source row in Settings: QR/cookie login and live account state. */
 function NeteaseSourceCard({
   account: initialAccount,
   onAccountChange,
@@ -991,11 +929,8 @@ function NeteaseSourceCard({
   const [account, setAccount] = useState<NeteaseAccountSummary | null>(initialAccount);
   const [cookie, setCookie] = useState("");
   const [qrLogin, setQrLogin] = useState<NeteaseQrStart | null>(null);
-  const [qrStatus, setQrStatus] = useState("点击生成二维码后，用网易云音乐扫码登录。");
+  const [qrStatus, setQrStatus] = useState("点击扫码登录，使用网易云音乐手机端扫描二维码。");
   const [showCookie, setShowCookie] = useState(false);
-  const [showNetwork, setShowNetwork] = useState(false);
-  const [realIp, setRealIp] = useState("");
-  const [savingNetwork, setSavingNetwork] = useState(false);
   const [saving, setSaving] = useState(false);
   const [qrLoading, setQrLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -1013,7 +948,6 @@ function NeteaseSourceCard({
       .then((settings) => {
         if (!mounted) return;
         setAccount((current) => (current?.connected ? current : settings.neteaseAccount));
-        setRealIp(settings.neteaseRealIp ?? "");
       })
       .catch(() => {
         if (mounted) setMessage("后端未连接");
@@ -1102,20 +1036,6 @@ function NeteaseSourceCard({
     }
   }
 
-  async function saveRealIp() {
-    setSavingNetwork(true);
-    setMessage(null);
-    try {
-      const result = await api.saveNeteaseRealIp(realIp.trim());
-      setRealIp(result.realIP ?? "");
-      setMessage(result.realIP ? "已启用网络环境补偿" : "已恢复正常网络环境");
-    } catch {
-      setMessage("保存失败，请检查 IP 格式");
-    } finally {
-      setSavingNetwork(false);
-    }
-  }
-
   async function logout() {
     setSaving(true);
     setMessage(null);
@@ -1124,7 +1044,7 @@ function NeteaseSourceCard({
       setAccount(result.account);
       accountChangeRef.current?.(result.account);
       setQrLogin(null);
-      setQrStatus("点击生成二维码后，用网易云音乐扫码登录。");
+      setQrStatus("点击扫码登录，使用网易云音乐手机端扫描二维码。");
       setMessage("已退出网易云音乐账号");
     } catch {
       setMessage("退出失败，请稍后重试");
@@ -1134,48 +1054,33 @@ function NeteaseSourceCard({
   }
 
   return (
-    <section
-      className={cn(
-        embedded
-          ? "rounded-[1.25rem] bg-white/55 p-4"
-          : "rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm",
-      )}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
-          <h3 className="mt-1 truncate text-base font-semibold">播放源 · 网易云音乐</h3>
-        </div>
-        {!embedded && (
-          <div className="flex shrink-0 items-center gap-2">
-            <Badge>{account?.connected ? "已登录" : "未登录"}</Badge>
-            <SourceToggle sourceId="netease" />
-          </div>
-        )}
-      </div>
-      <div className="mt-4 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3">
-        <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
+    <div className={cn(embedded ? "rounded-2xl bg-white/55 p-4" : "py-4")}>
+      <div className="flex items-start gap-3.5">
+        <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/80 shadow-xs">
           {account?.avatarUrl ? (
-            <ArtworkImage src={account.avatarUrl} cacheSize={320} alt="" draggable={false} className="size-full object-cover" />
+            <ArtworkImage src={account.avatarUrl} cacheSize={160} alt="" draggable={false} className="size-full object-cover" />
           ) : (
-            <UserRound className="size-9 text-neutral-300" />
+            <SourceLogo source="netease" className="size-6" />
           )}
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">{account?.connected ? account.nickname ?? "已登录" : "扫码登录"}</p>
-          <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{qrStatus}</p>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-neutral-900">网易云音乐</span>
+              <span className={cn("text-xs font-medium", account?.connected ? "text-emerald-600" : "text-neutral-400")}>
+                {account?.connected ? (account.nickname ?? "已登录") : "未登录"}
+              </span>
+            </div>
+            {!embedded && <SourceToggle sourceId="netease" />}
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button size="sm" onClick={startQrLogin} disabled={qrLoading || saving}>
-              <RefreshCw />
+              <QrCode />
               {qrLoading ? "生成中" : qrLogin ? "刷新二维码" : "扫码登录"}
             </Button>
             <Button size="sm" variant="subtle" onClick={() => setShowCookie((value) => !value)}>
               <Cookie />
               Cookie 备用绑定
-            </Button>
-            <Button size="sm" variant="subtle" onClick={() => setShowNetwork((value) => !value)}>
-              <Globe />
-              网络环境补偿
             </Button>
             {account?.connected && (
               <Button size="sm" variant="subtle" onClick={() => void logout()} disabled={saving}>
@@ -1186,36 +1091,37 @@ function NeteaseSourceCard({
           </div>
         </div>
       </div>
+
       {qrLogin && (
-        <div className="mt-3 flex items-center gap-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+        <div className="settings-inline-well mt-3 flex items-center gap-3 rounded-xl p-3">
           <img
             src={qrLogin.qrImage}
             alt="网易云扫码登录二维码"
-            width={132}
-            height={132}
-            className="size-[132px] rounded-[0.9rem] bg-white object-contain shadow-inner"
+            width={120}
+            height={120}
+            className="settings-qr-box size-[120px] rounded-xl object-contain"
           />
           <div className="min-w-0 text-xs leading-relaxed text-neutral-500">
-            <p className="font-medium text-neutral-600">网易云音乐 App 扫码</p>
-            <p className="mt-1">扫码后需要在手机上点「确认登录」，二维码约 3 分钟有效。</p>
+            <p className="font-medium text-neutral-700">网易云音乐 App 扫码</p>
+            <p className="mt-1">{qrStatus}</p>
             <p className="mt-1 text-neutral-400">二维码由本机服务端生成并轮询，不会上传到第三方。</p>
           </div>
         </div>
       )}
       {showCookie && (
-        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
-          <label className="text-xs font-medium text-neutral-500" htmlFor="netease-cookie">
+        <div className="settings-inline-well mt-3 rounded-xl p-3">
+          <label className="text-xs font-medium text-neutral-600" htmlFor="netease-cookie">
             网易云 Cookie
           </label>
           <textarea
             id="netease-cookie"
             value={cookie}
             onChange={(event) => setCookie(event.target.value)}
-            rows={4}
+            rows={3}
             placeholder="MUSIC_U=...; NMTID=..."
-            className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+            className="settings-input mt-2 w-full resize-none rounded-lg p-2.5 text-xs outline-none"
           />
-          <div className="mt-3 flex justify-end">
+          <div className="mt-2.5 flex justify-end">
             <Button size="sm" onClick={() => void bindCookie()} disabled={saving}>
               <Cookie />
               {saving ? "保存中" : "保存 Cookie"}
@@ -1223,36 +1129,8 @@ function NeteaseSourceCard({
           </div>
         </div>
       )}
-      {showNetwork && (
-        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
-          <label className="text-xs font-medium text-neutral-500" htmlFor="netease-real-ip">
-            网易云提示「环境异常」时，填入一个中国大陆的 IP
-          </label>
-          <input
-            id="netease-real-ip"
-            value={realIp}
-            onChange={(event) => setRealIp(event.target.value)}
-            placeholder="例如 116.25.146.177，留空表示使用本机网络"
-            className="mt-2 w-full rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
-          />
-          <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-            请求会以这个 IP 的名义发出，用于绕过异地登录风控。仅在你确认本机网络正常、仍然报环境异常时使用。
-          </p>
-          <div className="mt-3 flex justify-end">
-            <Button size="sm" onClick={() => void saveRealIp()} disabled={savingNetwork}>
-              <Globe />
-              {savingNetwork ? "保存中" : "保存"}
-            </Button>
-          </div>
-        </div>
-      )}
-      {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
-      {!account?.connected && (
-        <p className="mt-3 text-xs text-neutral-400">
-          登录后即可同步「我喜欢」、歌单、每日推荐与云盘。
-        </p>
-      )}
-    </section>
+      {message && <p className="settings-status-banner mt-2.5 rounded-lg px-3 py-1.5 text-xs">{message}</p>}
+    </div>
   );
 }
 
@@ -1334,8 +1212,7 @@ export function OnboardingDialog({
               <p className="mt-4 text-sm leading-6 text-neutral-500">Aria 把本地音乐、网易云、QQ 音乐与 B站三个在线音源，以及高音质播放集中在一个安静的工作台里。</p>
             </div>
             <div className="rounded-[1.25rem] bg-neutral-950 p-5 text-white shadow-lg">
-              <p className="text-xs uppercase tracking-[0.2em] text-white/55">Ready when you are</p>
-              <div className="mt-5 space-y-3 text-sm text-white/80">
+              <div className="space-y-3 text-sm text-white/80">
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />本地无损音乐</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />网易云音乐</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="size-4 text-[#9db2ff]" />QQ 音乐</p>
@@ -1389,15 +1266,19 @@ export function OnboardingDialog({
               QQ 音乐提示：建议用手机 QQ 扫码登录，登录后才能同步「我喜欢」和读取歌单；歌曲旁出现 VIP 表示整首收听需要绿钻，只有高音质受限的歌曲不会标 VIP。QQ 音乐歌单目前在 Aria 内只读，编辑请回到 QQ 音乐。
             </p>
             <p className="mt-3 rounded-[1rem] border border-sky-200/70 bg-sky-50/70 px-4 py-3 text-xs leading-6 text-sky-900/80">
-              B站提示：扫码登录后可同步「Aria」收藏夹；播放页红心会在第一次使用时自动创建该收藏夹，之后加入或移出。登录状态下视频清晰度更高。匿名搜索与播放无需登录。
+              B站提示：扫码登录后可同步「Aria」收藏夹与「我的收藏夹」歌单；播放页红心会在第一次使用时自动创建该收藏夹，之后加入或移出。登录状态下视频清晰度更高。匿名搜索与播放无需登录。
+            </p>
+            <p className="mt-3 rounded-[1rem] border border-rose-200/70 bg-rose-50/60 px-4 py-3 text-xs leading-6 text-rose-900/80">
+              YouTube 提示：无需登录即可搜索与播放；无法直连时，可在设置 → 播放源里为 YouTube 单独配置代理端口，其它音源不受影响。
             </p>
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <NeteaseSourceCard embedded account={neteaseAccount} onAccountChange={onAccountChange} />
-              <div className="overflow-hidden rounded-[1.25rem] bg-white/55 p-1">
-                <QqSourceCard onAccountChange={onSourceAccountChange} />
+              <QqSourceCard embedded onAccountChange={onSourceAccountChange} />
+              <div className="lg:col-span-2">
+                <BilibiliSourceCard embedded onAccountChange={onSourceAccountChange} />
               </div>
-              <div className="overflow-hidden rounded-[1.25rem] bg-white/55 p-1 lg:col-span-2">
-                <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
+              <div className="lg:col-span-2">
+                <YoutubeSourceCard embedded onAccountChange={onSourceAccountChange} />
               </div>
             </div>
           </div>
@@ -1463,7 +1344,7 @@ type RemoteAccessInfo = {
 };
 
 function RemoteAccessSettings() {
-  const desktopReady = Boolean(window.ariaDesktop?.getRemoteAccess);
+  const desktopReady = typeof window !== "undefined" && Boolean(window.ariaDesktop?.getRemoteAccess);
   const [info, setInfo] = useState<RemoteAccessInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -1547,54 +1428,47 @@ function RemoteAccessSettings() {
   const firstAddress = info?.addresses[0] ? `http://${info.addresses[0]}:${info.port}` : null;
 
   return (
-    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm lg:col-span-2">
+    <div className="py-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Remote</p>
-          <h3 className="mt-1 text-base font-semibold">手机远程访问</h3>
+          <p className="text-sm font-medium text-neutral-900">手机远程访问</p>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            开启后，同一局域网内的 Aria 手机版可连接此电脑同步歌单与本地曲库（令牌明文传输，请仅在家用可信网络使用）。
+          </p>
         </div>
-        <button
-          className={cn(
-            "flex h-8 w-14 items-center rounded-full p-1 transition disabled:opacity-50",
-            enabled ? "bg-neutral-950" : "bg-neutral-200",
-          )}
+        <SettingSwitch
+          checked={enabled}
+          onToggle={() => void toggleRemoteAccess()}
+          ariaLabel="切换手机远程访问"
           disabled={busy || !info}
-          onClick={toggleRemoteAccess}
-          aria-label="切换手机远程访问"
-          aria-pressed={enabled}
-        >
-          <span className={cn("size-6 rounded-full bg-white shadow-sm transition", enabled && "translate-x-6")} />
-        </button>
+        />
       </div>
-      <p className="mt-2 text-xs leading-5 text-neutral-500">
-        开启后,同一局域网内的 Aria 手机版可以连接这台电脑,同步网易云歌单并串流本地曲库。连接令牌只走明文 HTTP,请仅在可信的家用网络开启。
-      </p>
 
-      {!info && <p className="mt-4 text-sm text-neutral-400">读取远程访问状态…</p>}
+      {!info && <p className="mt-2.5 text-xs text-neutral-400">读取远程访问状态…</p>}
 
       {info && restarting && (
-        <p className="mt-3 flex items-center gap-2 text-xs text-sky-700">
+        <p className="mt-2.5 flex items-center gap-2 text-xs text-sky-700">
           <RefreshCw className="size-3.5 animate-spin" />
-          后端正在以新配置重启,约 2 秒后生效…
+          后端正在以新配置重启，约 2 秒后生效…
         </p>
       )}
 
       {info && enabled && (
-        <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="settings-inline-well mt-3 grid gap-4 rounded-xl p-3.5 sm:grid-cols-[minmax(0,1fr)_auto]">
           <div className="min-w-0 space-y-2">
             {info.addresses.length === 0 && (
-              <p className="rounded-[1rem] bg-amber-50 p-3 text-xs text-amber-700">没有检测到局域网地址,请确认电脑已连接网络。</p>
+              <p className="settings-status-banner rounded-lg px-3 py-2 text-xs">没有检测到局域网地址，请确认电脑已连接网络。</p>
             )}
             {info.addresses.map((address) => (
               <button
                 key={address}
                 type="button"
                 onClick={() => copyText(`http://${address}:${info.port}`, "address")}
-                className="flex w-full items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3 text-left transition hover:bg-neutral-950/[0.06]"
+                className="flex w-full items-center justify-between gap-3 rounded-lg bg-white/75 px-3 py-2 text-left transition hover:bg-white"
               >
                 <span className="min-w-0">
-                  <span className="block text-xs text-neutral-400">服务器地址(点击复制)</span>
-                  <span className="mt-0.5 block truncate font-mono text-sm font-medium">http://{address}:{info.port}</span>
+                  <span className="block text-[11px] text-neutral-400">服务器地址（点击复制）</span>
+                  <span className="mt-0.5 block truncate font-mono text-xs font-medium text-neutral-900">http://{address}:{info.port}</span>
                 </span>
                 {copied === "address" ? <CheckCircle2 className="size-4 shrink-0 text-emerald-600" /> : <Copy className="size-4 shrink-0 text-neutral-400" />}
               </button>
@@ -1602,32 +1476,29 @@ function RemoteAccessSettings() {
             <button
               type="button"
               onClick={() => copyText(info.token, "token")}
-              className="flex w-full items-center justify-between gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3 text-left transition hover:bg-neutral-950/[0.06]"
+              className="flex w-full items-center justify-between gap-3 rounded-lg bg-white/75 px-3 py-2 text-left transition hover:bg-white"
             >
               <span className="min-w-0">
-                <span className="block text-xs text-neutral-400">连接令牌(点击复制)</span>
-                <span className="mt-0.5 block truncate font-mono text-sm font-medium">{info.token}</span>
+                <span className="block text-[11px] text-neutral-400">连接令牌（点击复制）</span>
+                <span className="mt-0.5 block truncate font-mono text-xs font-medium text-neutral-900">{info.token}</span>
               </span>
               {copied === "token" ? <CheckCircle2 className="size-4 shrink-0 text-emerald-600" /> : <Copy className="size-4 shrink-0 text-neutral-400" />}
             </button>
-            <p className="text-xs leading-5 text-neutral-500">
-              在手机 Aria 的「连接到电脑」里输入上面的地址和令牌,或用手机相机扫码后把内容填入。
-            </p>
           </div>
-          <div className="flex items-start justify-center">
+          <div className="flex items-center justify-center">
             {qrDataUrl ? (
-              <img src={qrDataUrl} alt="Aria 手机连接二维码" className="size-40 rounded-[1rem] bg-white p-2 shadow-sm" draggable={false} />
+              <img src={qrDataUrl} alt="Aria 手机连接二维码" className="settings-qr-box size-32 rounded-xl" draggable={false} />
             ) : (
-              <div className="flex size-40 items-center justify-center rounded-[1rem] bg-white/70 text-xs text-neutral-400">二维码生成中…</div>
+              <div className="flex size-32 items-center justify-center rounded-xl bg-white/70 text-xs text-neutral-400">二维码生成中…</div>
             )}
           </div>
         </div>
       )}
 
       {info && !enabled && firstAddress && (
-        <p className="mt-3 font-mono text-xs text-neutral-400">{firstAddress} · 当前仅本机可访问</p>
+        <p className="mt-2 font-mono text-xs text-neutral-400">{firstAddress} · 当前仅本机可访问</p>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -1639,7 +1510,7 @@ function RemoteAccessSettings() {
 
 
 /** QQ Music source row: QR/cookie login + live account state from /api/sources/qq. */
-function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
+function QqSourceCard({ onAccountChange, embedded = false }: { onAccountChange?: () => void; embedded?: boolean }) {
   const [account, setAccount] = useState<SourceAccountSummary | null>(null);
   const [hasStoredCookie, setHasStoredCookie] = useState(false);
   const [cookie, setCookie] = useState("");
@@ -1647,7 +1518,6 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [loginStatus, setLoginStatus] = useState("点击扫码登录，用手机 QQ 扫描二维码。");
-  const [loginLoading, setLoginLoading] = useState(false);
   const [qrLogin, setQrLogin] = useState<{ key: string; image: string } | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const qrRestartsRef = useRef(0);
@@ -1740,39 +1610,6 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
     };
   }, [qrLogin]);
 
-  async function loginInWindow() {
-    const openLoginWindow = window.ariaDesktop?.qqLoginWindow;
-    if (!openLoginWindow) {
-      setMessage("当前环境不支持窗口登录，请使用 Cookie 备用绑定");
-      return;
-    }
-    setLoginLoading(true);
-    setMessage(null);
-    setLoginStatus("已打开登录窗口，可选择 QQ 或微信扫码并确认登录。");
-    try {
-      const result = await openLoginWindow();
-      if (!result?.ok || !result.cookie) {
-        setLoginStatus(result?.message ?? "未完成登录");
-        return;
-      }
-      const saved = await api.saveQqCookie(result.cookie);
-      setAccount(saved.account);
-      setHasStoredCookie(true);
-      onAccountChange?.();
-      if (saved.account.connected) {
-        setLoginStatus("登录成功，账号信息已同步。");
-        setMessage(`已登录：${saved.account.nickname ?? "QQ 音乐账号"}`);
-      } else {
-        setLoginStatus("已获取 Cookie，但账号信息接口未确认登录状态。");
-        setMessage("可重新窗口登录一次，或改用 Cookie 备用绑定粘贴完整 Cookie");
-      }
-    } catch {
-      setLoginStatus("窗口登录失败，可改用 Cookie 备用绑定。");
-    } finally {
-      setLoginLoading(false);
-    }
-  }
-
   async function saveCookie() {
     if (!cookie.trim()) {
       setMessage("请先粘贴 Cookie");
@@ -1814,39 +1651,30 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
   }
 
   return (
-    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
-          <h3 className="mt-1 truncate text-base font-semibold">播放源 · QQ 音乐</h3>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Badge>{account?.connected ? "已登录" : hasStoredCookie ? "登录已过期" : "未登录"}</Badge>
-          <SourceToggle sourceId="qq" />
-        </div>
-      </div>
-      <div className="mt-4 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3">
-        <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
+    <div className={cn(embedded ? "rounded-2xl bg-white/55 p-4" : "py-4")}>
+      <div className="flex items-start gap-3.5">
+        <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/80 shadow-xs">
           {account?.avatarUrl ? (
-            <ArtworkImage src={account.avatarUrl} cacheSize={320} alt="" draggable={false} className="size-full object-cover" />
+            <ArtworkImage src={account.avatarUrl} cacheSize={160} alt="" draggable={false} className="size-full object-cover" />
           ) : (
-            <UserRound className="size-9 text-neutral-300" />
+            <SourceLogo source="qq" className="size-6" />
           )}
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">{account?.connected ? account.nickname ?? "已登录" : "窗口扫码登录"}</p>
-          <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{loginStatus}</p>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-neutral-900">QQ 音乐</span>
+              <span className={cn("text-xs font-medium", account?.connected ? "text-emerald-600" : "text-neutral-400")}>
+                {account?.connected ? (account.nickname ?? "已登录") : hasStoredCookie ? "登录已过期" : "未登录"}
+              </span>
+            </div>
+            {!embedded && <SourceToggle sourceId="qq" />}
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => void startQrLogin()} disabled={qrLoading || loginLoading}>
+            <Button size="sm" onClick={() => void startQrLogin()} disabled={qrLoading || saving}>
               <QrCode />
               {qrLoading ? "生成中" : qrLogin ? "重新获取二维码" : "扫码登录"}
             </Button>
-            {window.ariaDesktop?.qqLoginWindow && (
-              <Button size="sm" variant="subtle" onClick={() => void loginInWindow()} disabled={loginLoading}>
-                <LogIn />
-                {loginLoading ? "等待登录" : "窗口扫码登录"}
-              </Button>
-            )}
             <Button size="sm" variant="subtle" onClick={() => setShowInput((value) => !value)}>
               <Cookie />
               Cookie 备用绑定
@@ -1861,35 +1689,35 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
         </div>
       </div>
       {qrLogin && (
-        <div className="mt-3 flex items-center gap-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+        <div className="settings-inline-well mt-3 flex items-center gap-3 rounded-xl p-3">
           <img
             src={qrLogin.image}
             alt="QQ 音乐登录二维码"
-            width={132}
-            height={132}
-            className="size-[132px] rounded-[0.9rem] bg-white object-contain shadow-inner"
+            width={120}
+            height={120}
+            className="settings-qr-box size-[120px] rounded-xl object-contain"
           />
           <div className="min-w-0 text-xs leading-relaxed text-neutral-500">
-            <p className="font-medium text-neutral-600">手机 QQ 扫码</p>
-            <p className="mt-1">扫码后需要在手机上点「确认登录」，二维码约 2 分钟有效。</p>
+            <p className="font-medium text-neutral-700">手机 QQ 扫码</p>
+            <p className="mt-1">{loginStatus}</p>
             <p className="mt-1 text-neutral-400">二维码会通过本机服务端轮询，不会上传到第三方。</p>
           </div>
         </div>
       )}
       {showInput && (
-        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
-          <label className="text-xs font-medium text-neutral-500" htmlFor="qq-cookie">
+        <div className="settings-inline-well mt-3 rounded-xl p-3">
+          <label className="text-xs font-medium text-neutral-600" htmlFor="qq-cookie">
             QQ 音乐 Cookie
           </label>
           <textarea
             id="qq-cookie"
             value={cookie}
             onChange={(event) => setCookie(event.target.value)}
-            rows={4}
+            rows={3}
             placeholder="uin=o...; qqmusic_key=...; ..."
-            className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+            className="settings-input mt-2 w-full resize-none rounded-lg p-2.5 text-xs outline-none"
           />
-          <div className="mt-3 flex justify-end">
+          <div className="mt-2.5 flex justify-end">
             <Button size="sm" onClick={() => void saveCookie()} disabled={saving}>
               <Cookie />
               {saving ? "保存中" : "保存 Cookie"}
@@ -1897,13 +1725,8 @@ function QqSourceCard({ onAccountChange }: { onAccountChange?: () => void }) {
           </div>
         </div>
       )}
-      {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
-      {!account?.connected && (
-        <p className="mt-3 text-xs text-neutral-400">
-          绑定后可搜索、播放、读取歌单并双向同步「我喜欢」；VIP 歌需要绿钻账号才能整首播放，仅高音质受限不会影响普通播放。
-        </p>
-      )}
-    </section>
+      {message && <p className="settings-status-banner mt-2.5 rounded-lg px-3 py-1.5 text-xs">{message}</p>}
+    </div>
   );
 }
 
@@ -1922,10 +1745,10 @@ function BilibiliDefaultQualityControls({
 }) {
   if (!onDefaultVideoQnChange && !onDefaultAudioLevelChange) return null;
   return (
-    <div className={cn("grid gap-3 rounded-[1rem] bg-neutral-950/[0.03] p-3 sm:grid-cols-2", className)}>
+    <div className={cn("grid gap-4 sm:grid-cols-2", className)}>
       {onDefaultVideoQnChange && (
         <div className="min-w-0">
-          <p className="text-sm font-semibold">B站默认画质</p>
+          <p className="text-sm font-medium text-neutral-900">B站默认画质</p>
           <p className="mt-0.5 text-xs text-neutral-500">切到 B站 MV 时默认优先请求的清晰度</p>
           <AriaSelect
             ariaLabel="B站默认画质"
@@ -1939,7 +1762,7 @@ function BilibiliDefaultQualityControls({
       )}
       {onDefaultAudioLevelChange && (
         <div className="min-w-0">
-          <p className="text-sm font-semibold">B站默认音质</p>
+          <p className="text-sm font-medium text-neutral-900">B站默认音质</p>
           <p className="mt-0.5 text-xs text-neutral-500">播放 B站音频与 MV 音轨时的首选档位</p>
           <AriaSelect
             ariaLabel="B站默认音质"
@@ -1958,8 +1781,10 @@ function BilibiliDefaultQualityControls({
 /** Bilibili source row: QR/cookie login + live account state from /api/sources/bilibili. */
 function BilibiliSourceCard({
   onAccountChange,
+  embedded = false,
 }: {
   onAccountChange?: () => void;
+  embedded?: boolean;
 }) {
   const [account, setAccount] = useState<SourceAccountSummary | null>(null);
   const [hasStoredCookie, setHasStoredCookie] = useState(false);
@@ -1967,7 +1792,7 @@ function BilibiliSourceCard({
   const [showInput, setShowInput] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [loginStatus, setLoginStatus] = useState("扫码登录后可同步「Aria」收藏夹，登录状态下视频清晰度更高。");
+  const [loginStatus, setLoginStatus] = useState("扫码登录后可同步「Aria」收藏夹和「我的收藏夹」歌单，登录状态下视频清晰度更高。");
   const [qrLogin, setQrLogin] = useState<{ key: string; image: string } | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
 
@@ -2083,28 +1908,25 @@ function BilibiliSourceCard({
   }
 
   return (
-    <section className="rounded-[1.25rem] border border-white/70 bg-white/62 p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-400">Sources</p>
-          <h3 className="mt-1 truncate text-base font-semibold">播放源 · 哔哩哔哩</h3>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Badge>{account?.connected ? "已登录" : hasStoredCookie ? "登录已过期" : "未登录"}</Badge>
-          <SourceToggle sourceId="bilibili" />
-        </div>
-      </div>
-      <div className="mt-4 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3">
-        <div className="flex aspect-square items-center justify-center overflow-hidden rounded-[1rem] bg-white shadow-inner">
+    <div className={cn(embedded ? "rounded-2xl bg-white/55 p-4" : "py-4")}>
+      <div className="flex items-start gap-3.5">
+        <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/80 shadow-xs">
           {account?.avatarUrl ? (
-            <ArtworkImage src={account.avatarUrl} cacheSize={320} alt="" draggable={false} className="size-full object-cover" />
+            <ArtworkImage src={account.avatarUrl} cacheSize={160} alt="" draggable={false} className="size-full object-cover" />
           ) : (
-            <SourceLogo source="bilibili" className="size-10" />
+            <SourceLogo source="bilibili" className="size-6" />
           )}
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">{account?.connected ? account.nickname ?? "已登录" : "扫码登录"}</p>
-          <p className="mt-1 min-h-10 text-xs leading-relaxed text-neutral-500">{loginStatus}</p>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-neutral-900">哔哩哔哩</span>
+              <span className={cn("text-xs font-medium", account?.connected ? "text-emerald-600" : "text-neutral-400")}>
+                {account?.connected ? (account.nickname ?? "已登录") : hasStoredCookie ? "登录已过期" : "未登录"}
+              </span>
+            </div>
+            {!embedded && <SourceToggle sourceId="bilibili" />}
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button size="sm" onClick={() => void startQrLogin()} disabled={qrLoading || saving}>
               <QrCode />
@@ -2124,35 +1946,35 @@ function BilibiliSourceCard({
         </div>
       </div>
       {qrLogin && (
-        <div className="mt-3 flex items-center gap-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
+        <div className="settings-inline-well mt-3 flex items-center gap-3 rounded-xl p-3">
           <img
             src={qrLogin.image}
             alt="B站登录二维码"
-            width={132}
-            height={132}
-            className="size-[132px] rounded-[0.9rem] bg-white object-contain shadow-inner"
+            width={120}
+            height={120}
+            className="settings-qr-box size-[120px] rounded-xl object-contain"
           />
           <div className="min-w-0 text-xs leading-relaxed text-neutral-500">
-            <p className="font-medium text-neutral-600">哔哩哔哩手机客户端扫码</p>
-            <p className="mt-1">扫码后需要在手机上点「确认登录」，二维码约 3 分钟有效。</p>
+            <p className="font-medium text-neutral-700">哔哩哔哩手机客户端扫码</p>
+            <p className="mt-1">{loginStatus}</p>
             <p className="mt-1 text-neutral-400">二维码由本机服务端生成与轮询，不会上传到第三方。</p>
           </div>
         </div>
       )}
       {showInput && (
-        <div className="mt-3 rounded-[1.1rem] bg-white/58 p-3 shadow-sm">
-          <label className="text-xs font-medium text-neutral-500" htmlFor="bilibili-cookie">
+        <div className="settings-inline-well mt-3 rounded-xl p-3">
+          <label className="text-xs font-medium text-neutral-600" htmlFor="bilibili-cookie">
             B站 Cookie
           </label>
           <textarea
             id="bilibili-cookie"
             value={cookie}
             onChange={(event) => setCookie(event.target.value)}
-            rows={4}
+            rows={3}
             placeholder="SESSDATA=...; bili_jct=...; DedeUserID=..."
-            className="mt-2 w-full resize-none rounded-[0.9rem] border border-white/70 bg-white/70 p-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+            className="settings-input mt-2 w-full resize-none rounded-lg p-2.5 text-xs outline-none"
           />
-          <div className="mt-3 flex justify-end">
+          <div className="mt-2.5 flex justify-end">
             <Button size="sm" onClick={() => void saveCookie()} disabled={saving}>
               <Cookie />
               {saving ? "保存中" : "保存 Cookie"}
@@ -2160,22 +1982,24 @@ function BilibiliSourceCard({
           </div>
         </div>
       )}
-      {message && <p className="mt-3 text-xs text-neutral-500">{message}</p>}
-      {!account?.connected && (
-        <p className="mt-3 text-xs text-neutral-400">
-          登录后，「我喜欢」会出现 B站「Aria」收藏夹；第一次点红心会自动创建这个收藏夹。匿名播放仍可用，但视频通常只有 360P。
-        </p>
-      )}
-    </section>
+      {message && <p className="settings-status-banner mt-2.5 rounded-lg px-3 py-1.5 text-xs">{message}</p>}
+    </div>
   );
 }
+
+const SOURCE_SWITCH_LABELS: Record<"netease" | "qq" | "bilibili" | "youtube", string> = {
+  netease: "网易云音乐",
+  qq: "QQ 音乐",
+  bilibili: "哔哩哔哩",
+  youtube: "YouTube Music",
+};
 
 /**
  * Per-source switch. Turning a source off keeps its login state but stops
  * Aria from sending it any search/stream request, which is the fastest way to
  * silence an upstream outage without restarting the app.
  */
-function SourceToggle({ sourceId }: { sourceId: "netease" | "qq" | "bilibili" }) {
+function SourceToggle({ sourceId }: { sourceId: "netease" | "qq" | "bilibili" | "youtube" }) {
   const [enabled, setEnabled] = useState(true);
   const [pending, setPending] = useState(false);
 
@@ -2210,21 +2034,426 @@ function SourceToggle({ sourceId }: { sourceId: "netease" | "qq" | "bilibili" })
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => void toggle()}
+    <SettingSwitch
+      checked={enabled}
+      onToggle={() => void toggle()}
+      ariaLabel={`切换 ${SOURCE_SWITCH_LABELS[sourceId]} 音源`}
       disabled={pending}
-      aria-pressed={enabled}
-      title={enabled ? "停用后不再向该音源发送请求" : "启用该音源"}
-      className={cn(
-        "rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
-        enabled
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-          : "border-neutral-200 bg-neutral-100 text-neutral-500 hover:bg-neutral-200",
-        pending && "opacity-60",
-      )}
-    >
-      {enabled ? "已启用" : "已停用"}
-    </button>
+    />
+  );
+}
+
+/**
+ * YouTube Music 源卡片：匿名搜索/播放（无账号登录），可选配置 HTTP 代理端口。
+ * 代理只作用于 YouTube 的搜索、播放解析、封面与音频流；网易云 / QQ / B站
+ * 永远直连，国内使用体验不受影响。
+ */
+function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountChange?: () => void; embedded?: boolean } = {}) {
+  const [proxy, setProxy] = useState("");
+  const [savedProxy, setSavedProxy] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [account, setAccount] = useState<SourceAccountSummary | null>(null);
+  const [hasStoredCookie, setHasStoredCookie] = useState(false);
+  const [cookie, setCookie] = useState("");
+  const [showCookieInput, setShowCookieInput] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    api
+      .getSettings()
+      .then((settings) => {
+        if (!mounted) return;
+        const stored = settings.youtubeProxy ?? null;
+        setSavedProxy(stored);
+        setProxy(stored ?? "");
+        setHasStoredCookie(Boolean(settings.hasYoutubeCookie));
+      })
+      .catch(() => undefined);
+    api
+      .getSourceAccount("youtube")
+      .then((result) => {
+        if (mounted) setAccount(result.account);
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  function applySavedProxyState(normalized: string | null) {
+    setSavedProxy(normalized);
+    setProxy(normalized ?? "");
+  }
+
+  async function saveProxy(clear: boolean) {
+    const value = clear ? "" : proxy.trim();
+    if (!clear && !value) {
+      setMessage("请先填写代理端口，例如 7890");
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.saveYoutubeProxy(value);
+      const normalized = result.youtubeProxy ?? null;
+      applySavedProxyState(normalized);
+      setMessage(normalized ? "代理已保存" : "已恢复直连");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存失败，请稍后重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function syncDraftProxy(): Promise<{ ok: boolean; activeProxy: string }> {
+    const draft = proxy.trim();
+    const current = savedProxy ?? "";
+    if (draft === current) {
+      return { ok: true, activeProxy: current };
+    }
+    setMessage(draft ? "正在保存代理端口…" : "正在清除代理并切换为直连…");
+    try {
+      const result = await api.saveYoutubeProxy(draft);
+      const normalized = result.youtubeProxy ?? null;
+      applySavedProxyState(normalized);
+      if (draft && !normalized) {
+        setMessage("代理格式不正确，请填写端口（如 7890）后重试");
+        return { ok: false, activeProxy: "" };
+      }
+      return { ok: true, activeProxy: normalized ?? "" };
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "代理保存失败，请稍后重试");
+      return { ok: false, activeProxy: "" };
+    }
+  }
+
+  async function saveCookie() {
+    if (!cookie.trim()) {
+      setMessage("请先粘贴 Cookie");
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.saveSourceCookie("youtube", cookie.trim());
+      setAccount(result.account);
+      setHasStoredCookie(true);
+      setCookie("");
+      setShowCookieInput(false);
+      onAccountChange?.();
+      window.dispatchEvent(new Event("aria-sources-changed"));
+      setMessage(
+        result.account.connected
+          ? `已登录：${result.account.nickname ?? "YouTube 账号"}`
+          : "Cookie 已保存，但登录状态未确认",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存失败，请确认后端正在运行");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function logout() {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api.clearSourceCookie("youtube");
+      setAccount(result.account);
+      setHasStoredCookie(false);
+      onAccountChange?.();
+      window.dispatchEvent(new Event("aria-sources-changed"));
+      setMessage("已退出 YouTube 登录");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "退出失败，请稍后重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testConnection() {
+    setTesting(true);
+    setMessage(null);
+    try {
+      const synced = await syncDraftProxy();
+      if (!synced.ok) return;
+      const result = await api.searchSource("youtube", "hello world", "tracks", 1);
+      setMessage(
+        result.tracks.length
+          ? "连接正常，已成功返回搜索结果。"
+          : "连接成功，但搜索没有返回歌曲，请换个关键词再试。",
+      );
+    } catch (error) {
+      setMessage(
+        `连接失败：${error instanceof Error ? error.message : "未知错误"}。若未配置代理，可在上方填写代理端口。`,
+      );
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  // 设备码登录（RFC 8628，智能电视同款授权通道）：手机上打开激活页输入代码
+  // 确认即可，凭据输入发生在用户自己的浏览器里，Aria 全程不接触 Google 登录
+  // 页——从结构上绕开「此浏览器或应用可能不安全」的嵌入浏览器拦截，交互与
+  // QQ/B站扫码同一范式（二维码 + 轮询 + 自动完成）。
+  const [deviceLogin, setDeviceLogin] = useState<{ key: string; userCode: string; verificationUrl: string; qrImage: string } | null>(null);
+  const [deviceStarting, setDeviceStarting] = useState(false);
+  const [deviceStatus, setDeviceStatus] = useState("");
+
+  async function startDeviceLogin() {
+    setDeviceStarting(true);
+    setMessage(null);
+    setDeviceStatus("正在向 Google 申请设备码…");
+    try {
+      const started = await api.startSourceQrLogin("youtube");
+      setDeviceLogin({
+        key: started.key,
+        userCode: started.userCode ?? "",
+        verificationUrl: started.verificationUrl ?? "",
+        qrImage: started.qrImage,
+      });
+      setDeviceStatus("用手机浏览器扫描二维码（或打开激活页）并输入代码确认。");
+    } catch (error) {
+      setDeviceLogin(null);
+      setDeviceStatus("");
+      setMessage(error instanceof Error ? error.message : "设备码申请失败，请稍后重试");
+    } finally {
+      setDeviceStarting(false);
+    }
+  }
+
+  async function copyUserCode() {
+    if (!deviceLogin?.userCode) return;
+    try {
+      await navigator.clipboard.writeText(deviceLogin.userCode);
+      setDeviceStatus("代码已复制，请在手机上粘贴并确认授权。");
+    } catch {
+      setDeviceStatus("复制失败，请手动输入代码。");
+    }
+  }
+
+  // 轮询设备码状态；Google 要求 ≥5s 间隔，authorized 后服务端自动换取并保存
+  // Cookie，账号状态与歌单同步由 aria-sources-changed 广播接续完成。
+  useEffect(() => {
+    if (!deviceLogin) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void api
+        .checkSourceQrLogin("youtube", deviceLogin.key)
+        .then((result) => {
+          if (cancelled) return;
+          if (result.status === "waiting") return;
+          window.clearInterval(timer);
+          setDeviceLogin(null);
+          if (result.status === "success" && result.account) {
+            setAccount(result.account);
+            setHasStoredCookie(true);
+            onAccountChange?.();
+            window.dispatchEvent(new Event("aria-sources-changed"));
+            setDeviceStatus("YouTube 登录成功，歌单与我喜欢已可同步。");
+            setMessage(`已登录：${result.account.nickname ?? "YouTube 账号"}`);
+          } else {
+            setDeviceStatus(result.message);
+            setMessage(result.message);
+          }
+        })
+        .catch(() => {
+          // 轮询期间的瞬时网络抖动按等待处理，下一轮继续。
+        });
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [deviceLogin, onAccountChange]);
+
+  // 窗口登录（备用路径）：应用内打开真实 Chromium 窗口登录 Google 账号，
+  // 成功后自动提取会话 Cookie；个别账号可能被 Google 风控拦截，主路径是
+  // 上面的设备码登录。
+  async function loginInWindow() {
+    const openLoginWindow = window.ariaDesktop?.youtubeLoginWindow;
+    if (!openLoginWindow) {
+      setMessage("窗口登录仅在桌面安装版可用；浏览器模式请使用 Cookie 备用绑定。");
+      return;
+    }
+    // 输入框有修改或与已保存值不一致时先保存再开窗，确保登录窗口使用最新代理。
+    setLoginLoading(true);
+    setMessage(null);
+    const synced = await syncDraftProxy();
+    if (!synced.ok) {
+      setLoginLoading(false);
+      return;
+    }
+    setMessage(null);
+    try {
+      const result = await openLoginWindow(synced.activeProxy);
+      if (!result.ok || !result.cookie) {
+        setMessage(result.message || "登录窗口已关闭，未完成登录。");
+        return;
+      }
+      const saved = await api.saveSourceCookie("youtube", result.cookie);
+      setAccount(saved.account);
+      setHasStoredCookie(true);
+      onAccountChange?.();
+      window.dispatchEvent(new Event("aria-sources-changed"));
+      setMessage(
+        saved.account.connected
+          ? `已登录：${saved.account.nickname ?? "YouTube 账号"}，歌单与我喜欢已可同步。`
+          : "已捕获登录会话，正在确认登录状态…",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "窗口登录失败，请稍后重试");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  const loginStatusText = account?.connected
+    ? `${account.nickname ?? "YouTube 用户"}${account.userId ? ` · ${account.userId}` : ""}`
+    : hasStoredCookie
+      ? "登录未确认"
+      : "未登录";
+
+  return (
+    <div className={cn(embedded ? "rounded-2xl bg-white/55 p-4" : "py-4")}>
+      <div className="flex items-start gap-3.5">
+        <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/80 shadow-xs">
+          {account?.avatarUrl && account.connected ? (
+            <ArtworkImage src={account.avatarUrl} cacheSize={160} alt="" draggable={false} className="size-full object-cover" />
+          ) : (
+            <SourceLogo source="youtube" className="size-6" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-neutral-900">YouTube Music</span>
+              <span className={cn("text-xs font-medium", account?.connected ? "text-emerald-600" : "text-neutral-400")}>
+                {loginStatusText}
+              </span>
+              <span className="text-xs text-neutral-400">· {savedProxy ? `代理 ${savedProxy}` : "直连"}</span>
+            </div>
+            {!embedded && <SourceToggle sourceId="youtube" />}
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <input
+              value={proxy}
+              onChange={(event) => {
+                setProxy(event.target.value);
+                if (message) setMessage(null);
+              }}
+              placeholder="代理端口，如 7890 或 127.0.0.1:7890"
+              aria-label="YouTube 代理端口"
+              maxLength={200}
+              className="settings-input min-w-0 flex-1 rounded-lg px-3 py-1.5 text-xs outline-none"
+            />
+            <Button size="sm" onClick={() => void saveProxy(false)} disabled={saving}>
+              {saving ? "保存中" : "保存代理"}
+            </Button>
+            {savedProxy && (
+              <Button size="sm" variant="subtle" onClick={() => void saveProxy(true)} disabled={saving}>
+                清除
+              </Button>
+            )}
+            <Button size="sm" variant="subtle" onClick={() => void testConnection()} disabled={testing}>
+              {testing ? "测试中" : "测试连接"}
+            </Button>
+          </div>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <Button size="sm" onClick={() => void startDeviceLogin()} disabled={deviceStarting || saving}>
+              <QrCode />
+              {deviceStarting ? "申请中…" : "设备码登录"}
+            </Button>
+            {typeof window !== "undefined" && window.ariaDesktop?.youtubeLoginWindow && (
+              <Button size="sm" variant="subtle" onClick={() => void loginInWindow()} disabled={loginLoading || saving}>
+                <LogIn />
+                {loginLoading ? "等待登录…" : "窗口登录"}
+              </Button>
+            )}
+            <Button size="sm" variant="subtle" onClick={() => setShowCookieInput((value) => !value)}>
+              <Cookie />
+              Cookie 备用绑定
+            </Button>
+            {account?.connected && (
+              <Button size="sm" variant="subtle" onClick={() => void logout()} disabled={saving}>
+                <LogOut />
+                退出登录
+              </Button>
+            )}
+          </div>
+          {loginLoading && (
+            <p className="settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs leading-relaxed">
+              已打开 YouTube 登录窗口：像平时一样登录 Google 账号即可，登录成功后 Aria 会自动完成绑定。
+              {!savedProxy && " 未配置代理时可能无法打开登录页，建议先在上方填写代理端口。"}
+            </p>
+          )}
+          {deviceLogin && (
+            <div className="settings-inline-well mt-3 rounded-xl p-3">
+              <div className="flex flex-wrap items-center gap-4">
+                <img
+                  src={deviceLogin.qrImage}
+                  alt="YouTube 设备码登录二维码"
+                  className="settings-qr-box size-36 rounded-xl"
+                  draggable={false}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-neutral-800">手机浏览器扫码打开激活页</p>
+                  <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+                    用任意设备打开 <span className="font-medium text-neutral-700">{deviceLogin.verificationUrl}</span>
+                    ，输入下方代码并确认授权（约 15 分钟内有效，全程在 Google 官方页面完成）。
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <code className="rounded-lg bg-neutral-100 px-3 py-1.5 text-sm font-semibold tracking-[0.2em] text-neutral-800">
+                      {deviceLogin.userCode}
+                    </code>
+                    <Button size="sm" variant="ghost" onClick={() => void copyUserCode()}>
+                      <Copy />
+                      复制代码
+                    </Button>
+                    <Button size="sm" variant="subtle" onClick={() => void startDeviceLogin()} disabled={deviceStarting}>
+                      重新生成
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              {deviceStatus && (
+                <p role="status" className="settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs">{deviceStatus}</p>
+              )}
+            </div>
+          )}
+          {showCookieInput && (
+            <div className="settings-inline-well mt-3 rounded-xl p-3">
+              <p className="text-xs leading-relaxed text-neutral-500">
+                备用方式：在已登录 YouTube 的浏览器标签页打开开发者工具 → Network，任选一个 music.youtube.com 请求，把完整 Cookie 头粘贴到这里。
+              </p>
+              <textarea
+                value={cookie}
+                onChange={(event) => {
+                  setCookie(event.target.value);
+                  if (message) setMessage(null);
+                }}
+                placeholder="SID=…; HSID=…; SSID=…; SAPISID=…"
+                aria-label="YouTube Cookie"
+                rows={3}
+                maxLength={20_000}
+                className="settings-input mt-2 block w-full resize-none rounded-lg px-3 py-2 text-xs outline-none"
+              />
+              <div className="mt-2 flex justify-end gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setShowCookieInput(false)}>取消</Button>
+                <Button size="sm" onClick={() => void saveCookie()} disabled={saving || !cookie.trim()}>
+                  {saving ? "保存中" : "保存并登录"}
+                </Button>
+              </div>
+            </div>
+          )}
+          {message && (
+            <p role="status" className="settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs">{message}</p>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

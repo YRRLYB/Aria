@@ -13,6 +13,13 @@ export type UpstreamStream = {
   sampleRate?: number | null;
   currentLevel?: string | null;
   cacheMaxAgeSeconds?: number;
+  /**
+   * Optional per-source upstream fetcher. YouTube's googlevideo URLs are bound
+   * to the egress that resolved them, so when a user proxy is configured the
+   * stream must be pulled through the same proxy; other sources keep the
+   * default global fetch (direct connection).
+   */
+  fetcher?: (url: string, init?: RequestInit) => Promise<Response>;
 };
 
 /** Upstream statuses that mean "this signed URL expired"; a fresh resolve may recover. */
@@ -44,7 +51,8 @@ export async function proxyAudioStream(
     for (let attempt = 0; attempt < 2; attempt += 1) {
       meta = await resolve(attempt);
       if (controller.signal.aborted) return;
-      upstream = await fetch(meta.url, {
+      const upstreamFetch = meta.fetcher ?? fetch;
+      upstream = await upstreamFetch(meta.url, {
         headers: {
           ...(meta.headers ?? {}),
           ...(req.headers.range ? { Range: req.headers.range } : {}),

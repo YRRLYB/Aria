@@ -51,10 +51,7 @@ export function HomeSidePanel({
   return (
     <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 lg:flex">
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">Listening</p>
-          <h2 className="mt-1 text-xl font-semibold">听歌洞察</h2>
-        </div>
+        <h2 className="text-xl font-semibold">听歌洞察</h2>
         <Button variant="ghost" size="icon" aria-label="查看听歌统计" onClick={onOpenStats}>
           <BarChart3 />
         </Button>
@@ -74,7 +71,7 @@ export function HomeSidePanel({
       </div>
 
       <div className="mt-5 flex items-center justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">Most Played</p>
+        <p className="text-xs font-medium text-neutral-500">常听曲目</p>
         <Button variant="ghost" size="sm" onClick={onOpenHistory}>
           <History />
           历史
@@ -188,7 +185,7 @@ export function HomeSurface({
           ) : (
             <div className="absolute bottom-5 left-5 right-5 z-20">
               <h2 className="line-clamp-2 text-3xl font-semibold leading-tight text-white drop-shadow">
-                <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
+                <CopyableTrackText track={activeTrack} field="title" marquee={false}>{activeTrack.title}</CopyableTrackText>
               </h2>
               <p className="mt-2 truncate text-base font-medium text-white/84">
                 <CopyableTrackText track={activeTrack} field="artist">{activeTrack.artist}</CopyableTrackText>
@@ -306,7 +303,7 @@ export function HistorySurface({
     const todayMs = todayStart.getTime();
     let plays = 0;
     let today = 0;
-    const counts: Record<SourceLogoOption, number> = { local: 0, cloud: 0, netease: 0, qq: 0, bilibili: 0 };
+    const counts: Record<SourceLogoOption, number> = { local: 0, cloud: 0, netease: 0, qq: 0, bilibili: 0, youtube: 0 };
     for (const entry of history) {
       plays += entry.count;
       if (entry.playedAt >= todayMs) today += 1;
@@ -391,6 +388,7 @@ export function HistorySurface({
               ["netease", "网易云", sourceCounts.netease, "netease"],
               ["qq", "QQ 音乐", sourceCounts.qq, "qq"],
               ["bilibili", "B站", sourceCounts.bilibili, "bilibili"],
+              ["youtube", "YouTube", sourceCounts.youtube, "youtube"],
               ...(sourceCounts.cloud > 0 ? [["cloud", "云盘", sourceCounts.cloud, "cloud"] as const] : []),
             ] as const
           ).map(([source, label, count, logo]) => {
@@ -497,7 +495,7 @@ function VirtualHistoryList({
                 <Badge className="shrink-0 whitespace-nowrap">{audioDetail}</Badge>
                 <span className="hidden min-w-[4.75rem] flex-col items-end text-right tabular-nums sm:flex">
                   <span className="text-[11px] font-medium text-neutral-600">{formatHistoryTimestamp(entry.playedAt)}</span>
-                  <span className="text-[10px] text-neutral-400">{entry.count} 次</span>
+                  <span className="text-[11px] text-neutral-400">{entry.count} 次</span>
                 </span>
               </div>
             </button>

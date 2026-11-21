@@ -188,8 +188,16 @@ const bilibiliQualityOptions: Array<{ value: QualityLevel; label: string }> = [
   { value: "hires", label: "Hi-Res" },
 ];
 
+const youtubeQualityOptions: Array<{ value: QualityLevel; label: string }> = [
+  { value: "standard", label: "AAC 128K" },
+  { value: "higher", label: "Opus 70K" },
+  { value: "exhigh", label: "Opus 160K" },
+];
+
 function sourceQualityOptionsForTrack(source: Track["source"]) {
-  return source === "bilibili" ? bilibiliQualityOptions : qualityOptions;
+  if (source === "bilibili") return bilibiliQualityOptions;
+  if (source === "youtube") return youtubeQualityOptions;
+  return qualityOptions;
 }
 
 function MvAudioQualitySelect({
@@ -212,7 +220,10 @@ function MvAudioQualitySelect({
   variant?: "glass" | "dark";
 }) {
   const qualitySwitchableSource =
-    activeTrack.source === "netease" || activeTrack.source === "qq" || activeTrack.source === "bilibili";
+    activeTrack.source === "netease" ||
+    activeTrack.source === "qq" ||
+    activeTrack.source === "bilibili" ||
+    activeTrack.source === "youtube";
   if (onQualityLevelChange && qualitySwitchableSource) {
     const availableLevels = activeTrack.availableLevels ?? [];
     const hasKnown = availableLevels.length > 0;
@@ -445,7 +456,7 @@ function PlayerVideoCurtain({
         )}
       >
         <div className="min-w-0 flex-1">
-          <p className={cn("flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em]", immersive ? "text-white/60" : "text-neutral-500")}>
+          <p className={cn("flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em]", immersive ? "text-white/60" : "text-neutral-500")}>
             <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: palette.primary }} />
             <span className="truncate">
               {sourceLabel[activeTrack.source]} · MV {immersive ? "沉浸画面" : "实时画面"} · {exclusiveMode ? "直通播放" : "独立音频输出"}
@@ -757,7 +768,11 @@ export function PlayerSurface({
   // cached/limited stream must not overwrite the user's selected button.
   const resolvedQualityLevel = qualityLevel;
   const availableLevels = activeTrack.availableLevels ?? [];
-  const qualitySwitchableSource = activeTrack.source === "netease" || activeTrack.source === "qq" || activeTrack.source === "bilibili";
+  const qualitySwitchableSource =
+    activeTrack.source === "netease" ||
+    activeTrack.source === "qq" ||
+    activeTrack.source === "bilibili" ||
+    activeTrack.source === "youtube";
   const hasKnownQualityLevels = qualitySwitchableSource && availableLevels.length > 0;
   const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [songOptionsOpen, setSongOptionsOpen] = useState(false);
@@ -898,7 +913,7 @@ export function PlayerSurface({
           <div className="min-w-0 shrink-0">
             <div className="flex items-start gap-3">
               <div className="min-w-0 flex-1 py-1">
-                <p className="truncate text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {exclusiveMode ? "直通播放" : "正在播放"}</p>
+                <p className="truncate text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{sourceLabel[activeTrack.source]} · {exclusiveMode ? "直通播放" : "正在播放"}</p>
                 <p className="mt-1 whitespace-nowrap text-xs font-medium leading-5 text-neutral-600">{formatAudioDetail(activeTrack)} <span className="text-neutral-400">· {activeTrack.duration}</span></p>
               </div>
               <div className="player-header-actions ml-auto flex shrink-0 items-center gap-2">
@@ -1056,25 +1071,32 @@ export function PlayerSurface({
               style={{ background: `linear-gradient(135deg, var(--player-quality-sheen, rgba(255,255,255,0.28)), ${colorWithAlpha(palette.secondary, 0.1)})` }}
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">Quality</p>
+                <p className="text-xs font-medium text-neutral-500">音质</p>
                 <div className="flex items-center gap-2">
                   {hifiEnabled && <Badge>HiFi 优先</Badge>}
                   <div className="player-quality-group flex flex-wrap gap-1 rounded-full bg-white/60 p-1">
-                  {sourceQualityOptionsForTrack(activeTrack.source).map((option) => (
-                    <button
-                      key={option.value}
-                      aria-pressed={resolvedQualityLevel === option.value}
-                      className={cn(
-                        "player-quality-option rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
-                        resolvedQualityLevel === option.value && "is-active bg-neutral-950 text-white shadow-sm",
-                        !qualitySwitchableSource || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value)) ? "opacity-45" : undefined,
-                      )}
-                      disabled={!qualitySwitchableSource || (hasKnownQualityLevels && option.value !== "standard" && !availableLevels.includes(option.value))}
-                      onClick={() => onQualityLevelChange(option.value)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+                  {qualityOptions.map((option) => {
+                    const isAvailable =
+                      qualitySwitchableSource && (!hasKnownQualityLevels || availableLevels.includes(option.value));
+                    const isEmptySlot = !isAvailable;
+                    const isActive = isAvailable && resolvedQualityLevel === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        aria-pressed={isActive}
+                        title={isEmptySlot ? "当前音源暂无此档位" : undefined}
+                        className={cn(
+                          "player-quality-option rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
+                          isActive && "is-active bg-neutral-950 text-white shadow-sm",
+                          isEmptySlot && "is-empty-slot border border-dashed border-neutral-300/80 bg-transparent text-neutral-400/75 opacity-60",
+                        )}
+                        disabled={isEmptySlot}
+                        onClick={() => onQualityLevelChange(option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
                   </div>
                 </div>
               </div>
@@ -1364,8 +1386,7 @@ export function ImmersivePlayerView({
           <div className="relative z-10 grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-6 py-6 lg:px-10 2xl:px-14">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/40">Immersive</p>
-                <p className="mt-1 whitespace-nowrap text-sm text-white/55">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
+                <p className="whitespace-nowrap text-sm text-white/55">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {BILIBILI_VIDEO_ENABLED && activeTrack.videoUrl && (
@@ -1391,7 +1412,7 @@ export function ImmersivePlayerView({
                   <CoverArt track={activeTrack} className="size-full" fit="cover" large />
                 </div>
                 <div className="min-w-0 lg:hidden">
-                  <h1 className="line-clamp-2 text-xl font-semibold leading-tight" title={activeTrack.title}>
+                  <h1 className="truncate text-xl font-semibold leading-tight" title={activeTrack.title}>
                     <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
                   </h1>
                   <p className="mt-1 truncate text-sm text-white/60">
@@ -1403,7 +1424,7 @@ export function ImmersivePlayerView({
 
               <div className="flex min-h-0 min-w-0 flex-col justify-center overflow-hidden">
                 <div className="hidden shrink-0 lg:block">
-                  <h1 className="line-clamp-2 text-3xl font-semibold leading-tight 2xl:text-4xl" title={activeTrack.title}>
+                  <h1 className="truncate text-3xl font-semibold leading-tight 2xl:text-4xl" title={activeTrack.title}>
                     <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
                   </h1>
                   <p className="mt-3 truncate text-lg text-white/65">

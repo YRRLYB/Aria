@@ -47,8 +47,8 @@ export function QueueList({
         <div
           key={track.id}
           className={cn(
-            "group relative flex w-full items-center rounded-3xl p-2 text-left transition hover:bg-white/65",
-            activeTrackId === track.id && "bg-white shadow-sm",
+            "group relative flex w-full items-center rounded-2xl p-2 text-left transition hover:bg-white/65",
+            activeTrackId === track.id && "bg-white/75",
           )}
         >
           <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onPickTrack(track.id)}>
@@ -56,7 +56,7 @@ export function QueueList({
             <div className="min-w-0 flex-1">
               {/* Actions float above the row instead of reserving ~130px of
                   transparent width, so song names can use the full sidebar. */}
-              <p className="line-clamp-2 min-w-0 break-words text-sm font-semibold leading-5" title={track.title}>
+              <p className="min-w-0 truncate text-sm font-semibold leading-5" title={track.title}>
                 <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
               </p>
               <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-neutral-500">
@@ -161,14 +161,9 @@ export function PlayerSidePanel({
 }) {
   return (
     <aside className="glass hidden min-h-0 min-w-0 flex-col rounded-[1.5rem] p-4 lg:flex">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.24em] text-neutral-400">
-            {mode === "lyrics" ? "Lyrics" : "Queue"}
-          </p>
-          <h2 className="mt-1 text-xl font-semibold">{mode === "lyrics" ? (track.lyrics.some((line) => line.words?.length) ? "逐字歌词" : "同步歌词") : "下一首"}</h2>
-        </div>
-        <div className="flex rounded-full bg-white/60 p-1 shadow-sm">
+      <div className="flex items-center justify-between gap-3 border-b border-neutral-950/6 pb-3">
+        <h2 className="text-base font-semibold tracking-tight">{mode === "lyrics" ? (track.lyrics.some((line) => line.words?.length) ? "逐字歌词" : "同步歌词") : "下一首"}</h2>
+        <div className="flex rounded-full bg-neutral-950/[0.045] p-0.5">
           <button
             className={cn(
               "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
@@ -250,9 +245,9 @@ function SidebarLyrics({
   };
 
   return (
-    <div className="relative mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.25rem] bg-white p-4 shadow-sm">
-      <div className="relative z-10 mb-3 min-w-0">
-        <p className="line-clamp-2 break-words text-sm font-semibold leading-5" title={track.title}>
+    <div className="relative mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="relative z-10 mb-2.5 min-w-0 px-1">
+        <p className="min-w-0 truncate text-sm font-semibold leading-5" title={track.title}>
           <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
         </p>
         <p className="truncate text-xs text-neutral-500" title={track.artist}>

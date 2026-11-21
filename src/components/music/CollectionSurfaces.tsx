@@ -1,23 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Clock3, Cloud, Disc3, Heart, LoaderCircle, Play, Plus, Radio, RefreshCw, Sparkles } from "lucide-react";
+import { Clock3, Cloud, Disc3, Heart, Link2, LoaderCircle, Play, Plus, Radio, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { LocalPlaylist, LocalPlaylistRemoteRef } from "@/lib/localPlaylists";
 import { computeListeningInsights, formatListeningDuration } from "@/lib/listeningStats";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatAudioDetail, mergeTracks } from "@/lib/playerPresentation";
+import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { cn } from "@/lib/utils";
 import { SourceBadge, SourceLogo, SourceToggle, type SourceToggleOption } from "./SourceLogos";
 import { ArtworkImage } from "./ArtworkImage";
 import { PlaylistDetail } from "./PlaylistDetail";
 import { AddToPlaylistButton } from "./PlaylistActions";
-import { LocalPlaylistSurface, type LocalPlaylistSurfaceProps } from "./LocalPlaylistSurfaces";
+import { BilibiliLinkDialog, LocalPlaylistSurface, type LocalPlaylistSurfaceProps } from "./LocalPlaylistSurfaces";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
-type LikedSource = "all" | SourceToggleOption | "bilibili";
+// 我喜欢页的来源筛选。YouTube v1 不提供账号收藏（capabilities.liked=false），
+// 因此这里显式列出四源，不随 SourceToggleOption 自动扩展。
+type LikedSource = "all" | "local" | "netease" | "qq" | "bilibili" | "youtube";
 
 export function CollectionSurface({
   title,
@@ -38,8 +43,8 @@ export function CollectionSurface({
   tracks: Track[];
   refreshing?: boolean;
   onRefresh?: () => void;
-  onPickTrack: (id: string) => void;
-  /** 双源切换:每日推荐/私人漫游等聚合页按 logo 切换网易云与 QQ。 */
+  onPickTrack: (id: string, queue?: Track[]) => void;
+  /** 双源切换:每日推荐/私人漫游等聚合页按 logo 切换网易云与 QQ。*/
   sourceToggle?: { value: "netease" | "qq"; onChange: (source: "netease" | "qq") => void };
   emptyText?: string;
   loading?: boolean;
@@ -68,8 +73,8 @@ export function CollectionSurface({
           <SourceToggle
             value={sourceToggle.value}
             onChange={(source) => {
-              // 本切换器只提供在线双源选项，SourceToggle 的联合类型里还有 local。
-              if (source !== "local") sourceToggle.onChange(source);
+              // 本切换器只提供在线双源选项，SourceToggle 的联合类型里还有 local/bilibili。
+              if (source === "netease" || source === "qq") sourceToggle.onChange(source);
             }}
             options={["netease", "qq"]}
             ariaLabel="推荐来源"
@@ -94,7 +99,7 @@ export function CollectionSurface({
         <VirtualTrackList
           className={sourceToggle ? "mt-5" : "mt-8"}
           tracks={tracks}
-          emptyText={emptyText ?? "暂无曲目，先扫描本地音乐或登录后同步红心。"}
+          emptyText={emptyText ?? "暂无曲目，先扫描本地音乐或登录后同步红心。"} 
           onPickTrack={onPickTrack}
         />
       )}
@@ -107,10 +112,13 @@ export function LikedSurface({
   neteaseTracks,
   qqTracks,
   bilibiliTracks,
+  youtubeTracks = [],
   neteaseConnected,
   qqConnected,
   bilibiliConnected,
+  youtubeConnected = false,
   bilibiliError = null,
+  youtubeError = null,
   refreshing = false,
   onRefresh,
   onVisibleTracksChange,
@@ -120,33 +128,36 @@ export function LikedSurface({
   neteaseTracks: Track[];
   qqTracks: Track[];
   bilibiliTracks: Track[];
+  youtubeTracks?: Track[];
   neteaseConnected: boolean;
   qqConnected: boolean;
   bilibiliConnected: boolean;
+  youtubeConnected?: boolean;
   bilibiliError?: string | null;
+  youtubeError?: string | null;
   refreshing?: boolean;
   onRefresh?: (source: LikedSource) => void;
   onVisibleTracksChange?: (tracks: Track[]) => void;
-  onPickTrack: (id: string) => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
   // 全部来源聚合是默认视图；来源按钮仍可单独查看。
   const [likedSource, setLikedSource] = useState<LikedSource>("all");
-  const connectionRef = useRef({ neteaseConnected, qqConnected, bilibiliConnected });
+  const connectionRef = useRef({ neteaseConnected, qqConnected, bilibiliConnected, youtubeConnected });
   useEffect(() => {
     const previous = connectionRef.current;
     if (!previous.qqConnected && qqConnected && !neteaseConnected && likedSource === "netease") setLikedSource("qq");
     if (!previous.neteaseConnected && neteaseConnected && !qqConnected && likedSource === "qq") setLikedSource("netease");
-    connectionRef.current = { neteaseConnected, qqConnected, bilibiliConnected };
-  }, [neteaseConnected, qqConnected, bilibiliConnected, likedSource]);
+    connectionRef.current = { neteaseConnected, qqConnected, bilibiliConnected, youtubeConnected };
+  }, [neteaseConnected, qqConnected, bilibiliConnected, youtubeConnected, likedSource]);
 
   const allTracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks, ...bilibiliTracks]),
-    [localTracks, neteaseTracks, qqTracks, bilibiliTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks, ...bilibiliTracks, ...youtubeTracks]),
+    [localTracks, neteaseTracks, qqTracks, bilibiliTracks, youtubeTracks],
   );
   const columns: Record<LikedSource, { title: string; subtitle: string; emptyText: string; tracks: Track[] }> = {
     all: {
       title: "全部喜欢",
-      subtitle: `本地、网易云、QQ 音乐与 B站共 ${allTracks.length} 首`,
+      subtitle: `本地、网易云、QQ 音乐、B站、YouTube 共 ${allTracks.length} 首`,
       emptyText: "还没有红心歌曲；在播放页点亮红心后会出现在这里。",
       tracks: allTracks,
     },
@@ -158,7 +169,7 @@ export function LikedSurface({
     },
     netease: {
       title: "网易云我喜欢",
-      subtitle: neteaseConnected ? `网易云账号已同步 ${neteaseTracks.length} 首` : "扫码或 Cookie 登录后读取",
+      subtitle: neteaseConnected ? `网易云账号已同步 ${neteaseTracks.length} 首` : "扫码或 Cookie 登录后读取。",
       emptyText: neteaseConnected ? "网易云账号暂无红心歌曲。" : "登录网易云后即可同步红心歌曲。",
       tracks: neteaseTracks,
     },
@@ -168,17 +179,29 @@ export function LikedSurface({
         ? qqTracks.length
           ? `QQ 音乐账号已同步 ${qqTracks.length} 首`
           : "QQ 音乐账号暂无红心歌曲"
-        : "登录 QQ 音乐后读取",
+        : "登录 QQ 音乐后读取。",
       emptyText: qqConnected
         ? "QQ 音乐账号暂无红心歌曲；如果刚在手机上点过红心，点右上角「同步红心」再试一次。"
         : "登录 QQ 音乐后即可同步红心歌曲。",
       tracks: qqTracks,
     },
+    youtube: {
+      title: "YouTube 赞过的音乐",
+      subtitle: youtubeConnected
+        ? youtubeError
+          ? "YouTube 喜欢的音乐读取失败。"
+          : `YouTube Music 已同步 ${youtubeTracks.length} 首`
+        : "登录 YouTube 账号后读取「赞过的音乐」",
+      emptyText: youtubeConnected
+        ? youtubeError ?? "YouTube「赞过的音乐」暂无曲目；在 YouTube Music 或播放页点亮红心后会同步到这里。"
+        : "在设置里登录 YouTube 后即可同步喜欢的音乐。",
+      tracks: youtubeTracks,
+    },
     bilibili: {
       title: "B站收藏",
       subtitle: bilibiliConnected
         ? bilibiliError
-          ? "B站收藏读取失败"
+          ? "B站收藏读取失败。"
           : `B站「Aria」收藏夹已同步 ${bilibiliTracks.length} 首`
         : "扫码登录后读取「Aria」收藏夹",
       emptyText: bilibiliConnected
@@ -201,7 +224,7 @@ export function LikedSurface({
           variant="glass"
           onClick={() => onRefresh?.(likedSource)}
           disabled={likedSource === "local" || refreshing}
-          title={likedSource === "local" ? "本地红心由播放页维护" : likedSource === "all" ? "同时同步网易云、QQ 音乐与 B站" : "重新同步当前音源的喜欢列表"}
+          title={likedSource === "local" ? "本地红心由播放页维护" : likedSource === "all" ? "同时同步网易云、QQ 音乐、B站与 YouTube" : "重新同步当前音源的喜欢列表"}
         >
           <RefreshCw className={cn(refreshing && "animate-spin")} />
           {refreshing ? "同步中…" : "同步红心"}
@@ -216,6 +239,7 @@ export function LikedSurface({
             ["netease", "网易云", neteaseTracks.length, "netease"],
             ["qq", "QQ 音乐", qqTracks.length, "qq"],
             ["bilibili", "B站", bilibiliTracks.length, "bilibili"],
+            ["youtube", "YouTube", youtubeTracks.length, "youtube"],
           ] as const
         ).map(([source, label, count, logo]) => {
           const activeSource = likedSource === source;
@@ -242,6 +266,11 @@ export function LikedSurface({
       {bilibiliConnected && bilibiliError && (likedSource === "all" || likedSource === "bilibili") && (
         <p role="alert" className="mt-3 shrink-0 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-700">
           B站：{bilibiliError}
+        </p>
+      )}
+      {youtubeConnected && youtubeError && (likedSource === "all" || likedSource === "youtube") && (
+        <p role="alert" className="mt-3 shrink-0 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-700">
+          YouTube：{youtubeError}
         </p>
       )}
 
@@ -272,7 +301,7 @@ function LikedColumn({
   emptyText: string;
   tracks: Track[];
   onVisibleTracksChange?: (tracks: Track[]) => void;
-  onPickTrack: (id: string) => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
   const virtual = useVirtualRows({ count: tracks.length, rowHeight: 72, overscan: 10 });
   const visibleTracks = useMemo(
@@ -310,7 +339,7 @@ function LikedColumn({
                 key={track.id}
                 className="absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_auto_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
                 style={{ top: offsetTop }}
-                onClick={() => onPickTrack(track.id)}
+                onClick={() => onPickTrack(track.id, tracks)}
               >
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0 flex-1">
@@ -338,6 +367,48 @@ function LikedColumn({
   );
 }
 
+export type PlaylistSourceTab = "netease" | "local" | "qq" | "bilibili" | "youtube";
+
+/** YouTube Music 歌单标签的数据包：账号播放列表（只读）。*/
+export type PlaylistSurfacePropsYoutube = {
+  connected: boolean;
+  playlists: ProviderPlaylist[];
+  loading: boolean;
+  error: string | null;
+  selectedPlaylist: ProviderPlaylist | null;
+  tracks: Track[];
+  tracksLoading: boolean;
+  tracksError: string | null;
+  onOpen: (playlist: ProviderPlaylist) => void;
+  onClose: () => void;
+  onRefresh: () => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+  onRequireLogin: () => void;
+};
+
+export type BilibiliPlaylistTabProps = {
+  connected: boolean;
+  playlists: ProviderPlaylist[];
+  loading: boolean;
+  error: string | null;
+  selectedPlaylist: ProviderPlaylist | null;
+  tracks: Track[];
+  tracksLoading: boolean;
+  tracksError: string | null;
+  playCounts: Record<string, number>;
+  /** 通过链接引用进来的B站收藏夹/合集镜像（存在 Aria 歌单里）。*/
+  referencedPlaylists: LocalPlaylist[];
+  onOpen: (playlist: ProviderPlaylist) => void;
+  onClose: () => void;
+  onRefresh: () => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+  onRequireLogin: () => void;
+  onCreateReference: (name: string, tracks: Track[], remoteRef: LocalPlaylistRemoteRef) => LocalPlaylist;
+  onSyncReference: (id: string, tracks: Track[], title?: string) => void;
+  onOpenReferenced: (id: string) => void;
+  onDeleteReferenced?: (id: string) => void;
+};
+
 export function PlaylistSurface({
   playlists,
   selectedPlaylist,
@@ -359,7 +430,10 @@ export function PlaylistSurface({
   onDeletePlaylist,
   local,
   qq,
+  bilibili,
+  youtube,
   initialSource = null,
+  sourceRequest = null,
 }: {
   playlists: ProviderPlaylist[];
   local: LocalPlaylistSurfaceProps;
@@ -391,11 +465,18 @@ export function PlaylistSurface({
     onClose: () => void;
     onPickTrack: (id: string, queue?: Track[]) => void;
   };
-  /** 从搜索/探索直接打开某个来源的歌单时强制初始标签。 */
-  initialSource?: "netease" | "local" | "qq" | null;
+  bilibili: BilibiliPlaylistTabProps;
+  youtube: PlaylistSurfacePropsYoutube;
+  /** 从搜索/探索直接打开某个来源的歌单时强制初始标签。*/
+  initialSource?: PlaylistSourceTab | null;
+  /**
+   * 页面已停留在歌单页时，父组件临时下发的来源切换请求（比如从B站标签点开
+   * 引用镜像后跳回 Aria 歌单页）。nonce 保证同一来源的重复请求也会生效。"
+   */
+  sourceRequest?: { source: PlaylistSourceTab; nonce: number } | null;
 }) {
   const [playlistFilter, setPlaylistFilter] = useState<"all" | "owned" | "saved">("all");
-  const [playlistSource, setPlaylistSource] = useState<"netease" | "local" | "qq">(() =>
+  const [playlistSource, setPlaylistSource] = useState<PlaylistSourceTab>(() =>
     initialSource ?? (qq.connected && !canCreatePlaylist ? "qq" : "netease"),
   );
   const playlistConnectionRef = useRef({ netease: canCreatePlaylist, qq: qq.connected });
@@ -411,6 +492,11 @@ export function PlaylistSurface({
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const createPendingRef = useRef(false);
+
+  // 父组件（如B站标签）在页面停留期间请求切换来源标签。"
+  useEffect(() => {
+    if (sourceRequest) setPlaylistSource(sourceRequest.source);
+  }, [sourceRequest]);
 
   async function submitPlaylist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -443,7 +529,15 @@ export function PlaylistSurface({
   }, [playlistFilter, playlists]);
 
   if (playlistSource === "local") {
-    return <LocalPlaylistSurface {...local} onOpenNetease={() => setPlaylistSource("netease")} />;
+    return <LocalPlaylistSurface {...local} />;
+  }
+
+  if (playlistSource === "bilibili") {
+    return <BilibiliPlaylistTab bilibili={bilibili} playCounts={playCounts} onRequireLogin={onRequireLogin} onSelectSource={setPlaylistSource} />;
+  }
+
+  if (playlistSource === "youtube") {
+    return <YoutubePlaylistTab youtube={youtube} playCounts={playCounts} onRequireLogin={onRequireLogin} onSelectSource={setPlaylistSource} />;
   }
 
   if (playlistSource === "qq") {
@@ -621,12 +715,334 @@ export function PlaylistSurface({
 }
 
 function SourceTabs({ playlistSource, onSelect }: {
-  playlistSource: "netease" | "local" | "qq";
-  onSelect: (source: "netease" | "local" | "qq") => void;
+  playlistSource: PlaylistSourceTab;
+  onSelect: (source: PlaylistSourceTab) => void;
 }) {
   return (
     <div className="mt-6">
-      <SourceToggle value={playlistSource} onChange={onSelect} options={["netease", "qq", "local"]} ariaLabel="歌单来源" />
+      <SourceToggle value={playlistSource} onChange={onSelect} options={["netease", "qq", "bilibili", "youtube", "local"]} ariaLabel="歌单来源" />
+    </div>
+  );
+}
+
+/**
+ * YouTube Music 歌单标签：登录账号的音乐播放列表（含固定置顶的「喜欢的音乐」），
+ * 全部只读——整理请前往 YouTube Music"
+ */
+function YoutubePlaylistTab({
+  youtube,
+  playCounts,
+  onRequireLogin,
+  onSelectSource,
+}: {
+  youtube: PlaylistSurfacePropsYoutube;
+  playCounts: Record<string, number>;
+  onRequireLogin: () => void;
+  onSelectSource: (source: PlaylistSourceTab) => void;
+}) {
+  if (youtube.selectedPlaylist) {
+    const selectedPlaylist = youtube.selectedPlaylist;
+    return (
+      <PlaylistDetail
+        key={selectedPlaylist.id}
+        playlist={selectedPlaylist}
+        tracks={youtube.tracks}
+        loading={youtube.tracksLoading}
+        error={youtube.tracksError}
+        connected={false}
+        showSubscribe={false}
+        playCounts={playCounts}
+        onBack={youtube.onClose}
+        onRetry={() => youtube.onOpen(selectedPlaylist)}
+        onPickTrack={youtube.onPickTrack}
+        onUpdate={async () => {}}
+        onUploadCover={async () => {}}
+        onRemove={async () => {}}
+        onReorder={async () => {}}
+        onSubscribe={async () => {}}
+        onDelete={async () => {}}
+        onRequireLogin={onRequireLogin}
+      />
+    );
+  }
+
+  return (
+    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <Badge>YouTube playlist</Badge>
+          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">YouTube 歌单</h1>
+          <p className="mt-3 text-sm text-neutral-500">
+            登录后同步你账号里的音乐播放列表；「喜欢的音乐」固定排在最前面。
+          </p>
+        </div>
+        {youtube.connected && (
+          <Button variant="glass" onClick={youtube.onRefresh} disabled={youtube.loading} aria-label="刷新 YouTube 歌单列表">
+            {youtube.loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+            同步歌单
+          </Button>
+        )}
+      </div>
+      {!youtube.connected && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-rose-50/70 px-4 py-3 text-sm text-neutral-600">
+          <span>登录 YouTube 后即可在这里看到你的音乐歌单；搜索与播放无需登录。</span>
+          <Button size="sm" onClick={onRequireLogin}>前往登录</Button>
+        </div>
+      )}
+      {youtube.error && (
+        <div role="alert" className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span>{youtube.error}</span>
+          <Button size="sm" onClick={onRequireLogin}>前往登录</Button>
+        </div>
+      )}
+      <SourceTabs playlistSource="youtube" onSelect={onSelectSource} />
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {youtube.playlists.map((playlist) => (
+          <button
+            key={playlist.id}
+            className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+            onClick={() => youtube.onOpen(playlist)}
+          >
+            {playlist.coverUrl ? (
+              <ArtworkImage
+                src={playlist.coverUrl}
+                cacheSize={160}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                fetchPriority="low"
+                draggable={false}
+                className="size-16 rounded-2xl object-cover shadow-sm"
+              />
+            ) : (
+              <span className="flex size-16 items-center justify-center rounded-2xl bg-[#ffe0e6] text-[#FF0033]">
+                <SourceLogo source="youtube" className="size-7" />
+              </span>
+            )}
+            <h2 className="mt-8 break-words text-2xl font-semibold">{playlist.name}</h2>
+            <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount ? `${playlist.trackCount} 首` : playlist.id === "FEmusic_liked_songs" ? "喜欢的音乐" : "打开查看曲目"}</p>
+            <Badge className="mt-5">YouTube Music</Badge>
+          </button>
+        ))}
+      </div>
+      {!youtube.playlists.length && !youtube.loading && (
+        <EmptyState
+          text={youtube.connected
+            ? "还没有可同步的播放列表。在 YouTube Music 里创建或收藏歌单后，点上方「同步歌单」。"
+            : "登录 YouTube 后，你的音乐歌单会自动同步到这里。"}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * B站歌单 tab：登录账号的收藏夹自动同步成只读歌单；粘贴链接可引入
+ * 别人的公开收藏夹或合集（存在 Aria 歌单里的同步镜像，随时刷新）。"
+ */
+function BilibiliPlaylistTab({
+  bilibili,
+  playCounts,
+  onRequireLogin,
+  onSelectSource,
+}: {
+  bilibili: BilibiliPlaylistTabProps;
+  playCounts: Record<string, number>;
+  onRequireLogin: () => void;
+  onSelectSource: (source: PlaylistSourceTab) => void;
+}) {
+  const [importOpen, setImportOpen] = useState(false);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  async function refreshMirror(playlist: LocalPlaylist) {
+    if (!playlist.remoteRef || syncingId) return;
+    setSyncingId(playlist.id);
+    setSyncError(null);
+    try {
+      const resolved = await api.resolveSourceLink("bilibili", playlist.remoteRef.url);
+      bilibili.onSyncReference(
+        playlist.id,
+        resolved.tracks.map((track, index) => providerTrackToUiTrack(track, index)),
+        resolved.title,
+      );
+    } catch (reason) {
+      setSyncError(reason instanceof Error ? reason.message : "同步B站歌单失败，请稍后重试");
+    } finally {
+      setSyncingId(null);
+    }
+  }
+
+  if (bilibili.selectedPlaylist) {
+    const selectedPlaylist = bilibili.selectedPlaylist;
+    return (
+      <PlaylistDetail
+        key={selectedPlaylist.id}
+        playlist={selectedPlaylist}
+        tracks={bilibili.tracks}
+        loading={bilibili.tracksLoading}
+        error={bilibili.tracksError}
+        connected={false}
+        showSubscribe={false}
+        playCounts={playCounts}
+        onBack={bilibili.onClose}
+        onRetry={() => bilibili.onOpen(selectedPlaylist)}
+        onPickTrack={bilibili.onPickTrack}
+        onUpdate={async () => {}}
+        onUploadCover={async () => {}}
+        onRemove={async () => {}}
+        onReorder={async () => {}}
+        onSubscribe={async () => {}}
+        onDelete={async () => {}}
+        onRequireLogin={onRequireLogin}
+      />
+    );
+  }
+
+  return (
+    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <Badge>Bilibili playlist</Badge>
+          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">B站歌单</h1>
+          <p className="mt-3 text-sm text-neutral-500">
+            登录后自动同步你的收藏夹；粘贴链接可以引入别人的公开收藏夹或合集。
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {bilibili.connected && (
+            <Button variant="glass" onClick={bilibili.onRefresh} disabled={bilibili.loading} aria-label="刷新B站收藏夹列表">
+              {bilibili.loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+              同步收藏夹
+            </Button>
+          )}
+          <Button onClick={() => setImportOpen(true)}>
+            <Link2 />引入B站歌单
+          </Button>
+        </div>
+      </div>
+      {!bilibili.connected && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-violet-50/70 px-4 py-3 text-sm text-neutral-600">
+          <span>登录B站后，你的收藏夹会自动出现在这里；也可以先粘贴公开链接引入别人的歌单。</span>
+          <Button size="sm" onClick={onRequireLogin}>前往登录</Button>
+        </div>
+      )}
+      {bilibili.error && (
+        <div role="alert" className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span>{bilibili.error}</span>
+          <Button size="sm" onClick={onRequireLogin}>前往登录</Button>
+        </div>
+      )}
+      {syncError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-600">{syncError}</p>}
+      <SourceTabs playlistSource="bilibili" onSelect={onSelectSource} />
+      <section className="mt-6" aria-labelledby="bilibili-own-playlists">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="bilibili-own-playlists" className="text-lg font-semibold">我的收藏夹</h2>
+          <span className="text-xs text-neutral-400">登录账号实时读取 · 只读</span>
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+          {bilibili.playlists.map((playlist) => (
+            <button
+              key={playlist.id}
+              className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+              onClick={() => bilibili.onOpen(playlist)}
+            >
+              <span className="flex size-16 items-center justify-center rounded-2xl bg-[#e6f7ff] text-[#00AEEC]">
+                <SourceLogo source="bilibili" className="size-7" />
+              </span>
+              <h3 className="mt-8 break-words text-2xl font-semibold">{playlist.name}</h3>
+              <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount ? `${playlist.trackCount} 首` : "空收藏夹"}</p>
+              <Badge className="mt-5">B站收藏夹</Badge>
+            </button>
+          ))}
+        </div>
+        {!bilibili.playlists.length && !bilibili.loading && (
+          <EmptyState
+            text={bilibili.connected
+              ? "还没有可同步的收藏夹。在B站里把视频加入收藏夹后，点上方「同步收藏夹」。"
+              : "登录B站后，你的收藏夹会自动同步到这里。"}
+          />
+        )}
+      </section>
+      <section className="mt-8" aria-labelledby="bilibili-referenced-playlists">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="bilibili-referenced-playlists" className="text-lg font-semibold">引入的B站歌单</h2>
+          <span className="text-xs text-neutral-400">别人的收藏夹 / 合集 · 可刷新同步</span>
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+          {bilibili.referencedPlaylists.map((playlist) => (
+            <div key={playlist.id} className="group relative min-h-48">
+              <button
+                type="button"
+                className="h-full min-h-48 w-full overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+                onClick={() => bilibili.onOpenReferenced(playlist.id)}
+              >
+                <span className="flex size-16 items-center justify-center rounded-2xl bg-[#e6f7ff] text-[#00AEEC]">
+                  <SourceLogo source="bilibili" className="size-7" />
+                </span>
+                <h3 className="mt-8 break-words pr-10 text-2xl font-semibold">{playlist.name}</h3>
+                <p className="mt-2 text-sm text-neutral-500">{playlist.trackIds.length} 首</p>
+                <Badge className="mt-5">
+                  {playlist.remoteRef?.kind === "playlist" ? "B站合集镜像" : "B站收藏夹镜像"}
+                  {playlist.remoteRef?.syncedAt ? ` · ${new Date(playlist.remoteRef.syncedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}` : ""}
+                </Badge>
+              </button>
+              <div className="absolute right-4 top-4 z-10 flex gap-1.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                <button
+                  type="button"
+                  aria-label={`刷新 ${playlist.name}`}
+                  title="从B站重新同步这份歌单"
+                  disabled={syncingId === playlist.id}
+                  className="flex size-9 items-center justify-center rounded-full bg-white/90 text-neutral-400 shadow-sm ring-1 ring-black/5 transition hover:bg-violet-50 hover:text-violet-600 disabled:opacity-60"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void refreshMirror(playlist);
+                  }}
+                >
+                  {syncingId === playlist.id ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                </button>
+                {bilibili.onDeleteReferenced && (
+                  <button
+                    type="button"
+                    aria-label={`删除 ${playlist.name}`}
+                    title="删除这份镜像歌单（不影响B站收藏夹）"
+                    className="flex size-9 items-center justify-center rounded-full bg-white/90 text-neutral-400 shadow-sm ring-1 ring-black/5 transition hover:bg-red-50 hover:text-red-600"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (window.confirm(`删除镜像歌单“${playlist.name}”？B站收藏夹本身不会被修改。`)) bilibili.onDeleteReferenced?.(playlist.id);
+                    }}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        {!bilibili.referencedPlaylists.length && (
+          <EmptyState text="把别人的B站收藏夹或合集链接粘贴到「引入B站歌单」，就会在这里生成一份可刷新的镜像歌单。" />
+        )}
+      </section>
+      {importOpen && (
+        <BilibiliLinkDialog
+          mode="reference"
+          onClose={() => setImportOpen(false)}
+          onReference={(resolved) => {
+            const created = bilibili.onCreateReference(
+              resolved.title ?? (resolved.kind === "playlist" ? "B站合集" : "B站收藏夹"),
+              resolved.tracks,
+              {
+                source: "bilibili",
+                url: resolved.url,
+                kind: resolved.kind,
+                ...(resolved.title ? { title: resolved.title } : {}),
+              },
+            );
+            setImportOpen(false);
+            bilibili.onOpenReferenced(created.id);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -657,8 +1073,8 @@ export function StatsSurface({
     <div className="stats-surface glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-[var(--accent)]">Listening Insights</p>
-          <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">听歌洞察</h1>
+          {/* listening insights heading */}
+          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">听歌洞察</h1>
           <p className="mt-2 text-sm text-[var(--text-secondary)]">{insights.personaDetail}</p>
         </div>
         <div className="stats-persona-pill inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--surface)] px-4 py-2 text-xs font-semibold shadow-sm">
@@ -738,7 +1154,7 @@ export function StatsSurface({
               <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
                 {insights.peakHour !== null
                   ? `最活跃时段 ${String(insights.peakHour).padStart(2, "0")}:00 – ${String((insights.peakHour + 1) % 24).padStart(2, "0")}:00`
-                  : "按一天 24 小时统计你的活跃波峰"}
+                  : "按一年 24 小时统计你的活跃波峰"}
               </p>
             </div>
             <Badge className="tabular-nums">
@@ -772,7 +1188,7 @@ export function StatsSurface({
               );
             })}
           </div>
-          <div className="mt-2 flex items-center justify-between text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">
+          <div className="mt-2 flex items-center justify-between text-[11px] font-medium tabular-nums text-[var(--text-secondary)]">
             <span>00:00</span>
             <span>06:00</span>
             <span>12:00</span>
@@ -874,7 +1290,7 @@ export function StatsSurface({
             </div>
           ) : (
             <div className="mt-4">
-              <EmptyState text="还没有歌手聆听记录，播几首歌这里就会立体起来。" />
+              <EmptyState text="还没有歌手聆听记录，播几首歌这里就会立体起来。"/>
             </div>
           )}
         </section>
@@ -951,7 +1367,7 @@ export function StatsSurface({
             </div>
           ) : (
             <div className="mt-4">
-              <EmptyState text="先播放几首歌，单曲循环榜和听歌时间画像就会在这里呈现。" />
+              <EmptyState text="先播放几首歌，单曲循环榜和听歌时间画像就会在这里呈现。"/>
             </div>
           )}
         </section>
@@ -970,7 +1386,7 @@ function VirtualTrackList({
   tracks: Track[];
   emptyText: string;
   className?: string;
-  onPickTrack: (id: string) => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
   renderMeta?: (track: Track) => React.ReactNode;
 }) {
   const virtual = useVirtualRows({ count: tracks.length, rowHeight: 88, overscan: 10 });
@@ -986,10 +1402,10 @@ function VirtualTrackList({
               key={track.id}
               role="button"
               tabIndex={0}
-              onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id); } }}
+              onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id, tracks); } }}
               className="absolute left-0 right-0 grid h-20 grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
               style={{ top: offsetTop }}
-              onClick={() => onPickTrack(track.id)}
+              onClick={() => onPickTrack(track.id, tracks)}
             >
               <span className="text-center text-sm text-neutral-400">{index + 1}</span>
               <CoverArt track={track} className="size-14 rounded-2xl" />

@@ -3,6 +3,7 @@ import type { Track } from "@/data/music";
 import {
   createLocalPlaylist,
   createPlaylistTrackSnapshots,
+  mergeReferenceSync,
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
   writeLocalPlaylists,
@@ -41,25 +42,9 @@ export function useLocalPlaylists(tracks: Track[]) {
   }
 
   function syncReference(id: string, tracksToSync: Track[], title?: string) {
-    const snapshots = createPlaylistTrackSnapshots(tracksToSync);
-    const trimmedTitle = title?.trim().slice(0, 120);
-    setPlaylists((current) => current.map((playlist) => {
-      if (playlist.id !== id) return playlist;
-      return {
-        ...playlist,
-        name: trimmedTitle || playlist.name,
-        trackIds: [...new Set(tracksToSync.map((track) => track.id))],
-        trackSnapshots: snapshots,
-        remoteRef: playlist.remoteRef
-          ? {
-              ...playlist.remoteRef,
-              ...(trimmedTitle ? { title: trimmedTitle } : {}),
-              syncedAt: Date.now(),
-            }
-          : undefined,
-        updatedAt: Date.now(),
-      };
-    }));
+    setPlaylists((current) => current.map((playlist) =>
+      playlist.id === id ? mergeReferenceSync(playlist, tracksToSync, title) : playlist,
+    ));
   }
 
   function rename(id: string, name: string) {

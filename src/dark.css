@@ -458,6 +458,13 @@ html.dark {
   color: var(--text-secondary);
 }
 
+.dark .player-quality-option.is-empty-slot {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.28);
+  opacity: 0.72;
+}
+
 .dark .player-quality-option:not(:disabled):hover {
   color: var(--text-primary);
   background-color: rgba(255, 255, 255, 0.09);
@@ -717,8 +724,9 @@ html.dark {
   background-color: rgba(0, 0, 0, 0.72);
 }
 
-.dark [class~="bg-violet-50"] {
-  background-color: rgba(180, 155, 243, 0.14);
+.dark [class~="bg-violet-50"],
+.dark [class~="bg-violet-50/70"] {
+  background-color: rgba(180, 155, 243, 0.16);
 }
 
 .dark [class~="bg-violet-100"] {
@@ -748,6 +756,7 @@ html.dark {
 }
 
 .dark [class~="bg-amber-50"],
+.dark [class~="bg-amber-50/80"],
 .dark [class~="bg-amber-100"] {
   background-color: rgba(251, 191, 36, 0.15);
 }
@@ -875,7 +884,8 @@ html.dark {
   color: #a7f3d0;
 }
 
-.dark [class~="text-amber-700"] {
+.dark [class~="text-amber-700"],
+.dark [class~="text-amber-800"] {
   color: #fcd34d;
 }
 
@@ -1032,6 +1042,28 @@ html.dark {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.dark .home-heatmap-cell[data-outside="true"] {
+  background: transparent;
+}
+
+.dark .home-heatmap-year-nav {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dark .home-heatmap-year-nav span {
+  color: #cbb8ff;
+}
+
+.dark .home-heatmap-year-nav button {
+  color: #cbb8ff;
+}
+
+.dark .home-heatmap-year-nav button:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.22);
+  color: #eceaf7;
+}
+
 .dark .home-heatmap-cell[data-level="1"] {
   background: #0e4429;
 }
@@ -1111,6 +1143,12 @@ html.dark {
   border-color: rgba(129, 140, 248, 0.3);
   background: rgba(99, 102, 241, 0.18);
   color: #a5b4fc;
+}
+
+.dark .source-badge-youtube {
+  border-color: rgba(255, 82, 82, 0.32);
+  background: rgba(255, 82, 82, 0.16);
+  color: #ffb3b3;
 }
 
 .dark .history-eyebrow,
@@ -1257,5 +1295,82 @@ html.dark {
 
 .dark .explore-track-row:hover {
   background: rgba(255, 255, 255, 0.075);
+}
+
+/* Minimalist desktop settings surface (dark mode luminance stacking) */
+.dark .settings-shell {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(16, 17, 24, 0.88);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.48);
+}
+
+.dark .settings-header {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .settings-section {
+  border-color: rgba(255, 255, 255, 0.07);
+}
+
+.dark .settings-row-divider {
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.dark .settings-segment {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dark .settings-segment-item {
+  color: #9a9db0;
+}
+
+.dark .settings-segment-item:hover:not(:disabled) {
+  color: #f3f4f8;
+}
+
+.dark .settings-segment-item.is-active {
+  background: rgba(180, 155, 243, 0.22);
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(180, 155, 243, 0.36);
+}
+
+.dark .settings-inline-well {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.dark .settings-status-banner {
+  border-color: rgba(180, 155, 243, 0.32);
+  background: rgba(139, 115, 227, 0.16);
+  color: #ece6ff;
+}
+
+.dark .settings-status-banner.is-error {
+  border-color: rgba(251, 113, 133, 0.32);
+  background: rgba(244, 63, 94, 0.15);
+  color: #fecdd3;
+}
+
+.dark .settings-divider > :not(:first-child) {
+  border-top-color: rgba(255, 255, 255, 0.07);
+}
+
+.dark .settings-input {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(20, 21, 30, 0.88);
+  color: #f2f0fa;
+}
+
+.dark .settings-input::placeholder {
+  color: #8f8ca3;
+}
+
+.dark .settings-input:focus {
+  border-color: rgba(180, 155, 243, 0.6);
+}
+
+.dark .settings-qr-box {
+  background: #ffffff;
 }
 

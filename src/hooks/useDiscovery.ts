@@ -27,6 +27,7 @@ export type SearchBundle = {
   neteaseTracks: Track[];
   qqTracks: Track[];
   bilibiliTracks: Track[];
+  youtubeTracks: Track[];
   artists: ArtistSummary[];
   playlists: ProviderPlaylist[];
   users: ProviderUser[];
@@ -40,6 +41,7 @@ const emptySearchBundle: SearchBundle = {
   neteaseTracks: [],
   qqTracks: [],
   bilibiliTracks: [],
+  youtubeTracks: [],
   artists: [],
   playlists: [],
   users: [],
@@ -59,6 +61,7 @@ export function useDiscovery(options: {
   onMergeNeteaseTracks: (updater: (current: Track[]) => Track[]) => void;
   onMergeQqTracks: (updater: (current: Track[]) => Track[]) => void;
   onMergeBilibiliTracks?: (updater: (current: Track[]) => Track[]) => void;
+  onMergeYoutubeTracks?: (updater: (current: Track[]) => Track[]) => void;
 }) {
   const [searchBundle, setSearchBundle] =
     useState<SearchBundle>(emptySearchBundle);
@@ -67,16 +70,19 @@ export function useDiscovery(options: {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchQqError, setSearchQqError] = useState<string | null>(null);
   const [searchBilibiliError, setSearchBilibiliError] = useState<string | null>(null);
+  const [searchYoutubeError, setSearchYoutubeError] = useState<string | null>(null);
   const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchMore, setSearchMore] = useState(false);
   const [searchQqMore, setSearchQqMore] = useState(false);
   const [searchBilibiliMore, setSearchBilibiliMore] = useState(false);
+  const [searchYoutubeMore, setSearchYoutubeMore] = useState(false);
   const [searchRevision, setSearchRevision] = useState(0);
   const searchRequestRef = useRef(0);
   const searchOffsetRef = useRef(0);
   const qqSearchOffsetRef = useRef(0);
   const bilibiliSearchOffsetRef = useRef(0);
+  const youtubeSearchOffsetRef = useRef(0);
   const searchLoadingRef = useRef(false);
   const [selectedArtist, setSelectedArtist] = useState<ArtistSummary | null>(
     null,
@@ -152,13 +158,16 @@ export function useDiscovery(options: {
     searchOffsetRef.current = 0;
     qqSearchOffsetRef.current = 0;
     bilibiliSearchOffsetRef.current = 0;
+    youtubeSearchOffsetRef.current = 0;
     setSearchError(null);
     setSearchQqError(null);
     setSearchBilibiliError(null);
+    setSearchYoutubeError(null);
     setSearchTotal(0);
     setSearchMore(false);
     setSearchQqMore(false);
     setSearchBilibiliMore(false);
+    setSearchYoutubeMore(false);
     const normalizedText = text.toLowerCase();
     const localMatches =
       searchMode === "tracks" && text
@@ -196,10 +205,9 @@ export function useDiscovery(options: {
             ...new Map(items.map((item) => [item.id, item])).values(),
           ];
           setSearchBundle((current) => ({
+            ...current,
             localTracks: localMatches,
             neteaseTracks: remoteTracks,
-            qqTracks: current.qqTracks,
-            bilibiliTracks: current.bilibiliTracks,
             artists: mergeArtists([
               ...current.artists,
               ...localArtists,
@@ -321,7 +329,36 @@ export function useDiscovery(options: {
                   );
               })
           : Promise.resolve();
-      Promise.allSettled([neteaseSearch, qqSearch, bilibiliSearch]).finally(() => {
+      // YouTube 搜索与B站同构：一次性小页 + continuation 翻页，全部结果
+      // 并入应用级曲目池（youtube: 前缀天然隔离）。
+      const youtubeSearch =
+        searchMode === "tracks" && sourceSwitches.youtube !== false
+          ? api
+              .searchSource("youtube", text, "tracks", searchPageSize)
+              .then((result) => {
+                if (requestId !== searchRequestRef.current) return;
+                setSearchYoutubeError(null);
+                const uiTracks = result.tracks.map((track, index) =>
+                  providerTrackToUiTrack(track, index),
+                );
+                youtubeSearchOffsetRef.current = searchPageSize;
+                setSearchYoutubeMore(result.tracks.length >= searchPageSize);
+                options.onMergeYoutubeTracks?.((current) =>
+                  trimTrackCache([...current, ...uiTracks]),
+                );
+                setSearchBundle((current) => ({
+                  ...current,
+                  youtubeTracks: uiTracks,
+                }));
+              })
+              .catch((error) => {
+                if (requestId === searchRequestRef.current)
+                  setSearchYoutubeError(
+                    error instanceof Error ? error.message : "YouTube 搜索暂不可用；无法访问时可尝试在设置里配置代理端口。",
+                  );
+              })
+          : Promise.resolve();
+      Promise.allSettled([neteaseSearch, qqSearch, bilibiliSearch, youtubeSearch]).finally(() => {
         if (requestId === searchRequestRef.current) {
           setSearchLoading(false);
           searchLoadingRef.current = false;
@@ -332,7 +369,7 @@ export function useDiscovery(options: {
       window.clearTimeout(timer);
       searchRequestRef.current += 1;
     };
-  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision, sourceSwitches.qq, sourceSwitches.netease, sourceSwitches.bilibili]);
+  }, [localArtistSummaries, localSearchIndex, options.localSearchSignature, options.query, searchMode, searchRevision, sourceSwitches.qq, sourceSwitches.netease, sourceSwitches.bilibili, sourceSwitches.youtube]);
 
   const activeSuggestionQuery = options.suggestionQuery ?? options.query;
   useEffect(() => {
@@ -368,12 +405,16 @@ export function useDiscovery(options: {
     const shouldLoadBilibili = Boolean(
       searchMode === "tracks" && searchBilibiliMore && sourceSwitches.bilibili !== false,
     );
-    if ((!shouldLoadNetease && !shouldLoadQq && !shouldLoadBilibili) || searchLoadingRef.current) return;
+    const shouldLoadYoutube = Boolean(
+      searchMode === "tracks" && searchYoutubeMore && sourceSwitches.youtube !== false,
+    );
+    if ((!shouldLoadNetease && !shouldLoadQq && !shouldLoadBilibili && !shouldLoadYoutube) || searchLoadingRef.current) return;
 
     const requestId = searchRequestRef.current;
     const neteaseOffset = searchOffsetRef.current;
     const qqOffset = qqSearchOffsetRef.current;
     const bilibiliOffset = bilibiliSearchOffsetRef.current;
+    const youtubeOffset = youtubeSearchOffsetRef.current;
     searchLoadingRef.current = true;
     setSearchLoading(true);
 
@@ -401,11 +442,8 @@ export function useDiscovery(options: {
               ...new Map(items.map((item) => [item.id, item])).values(),
             ];
             setSearchBundle((current) => ({
-              localTracks: current.localTracks,
+              ...current,
               neteaseTracks: mergeTracks([...current.neteaseTracks, ...remoteTracks]),
-              // QQ / B站分页结果由下面的任务单独追加，这里必须原样保留。
-              qqTracks: current.qqTracks,
-              bilibiliTracks: current.bilibiliTracks,
               artists: mergeArtists([
                 ...current.artists,
                 ...result.artists.map(providerArtistToUiArtist),
@@ -523,6 +561,35 @@ export function useDiscovery(options: {
       );
     }
 
+    if (shouldLoadYoutube) {
+      setSearchYoutubeError(null);
+      tasks.push(
+        api
+          .searchSource("youtube", options.query.trim(), "tracks", searchPageSize, youtubeOffset)
+          .then((result) => {
+            if (requestId !== searchRequestRef.current) return;
+            const tracks = result.tracks.map((track, index) =>
+              providerTrackToUiTrack(track, youtubeOffset + index),
+            );
+            youtubeSearchOffsetRef.current = youtubeOffset + searchPageSize;
+            setSearchYoutubeMore(result.tracks.length >= searchPageSize);
+            options.onMergeYoutubeTracks?.((current) =>
+              trimTrackCache([...current, ...tracks]),
+            );
+            setSearchBundle((current) => ({
+              ...current,
+              youtubeTracks: mergeTracks([...current.youtubeTracks, ...tracks]),
+            }));
+          })
+          .catch((error) => {
+            if (requestId === searchRequestRef.current)
+              setSearchYoutubeError(
+                error instanceof Error ? error.message : "YouTube 加载更多失败，请重试。",
+              );
+          }),
+      );
+    }
+
     try {
       await Promise.allSettled(tasks);
     } finally {
@@ -588,15 +655,6 @@ export function useDiscovery(options: {
                 .next().value;
               if (oldest === undefined) break;
               artistRemoteTracksCacheRef.current.delete(oldest);
-            }
-            if (artistSource === "qq") {
-              options.onMergeQqTracks((current) =>
-                trimTrackCache([...current, ...remoteTracks]),
-              );
-            } else {
-              options.onMergeNeteaseTracks((current) =>
-                trimTrackCache([...current, ...remoteTracks]),
-              );
             }
             if (selectedArtistIdRef.current === artistId) {
               setArtistTracks(
@@ -768,6 +826,8 @@ export function useDiscovery(options: {
     searchMore,
     searchQqMore,
     searchBilibiliMore,
+    searchYoutubeError,
+    searchYoutubeMore,
     loadMoreSearch,
     retrySearch: () => setSearchRevision((current) => current + 1),
     selectedArtist,

@@ -1,10 +1,26 @@
-export type ShortcutCommand = "toggle" | "previous" | "next" | "show";
+export type ShortcutCommand =
+  | "toggle"
+  | "previous"
+  | "next"
+  | "volumeUp"
+  | "volumeDown"
+  | "mute"
+  | "like"
+  | "mode"
+  | "equalizer"
+  | "show";
 export type KeyboardShortcuts = Record<ShortcutCommand, string>;
 
 export const shortcutDefinitions: Array<{ command: ShortcutCommand; label: string; description: string }> = [
   { command: "toggle", label: "播放 / 暂停", description: "无论 Aria 是否在前台都可切换播放状态。" },
   { command: "previous", label: "上一首", description: "返回当前队列中的上一首歌曲。" },
   { command: "next", label: "下一首", description: "跳到当前队列中的下一首歌曲。" },
+  { command: "volumeUp", label: "音量增加", description: "每次全局调高 5% 播放音量。" },
+  { command: "volumeDown", label: "音量减小", description: "每次全局调低 5% 播放音量。" },
+  { command: "mute", label: "静音 / 恢复", description: "一键静音或恢复上次播放音量。" },
+  { command: "like", label: "喜欢 / 取消喜欢", description: "快速为当前播放歌曲点亮或取消红心。" },
+  { command: "mode", label: "切换循环 / 随机", description: "在顺序、随机与单曲循环之间切换。" },
+  { command: "equalizer", label: "均衡器面板", description: "打开或收起科学 Hi-Fi 均衡器控制台。" },
   { command: "show", label: "唤出 Aria", description: "从后台托管状态恢复主窗口。" },
 ];
 
@@ -12,6 +28,12 @@ export const defaultKeyboardShortcuts: KeyboardShortcuts = {
   toggle: "Control+Alt+Space",
   previous: "Control+Alt+Left",
   next: "Control+Alt+Right",
+  volumeUp: "Control+Alt+Up",
+  volumeDown: "Control+Alt+Down",
+  mute: "Control+Alt+M",
+  like: "Control+Alt+L",
+  mode: "Control+Alt+R",
+  equalizer: "Control+Alt+E",
   show: "Control+Alt+A",
 };
 

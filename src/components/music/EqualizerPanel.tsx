@@ -279,7 +279,7 @@ export function EqualizerPanel({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-base font-semibold tracking-tight">声学均衡控制台</h3>
-            <span className="aria-eq-spec-pill rounded-full px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.12em] tabular-nums">
+            <span className="aria-eq-spec-pill rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-[0.12em] tabular-nums">
               IIR Biquad Peaking · Q={equalizerFilterQ.toFixed(2)} · fs={equalizerReferenceSampleRate / 1000} kHz
             </span>
           </div>
@@ -322,15 +322,15 @@ export function EqualizerPanel({
       {/* Scientific Telemetry Strip */}
       <div className="mt-3.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <div className="aria-eq-metric rounded-xl px-3 py-2">
-          <p className="text-[10px] font-medium uppercase tracking-[0.14em] opacity-60">峰值增益</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] opacity-60">峰值增益</p>
           <p className="mt-0.5 text-sm font-semibold tabular-nums">{formatDb(telemetry.peakBoostDb, true)}</p>
         </div>
         <div className="aria-eq-metric rounded-xl px-3 py-2">
-          <p className="text-[10px] font-medium uppercase tracking-[0.14em] opacity-60">最深衰减</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] opacity-60">最深衰减</p>
           <p className="mt-0.5 text-sm font-semibold tabular-nums">{formatDb(telemetry.peakCutDb, true)}</p>
         </div>
         <div className={cn("aria-eq-metric rounded-xl px-3 py-2", `is-${telemetry.headroomStatus}`)}>
-          <p className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.14em] opacity-75">
+          <p className="flex items-center justify-between text-[11px] font-medium uppercase tracking-[0.14em] opacity-75">
             <span>防削波余量</span>
             {telemetry.headroomStatus === "clipRisk" ? (
               <ShieldAlert className="size-3 text-rose-500" />
@@ -343,7 +343,7 @@ export function EqualizerPanel({
           </p>
         </div>
         <div className="aria-eq-metric rounded-xl px-3 py-2">
-          <p className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.14em] opacity-60">
+          <p className="flex items-center justify-between text-[11px] font-medium uppercase tracking-[0.14em] opacity-60">
             <span>声学特征</span>
             <Activity className="size-3 opacity-70" />
           </p>
@@ -353,7 +353,7 @@ export function EqualizerPanel({
 
       {/* Logarithmic Bode Magnitude Plot */}
       <div className={cn("aria-eq-plot relative mt-3.5 rounded-[1.2rem] border p-3.5 transition", !enabled && "opacity-65")}>
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 text-[10px] font-semibold uppercase tracking-[0.14em] opacity-55">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 text-[11px] font-semibold uppercase tracking-[0.14em] opacity-55">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {equalizerAcousticZones.map((zone) => (
               <span key={zone.label} className="whitespace-nowrap">
@@ -525,7 +525,7 @@ export function EqualizerPanel({
               >
                 <span
                   className={cn(
-                    "text-[10px] font-semibold tabular-nums transition-colors",
+                    "text-[11px] font-semibold tabular-nums transition-colors",
                     Math.abs(gain) >= 0.1 ? "text-[var(--accent)]" : "opacity-45",
                     isActive && "opacity-100",
                   )}
@@ -601,7 +601,7 @@ export function EqualizerPanel({
 
                 <span
                   className={cn(
-                    "text-[10px] font-semibold tabular-nums transition-colors",
+                    "text-[11px] font-semibold tabular-nums transition-colors",
                     isSelected ? "text-[var(--accent)]" : "opacity-55",
                   )}
                 >
@@ -612,7 +612,7 @@ export function EqualizerPanel({
           })}
         </div>
 
-        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-[10px] tracking-[0.06em] opacity-55">
+        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] tracking-[0.06em] opacity-55">
           <span className="flex items-center gap-1">
             <SlidersHorizontal className="size-3" /> 拖动节点或推子 · 双击单段归零 · Shift/Ctrl 多选联调
           </span>
@@ -622,7 +622,7 @@ export function EqualizerPanel({
 
       {/* Scientific Reference Target Presets */}
       <div className="mt-3.5">
-        <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] opacity-55">目标响应曲线</p>
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] opacity-55">目标响应曲线</p>
         <div className="flex flex-wrap gap-1.5">
           {equalizerPresets.map((item) => {
             const active = preset === item.id && (!activeBuiltin || activeBuiltin.id === item.id);
@@ -646,7 +646,7 @@ export function EqualizerPanel({
                   />
                 )}
                 <span className="relative z-10">{item.label}</span>
-                <span className={cn("relative z-10 text-[9px] font-medium tracking-[0.08em]", active ? "text-white/75" : "opacity-50")}>
+                <span className={cn("relative z-10 text-[11px] font-medium tracking-[0.08em]", active ? "text-white/75" : "opacity-50")}>
                   {item.targetTag}
                 </span>
               </motion.button>
@@ -658,7 +658,7 @@ export function EqualizerPanel({
       {/* Custom Presets & Portable Import / Export */}
       <div className="mt-3.5 border-t border-[var(--line)] pt-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] opacity-55">我的声学预设</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] opacity-55">我的声学预设</p>
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="sm" onClick={() => { setSavingOpen((open) => !open); setNotice(null); }}>
               <Plus className="size-3.5" />
@@ -780,10 +780,7 @@ export function EqualizerDialog({
           >
             <div className="pointer-events-none absolute -right-24 -top-28 size-72 rounded-full bg-[radial-gradient(circle,rgba(139,92,246,0.22),transparent_68%)]" />
             <div className="relative mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] opacity-55">Precision Acoustic DSP</p>
-                <h2 className="mt-0.5 text-xl font-semibold tracking-tight">均衡器</h2>
-              </div>
+              <h2 className="text-xl font-semibold tracking-tight">均衡器</h2>
               <Button variant="ghost" size="icon" aria-label="关闭均衡器" onClick={onClose}>
                 <X />
               </Button>

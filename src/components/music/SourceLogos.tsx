@@ -57,6 +57,16 @@ export function BilibiliLogo({ className }: { className?: string }) {
   );
 }
 
+/** YouTube Music：官方红底圆角矩形 + 白色圆孔播放键。 */
+export function YoutubeLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={cn("size-4 shrink-0", className)} aria-hidden="true">
+      <rect x="1.2" y="4.4" width="21.6" height="15.2" rx="4.4" fill="#FF0033" />
+      <path d="M10.05 8.35l6.4 3.65-6.4 3.65z" fill="#fff" />
+    </svg>
+  );
+}
+
 export function CloudLogo({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={cn("size-4 shrink-0", className)} aria-hidden="true">
@@ -69,7 +79,7 @@ export function CloudLogo({ className }: { className?: string }) {
   );
 }
 
-export type SourceToggleOption = "local" | "netease" | "qq";
+export type SourceToggleOption = "local" | "netease" | "qq" | "bilibili" | "youtube";
 export type SourceLogoOption = Track["source"];
 
 const SOURCE_META: Record<SourceLogoOption, { label: string; shortLabel: string }> = {
@@ -78,12 +88,14 @@ const SOURCE_META: Record<SourceLogoOption, { label: string; shortLabel: string 
   netease: { label: "网易云", shortLabel: "网易云" },
   qq: { label: "QQ 音乐", shortLabel: "QQ" },
   bilibili: { label: "B站", shortLabel: "B站" },
+  youtube: { label: "YouTube", shortLabel: "YT" },
 };
 
 export function SourceLogo({ source, className }: { source: SourceLogoOption; className?: string }) {
   if (source === "netease") return <NeteaseLogo className={className} />;
   if (source === "qq") return <QqLogo className={className} />;
   if (source === "bilibili") return <BilibiliLogo className={className} />;
+  if (source === "youtube") return <YoutubeLogo className={className} />;
   if (source === "cloud") return <CloudLogo className={className} />;
   return <LocalLogo className={className} />;
 }
@@ -114,10 +126,10 @@ export function SourceBadge({
   );
 }
 
-export function SourceToggle({ value, onChange, options, ariaLabel }: {
-  value: SourceToggleOption;
-  onChange: (source: SourceToggleOption) => void;
-  options: SourceToggleOption[];
+export function SourceToggle<T extends SourceToggleOption>({ value, onChange, options, ariaLabel }: {
+  value: T;
+  onChange: (source: T) => void;
+  options: T[];
   ariaLabel: string;
 }) {
   // 滑块式切换：深色滑块在 logo 选项之间平滑滑动（融合界面一次只显示一个源）。
