@@ -2,6 +2,7 @@ import type { ApiScannedTrack, ProviderPlaylist, ProviderTrack } from "@/lib/api
 import { api } from "@/lib/api";
 import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
 import { formatDuration, normalizeQuality, readCachedLyrics } from "@/lib/playerPresentation";
+import { applyYoutubeCachedAudioMeta } from "@/lib/youtubeAudioMeta";
 import { readCachedArtworkOverride } from "@/lib/artworkOverrides";
 import type { Track } from "@/data/music";
 
@@ -30,9 +31,9 @@ const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili" | "youtu
     { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
   ],
   youtube: [
-    { time: "00:00", text: "歌词等待同步" },
-    { time: "00:15", text: "YouTube 曲目暂不提供歌词" },
-    { time: "00:30", text: "可以尝试在本地歌单中绑定歌词" },
+    { time: "00:00", text: "歌词等待匹配" },
+    { time: "00:15", text: "播放时会自动跨源匹配同步歌词" },
+    { time: "00:30", text: "也可在歌词栏右上角手动搜词绑定" },
   ],
 };
 const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
@@ -110,7 +111,7 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
   const lyricsEnabled = source !== "bilibili" || BILIBILI_LYRICS_ENABLED;
   const cachedLyrics = lyricsEnabled ? readCachedLyrics(trackKey) : [];
 
-  return {
+  const uiTrack: Track = {
     id: trackKey,
     providerId: track.id,
     albumId: track.albumId ?? null,
@@ -154,6 +155,7 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     lyricStatus: !lyricsEnabled ? "missing" : cachedLyrics.length ? "linked" : "searchable",
     lyrics: !lyricsEnabled ? [] : cachedLyrics.length ? cachedLyrics : PROVIDER_PLACEHOLDER_LYRICS[source],
   };
+  return source === "youtube" ? applyYoutubeCachedAudioMeta(uiTrack) : uiTrack;
 }
 
 export function getTrackSearchSignature(tracks: Track[]) {

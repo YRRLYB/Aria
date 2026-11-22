@@ -65,6 +65,7 @@ export function useAudioEngine(options: {
   const [normalizationError, setNormalizationError] = useState<string | null>(null);
   const [equalizerError, setEqualizerError] = useState<string | null>(null);
   const [normalizerReady, setNormalizerReady] = useState(false);
+  const [deviceChangePrompt, setDeviceChangePrompt] = useState<string | null>(null);
   // 播放失败不能静默：以前 HTMLAudio/原生加载失败只会把 playing 置 false，
   // 用户点击后看起来“没反应”。这里保留一条可展示的具体原因。
   const [playbackError, setPlaybackError] = useState<string | null>(null);
@@ -172,6 +173,9 @@ export function useAudioEngine(options: {
   const preloadKeyRef = useRef<string | null>(null);
   const handledGaplessGenerationRef = useRef(0);
   const previousStreamRef = useRef({ trackId: activeTrack.id, url: activeStreamUrl });
+  const knownDeviceIdsRef = useRef<Set<string> | null>(null);
+  const selectedSinkIdRef = useRef(selectedSinkId);
+  selectedSinkIdRef.current = selectedSinkId;
 
   // The static `supported` flag only knows the platform. The engine's
   // isSupported() checks the platform mpv binary, which macOS ships without
@@ -192,15 +196,24 @@ export function useAudioEngine(options: {
   }, []);
 
   // A quality change replaces the stream, not the song. Capture the shared
-  // clock before either decoder resets its source; both the native load and
-  // browser loadedmetadata paths consume this position when they are ready.
+  // clock before either decoder resets its source — but only after the active
+  // track has actually started playing so pre-start level fallbacks (e.g.
+  // YouTube exhigh -> standard) never inherit a stale playhead from the prior
+  // track.
   useEffect(() => {
     const previous = previousStreamRef.current;
-    if (previous.trackId === activeTrack.id && previous.url && activeStreamUrl && previous.url !== activeStreamUrl) {
-      options.pendingSeekRef.current = getPlaybackTime();
+    if (previous.trackId !== activeTrack.id) {
+      options.pendingSeekRef.current = 0;
+    } else if (previous.url && activeStreamUrl && previous.url !== activeStreamUrl) {
+      const trackStartedPlaying = nativePlaybackEnabled
+        ? Boolean(nativeAudioState?.active && nativeAudioState.trackId === activeTrack.id)
+        : Boolean(audioRef.current && audioRef.current.readyState >= 1 && audioRef.current.src === previous.url);
+      if (trackStartedPlaying) {
+        options.pendingSeekRef.current = getPlaybackTime();
+      }
     }
     previousStreamRef.current = { trackId: activeTrack.id, url: activeStreamUrl };
-  }, [activeTrack.id, activeStreamUrl]);
+  }, [activeTrack.id, activeStreamUrl, nativePlaybackEnabled, nativeAudioState?.active, nativeAudioState?.trackId]);
 
   useEffect(() => {
     // 不在这里清 playbackError：播放失败后可能自动跳下一首，错误提示需要
@@ -221,11 +234,10 @@ export function useAudioEngine(options: {
       nativePlaybackEnabled &&
       currentTrackMatches &&
       (state.active ||
-        state.kind === "loading" ||
+        (state.kind === "loading" && (state.position ?? 0) === 0) ||
         state.kind === "loaded" ||
         state.kind === "pause" ||
         state.kind === "seek" ||
-        state.kind === "progress" ||
         state.kind === "ended");
 
     if (shouldSyncPlayback) {
@@ -297,24 +309,25 @@ export function useAudioEngine(options: {
     });
   }, [nativePlaybackEnabled, selectedSinkId]);
 
-  const refreshAudioOutputDevices = useCallback(async () => {
+  const refreshAudioOutputDevices = useCallback(async (): Promise<Array<{ id: string; label: string }> | null> => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (nativeAudio?.supported && options.audioOutputMode !== "system") {
       try {
         const supported = Boolean(await nativeAudio.isSupported?.());
         setNativeAudioSupported(supported);
-        if (!supported) return;
+        if (!supported) return null;
         const devices = await nativeAudio.listDevices?.();
         if (Array.isArray(devices) && devices.length) {
           setAudioOutputDevices(devices);
+          return devices;
         }
       } catch {
         setNativeAudioSupported(false);
       }
-      return;
+      return null;
     }
 
-    if (!navigator.mediaDevices?.enumerateDevices) return;
+    if (!navigator.mediaDevices?.enumerateDevices) return null;
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const outputs = devices
@@ -323,23 +336,68 @@ export function useAudioEngine(options: {
           id: device.deviceId || `output-${index}`,
           label: device.label || `播放设备 ${index + 1}`,
         }));
-      setAudioOutputDevices([{ id: "default", label: "系统默认" }, ...outputs.filter((device) => device.id !== "default")]);
+      const normalized = [{ id: "default", label: "系统默认" }, ...outputs.filter((device) => device.id !== "default")];
+      setAudioOutputDevices(normalized);
+      return normalized;
     } catch {
-      setAudioOutputDevices([{ id: "default", label: "系统默认" }]);
+      const fallback = [{ id: "default", label: "系统默认" }];
+      setAudioOutputDevices(fallback);
+      return fallback;
     }
   }, [options.audioOutputMode]);
 
   useEffect(() => {
-    void refreshAudioOutputDevices();
+    void refreshAudioOutputDevices().then((devices) => {
+      if (devices) knownDeviceIdsRef.current = new Set(devices.map((device) => device.id));
+    });
     if (!navigator.mediaDevices?.addEventListener) return;
     const handleDeviceChange = () => {
-      void refreshAudioOutputDevices();
+      void refreshAudioOutputDevices().then((devices) => {
+        if (!devices) return;
+        const nextIds = new Set(devices.map((device) => device.id));
+        const previousIds = knownDeviceIdsRef.current;
+        knownDeviceIdsRef.current = nextIds;
+        if (!previousIds) return;
+        const listChanged =
+          previousIds.size !== nextIds.size || [...nextIds].some((id) => !previousIds.has(id));
+        if (!listChanged) return;
+        const currentSink = selectedSinkIdRef.current;
+        if (currentSink !== "default" && !nextIds.has(currentSink)) {
+          setSelectedSinkId("default");
+          setDeviceChangePrompt("检测到原音频设备已断开，已切回系统默认设备");
+          return;
+        }
+        if (latestPlaybackRef.current.playing) {
+          setDeviceChangePrompt("检测到音频设备变化，若无声可点击恢复输出");
+        }
+      });
     };
     navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
     return () => {
       navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
     };
   }, [refreshAudioOutputDevices]);
+
+  const dismissDeviceChangePrompt = useCallback(() => {
+    setDeviceChangePrompt(null);
+  }, []);
+
+  const recoverAudioOutput = useCallback(async () => {
+    const devices = await refreshAudioOutputDevices();
+    if (devices) knownDeviceIdsRef.current = new Set(devices.map((device) => device.id));
+    setDeviceChangePrompt(null);
+    if (nativePlaybackEnabled) {
+      await window.ariaDesktop?.nativeAudio?.recoverOutput?.("device-change").catch(() => undefined);
+      return;
+    }
+    const context = audioContextRef.current;
+    if (context && context.state !== "running") {
+      await context.resume().catch(() => undefined);
+    }
+    if (latestPlaybackRef.current.playing) {
+      await audioRef.current?.play().catch(() => undefined);
+    }
+  }, [nativePlaybackEnabled, refreshAudioOutputDevices]);
 
   useEffect(() => {
     const existing = readCachedAudioSettings();
@@ -429,7 +487,16 @@ export function useAudioEngine(options: {
       }
       audio.src = nextSrc;
       audio.load();
-      if (!nativePlaybackEnabled) options.setDurationSeconds(0);
+      if (!nativePlaybackEnabled) {
+        if (options.pendingSeekRef.current <= 0) {
+          try {
+            audio.currentTime = 0;
+          } catch {
+            // Will reset on metadata load.
+          }
+        }
+        options.setDurationSeconds(0);
+      }
     }
 
     if (nativePlaybackEnabled) {
@@ -601,11 +668,13 @@ export function useAudioEngine(options: {
     const loadSequence = nativeLoadSequenceRef.current + 1;
     nativeLoadSequenceRef.current = loadSequence;
     nativeLoadedUrlRef.current = nextLoadKey;
+    const startPosition = options.pendingSeekRef.current || 0;
+    options.pendingSeekRef.current = 0;
     nativeAudio
       .load?.({
         trackId: options.activeTrack.id,
         url: nextUrl,
-        position: options.pendingSeekRef.current || 0,
+        position: startPosition,
         paused: !options.playing,
         volume: options.volume,
         exclusive: options.exclusiveMode,
@@ -1028,5 +1097,8 @@ export function useAudioEngine(options: {
     resetAudioError,
     normalizationError,
     equalizerError,
+    deviceChangePrompt,
+    dismissDeviceChangePrompt,
+    recoverAudioOutput,
   };
 }

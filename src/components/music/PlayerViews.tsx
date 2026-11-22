@@ -433,7 +433,7 @@ function PlayerVideoCurtain({
           : "aria-mv-stage video-stage absolute inset-0 z-20 grid h-full max-h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden p-4 pb-7 sm:p-6 sm:pb-9 2xl:p-7 2xl:pb-10",
         controlsDimmed && "cursor-none",
       )}
-      aria-label="B站实时视频舞台"
+      aria-label={activeTrack.source === "youtube" ? "YouTube 实时视频舞台" : "B站实时视频舞台"}
     >
       {!immersive && (
         <div
@@ -988,12 +988,12 @@ export function PlayerSurface({
                     disabled={!canPlayVideo}
                     title={
                       !canPlayVideo
-                        ? "当前曲目无关联视频（仅 B站曲目支持实时视频）"
+                        ? "当前曲目无关联视频（支持 B站与 YouTube 曲目）"
                         : videoMode
-                          ? "收起 B站实时视频"
-                          : "播放 B站实时视频（不中断音频输出）"
+                          ? "收起实时视频"
+                          : "播放实时视频（不中断音频输出）"
                     }
-                    aria-label={!canPlayVideo ? "当前曲目无视频" : videoMode ? "收起 B站实时视频" : "播放 B站实时视频"}
+                    aria-label={!canPlayVideo ? "当前曲目无视频" : videoMode ? "收起实时视频" : "播放实时视频"}
                     aria-pressed={showVideo}
                     className={cn(
                       "relative size-8 px-0",

@@ -857,4 +857,80 @@ describe("YouTube Music client", () => {
     expect(liked[0]?.id).toBe("trk_0000000");
     expect(liked[149]?.id).toBe("trk_0000149");
   });
+
+  it("caches fallback level under resolved currentLevel, clears caches on proxy switch, and invalidates playlists on like", async () => {
+    const muxed18 = {
+      itag: 18,
+      url: "https://rr3---sn.googlevideo.com/videoplayback?itag=18",
+      mimeType: 'video/mp4; codecs="avc1.42001E, mp4a.40.2"',
+      width: 640,
+      height: 360,
+    };
+
+    undiciMocks.fetch.mockImplementation(async (url) => {
+      if (String(url).includes("googlevideo.com")) return new Response(null, { status: 403 });
+      return playerResponse("OK", [AAC_140, OPUS_251], [muxed18]);
+    });
+
+    const first = await resolveYoutubeStreamMeta("dQw4w9WgXcQ", { level: "exhigh" });
+    expect(first.currentLevel).toBe("standard");
+    const callsAfterFirst = undiciMocks.fetch.mock.calls.length;
+
+    // Follow-up request for resolved fallback level hits cache immediately.
+    const second = await resolveYoutubeStreamMeta("dQw4w9WgXcQ", { level: "standard" });
+    expect(second.url).toBe(muxed18.url);
+    expect(undiciMocks.fetch.mock.calls.length).toBe(callsAfterFirst);
+
+    // Changing YouTube proxy clears cached stream URLs so the new egress IP resolves fresh URLs.
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 5_000);
+    storeMocks.readStore.mockResolvedValue({ youtubeProxy: "7890", youtubeCookie: VALID_COOKIE });
+    const afterProxy = await resolveYoutubeStreamMeta("dQw4w9WgXcQ", { level: "standard" });
+    expect(afterProxy.url).toBe(muxed18.url);
+    expect(undiciMocks.fetch.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    vi.useRealTimers();
+
+    // Toggling like invalidates playlistsCacheState as well as likedCacheState.
+    undiciMocks.fetch.mockImplementation(async () =>
+      jsonResponse({
+        contents: {
+          singleColumnBrowseResultsRenderer: {
+            tabs: [
+              {
+                tabRenderer: {
+                  content: {
+                    sectionListRenderer: {
+                      contents: [
+                        {
+                          gridRenderer: {
+                            items: [
+                              {
+                                musicTwoRowItemRenderer: {
+                                  title: { runs: [{ text: "Liked Music" }] },
+                                  navigationEndpoint: { browseEndpoint: { browseId: "FEmusic_liked_songs" } },
+                                },
+                              },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    await getYoutubePlaylists();
+    const callsBeforeLike = undiciMocks.fetch.mock.calls.length;
+    await getYoutubePlaylists();
+    expect(undiciMocks.fetch.mock.calls.length).toBe(callsBeforeLike);
+
+    await setYoutubeLike("dQw4w9WgXcQ", true);
+    const callsAfterLike = undiciMocks.fetch.mock.calls.length;
+    await getYoutubePlaylists();
+    expect(undiciMocks.fetch.mock.calls.length).toBeGreaterThan(callsAfterLike);
+  });
 });

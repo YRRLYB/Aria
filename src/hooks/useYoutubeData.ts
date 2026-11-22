@@ -21,7 +21,8 @@ export function useYoutubeData(options: { connected: boolean }) {
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const playlistsRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const likedSessionTokenRef = useRef(0);
-  const sessionTokenRef = useRef(0);
+  const playlistsTokenRef = useRef(0);
+  const playlistDetailTokenRef = useRef(0);
   const accountEpochRef = useRef(0);
 
   const refreshLiked = useCallback(() => {
@@ -52,24 +53,24 @@ export function useYoutubeData(options: { connected: boolean }) {
   const refreshPlaylists = useCallback(() => {
     if (!options.connected) return Promise.resolve();
     if (playlistsRefreshPromiseRef.current) return playlistsRefreshPromiseRef.current;
-    const sessionToken = ++sessionTokenRef.current;
+    const sessionToken = ++playlistsTokenRef.current;
     setPlaylistsLoading(true);
     const task = api
       .getSourcePlaylists("youtube")
       .then(({ playlists: nextPlaylists }) => {
-        if (sessionToken !== sessionTokenRef.current) return;
+        if (sessionToken !== playlistsTokenRef.current) return;
         setPlaylists(nextPlaylists);
         setPlaylistsError(null);
       })
       .catch((error: unknown) => {
-        if (sessionToken !== sessionTokenRef.current) return;
+        if (sessionToken !== playlistsTokenRef.current) return;
         setPlaylistsError(error instanceof Error ? error.message : "YouTube 歌单读取失败，请稍后重试");
       })
       .finally(() => {
-        if (sessionToken === sessionTokenRef.current) setPlaylistsLoading(false);
+        if (sessionToken === playlistsTokenRef.current) setPlaylistsLoading(false);
       });
     playlistsRefreshPromiseRef.current = task.finally(() => {
-      if (sessionToken === sessionTokenRef.current) playlistsRefreshPromiseRef.current = null;
+      if (sessionToken === playlistsTokenRef.current) playlistsRefreshPromiseRef.current = null;
     });
     return playlistsRefreshPromiseRef.current;
   }, [options.connected]);
@@ -86,7 +87,8 @@ export function useYoutubeData(options: { connected: boolean }) {
       return;
     }
     likedSessionTokenRef.current += 1;
-    sessionTokenRef.current += 1;
+    playlistsTokenRef.current += 1;
+    playlistDetailTokenRef.current += 1;
     refreshPromiseRef.current = null;
     playlistsRefreshPromiseRef.current = null;
     setLikedTracks([]);
@@ -102,7 +104,7 @@ export function useYoutubeData(options: { connected: boolean }) {
   }, [options.connected, refresh]);
 
   const openPlaylist = useCallback((playlist: ProviderPlaylist) => {
-    const sessionToken = ++sessionTokenRef.current;
+    const sessionToken = ++playlistDetailTokenRef.current;
     setSelectedPlaylist(playlist);
     setPlaylistTracks([]);
     setPlaylistError(null);
@@ -110,21 +112,21 @@ export function useYoutubeData(options: { connected: boolean }) {
     api
       .getSourcePlaylistTracks("youtube", playlist.id)
       .then(({ tracks }) => {
-        if (sessionToken !== sessionTokenRef.current) return;
+        if (sessionToken !== playlistDetailTokenRef.current) return;
         setPlaylistTracks(tracks.map((rawTrack, index) => providerTrackToUiTrack(rawTrack, index)));
         setPlaylistError(null);
       })
       .catch((error: unknown) => {
-        if (sessionToken !== sessionTokenRef.current) return;
+        if (sessionToken !== playlistDetailTokenRef.current) return;
         setPlaylistError(error instanceof Error ? error.message : "读取 YouTube 歌单曲目失败，请稍后重试");
       })
       .finally(() => {
-        if (sessionToken === sessionTokenRef.current) setPlaylistLoading(false);
+        if (sessionToken === playlistDetailTokenRef.current) setPlaylistLoading(false);
       });
   }, []);
 
   const closePlaylist = useCallback(() => {
-    sessionTokenRef.current += 1;
+    playlistDetailTokenRef.current += 1;
     setSelectedPlaylist(null);
     setPlaylistTracks([]);
     setPlaylistLoading(false);
@@ -154,7 +156,7 @@ export function useYoutubeData(options: { connected: boolean }) {
     try {
       await api.setSourceLike("youtube", providerId, nextLiked);
       if (epoch !== accountEpochRef.current) return;
-      void refreshLiked();
+      void refresh();
     } catch (error) {
       if (epoch === accountEpochRef.current) {
         setLikedTracks((current) =>
@@ -165,7 +167,7 @@ export function useYoutubeData(options: { connected: boolean }) {
       }
       throw error;
     }
-  }, [likedIds, options.connected, refreshLiked]);
+  }, [likedIds, options.connected, refresh]);
 
   return {
     likedTracks,
@@ -175,12 +177,14 @@ export function useYoutubeData(options: { connected: boolean }) {
     refresh,
     refreshLiked,
     toggleLike,
+    setLikedTracks,
     playlists,
     playlistsLoading,
     playlistsError,
     refreshPlaylists,
     selectedPlaylist,
     playlistTracks,
+    setPlaylistTracks,
     playlistLoading,
     playlistError,
     openPlaylist,

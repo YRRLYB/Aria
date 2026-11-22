@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     setVolume: (volume) => ipcRenderer.invoke("aria:native-audio:volume", Number(volume) || 0),
     configure: (payload) => ipcRenderer.invoke("aria:native-audio:configure", payload),
     stop: () => ipcRenderer.invoke("aria:native-audio:stop"),
+    recoverOutput: (reason) => ipcRenderer.invoke("aria:native-audio:recover", reason || "manual"),
     onEvent: (callback) => {
       const handler = (_event, payload) => callback(payload);
       ipcRenderer.on("aria:native-audio-event", handler);

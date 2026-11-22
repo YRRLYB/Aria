@@ -99,6 +99,23 @@ function textSimilarity(left: string, right: string) {
   return (2 * shared) / (ap.size + bp.size);
 }
 
+const YOUTUBE_NOISE_TAG_RE =
+  /\s*[([（【]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|music\s*video|lyric\s*video|audio\s*only|lyrics?|audio|mv|hd|4k|full\s*ver\.?)\s*[)\]）】]/gi;
+
+/** Strip channel suffixes ("- Topic") and video-tag noise so cross-source lyric searches match cleanly. */
+export function cleanYoutubeTrackQuery(track: { title: string; artist?: string; album?: string }) {
+  const cleanedTitle = track.title.replace(YOUTUBE_NOISE_TAG_RE, " ").replace(/\s+/g, " ").trim() || track.title.trim();
+  const rawArtist = (track.artist ?? "").replace(/\s*-\s*Topic$/i, "").trim();
+  const cleanedArtist = /^youtube(?:\s+music)?$|^youtube\s*视频$/i.test(rawArtist) ? "" : rawArtist;
+  const rawAlbum = (track.album ?? "").trim();
+  const cleanedAlbum = /^youtube(?:\s+music)?$|^youtube\s*视频$/i.test(rawAlbum) ? "" : rawAlbum;
+  return {
+    title: cleanedTitle,
+    artist: cleanedArtist,
+    album: cleanedAlbum,
+  };
+}
+
 function artistSimilarity(left: string, right: string) {
   const split = (value: string) => value.split(/\s*(?:\/|、|&|;|,|，| feat\.? | ft\.? )\s*/i).filter(Boolean);
   const a = split(left);

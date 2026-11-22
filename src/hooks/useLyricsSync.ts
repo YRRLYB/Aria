@@ -5,7 +5,7 @@ import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
 import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
 import { hasSyncedLyrics, writeCachedLyrics } from "@/lib/playerPresentation";
 import { idleTrack } from "@/lib/trackMappers";
-import { selectAutomaticMetadataCandidate } from "@/lib/localMetadata";
+import { cleanYoutubeTrackQuery, selectAutomaticMetadataCandidate } from "@/lib/localMetadata";
 import { memoryLimits, trimMapCache } from "@/lib/memoryCache";
 
 // Owns lyric acquisition: binding-driven rebinds for local tracks, automatic
@@ -64,7 +64,7 @@ export function useLyricsSync(options: {
       return true;
     }
 
-    if (track.source === "local") {
+    if (track.source === "local" || track.source === "youtube") {
       const binding = lyricBindingsRef.current[track.id];
       if (binding) {
         const result = await api.bindLyric(track.id, binding, binding);
@@ -73,12 +73,11 @@ export function useLyricsSync(options: {
         applyLyricsToTrack(track.id, result.lyrics);
         return true;
       }
-      const candidates = await api.searchLyrics({
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-      });
-      const best = selectAutomaticMetadataCandidate(track, candidates.candidates);
+      const searchInput = track.source === "youtube"
+        ? cleanYoutubeTrackQuery(track)
+        : { title: track.title, artist: track.artist, album: track.album };
+      const candidates = await api.searchLyrics(searchInput);
+      const best = selectAutomaticMetadataCandidate(searchInput, candidates.candidates);
       if (!best || lyricBindingsRef.current[track.id] !== binding) return false;
       const result = await api.bindLyric(track.id, best.id, binding ?? null);
       if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
@@ -145,7 +144,9 @@ export function useLyricsSync(options: {
     if (activeTrack.source === "bilibili" && !BILIBILI_LYRICS_ENABLED) return;
     const hasLyrics = hasSyncedLyrics(activeTrack);
     const needsTranslation = activeTrack.source === "netease" && !activeTrack.lyrics.some((line) => Boolean(line.translation));
-    const canRefreshTiming = activeTrack.source === "netease" || (activeTrack.source === "local" && Boolean(lyricBindings[activeTrack.id]));
+    const canRefreshTiming =
+      activeTrack.source === "netease" ||
+      ((activeTrack.source === "local" || activeTrack.source === "youtube") && Boolean(lyricBindings[activeTrack.id]));
     const needsTiming = canRefreshTiming && !activeTrack.lyrics.some((line) => line.timingVersion === 1);
     const needsEnrichment = needsTranslation || needsTiming;
     if (activeTrack.id === idleTrack.id || (hasLyrics && !needsEnrichment)) return;

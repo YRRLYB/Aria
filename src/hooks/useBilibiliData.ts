@@ -98,7 +98,8 @@ export function useBilibiliData(options: {
   const [playlistError, setPlaylistError] = useState<string | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const playlistsRefreshPromiseRef = useRef<Promise<void> | null>(null);
-  const playlistSessionTokenRef = useRef(0);
+  const playlistsTokenRef = useRef(0);
+  const playlistDetailTokenRef = useRef(0);
   const sessionTokenRef = useRef(0);
   const accountEpochRef = useRef(0);
   const likedTracksRef = useRef<Track[]>(likedTracks);
@@ -157,7 +158,8 @@ export function useBilibiliData(options: {
     sessionTokenRef.current += 1;
     refreshPromiseRef.current = null;
     playlistsRefreshPromiseRef.current = null;
-    playlistSessionTokenRef.current += 1;
+    playlistsTokenRef.current += 1;
+    playlistDetailTokenRef.current += 1;
     probedKeysRef.current.clear();
     inFlightKeysRef.current.clear();
     pendingQueueRef.current = [];
@@ -176,24 +178,24 @@ export function useBilibiliData(options: {
   /** 拉取账号自己的收藏夹歌单列表（并发合并，切账号自动作废）。 */
   const refreshPlaylists = useCallback(() => {
     if (playlistsRefreshPromiseRef.current) return playlistsRefreshPromiseRef.current;
-    const sessionToken = ++playlistSessionTokenRef.current;
+    const sessionToken = ++playlistsTokenRef.current;
     setPlaylistsLoading(true);
     const task = api
       .getSourcePlaylists("bilibili")
       .then(({ playlists: nextPlaylists }) => {
-        if (sessionToken !== playlistSessionTokenRef.current) return;
+        if (sessionToken !== playlistsTokenRef.current) return;
         setPlaylists(nextPlaylists);
         setPlaylistsError(null);
       })
       .catch((error: unknown) => {
-        if (sessionToken !== playlistSessionTokenRef.current) return;
+        if (sessionToken !== playlistsTokenRef.current) return;
         setPlaylistsError(error instanceof Error ? error.message : "B站收藏夹读取失败，请稍后重试");
       })
       .finally(() => {
-        if (sessionToken === playlistSessionTokenRef.current) setPlaylistsLoading(false);
+        if (sessionToken === playlistsTokenRef.current) setPlaylistsLoading(false);
       });
     playlistsRefreshPromiseRef.current = task.finally(() => {
-      if (sessionToken === playlistSessionTokenRef.current) playlistsRefreshPromiseRef.current = null;
+      if (sessionToken === playlistsTokenRef.current) playlistsRefreshPromiseRef.current = null;
     });
     return playlistsRefreshPromiseRef.current;
   }, []);
@@ -205,7 +207,7 @@ export function useBilibiliData(options: {
   }, [options.connected, refreshPlaylists]);
 
   const openPlaylist = useCallback((playlist: ProviderPlaylist) => {
-    const sessionToken = ++playlistSessionTokenRef.current;
+    const sessionToken = ++playlistDetailTokenRef.current;
     setSelectedPlaylist(playlist);
     setPlaylistTracks([]);
     setPlaylistError(null);
@@ -213,22 +215,22 @@ export function useBilibiliData(options: {
     api
       .getSourcePlaylistTracks("bilibili", playlist.id)
       .then(({ tracks }) => {
-        if (sessionToken !== playlistSessionTokenRef.current) return;
+        if (sessionToken !== playlistDetailTokenRef.current) return;
         const cacheStore = readAudioMetaStore();
         setPlaylistTracks(tracks.map((rawTrack, index) => mergeCachedAudioMeta(providerTrackToUiTrack(rawTrack, index), cacheStore)));
         setPlaylistError(null);
       })
       .catch((error: unknown) => {
-        if (sessionToken !== playlistSessionTokenRef.current) return;
+        if (sessionToken !== playlistDetailTokenRef.current) return;
         setPlaylistError(error instanceof Error ? error.message : "读取B站歌单曲目失败，请稍后重试");
       })
       .finally(() => {
-        if (sessionToken === playlistSessionTokenRef.current) setPlaylistLoading(false);
+        if (sessionToken === playlistDetailTokenRef.current) setPlaylistLoading(false);
       });
   }, []);
 
   const closePlaylist = useCallback(() => {
-    playlistSessionTokenRef.current += 1;
+    playlistDetailTokenRef.current += 1;
     setSelectedPlaylist(null);
     setPlaylistTracks([]);
     setPlaylistLoading(false);
@@ -375,6 +377,7 @@ export function useBilibiliData(options: {
     refreshPlaylists,
     selectedPlaylist,
     playlistTracks,
+    setPlaylistTracks,
     playlistLoading,
     playlistError,
     openPlaylist,

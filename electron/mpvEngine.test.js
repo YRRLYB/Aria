@@ -184,4 +184,22 @@ describe("native mpv output", () => {
     expect(engine.state.position).toBe(0);
     expect(events.filter((event) => event.kind === "seek")).toHaveLength(0);
   });
+
+  it("ignores stale outgoing time-pos ticks while loading a replacement track and starts at 0 on file-loaded", () => {
+    const events = [];
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: (event) => events.push(event) });
+    engine.setPaused = vi.fn().mockResolvedValue(undefined);
+    engine.state.active = false;
+    engine.state.trackId = "youtube:dQw4w9WgXcQ";
+    engine.state.position = 0;
+
+    engine.handleMessage({ event: "property-change", name: "time-pos", data: 52.4 });
+    engine.handleMessage({ event: "property-change", name: "duration", data: 240 });
+    expect(engine.state.position).toBe(0);
+    expect(engine.state.duration).toBe(0);
+    expect(events.filter((event) => event.kind === "progress" && event.position > 0)).toHaveLength(0);
+
+    engine.handleMessage({ event: "file-loaded" });
+    expect(events.at(-1)).toMatchObject({ kind: "loaded", active: true, trackId: "youtube:dQw4w9WgXcQ", position: 0 });
+  });
 });

@@ -2036,8 +2036,16 @@ ipcMain.handle("aria:set-iconic-thumbnail", (_event, pixels, width, height) => {
     const buffer = Buffer.from(pixels);
     const w = Number(width) || 0;
     const h = Number(height) || 0;
-    const ok = Boolean(iconicThumbAddon.setBitmap(buffer, w, h));
-    if (ok) lastIconicBitmap = { buffer, width: w, height: h };
+    if (w > 0 && h > 0) lastIconicBitmap = { buffer, width: w, height: h };
+    let ok = Boolean(iconicThumbAddon.setBitmap(buffer, w, h));
+    if (!ok && mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        iconicThumbAddon.attach(mainWindow.getNativeWindowHandle());
+        ok = Boolean(iconicThumbAddon.setBitmap(buffer, w, h));
+      } catch {
+        ok = false;
+      }
+    }
     writeLog("desktop.log", `iconic thumbnail setBitmap: ${w}x${h} ok=${ok}`);
     return ok;
   } catch (error) {
@@ -2096,6 +2104,10 @@ ipcMain.handle("aria:native-audio:configure", async (_event, payload) => {
 
 ipcMain.handle("aria:native-audio:stop", async () => {
   return getNativeAudioEngine().stop();
+});
+
+ipcMain.handle("aria:native-audio:recover", async (_event, reason) => {
+  return getNativeAudioEngine().recoverOutput(typeof reason === "string" && reason ? reason : "manual");
 });
 
 app.on("second-instance", showWindow);

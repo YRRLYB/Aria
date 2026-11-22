@@ -166,4 +166,44 @@ describe("player and playlist surfaces", () => {
     expect(originalOnlyMarkup).toContain("Take my hand tonight");
     expect(originalOnlyMarkup).not.toContain("今晚牵起我的手");
   });
+
+  it("uses shared video stage and button labels for both Bilibili and YouTube", () => {
+    const youtubeTrack = {
+      ...tracks[0],
+      id: "youtube:yt123456789",
+      providerId: "yt123456789",
+      source: "youtube" as const,
+      videoUrl: "/api/sources/youtube/tracks/yt123456789/video",
+      quality: "AAC" as const,
+      currentLevel: "exhigh" as const,
+      availableLevels: ["standard", "higher", "exhigh"] as const,
+    };
+    const markup = renderToStaticMarkup(<PlayerSurface
+      activeTrack={{ ...youtubeTrack, availableLevels: [...youtubeTrack.availableLevels] }}
+      palette={{ primary: "#7b61df", secondary: "#e06c9f" }}
+      playing visualizerPlaying visualizerActive shuffleEnabled={false} repeatMode="all"
+      onTogglePlay={vi.fn()} onToggleShuffle={vi.fn()} onCycleRepeatMode={vi.fn()} onNext={vi.fn()} onPrevious={vi.fn()} onOpenImmersive={vi.fn()}
+      videoMode onToggleVideoMode={vi.fn()} videoActive videoControlRef={{ current: null }} onVideoDuration={vi.fn()} onVideoEnded={vi.fn()} onVideoError={vi.fn()}
+      equalizerEnabled={false} onOpenEqualizer={vi.fn()} onReplaceLocalArtwork={vi.fn(async () => undefined)} liked={false} onToggleLike={vi.fn()}
+      volume={72} onVolumeChange={vi.fn()} qualityLevel="exhigh" onQualityLevelChange={vi.fn()} hifiEnabled masterQualityEnabled={false}
+      onMasterQualityEnabledChange={vi.fn()} exclusiveMode={false} durationSeconds={200} analyserRef={{ current: null }} visualizerMode="system"
+      lyricDisplayMode="bilingual" onLyricDisplayModeChange={vi.fn()} onSeek={vi.fn()} />);
+
+    expect(markup).toContain('aria-label="YouTube 实时视频舞台"');
+    expect(markup).toContain('aria-label="收起实时视频"');
+
+    const localTrack = { ...tracks[0], source: "local" as const, videoUrl: undefined };
+    const noVideoMarkup = renderToStaticMarkup(<PlayerSurface
+      activeTrack={localTrack} palette={{ primary: "#777777", secondary: "#999999" }}
+      playing={false} visualizerPlaying={false} visualizerActive={false} shuffleEnabled={false} repeatMode="all"
+      onTogglePlay={vi.fn()} onToggleShuffle={vi.fn()} onCycleRepeatMode={vi.fn()} onNext={vi.fn()} onPrevious={vi.fn()} onOpenImmersive={vi.fn()}
+      videoMode={false} onToggleVideoMode={vi.fn()} videoActive={false} videoControlRef={{ current: null }} onVideoDuration={vi.fn()} onVideoEnded={vi.fn()} onVideoError={vi.fn()}
+      equalizerEnabled={false} onOpenEqualizer={vi.fn()} onReplaceLocalArtwork={vi.fn(async () => undefined)} liked={false} onToggleLike={vi.fn()}
+      volume={50} onVolumeChange={vi.fn()} qualityLevel="lossless" onQualityLevelChange={vi.fn()} hifiEnabled masterQualityEnabled={false}
+      onMasterQualityEnabledChange={vi.fn()} exclusiveMode={false} durationSeconds={200} analyserRef={{ current: null }} visualizerMode="system"
+      lyricDisplayMode="original" onLyricDisplayModeChange={vi.fn()} onSeek={vi.fn()} />);
+
+    expect(noVideoMarkup).toContain("支持 B站与 YouTube 曲目");
+    expect(noVideoMarkup).not.toContain("仅 B站");
+  });
 });

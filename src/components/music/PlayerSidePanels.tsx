@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties } from "react";
-import { ArrowDown, ArrowUp, ListEnd, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { ArrowDown, ArrowUp, ListEnd, Search, Trash2, X } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
 import { SourceLogo } from "@/components/music/SourceLogos";
-import type { Track } from "@/data/music";
+import type { LyricCandidate, Track } from "@/data/music";
+import { api } from "@/lib/api";
 import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
+import { cleanYoutubeTrackQuery } from "@/lib/localMetadata";
 import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
 import { getPlaybackTime, subscribePlaybackTime } from "@/lib/playbackClock";
 import {
@@ -141,6 +143,7 @@ export function PlayerSidePanel({
   activeTrackId,
   onPickTrack,
   onSeek,
+  onBindLyrics,
   onPlayNext,
   onRemove,
   onMove,
@@ -155,6 +158,7 @@ export function PlayerSidePanel({
   activeTrackId: string;
   onPickTrack: (id: string) => void;
   onSeek: (time: number) => void;
+  onBindLyrics?: (trackId: string, lyrics: Track["lyrics"], candidateId: string) => void;
   onPlayNext?: (id: string) => void;
   onRemove?: (id: string) => void;
   onMove?: (id: string, direction: "up" | "down") => void;
@@ -192,6 +196,7 @@ export function PlayerSidePanel({
           lyricDisplayMode={lyricDisplayMode}
           playing={playing}
           onSeek={onSeek}
+          onBindLyrics={onBindLyrics}
         />
       ) : (
         <QueueList
@@ -214,14 +219,74 @@ function SidebarLyrics({
   lyricDisplayMode,
   playing,
   onSeek,
+  onBindLyrics,
 }: {
   track: Track;
   palette: CoverPalette;
   lyricDisplayMode: "original" | "bilingual";
   playing: boolean;
   onSeek: (time: number) => void;
+  onBindLyrics?: (trackId: string, lyrics: Track["lyrics"], candidateId: string) => void;
 }) {
   const bilibiliLyricsOff = track.source === "bilibili" && !BILIBILI_LYRICS_ENABLED;
+  const canSearchManualLyrics =
+    Boolean(onBindLyrics) && track.id !== "idle" && (track.source === "youtube" || track.source === "local");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTitle, setSearchTitle] = useState("");
+  const [searchArtist, setSearchArtist] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [bindingId, setBindingId] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<LyricCandidate[]>([]);
+
+  useEffect(() => {
+    setSearchOpen(false);
+    setCandidates([]);
+    setSearchError(null);
+    setBindingId(null);
+    const cleaned = track.source === "youtube" ? cleanYoutubeTrackQuery(track) : { title: track.title, artist: track.artist };
+    setSearchTitle(cleaned.title);
+    setSearchArtist(cleaned.artist);
+  }, [track.id]);
+
+  async function runManualSearch() {
+    const title = searchTitle.trim();
+    if (!title) return;
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const result = await api.searchLyrics({
+        title,
+        artist: searchArtist.trim() || undefined,
+      });
+      setCandidates(result.candidates);
+      if (!result.candidates.length) setSearchError("未找到匹配的歌词候选");
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : "搜词失败，请稍后重试");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function applyCandidateBinding(candidateId: string) {
+    if (!onBindLyrics) return;
+    setBindingId(candidateId);
+    setSearchError(null);
+    try {
+      const result = await api.bindLyric(track.id, candidateId);
+      if (!result.lyrics?.length) {
+        setSearchError("该候选暂未返回歌词内容");
+        return;
+      }
+      onBindLyrics(track.id, result.lyrics, candidateId);
+      setSearchOpen(false);
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : "歌词绑定失败，请稍后重试");
+    } finally {
+      setBindingId(null);
+    }
+  }
+
   const lines = useMemo(
     () => (bilibiliLyricsOff ? [] : normalizeBilingualLyrics(track.lyrics)),
     [bilibiliLyricsOff, track.lyrics],
@@ -246,14 +311,94 @@ function SidebarLyrics({
 
   return (
     <div className="relative mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="relative z-10 mb-2.5 min-w-0 px-1">
-        <p className="min-w-0 truncate text-sm font-semibold leading-5" title={track.title}>
-          <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
-        </p>
-        <p className="truncate text-xs text-neutral-500" title={track.artist}>
-          <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
-        </p>
+      <div className="relative z-10 mb-2.5 flex min-w-0 items-start justify-between gap-2 px-1">
+        <div className="min-w-0 flex-1">
+          <p className="min-w-0 truncate text-sm font-semibold leading-5" title={track.title}>
+            <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+          </p>
+          <p className="truncate text-xs text-neutral-500" title={track.artist}>
+            <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+          </p>
+        </div>
+        {canSearchManualLyrics && (
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-neutral-950/[0.06] px-2.5 py-1 text-[11px] font-medium text-neutral-600 transition hover:bg-neutral-950/10 hover:text-neutral-950"
+            title="手动搜词绑定"
+            onClick={() => {
+              const nextOpen = !searchOpen;
+              setSearchOpen(nextOpen);
+              if (nextOpen && !candidates.length && !searching) void runManualSearch();
+            }}
+          >
+            {searchOpen ? <X className="size-3" /> : <Search className="size-3" />}
+            {searchOpen ? "收起" : "搜词"}
+          </button>
+        )}
       </div>
+      {searchOpen && canSearchManualLyrics && (
+        <div className="relative z-20 mb-3 rounded-2xl border border-neutral-950/8 bg-white/75 p-3 text-xs shadow-sm">
+          <div className="flex flex-col gap-1.5">
+            <input
+              type="text"
+              value={searchTitle}
+              onChange={(event) => setSearchTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void runManualSearch();
+              }}
+              placeholder="歌名"
+              className="w-full rounded-lg border border-neutral-950/10 bg-white/80 px-2.5 py-1.5 text-xs outline-none focus:border-violet-400"
+            />
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={searchArtist}
+                onChange={(event) => setSearchArtist(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void runManualSearch();
+                }}
+                placeholder="歌手（可选）"
+                className="min-w-0 flex-1 rounded-lg border border-neutral-950/10 bg-white/80 px-2.5 py-1.5 text-xs outline-none focus:border-violet-400"
+              />
+              <button
+                type="button"
+                disabled={searching}
+                onClick={() => void runManualSearch()}
+                className="shrink-0 rounded-lg bg-neutral-950 px-3 py-1.5 font-medium text-white transition hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {searching ? "搜索中" : "搜索"}
+              </button>
+            </div>
+          </div>
+          {searchError && <p className="mt-2 text-[11px] text-rose-500">{searchError}</p>}
+          {candidates.length > 0 && (
+            <div className="no-scrollbar mt-2 max-h-44 space-y-1.5 overflow-y-auto pr-0.5">
+              {candidates.map((candidate) => (
+                <div key={candidate.id} className="flex items-start justify-between gap-2 rounded-xl bg-neutral-950/[0.04] p-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-neutral-900">
+                      <span className="mr-1.5 rounded bg-neutral-950/10 px-1 py-0.5 text-[10px] text-neutral-600">{candidate.source}</span>
+                      {candidate.title}
+                    </p>
+                    <p className="truncate text-[11px] text-neutral-500">{candidate.artist}</p>
+                    {candidate.preview[0] && (
+                      <p className="mt-0.5 truncate text-[11px] text-neutral-400">{candidate.preview[0]}</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={bindingId === candidate.id}
+                    onClick={() => void applyCandidateBinding(candidate.id)}
+                    className="shrink-0 rounded-lg border border-neutral-950/10 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-800 hover:bg-neutral-950 hover:text-white disabled:opacity-50"
+                  >
+                    {bindingId === candidate.id ? "绑定中" : "绑定"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {bilibiliLyricsOff ? (
         <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 text-center">
           <p className="text-sm font-medium text-neutral-500">B站曲目默认不加载歌词</p>

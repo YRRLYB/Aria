@@ -440,6 +440,7 @@ class MpvAudioEngine {
       // mpv temporarily reports an unavailable time-pos while it flushes a
       // seek. Keep the last playhead until a real timestamp arrives.
       if (message.name === "time-pos") {
+        if (!this.state.active) return;
         if (typeof message.data !== "number" || !Number.isFinite(message.data)) return;
         const nextPosition = Math.max(0, message.data);
         this.state.position = nextPosition;
@@ -461,7 +462,10 @@ class MpvAudioEngine {
         this.state.bitrate = Number(message.data) || null;
         return;
       }
-      if (message.name === "duration") this.state.duration = Number(message.data) || 0;
+      if (message.name === "duration") {
+        if (!this.state.active) return;
+        this.state.duration = Number(message.data) || 0;
+      }
       if (message.name === "pause") this.state.paused = Boolean(message.data);
       if (message.name === "audio-exclusive") this.state.exclusive = Boolean(message.data);
       if (message.name === "audio-device" && typeof message.data === "string") this.state.deviceId = message.data;
@@ -492,10 +496,12 @@ class MpvAudioEngine {
       const pendingSeek = this.pendingSeek;
       const loadToken = this.loadToken;
       this.pendingSeek = 0;
-      this.lastEmittedPosition = this.state.position;
+      this.state.position = pendingSeek;
+      this.lastEmittedPosition = pendingSeek;
       this.lastProgressEmitAt = 0;
       Promise.resolve()
         .then(async () => {
+          if (!this.isCurrentLoad(loadToken)) return;
           if (pendingSeek > 0) {
             await this.command("seek", pendingSeek, "absolute+exact");
           }

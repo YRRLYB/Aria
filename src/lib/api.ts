@@ -56,6 +56,7 @@ declare global {
           equalizerBands?: number[];
         }) => Promise<unknown>;
         stop?: () => Promise<unknown>;
+        recoverOutput?: (reason?: string) => Promise<unknown>;
         onEvent?: (callback: (payload: {
           supported: boolean;
           ready: boolean;

@@ -197,6 +197,8 @@ async function currentProxyDispatcher(): Promise<Dispatcher | null> {
       agent: effectiveUri ? new ProxyAgent({ uri: effectiveUri, requestTls: { timeout: 15_000 } }) : null,
       fetchedAt: now,
     };
+    streamMetaCache.clear();
+    videoMetaCache.clear();
   }
   return proxyState.agent;
 }
@@ -620,6 +622,7 @@ export async function setYoutubeLike(trackId: string, liked: boolean): Promise<{
     throw new SourceError("UPSTREAM_FAILED", `YouTube 红心操作失败（${response.status}）`, { source: "youtube" });
   }
   likedCacheState = null;
+  playlistsCacheState = null;
   return { ok: true, liked };
 }
 
@@ -965,8 +968,38 @@ function formatLevel(format: AdaptiveFormat): AriaLevel | null {
   return "exhigh";
 }
 
+const MAX_MEDIA_META_CACHE = 256;
 const streamMetaCache = new Map<string, { at: number; level: AriaLevel | null; meta: SourceStreamMeta }>();
 const videoMetaCache = new Map<string, { at: number; meta: SourceVideoMeta }>();
+
+function writeBoundedMediaCache<T extends { at: number }>(cache: Map<string, T>, key: string, entry: T) {
+  const now = entry.at;
+  for (const [existingKey, existing] of cache) {
+    if (now - existing.at >= STREAM_META_TTL_MS) cache.delete(existingKey);
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > MAX_MEDIA_META_CACHE) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function cacheResolvedStreamMeta(
+  trackId: string,
+  requestedLevel: AriaLevel | undefined,
+  meta: SourceStreamMeta,
+) {
+  const at = Date.now();
+  const level = requestedLevel ?? null;
+  const primaryKey = `${trackId}\u0000${requestedLevel ?? ""}`;
+  writeBoundedMediaCache(streamMetaCache, primaryKey, { at, level, meta });
+  if (meta.currentLevel && meta.currentLevel !== requestedLevel) {
+    const resolvedKey = `${trackId}\u0000${meta.currentLevel}`;
+    writeBoundedMediaCache(streamMetaCache, resolvedKey, { at, level: meta.currentLevel, meta });
+  }
+}
 
 async function requestYoutubePlayer(
   trackId: string,
@@ -1101,6 +1134,7 @@ export async function resolveYoutubeStreamMeta(
   trackId: string,
   options: { level?: AriaLevel; refresh?: boolean },
 ): Promise<SourceStreamMeta> {
+  await currentProxyDispatcher();
   const cacheKey = `${trackId}\u0000${options.level ?? ""}`;
   const cached = streamMetaCache.get(cacheKey);
   if (!options.refresh && cached && Date.now() - cached.at < STREAM_META_TTL_MS) return cached.meta;
@@ -1124,7 +1158,7 @@ export async function resolveYoutubeStreamMeta(
         muxed.length === 0 || (await probeYoutubeStreamReadable(chosen.format.url as string, headers));
       if (!adaptiveReadable) {
         const meta = buildProgressiveStreamMeta(muxed, clientId, expiresAt);
-        streamMetaCache.set(cacheKey, { at: Date.now(), level: options.level ?? null, meta });
+        cacheResolvedStreamMeta(trackId, options.level, meta);
         return meta;
       }
       const bitrate = Number(chosen.format.bitrate ?? 0) || null;
@@ -1141,13 +1175,13 @@ export async function resolveYoutubeStreamMeta(
         expiresAt,
         fetcher: youtubeStreamFetcher,
       };
-      streamMetaCache.set(cacheKey, { at: Date.now(), level: options.level ?? null, meta });
+      cacheResolvedStreamMeta(trackId, options.level, meta);
       return meta;
     }
 
     if (muxed.length) {
       const meta = buildProgressiveStreamMeta(muxed, clientId, expiresAt);
-      streamMetaCache.set(cacheKey, { at: Date.now(), level: options.level ?? null, meta });
+      cacheResolvedStreamMeta(trackId, options.level, meta);
       return meta;
     }
   }
@@ -1222,6 +1256,7 @@ export async function resolveYoutubeVideoMeta(
   trackId: string,
   options: { level?: AriaLevel; qn?: number; refresh?: boolean },
 ): Promise<SourceVideoMeta> {
+  await currentProxyDispatcher();
   const targetQn = options.qn ?? 1080;
   const cacheKey = `${trackId}\u0000${targetQn}\u0000${options.level ?? ""}`;
   const cached = videoMetaCache.get(cacheKey);
@@ -1307,14 +1342,14 @@ export async function resolveYoutubeVideoMeta(
           expiresAt,
           fetcher: youtubeStreamFetcher,
         };
-        videoMetaCache.set(cacheKey, { at: Date.now(), meta });
+        writeBoundedMediaCache(videoMetaCache, cacheKey, { at: Date.now(), meta });
         return meta;
       }
     }
 
     if (muxed.length) {
       const meta = buildProgressiveVideoMeta(muxed, clientId, expiresAt);
-      videoMetaCache.set(cacheKey, { at: Date.now(), meta });
+      writeBoundedMediaCache(videoMetaCache, cacheKey, { at: Date.now(), meta });
       return meta;
     }
   }

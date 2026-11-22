@@ -54,6 +54,7 @@ import { useNeteaseData } from "@/hooks/useNeteaseData";
 import { useQqData } from "@/hooks/useQqData";
 import { saveBilibiliAudioMeta, useBilibiliData } from "@/hooks/useBilibiliData";
 import { useYoutubeData } from "@/hooks/useYoutubeData";
+import { saveYoutubeAudioMeta } from "@/lib/youtubeAudioMeta";
 import {
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
@@ -857,9 +858,9 @@ export default function App() {
     if (activeView !== "artists" && !searchActive) return [] as ArtistSummary[];
     const artists = new Map<string, ArtistSummary & { albums: Set<string>; sources: Set<Track["source"]> }>();
     for (const track of allTracks) {
-      // Bilibili has no artist catalogue yet; keeping its UP names out of the
-      // artist summaries avoids sending them through NetEase/QQ lookups.
-      if (track.source === "bilibili") continue;
+      // Bilibili and YouTube have no shared artist catalogue; keeping their
+      // channel names out avoids sending them through NetEase/QQ lookups.
+      if (track.source === "bilibili" || track.source === "youtube") continue;
       for (const [artistIndex, artistName] of splitArtistNames(track.artist).entries()) {
         const key = artistName.toLowerCase();
         const current =
@@ -987,6 +988,15 @@ export default function App() {
         if (activeTrack.source === "bilibili" && activeTrack.providerId) {
           saveBilibiliAudioMeta(activeTrack.providerId, {
             bitrate: meta.bitrate ?? null,
+            quality: meta.quality ? normalizeQuality(meta.quality) : undefined,
+            currentLevel: meta.currentLevel ?? null,
+            availableLevels: meta.availableLevels,
+          });
+        }
+        if (activeTrack.source === "youtube" && activeTrack.providerId) {
+          saveYoutubeAudioMeta(activeTrack.providerId, {
+            bitrate: meta.bitrate ?? null,
+            sampleRate: meta.sampleRate ?? null,
             quality: meta.quality ? normalizeQuality(meta.quality) : undefined,
             currentLevel: meta.currentLevel ?? null,
             availableLevels: meta.availableLevels,
@@ -1343,6 +1353,7 @@ export default function App() {
     setSelectedSinkId,
     nativePlaybackEnabled,
     activeStreamUrl,
+    audioElementStreamUrl,
     playbackError,
     setPlaybackError,
     handleAudioError,
@@ -1351,6 +1362,9 @@ export default function App() {
     seekNativeTrack,
     normalizationError,
     equalizerError,
+    deviceChangePrompt,
+    dismissDeviceChangePrompt,
+    recoverAudioOutput,
   } = useAudioEngine({
     activeTrack,
     activeTrackId,
@@ -1708,6 +1722,9 @@ export default function App() {
     qqData.setDailyTracks(applyTo);
     qqData.setRoamTracks(applyTo);
     bilibiliData.setLikedTracks(applyTo);
+    bilibiliData.setPlaylistTracks(applyTo);
+    youtubeData.setLikedTracks(applyTo);
+    youtubeData.setPlaylistTracks(applyTo);
     setCloudTracks(applyTo);
     setExploreTracks(applyTo);
     setCachedQueueSnapshots(applyTo);
@@ -2656,7 +2673,13 @@ export default function App() {
         crossOrigin="anonymous"
         preload="metadata"
         onTimeUpdate={(event) => {
-          if (nativePlaybackEnabled) return;
+          if (nativePlaybackEnabled || !audioElementStreamUrl) return;
+          try {
+            const expectedSrc = new URL(audioElementStreamUrl, window.location.href).href;
+            if (event.currentTarget.src !== expectedSrc) return;
+          } catch {
+            return;
+          }
           commitPlaybackTime(event.currentTarget.currentTime || 0);
         }}
         onLoadedMetadata={(event) => {
@@ -2847,7 +2870,17 @@ export default function App() {
               aria-label={primaryAccount ? `账号：${primaryAccount.nickname ?? "已登录"}` : "账号登录"}
               title={
                 primaryAccount
-                  ? `${primaryAccount.nickname ?? "已登录"}${neteaseConnected ? "（网易云音乐）" : "（QQ 音乐）"}`
+                  ? `${primaryAccount.nickname ?? "已登录"}${
+                      neteaseConnected
+                        ? "（网易云音乐）"
+                        : qqConnected
+                          ? "（QQ 音乐）"
+                          : bilibiliConnected
+                            ? "（B站）"
+                            : youtubeConnected
+                              ? "（YouTube）"
+                              : ""
+                    }`
                   : "登录播放源账号"
               }
               onClick={() => setAccountOpen((value) => !value)}
@@ -3450,12 +3483,12 @@ export default function App() {
                     onRemoveLibraryRoot={(root) => void removeLibraryFolder(root)}
                     onToggleLibraryAutoScan={(enabled) => void toggleLibraryAutoScan(enabled)}
                     trackCount={allTracks.length}
-                    likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length + bilibiliData.likedTracks.length}
+                    likedCount={localLikedTracks.length + neteaseLikedDisplayTracks.length + qqData.likedTracks.length + bilibiliData.likedTracks.length + youtubeData.likedTracks.length}
                     lyricProgress={lyricProgress}
                     volume={volume}
                     onVolumeChange={setVolume}
                     audioOutputDevices={audioOutputDevices}
-                    onRefreshAudioOutputDevices={refreshAudioOutputDevices}
+                    onRefreshAudioOutputDevices={() => refreshAudioOutputDevices().then(() => undefined)}
                     selectedSinkId={selectedSinkId}
                     onSelectedSinkIdChange={setSelectedSinkId}
                     hifiEnabled={hifiEnabled}
@@ -3496,7 +3529,15 @@ export default function App() {
                         setVideoAudioLevel(level);
                       }
                     }}
-                    onSourceAccountChange={() => { refreshQqAccount(); refreshBilibiliAccount(); refreshYoutubeAccount(); void qqData.refresh(); }}
+                    onSourceAccountChange={() => {
+                      refreshQqAccount();
+                      refreshBilibiliAccount();
+                      refreshYoutubeAccount();
+                      void qqData.refresh();
+                      void bilibiliData.refresh();
+                      void bilibiliData.refreshPlaylists();
+                      void youtubeData.refresh();
+                    }}
                     onNeteaseAccountChange={(account) => {
                       setNeteaseAccount(account);
                       if (account.connected) void refreshNeteaseData();
@@ -3524,6 +3565,7 @@ export default function App() {
               activeTrackId={activeTrackId}
               onPickTrack={chooseTrack}
               onSeek={seekTo}
+              onBindLyrics={(trackId, lyrics, candidateId) => applyLyricsToTrack(trackId, lyrics, candidateId)}
               onPlayNext={playNextTrack}
               onRemove={removeFromQueue}
               onMove={moveQueueTrack}
@@ -3702,13 +3744,33 @@ export default function App() {
         />}
 
       </div>
-      {(playbackNotice || playbackError) && (
+      {(playbackNotice || playbackError || deviceChangePrompt) && (
         <div
           role="alert"
-          className="fixed bottom-6 left-1/2 z-[90] flex max-w-[min(92vw,34rem)] -translate-x-1/2 items-start gap-3 rounded-2xl bg-neutral-950/92 px-4 py-3 text-sm text-white shadow-[0_18px_50px_rgba(20,24,35,0.35)] backdrop-blur"
+          className="fixed bottom-6 left-1/2 z-[90] flex max-w-[min(92vw,34rem)] -translate-x-1/2 items-center gap-3 rounded-2xl bg-neutral-950/92 px-4 py-3 text-sm text-white shadow-[0_18px_50px_rgba(20,24,35,0.35)] backdrop-blur"
         >
-          <span className="min-w-0 flex-1 leading-6">{playbackNotice ?? playbackError}</span>
-          <button type="button" className="shrink-0 rounded-full px-1 text-white/60 hover:text-white" aria-label="关闭提示" onClick={() => { setPlaybackNotice(null); setPlaybackError(null); }}>×</button>
+          <span className="min-w-0 flex-1 leading-6">{playbackNotice ?? playbackError ?? deviceChangePrompt}</span>
+          {!playbackNotice && !playbackError && deviceChangePrompt && (
+            <button
+              type="button"
+              className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white transition hover:bg-white/25"
+              onClick={() => void recoverAudioOutput()}
+            >
+              恢复输出
+            </button>
+          )}
+          <button
+            type="button"
+            className="shrink-0 rounded-full px-1 text-white/60 hover:text-white"
+            aria-label="关闭提示"
+            onClick={() => {
+              setPlaybackNotice(null);
+              setPlaybackError(null);
+              dismissDeviceChangePrompt();
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
       {addPlaylistRequest && (shouldUseLocalPlaylistDialog(addPlaylistRequest.tracks) ? (
