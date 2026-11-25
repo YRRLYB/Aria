@@ -46,7 +46,17 @@ export type StoredNeteaseAccount = {
   userId: string | null;
   avatarUrl: string | null;
   cookiePreview: string | null;
+  isVip?: boolean;
   validatedAt: number;
+};
+
+export type StoredYoutubeOauth = {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  clientId: string;
+  clientSecret: string;
+  tokenType?: string;
 };
 
 export type AppStore = {
@@ -70,11 +80,27 @@ export type AppStore = {
   youtubeProxy?: string | null;
   /** Raw YouTube/Google cookie header (SID/HSID/SSID/SAPISID/…); innertube auth. */
   youtubeCookie?: string | null;
+  /** RFC 8628 device-code OAuth2 tokens for YouTube Music. */
+  youtubeOauth?: StoredYoutubeOauth | null;
   /**
    * Per-source switches. A source missing from this record is enabled, so
    * existing stores keep working after an upgrade adds a new source.
    */
   sources?: Record<string, { enabled?: boolean }>;
+  ariaRoomConfig?: AriaRoomStoredConfig;
   lyricBindings: Record<string, string>;
   libraryAutoScanEnabled: boolean;
+};
+
+export type AriaRoomStoredConfig = {
+  signalingProvider?: "cloudflare" | "self-hosted";
+  signalingUrl?: string;
+  selfHostedSignalingUrl?: string;
+  preferredIps?: string[];
+  autoPreferredIp?: boolean;
+  directPort?: number;
+  publicHost?: string;
+  turnUrls?: string[];
+  turnUsername?: string;
+  turnCredential?: string;
 };

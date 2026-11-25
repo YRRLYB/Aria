@@ -4,6 +4,7 @@ import {
   LOCAL_PLAYLISTS_STORAGE_KEY,
   createLocalPlaylist,
   createPlaylistTrackSnapshots,
+  mergePlaylistTrackIds,
   mergeReferenceSync,
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
@@ -164,5 +165,78 @@ describe("local playlists", () => {
     const resolved = resolveLocalPlaylistTracks(playlist, []);
     expect(resolved.map((track) => track.id)).toEqual([remote.id]);
     expect(resolved[0].streamUrl).toBe(remote.streamUrl);
+  });
+
+  it("preserves exact selection order and deduplicates when inserting at top or bottom", () => {
+    expect(mergePlaylistTrackIds(["e1", "e2"], ["n3", "n1", "e1", "n3", "n2"], "top")).toEqual([
+      "n3",
+      "n1",
+      "n2",
+      "e1",
+      "e2",
+    ]);
+    expect(mergePlaylistTrackIds(["e1", "e2"], ["n3", "n1", "e2", "n2"], "bottom")).toEqual([
+      "e1",
+      "e2",
+      "n3",
+      "n1",
+      "n2",
+    ]);
+    expect(mergePlaylistTrackIds(["e1"], ["e1"], "top")).toEqual(["e1"]);
+  });
+
+  it("persists and sanitizes Super混合 playlists with sources, strategy and manualTrackIds", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: vi.fn((key: string) => values.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        values.set(key, value);
+      }),
+    };
+    const superMix = {
+      sources: [
+        { key: "netease:10", source: "netease" as const, playlistId: "10", name: "云村红心", trackCount: 50 },
+        { key: "qq:20", source: "qq" as const, playlistId: "20", name: "QQ收藏", trackCount: 30 },
+      ],
+      strategy: "interleave" as const,
+      dedupe: true,
+      manualTrackIds: ["local:fav1"],
+      syncedAt: 123456,
+      dedupedCount: 4,
+      sourceCounts: { netease: 46, qq: 30, local: 1 },
+    };
+    const playlist = createLocalPlaylist("我的 Super混合", ["netease:1", "qq:2", "local:fav1"], 100, undefined, undefined, superMix);
+
+    expect(playlist.kind).toBe("super-mix");
+    expect(writeLocalPlaylists([playlist], storage)).toBe(true);
+    expect(readLocalPlaylists(storage)).toEqual([playlist]);
+
+    const sanitized = sanitizeLocalPlaylists([
+      {
+        id: "sm-1",
+        name: "混播",
+        trackIds: ["qq:2"],
+        superMix: {
+          sources: [
+            { key: "qq:2", source: "qq", playlistId: "2", name: "QQ" },
+            { key: "bad", source: "unknown", playlistId: "", name: "" },
+          ],
+          strategy: "invalid-strategy",
+          dedupe: false,
+          manualTrackIds: ["local:a", "local:a", 42],
+        },
+        createdAt: 1,
+        updatedAt: 2,
+      },
+    ]);
+    expect(sanitized[0]).toMatchObject({
+      kind: "super-mix",
+      superMix: {
+        sources: [{ key: "qq:2", source: "qq", playlistId: "2", name: "QQ" }],
+        strategy: "interleave",
+        dedupe: false,
+        manualTrackIds: ["local:a"],
+      },
+    });
   });
 });

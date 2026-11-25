@@ -128,6 +128,8 @@ describe("Aria v0.8.0 Bilibili playlist tab", () => {
     expect(markup).toContain("别人的夜歌单");
     expect(markup).toContain("引入B站歌单");
     expect(markup).toContain("同步收藏夹");
+    expect(markup).toContain("aria-page-shell");
+    expect(markup).not.toContain("Bilibili playlist");
     // 四来源切换胶囊包含 B站选项。
     expect(markup).toContain("歌单来源");
   });
@@ -232,7 +234,90 @@ describe("Aria v0.8.0 Bilibili playlist tab", () => {
     expect(markup).toContain("深夜编码");
     expect(markup).toContain("12 首");
     expect(markup).toContain("同步歌单");
+    expect(markup).toContain("aria-page-shell");
+    expect(markup).not.toContain("YouTube playlist");
     // 未打开详情时不渲染 PlaylistDetail 的「返回歌单」。
     expect(markup).not.toContain("返回歌单");
+  });
+
+  it("keeps the source navigation bar in the local playlist tab and removes Bilibili link controls", () => {
+    const owned = createLocalPlaylist("我的本地歌单", [], 10);
+    const baseLocal = localBundle();
+    const markup = renderToStaticMarkup(
+      <PlaylistSurface
+        playlists={[]}
+        local={{ ...baseLocal, playlists: [owned] }}
+        selectedPlaylist={null}
+        tracks={[]}
+        playCounts={{}}
+        loading={false}
+        canCreatePlaylist={false}
+        onCreatePlaylist={noopPlaylistAsync}
+        onRequireLogin={vi.fn()}
+        onOpenPlaylist={vi.fn()}
+        onClosePlaylist={vi.fn()}
+        onPickTrack={vi.fn()}
+        error={null}
+        onUpdatePlaylist={noopAsync}
+        onUploadCover={noopAsync}
+        onRemoveTracks={noopAsync}
+        onReorderTracks={noopAsync}
+        onSubscribe={noopAsync}
+        onDeletePlaylist={noopAsync}
+        qq={{
+          connected: false,
+          playlists: [],
+          selectedPlaylist: null,
+          tracks: [],
+          loading: false,
+          error: null,
+          onOpen: vi.fn(),
+          onClose: vi.fn(),
+          onPickTrack: vi.fn(),
+        }}
+        bilibili={{
+          connected: false,
+          playlists: [],
+          loading: false,
+          error: null,
+          selectedPlaylist: null,
+          tracks: [],
+          tracksLoading: false,
+          tracksError: null,
+          playCounts: {},
+          referencedPlaylists: baseLocal.playlists,
+          onOpen: vi.fn(),
+          onClose: vi.fn(),
+          onRefresh: vi.fn(),
+          onPickTrack: vi.fn(),
+          onRequireLogin: vi.fn(),
+          onCreateReference: vi.fn(),
+          onSyncReference: vi.fn(),
+          onOpenReferenced: vi.fn(),
+        }}
+        youtube={{
+          connected: false,
+          playlists: [],
+          loading: false,
+          error: null,
+          selectedPlaylist: null,
+          tracks: [],
+          tracksLoading: false,
+          tracksError: null,
+          onOpen: vi.fn(),
+          onClose: vi.fn(),
+          onRefresh: vi.fn(),
+          onPickTrack: vi.fn(),
+          onRequireLogin: vi.fn(),
+        }}
+        initialSource="local"
+      />,
+    );
+
+    expect(markup).toContain("Aria 歌单");
+    expect(markup).toContain("我的本地歌单");
+    expect(markup).toContain('aria-label="歌单来源"');
+    expect(markup).not.toContain("引用B站歌单");
+    expect(markup).not.toContain("B站链接");
   });
 });

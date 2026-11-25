@@ -9,8 +9,9 @@ const mocks = vi.hoisted(() => ({
   search: vi.fn(), suggest: vi.fn(), user: vi.fn(), album: vi.fn(), artist: vi.fn(), artistDesc: vi.fn(), artistAlbums: vi.fn(),
   styles: vi.fn(), styleDetail: vi.fn(), styleSongs: vi.fn(), sportRadio: vi.fn(),
   playlistDetail: vi.fn(), playlistTracks: vi.fn(), editTracks: vi.fn(), order: vi.fn(), name: vi.fn(), description: vi.fn(), tags: vi.fn(), cover: vi.fn(), subscribe: vi.fn(), deletePlaylist: vi.fn(),
+  songDetail: vi.fn(), songUrlV1: vi.fn(),
   persistent: new Map<string, unknown>(),
-  rememberPersistent: vi.fn(), clearPersistent: vi.fn(), setPersistent: vi.fn(),
+  getPersistent: vi.fn(), rememberPersistent: vi.fn(), clearPersistent: vi.fn(), setPersistent: vi.fn(),
 }));
 
 vi.mock("NeteaseCloudMusicApi", () => ({
@@ -24,14 +25,20 @@ vi.mock("NeteaseCloudMusicApi", () => ({
     playlist_tracks: mocks.editTracks, song_order_update: mocks.order,
     playlist_name_update: mocks.name, playlist_desc_update: mocks.description, playlist_tags_update: mocks.tags,
     playlist_cover_update: mocks.cover, playlist_subscribe: mocks.subscribe, playlist_delete: mocks.deletePlaylist,
+    song_detail: mocks.songDetail, song_url_v1: mocks.songUrlV1,
   },
 }));
 vi.mock("../store", () => ({ readStore: mocks.store }));
 vi.mock("../services/neteaseService", () => ({ getNeteaseAccountSummary: mocks.account }));
-vi.mock("../utils/persistentCache", () => ({ rememberPersistent: mocks.rememberPersistent, clearPersistent: mocks.clearPersistent, setPersistent: mocks.setPersistent }));
+vi.mock("../utils/persistentCache", () => ({
+  getPersistent: mocks.getPersistent,
+  rememberPersistent: mocks.rememberPersistent,
+  clearPersistent: mocks.clearPersistent,
+  setPersistent: mocks.setPersistent,
+}));
 
 import sharp from "sharp";
-import { NeteaseClient, normalizeSong, qualityFromLevel } from "./neteaseClient";
+import { NeteaseClient, normalizeSong, qualityFromLevel, sanitizeNeteaseArtistAvatar } from "./neteaseClient";
 import { clearCache } from "../utils/memoryCache";
 
 beforeEach(() => {
@@ -40,6 +47,7 @@ beforeEach(() => {
   mocks.persistent.clear();
   mocks.store.mockResolvedValue({ neteaseCookie: "test-cookie" });
   mocks.account.mockResolvedValue({ connected: true, userId: "7" });
+  mocks.getPersistent.mockImplementation(async (key: string) => mocks.persistent.get(key));
   mocks.rememberPersistent.mockImplementation(async (key: string, _ttl: number, loader: () => Promise<unknown>) => {
     if (mocks.persistent.has(key)) return mocks.persistent.get(key);
     const value = await loader(); mocks.persistent.set(key, value); return value;
@@ -374,5 +382,83 @@ describe("NetEase playlist editing", () => {
     mocks.playlistDetail.mockResolvedValue({ body: { code: 200, playlist: { ...playlist, creator: { userId: 9 } } } });
     expect(await client.subscribePlaylist("42", false)).toEqual({ ok: true, subscribed: false });
     expect(mocks.subscribe).toHaveBeenCalledWith(expect.objectContaining({ id: "42", t: 2 }));
+  });
+
+  it("filters NetEase default silhouette placeholders and keeps real artist avatars", () => {
+    expect(sanitizeNeteaseArtistAvatar("https://p1.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg")).toBeNull();
+    expect(sanitizeNeteaseArtistAvatar("https://p2.music.126.net/default_avatar.png")).toBeNull();
+    expect(sanitizeNeteaseArtistAvatar("  ")).toBeNull();
+    expect(sanitizeNeteaseArtistAvatar("https://p2.music.126.net/real-artist-pic/109951169999999.jpg")).toBe(
+      "https://p2.music.126.net/real-artist-pic/109951169999999.jpg",
+    );
+  });
+
+  it("flags 30s VIP trial streams via freeTrialInfo or short clip duration while keeping full streams clean", async () => {
+    mocks.songDetail.mockResolvedValue({
+      body: {
+        code: 200,
+        songs: [{ id: 1001, name: "Trial Song", dt: 240_000, sq: { br: 999000, sr: 44100 } }],
+      },
+    });
+    mocks.songUrlV1.mockResolvedValueOnce({
+      body: {
+        code: 200,
+        data: [
+          {
+            url: "https://cdn.example/trial-explicit.mp3",
+            br: 128000,
+            sr: 44100,
+            size: 480000,
+            level: "standard",
+            time: 30_000,
+            freeTrialInfo: { start: 0, end: 30 },
+          },
+        ],
+      },
+    });
+
+    const explicitTrial = await client.getStreamMeta("1001", "lossless", true);
+    expect(explicitTrial.isTrial).toBe(true);
+    expect(explicitTrial.trialDurationSec).toBe(30);
+
+    mocks.songUrlV1.mockResolvedValueOnce({
+      body: {
+        code: 200,
+        data: [
+          {
+            url: "https://cdn.example/trial-short.mp3",
+            br: 128000,
+            sr: 44100,
+            size: 480000,
+            level: "standard",
+            time: 30_000,
+            freeTrialInfo: null,
+          },
+        ],
+      },
+    });
+    const shortClipTrial = await client.getStreamMeta("1001", "lossless", true);
+    expect(shortClipTrial.isTrial).toBe(true);
+    expect(shortClipTrial.trialDurationSec).toBe(30);
+
+    mocks.songUrlV1.mockResolvedValueOnce({
+      body: {
+        code: 200,
+        data: [
+          {
+            url: "https://cdn.example/full-lossless.flac",
+            br: 999000,
+            sr: 44100,
+            size: 28000000,
+            level: "lossless",
+            time: 240_000,
+            freeTrialInfo: null,
+          },
+        ],
+      },
+    });
+    const fullTrack = await client.getStreamMeta("1001", "lossless", true);
+    expect(fullTrack.isTrial).toBeUndefined();
+    expect(fullTrack.url).toBe("https://cdn.example/full-lossless.flac");
   });
 });

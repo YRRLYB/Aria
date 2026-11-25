@@ -96,6 +96,7 @@ export function useDiscovery(options: {
   const [artistAvatarCache, setArtistAvatarCache] = useState<
     Record<string, string | null>
   >({});
+  const [avatarBatchTick, setAvatarBatchTick] = useState(0);
   const artistRequestRef = useRef<Set<string>>(new Set());
   const artistAvatarLookupRef = useRef<Set<string>>(new Set());
   const artistAvatarCacheRef = useRef<Record<string, string | null>>({});
@@ -753,18 +754,20 @@ export function useDiscovery(options: {
   }, [options.allTracks, selectedArtist, artistTracksRevision]);
 
   useEffect(() => {
-    const candidates = options.artistSummaries
-      .filter((artist) => {
-        const key = artist.name.toLowerCase();
-        return (
-          !artist.avatarUrl &&
-          !(key in artistAvatarCacheRef.current) &&
-          !artistAvatarLookupRef.current.has(key)
-        );
-      })
-      .slice(0, 6);
+    const visibleArtists = options.artistSummaries.slice(0, 80);
+    const pending = visibleArtists.filter((artist) => {
+      const key = artist.name.toLowerCase();
+      return (
+        !artist.avatarUrl &&
+        !(key in artistAvatarCacheRef.current) &&
+        !artistAvatarLookupRef.current.has(key)
+      );
+    });
+    const candidates = pending.slice(0, 6);
     if (!candidates.length) return;
 
+    let cancelled = false;
+    let nextBatchTimer: number | null = null;
     candidates.forEach((artist) =>
       artistAvatarLookupRef.current.add(artist.name.toLowerCase()),
     );
@@ -788,19 +791,30 @@ export function useDiscovery(options: {
           candidates[index].name.toLowerCase(),
         ),
       );
+      if (cancelled) return;
       const entries = results.flatMap((result) =>
         result.status === "fulfilled" ? [result.value] : [],
       );
-      if (!entries.length) return;
-      setArtistAvatarCache((current) => {
-        const next = { ...current };
-        for (const [key, avatarUrl] of entries) {
-          next[key] = avatarUrl;
-        }
-        return trimRecordCache(next, memoryLimits.artistAvatarCache);
-      });
+      if (entries.length) {
+        setArtistAvatarCache((current) => {
+          const next = { ...current };
+          for (const [key, avatarUrl] of entries) {
+            next[key] = avatarUrl;
+          }
+          return trimRecordCache(next, memoryLimits.artistAvatarCache);
+        });
+      }
+      if (pending.length > candidates.length) {
+        nextBatchTimer = window.setTimeout(() => {
+          if (!cancelled) setAvatarBatchTick((tick) => tick + 1);
+        }, 180);
+      }
     });
-  }, [options.artistSummaries]);
+    return () => {
+      cancelled = true;
+      if (nextBatchTimer !== null) window.clearTimeout(nextBatchTimer);
+    };
+  }, [options.artistSummaries, avatarBatchTick]);
 
   useEffect(() => {
     const trimmedCache = trimRecordCache(

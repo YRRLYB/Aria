@@ -296,4 +296,58 @@ describe("playerPresentation", () => {
     );
     expect(trimmed.some((item) => item.id === richTrack.id)).toBe(true);
   });
+
+  it("scrubs legacy NetEase placeholder lyrics from persisted snapshots and preserves missing status across merges", () => {
+    const storage = mockLocalStorage();
+    const stalePlaceholderTrack = {
+      id: "netease:1844160090",
+      providerId: "1844160090",
+      title: "Crystal Gravity",
+      artist: "Tanchiky / siromaru",
+      album: "Crystal Gravity",
+      duration: "02:04",
+      quality: "320K",
+      source: "netease",
+      streamUrl: "/stream/1844160090",
+      cover: "#111",
+      accent: "#7c5ce6",
+      waveform: [],
+      lyrics: [
+        { time: "00:00", text: "歌词等待同步" },
+        { time: "00:15", text: "网易云歌曲已接入真实账号数据" },
+        { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
+      ],
+      lyricStatus: "linked",
+    };
+    storage.setItem(
+      "aria-player-state",
+      JSON.stringify({
+        activeTrackId: stalePlaceholderTrack.id,
+        activeTrackSnapshot: stalePlaceholderTrack,
+        playQueueIds: [stalePlaceholderTrack.id],
+        playQueueSnapshots: [stalePlaceholderTrack],
+      }),
+    );
+
+    const restored = readCachedPlayerState();
+    expect(restored.activeTrackSnapshot?.lyrics).toEqual([]);
+    expect(restored.activeTrackSnapshot?.lyricStatus).toBe("searchable");
+    expect(hasSyncedLyrics(restored.activeTrackSnapshot!)).toBe(false);
+    expect(restored.playQueueSnapshots?.[0].lyrics).toEqual([]);
+    expect(restored.playQueueSnapshots?.[0].lyricStatus).toBe("searchable");
+
+    const resolvedInstrumental = {
+      ...restored.activeTrackSnapshot!,
+      lyrics: [],
+      lyricStatus: "missing" as const,
+    };
+    const incomingSearchable = {
+      ...restored.activeTrackSnapshot!,
+      lyrics: [],
+      lyricStatus: "searchable" as const,
+    };
+    const merged = mergeTrackRecord(resolvedInstrumental, incomingSearchable);
+    expect(merged.lyricStatus).toBe("missing");
+    expect(merged.lyrics).toEqual([]);
+  });
 });

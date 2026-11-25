@@ -9,8 +9,9 @@ const { inspectMachO } = require("./macBinary.cjs");
 // name (for example, `Aria.exe`).  The branded filename lets the native
 // decoder stay in WASAPI while remaining part of the app selected for share.
 const NATIVE_AUDIO_CLIENT_NAME = "Aria";
-const IS_WINDOWS = process.platform === "win32";
-const IS_MAC = process.platform === "darwin";
+const DEFAULT_PLATFORM = process.platform;
+const IS_WINDOWS = DEFAULT_PLATFORM === "win32";
+const IS_MAC = DEFAULT_PLATFORM === "darwin";
 // Windows uses the branded .exe so application loopback can select Aria; the
 // other platforms ship (or expect) an `mpv` binary next to it.
 const NATIVE_AUDIO_PROCESS_NAME = IS_WINDOWS ? `${NATIVE_AUDIO_CLIENT_NAME}.exe` : "mpv";
@@ -33,16 +34,41 @@ function buildEqualizerFilter(bands) {
     .join(",");
 }
 
-function buildMpvArguments(pipePath, exclusive = false, supportedOptions = null) {
+function buildIpcPipePath(platform = DEFAULT_PLATFORM, pid = process.pid, now = Date.now()) {
+  if (platform === "win32") {
+    return `\\\\.\\pipe\\aria-mpv-${pid}-${now}`;
+  }
+  const suffix = `aria-mpv-${pid}-${Number(now).toString(36)}.sock`;
+  if (platform === "darwin") {
+    const tmpRoot =
+      process.platform !== "darwin"
+        ? "/tmp"
+        : (() => {
+            try {
+              fs.accessSync("/tmp", fs.constants.W_OK);
+              return "/tmp";
+            } catch {
+              return require("node:os").tmpdir();
+            }
+          })();
+    return `${tmpRoot.replace(/\/+$/, "")}/${suffix}`;
+  }
+  return path.join(require("node:os").tmpdir(), suffix);
+}
+
+function buildMpvArguments(pipePath, exclusive = false, supportedOptions = null, platform = DEFAULT_PLATFORM) {
   // macOS bundled mpv builds (and older community builds) do not expose every
   // option the Windows decoder has. Only pass the optional media-session flags
   // when the resolved binary actually lists them; an unknown option makes mpv
   // exit before the IPC socket is created, which previously looked like
   // "mpv is not usable on macOS".
+  const isWin = platform === "win32";
+  const isMac = platform === "darwin";
+  const ao = isMac ? "coreaudio" : isWin ? "wasapi" : "pipewire,pulse,alsa";
   const hasOption = (name) => !(supportedOptions instanceof Set) || supportedOptions.has(name);
   return [
     "--idle=yes",
-    `--ao=${NATIVE_AUDIO_OUTPUT}`,
+    `--ao=${ao}`,
     "--no-video",
     "--force-window=no",
     "--keep-open=no",
@@ -56,24 +82,24 @@ function buildMpvArguments(pipePath, exclusive = false, supportedOptions = null)
     ...(hasOption("audio-set-media-role") ? ["--audio-set-media-role=yes"] : []),
     `--title=${NATIVE_AUDIO_CLIENT_NAME}`,
     `--force-media-title=${NATIVE_AUDIO_CLIENT_NAME}`,
-    // Exclusive mode is a WASAPI concept; macOS/Linux keep shared output.
-    ...(IS_WINDOWS ? [`--audio-exclusive=${exclusive ? "yes" : "no"}`] : []),
+    ...(isWin || (isMac && hasOption("audio-exclusive"))
+      ? [`--audio-exclusive=${exclusive ? "yes" : "no"}`]
+      : []),
     "--msg-level=all=warn",
     "--no-config",
     "--cache=yes",
-    "--cache-pause=no",
+    "--cache-pause=yes",
     "--cache-pause-initial=no",
-    "--cache-pause-wait=0.15",
-    // Audio-only streams never need the video-sized default demuxer buffers;
-    // trimming them keeps mpv's resident set small during long sessions.
-    "--demuxer-readahead-secs=4",
-    "--demuxer-max-bytes=8MiB",
-    "--demuxer-max-back-bytes=2MiB",
-    "--stream-buffer-size=256KiB",
+    "--cache-pause-wait=0.8",
+    // Keep enough readahead headroom so P2P/HTTP audio jitter never causes choppy dropouts.
+    "--demuxer-readahead-secs=20",
+    "--demuxer-max-bytes=24MiB",
+    "--demuxer-max-back-bytes=8MiB",
+    "--stream-buffer-size=512KiB",
     // Keep the decoder/AO chain warm across playlist entries so appended
-    // tracks start without reopening the WASAPI device.
+    // tracks start without reopening the audio device.
     "--gapless-audio=yes",
-    "--audio-buffer=0.12",
+    "--audio-buffer=0.2",
     `--input-ipc-server=${pipePath}`,
   ];
 }
@@ -194,6 +220,7 @@ class MpvAudioEngine {
       duration: 0,
       paused: true,
       volume: 72,
+      speed: 1,
       exclusive: false,
       deviceId: "auto",
       bitrate: null,
@@ -318,9 +345,7 @@ class MpvAudioEngine {
     this.ensurePromise = (async () => {
       await this.teardown();
 
-      this.pipePath = IS_WINDOWS
-        ? `\\\\.\\pipe\\aria-mpv-${process.pid}-${Date.now()}`
-        : path.join(require("node:os").tmpdir(), `aria-mpv-${process.pid}-${Date.now()}.sock`);
+      this.pipePath = buildIpcPipePath(process.platform);
       this.buffer = "";
       this.launchExclusive = requestedExclusive;
 
@@ -617,18 +642,39 @@ class MpvAudioEngine {
       await this.command("set_property", "volume", volume);
     }
     if (typeof exclusive === "boolean") {
-      await this.command("set_property", "audio-exclusive", exclusive);
-      this.state.exclusive = Boolean(await this.command("get_property", "audio-exclusive"));
-      if (exclusive && !this.state.exclusive) {
-        // Do not leave the shared session alive after an exclusive request is
-        // rejected. A surviving mpv process would keep producing audio and
-        // make the UI appear to be in exclusive mode while Windows still
-        // owns a shared endpoint.
-        await this.teardown();
-        this.state.active = false;
-        this.state.trackId = null;
-        this.state.url = null;
-        throw new Error("WASAPI exclusive mode was rejected by the selected output device.");
+      const supportedOptions = IS_WINDOWS ? null : readSupportedMpvOptions(this.resolveExecutable());
+      const canToggleExclusive = !(supportedOptions instanceof Set) || supportedOptions.has("audio-exclusive");
+      if (!canToggleExclusive) {
+        this.state.exclusive = false;
+        if (exclusive) {
+          await this.teardown();
+          this.state.active = false;
+          this.state.trackId = null;
+          this.state.url = null;
+          throw new Error(
+            IS_MAC
+              ? "CoreAudio exclusive mode is not supported by this mpv build."
+              : "Audio exclusive mode is not supported by this mpv build.",
+          );
+        }
+      } else {
+        await this.command("set_property", "audio-exclusive", exclusive).catch((err) => {
+          if (exclusive) throw err;
+        });
+        this.state.exclusive = exclusive
+          ? Boolean(await this.command("get_property", "audio-exclusive").catch(() => false))
+          : false;
+        if (exclusive && !this.state.exclusive) {
+          await this.teardown();
+          this.state.active = false;
+          this.state.trackId = null;
+          this.state.url = null;
+          throw new Error(
+            IS_MAC
+              ? "CoreAudio exclusive mode was rejected by the selected output device."
+              : "WASAPI exclusive mode was rejected by the selected output device.",
+          );
+        }
       }
     }
     this.writeLog("native-audio.log", `native output: ${this.state.exclusive ? "exclusive" : "shared"} device=${this.state.deviceId}`);
@@ -849,10 +895,12 @@ class MpvAudioEngine {
     this.state.duration = 0;
     this.state.active = false;
     this.state.paused = this.pendingPause;
+    this.state.speed = 1;
     this.state.bitrate = null;
     this.emit({ kind: "switching" });
 
     await this.command("set_property", "pause", true).catch(() => undefined);
+    await this.command("set_property", "speed", 1).catch(() => undefined);
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     await this.applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled, equalizerEnabled, equalizerBands });
@@ -915,6 +963,22 @@ class MpvAudioEngine {
     this.state.volume = Math.max(0, Math.min(100, Number(volume) || 0));
     await this.command("set_property", "volume", this.state.volume);
     this.emit({ kind: "volume" });
+    return this.snapshot();
+  }
+
+  async setSpeed(speed) {
+    const parsed = Number(speed);
+    const clamped = Number.isFinite(parsed)
+      ? Math.max(0.5, Math.min(2, Math.round(parsed * 1000) / 1000))
+      : 1;
+    if (Math.abs((this.state.speed ?? 1) - clamped) < 0.001) {
+      return this.snapshot();
+    }
+    this.state.speed = clamped;
+    if (this.process && this.socket && !this.socket.destroyed) {
+      await this.command("set_property", "speed", clamped).catch(() => undefined);
+    }
+    this.emit({ kind: "speed" });
     return this.snapshot();
   }
 
@@ -999,6 +1063,7 @@ class MpvAudioEngine {
 
 module.exports = {
   MpvAudioEngine,
+  buildIpcPipePath,
   buildMpvArguments,
   NATIVE_AUDIO_CLIENT_NAME,
   NATIVE_AUDIO_PROCESS_NAME,

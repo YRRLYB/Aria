@@ -9,32 +9,12 @@ import type { Track } from "@/data/music";
 const LOCAL_DEFAULT_WAVEFORM = [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48];
 const PROVIDER_DEFAULT_WAVEFORM = [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52];
 const DEFAULT_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = ["standard", "higher", "exhigh"];
-const LOCAL_PLACEHOLDER_LYRICS: Track["lyrics"] = [
-  { time: "00:00", text: "本地歌词等待匹配" },
-  { time: "00:15", text: "可以在本地音乐页联网搜词后绑定" },
-  { time: "00:30", text: "绑定后会保存到本地索引" },
-];
+const LOCAL_PLACEHOLDER_LYRICS: Track["lyrics"] = [];
 const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili" | "youtube", Track["lyrics"]> = {
-  netease: [
-    { time: "00:00", text: "歌词等待同步" },
-    { time: "00:15", text: "网易云歌曲已接入真实账号数据" },
-    { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
-  ],
-  qq: [
-    { time: "00:00", text: "歌词等待同步" },
-    { time: "00:15", text: "QQ音乐歌词会在播放时自动获取" },
-    { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
-  ],
-  bilibili: [
-    { time: "00:00", text: "歌词等待同步" },
-    { time: "00:15", text: "B站视频字幕会在播放时自动获取" },
-    { time: "00:30", text: "后续会按歌曲 ID 同步滚动歌词" },
-  ],
-  youtube: [
-    { time: "00:00", text: "歌词等待匹配" },
-    { time: "00:15", text: "播放时会自动跨源匹配同步歌词" },
-    { time: "00:30", text: "也可在歌词栏右上角手动搜词绑定" },
-  ],
+  netease: [],
+  qq: [],
+  bilibili: [],
+  youtube: [],
 };
 const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
 const EMPTY_ARTIST_IDS: string[] = [];

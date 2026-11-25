@@ -19,6 +19,6 @@ export const qqManifest: SourceManifest = {
     artistDetail: true,
     albumDetail: true,
     qualitySelection: true,
-    videoPlayback: false,
+    videoPlayback: true,
   },
 };

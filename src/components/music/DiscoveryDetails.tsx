@@ -121,7 +121,7 @@ export function PlaylistDiscoveryCard({
     <button
       type="button"
       onClick={() => onPick(playlist)}
-      className="group flex min-w-0 items-center gap-3 rounded-2xl bg-white/55 p-3 text-left transition hover:bg-white"
+      className="aria-flat-tile group flex min-w-0 items-center gap-3 rounded-2xl p-3 text-left"
     >
       <DiscoveryArtwork
         src={playlist.coverUrl}
@@ -153,7 +153,7 @@ export function AlbumDiscoveryCard({
     <button
       type="button"
       onClick={() => onPick(album)}
-      className="group flex min-w-0 items-center gap-3 rounded-2xl bg-white/55 p-3 text-left transition hover:bg-white"
+      className="aria-flat-tile group flex min-w-0 items-center gap-3 rounded-2xl p-3 text-left"
     >
       <DiscoveryArtwork
         src={album.coverUrl}
@@ -198,7 +198,7 @@ export function DiscoveryTrackRow({
     <div
       role="button"
       tabIndex={0}
-      className="flex min-w-0 cursor-pointer items-center gap-2 rounded-xl bg-white/55 px-3 py-2.5 transition hover:bg-white"
+      className="aria-flat-row flex min-w-0 cursor-pointer items-center gap-2 rounded-xl px-3 py-2.5"
       onClick={() => onPickTrack(track.id, queue)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
@@ -293,18 +293,18 @@ export function UserDetailSurface({
   onPickPlaylist: (playlist: ProviderPlaylist) => void;
 }) {
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-6">
+    <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
       <BackButton onBack={onBack} label="返回用户搜索" />
-      <header className="my-5 flex shrink-0 items-center gap-5">
+      <header className="aria-page-header my-4 flex shrink-0 items-center gap-5 pb-4">
         <ArtistAvatar
           name={user.nickname}
           avatarUrl={user.avatarUrl}
-          className="size-24 rounded-full"
+          className="size-20 rounded-full"
         />
         <div className="min-w-0">
-          <p className="text-xs tracking-widest text-neutral-400">网易云用户</p>
+          <p className="text-xs text-neutral-400">网易云用户</p>
           <h1
-            className="mt-2 truncate text-3xl font-semibold"
+            className="mt-1 truncate text-2xl font-semibold sm:text-3xl"
             title={user.nickname}
           >
             {user.nickname}
@@ -371,19 +371,18 @@ export function AlbumDetailSurface({
 }) {
   const playlistActions = usePlaylistActions();
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-6">
+    <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
       <BackButton onBack={onBack} label="返回" />
       <div className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
-        <header className="flex items-center gap-6">
+        <header className="aria-page-header flex items-center gap-6 pb-5">
           <DiscoveryArtwork
             src={album.coverUrl}
             name={album.name}
             cacheSize={512}
-            className="size-40 rounded-2xl shadow-sm"
+            className="size-36 rounded-2xl"
           />
           <div className="min-w-0 flex-1">
-            <p className="text-xs tracking-widest text-neutral-400">ALBUM</p>
-            <h1 className="mt-2 break-words text-3xl font-semibold leading-snug">
+            <h1 className="break-words text-2xl font-semibold leading-snug sm:text-3xl">
               {album.name}
             </h1>
             <button
@@ -427,7 +426,7 @@ export function AlbumDetailSurface({
           </div>
         </header>
         {album.description && (
-          <details className="mt-5 rounded-xl bg-white/45 px-4 py-3 text-sm text-neutral-600">
+          <details className="aria-flat-well mt-5 rounded-xl px-4 py-3 text-sm text-neutral-600">
             <summary className="cursor-pointer font-medium">专辑介绍</summary>
             <p className="mt-3 whitespace-pre-line leading-7">
               {album.description}
@@ -474,7 +473,7 @@ function BackButton({ onBack, label }: { onBack: () => void; label: string }) {
     <button
       type="button"
       onClick={onBack}
-      className="flex w-fit shrink-0 items-center gap-2 rounded-full bg-white/75 px-4 py-2 text-xs font-medium text-neutral-600 transition hover:bg-white"
+      className="aria-chip flex w-fit shrink-0 items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium"
     >
       <ArrowLeft className="size-3.5" />
       {label}

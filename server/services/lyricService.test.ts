@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ words: vi.fn(), lines: vi.fn() }));
+const mocks = vi.hoisted(() => ({ words: vi.fn(), lines: vi.fn(), readStore: vi.fn() }));
 vi.mock("NeteaseCloudMusicApi", () => ({ default: { lyric_new: mocks.words, lyric: mocks.lines } }));
 // Keep the suite hermetic: a locally configured egress IP must not leak into
 // the exact argument assertions below.
-vi.mock("../store", () => ({ readStore: async () => ({ neteaseCookie: null, neteaseRealIp: null }) }));
+vi.mock("../store", () => ({ readStore: mocks.readStore }));
 import { fetchNeteaseLyrics } from "./lyricService";
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  mocks.readStore.mockResolvedValue({ neteaseCookie: null, neteaseRealIp: null });
+});
 
 describe("lyric acquisition", () => {
   it("loads word timing without an additional ordinary lyric request", async () => {
@@ -29,5 +32,12 @@ describe("lyric acquisition", () => {
     mocks.words.mockResolvedValue({ body: { code: 200, lrc: { lyric: "[00:01]歌" } } });
     expect(await fetchNeteaseLyrics(42)).toMatchObject([{ timingVersion: 1, text: "歌" }]);
     expect(mocks.lines).not.toHaveBeenCalled();
+  });
+
+  it("forwards the signed-in neteaseCookie when configured in store", async () => {
+    mocks.readStore.mockResolvedValue({ neteaseCookie: "MUSIC_U=session_cookie", neteaseRealIp: null });
+    mocks.words.mockResolvedValue({ body: { code: 200, lrc: { lyric: "[00:01]带Cookie歌词" } } });
+    expect(await fetchNeteaseLyrics("88")).toMatchObject([{ text: "带Cookie歌词" }]);
+    expect(mocks.words).toHaveBeenCalledExactlyOnceWith({ id: "88", cookie: "MUSIC_U=session_cookie" });
   });
 });

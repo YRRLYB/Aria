@@ -1,7 +1,7 @@
 import QRCode from "qrcode";
 import type { SourceAccount, SourceQrLoginCheck, SourceQrLoginStart } from "../contract";
 import { SourceError } from "../contract";
-import { saveYoutubeCookie, youtubeRawFetch } from "./client";
+import { saveYoutubeOauthSession, youtubeRawFetch } from "./client";
 
 /**
  * YouTube 设备码登录（RFC 8628，智能电视同款授权通道）。
@@ -39,7 +39,7 @@ const FALLBACK_TV_CLIENT_SECRET = "SboVhoG9s0rNafixCSGGKXAT";
 // `openid` 换取 gaiaId（Multilogin 备用通道需要）；gdata/youtube(-paid-content)
 // 与 SmartTube 完全一致——这套 scope 与 OAuthLogin 换 Cookie 步骤配套验证过。
 const OAUTH_SCOPE =
-  "openid http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content https://www.googleapis.com/auth/youtube";
+  "openid profile http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content https://www.googleapis.com/auth/youtube";
 
 const TV_UA =
   "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36";
@@ -319,15 +319,32 @@ export async function checkYoutubeDeviceLogin(key: string): Promise<SourceQrLogi
       account: null,
     };
   }
+  const refreshToken = typeof json.refresh_token === "string" ? json.refresh_token : null;
+  const expiresIn = typeof json.expires_in === "number" && json.expires_in > 0 ? json.expires_in : 3600;
+  const tokenType = typeof json.token_type === "string" ? json.token_type : null;
   sessions.delete(key);
-  let cookie: string;
+
+  let mintedCookie: string | null = null;
+  try {
+    mintedCookie = await mintYoutubeSessionCookie(accessToken);
+  } catch {
+    // Google 已限制/停用部分账号的 legacy OAuthLogin→MergeSession 换取浏览器
+    // Cookie 链路；保留 OAuth2 Bearer 会话仍可完成完整登录与账号读取。
+    mintedCookie = null;
+  }
+
   let account: SourceAccount;
   try {
-    cookie = await mintYoutubeSessionCookie(accessToken);
-    account = await saveYoutubeCookie(cookie);
+    account = await saveYoutubeOauthSession({
+      accessToken,
+      refreshToken,
+      expiresIn,
+      clientId: session.clientId,
+      clientSecret: session.clientSecret,
+      tokenType,
+      cookie: mintedCookie,
+    });
   } catch (error) {
-    // 授权本身已成功，失败只可能出在换 Cookie / 保存环节：给出明确文案并
-    // 终止轮询，避免前端把一次永久性错误当成瞬时抖动无限重试。
     const message = error instanceof SourceError ? error.message : error instanceof Error ? error.message : "未知错误";
     return {
       code: 65,

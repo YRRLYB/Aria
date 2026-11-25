@@ -35,6 +35,13 @@
   --eq-label: rgba(23, 23, 23, 0.4);
 }
 
+:root[data-platform="darwin"] {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+    "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
 * {
   box-sizing: border-box;
   -webkit-user-select: none;
@@ -941,4 +948,105 @@ textarea::selection,
 .settings-qr-box {
   background: #ffffff;
   padding: 6px;
+}
+
+/* Shared minimalist page & list primitives matching Settings aesthetics */
+.aria-page-shell {
+  border: 1px solid rgba(23, 23, 27, 0.07);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 20px 60px rgba(47, 55, 76, 0.08);
+  backdrop-filter: blur(22px);
+}
+
+.aria-page-header {
+  border-bottom: 1px solid rgba(23, 23, 27, 0.07);
+}
+
+.aria-section-divider {
+  border-color: rgba(23, 23, 27, 0.06);
+}
+
+.aria-flat-tile {
+  border: 1px solid rgba(23, 23, 27, 0.065);
+  background: rgba(23, 23, 27, 0.018);
+  transition: background-color 160ms, border-color 160ms;
+}
+
+.aria-flat-tile:hover {
+  border-color: rgba(124, 92, 230, 0.28);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.aria-flat-row {
+  border-bottom: 1px solid rgba(23, 23, 27, 0.055);
+  background: transparent;
+  transition: background-color 140ms;
+}
+
+.aria-flat-row:hover {
+  background: rgba(23, 23, 27, 0.035);
+}
+
+.aria-flat-row.is-current {
+  background: rgba(124, 92, 230, 0.085);
+}
+
+.aria-flat-well {
+  border: 1px solid rgba(23, 23, 27, 0.07);
+  background: rgba(23, 23, 27, 0.025);
+}
+
+.aria-flat-input {
+  border: 1px solid rgba(23, 23, 27, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  color: #17171b;
+  transition: border-color 150ms, background-color 150ms;
+}
+
+.aria-flat-input::placeholder {
+  color: #9ca3af;
+}
+
+.aria-flat-input:focus {
+  border-color: rgba(124, 92, 230, 0.55);
+  background: #ffffff;
+}
+
+.aria-segment {
+  border: 1px solid rgba(23, 23, 27, 0.08);
+  background: rgba(23, 23, 27, 0.035);
+}
+
+.aria-segment-item {
+  color: #5b5e71;
+  transition: background-color 150ms, color 150ms;
+}
+
+.aria-segment-item:hover:not(:disabled) {
+  color: #17171b;
+}
+
+.aria-segment-item.is-active {
+  background: #ffffff;
+  color: #17171b;
+  box-shadow: 0 1px 4px rgba(23, 23, 27, 0.08);
+}
+
+.aria-chip {
+  border: 1px solid rgba(23, 23, 27, 0.08);
+  background: rgba(23, 23, 27, 0.03);
+  color: #5b5e71;
+  transition: background-color 140ms, border-color 140ms, color 140ms;
+}
+
+.aria-chip:hover {
+  border-color: rgba(124, 92, 230, 0.28);
+  background: rgba(255, 255, 255, 0.8);
+  color: #17171b;
+}
+
+.aria-chip.is-active {
+  border-color: #17171b;
+  background: #17171b;
+  color: #ffffff;
 }

@@ -8,7 +8,7 @@ import { FloatingNav } from "./FloatingNav";
 import { ExploreSurface } from "./ExploreSurface";
 import { HistorySurface } from "./HomeSurfaces";
 import { BilibiliLogo, NeteaseLogo, QqLogo, SourceBadge } from "./SourceLogos";
-import { StatsSurface } from "./CollectionSurfaces";
+import { CollectionSurface, StatsSurface } from "./CollectionSurfaces";
 import { EqualizerPanel } from "./EqualizerPanel";
 import { PlayerSidePanel } from "./PlayerSidePanels";
 import { CopyableTrackText } from "./shared";
@@ -100,6 +100,8 @@ describe("Aria v0.7.4 surfaces and polish", () => {
     expect(markup).toContain("曲风漫游");
     expect(markup).toContain("热歌榜");
     expect(markup).toContain("午夜霓虹");
+    expect(markup).toContain("aria-page-shell");
+    expect(markup).not.toContain("EXPLORE ·");
     expect(markup).not.toContain("节拍电台");
     expect(markup).not.toContain("BPM");
   });
@@ -127,6 +129,8 @@ describe("Aria v0.7.4 surfaces and polish", () => {
     );
 
     expect(markup).toContain("history-surface");
+    expect(markup).toContain("aria-page-shell");
+    expect(markup).not.toContain("LISTENING JOURNAL");
     expect(markup).toContain("source-badge-netease");
     expect(markup).toContain("source-badge-qq");
     expect(markup).toContain("source-badge-bilibili");
@@ -394,5 +398,70 @@ describe("Aria v0.7.4 surfaces and polish", () => {
     const biliQualitySection = biliMarkup.slice(biliMarkup.indexOf("player-quality-group"));
     expect((biliQualitySection.match(/player-quality-option/g) ?? []).length).toBe(6);
     expect((biliQualitySection.match(/is-empty-slot/g) ?? []).length).toBe(4);
+  });
+
+  it("supports YouTube Music in CollectionSurface recommendations and ExploreSurface discovery", () => {
+    const collectionMarkup = renderToStaticMarkup(
+      <CollectionSurface
+        title="YouTube 每日推荐"
+        subtitle="YouTube Music 精选动态推荐"
+        icon={<span />}
+        tracks={tracks.slice(0, 1)}
+        onPickTrack={vi.fn()}
+        sourceToggle={{ value: "youtube", onChange: vi.fn() }}
+      />,
+    );
+    expect(collectionMarkup).toContain('aria-label="推荐来源"');
+    expect(collectionMarkup).toContain("YouTube 每日推荐");
+
+    const exploreMarkup = renderToStaticMarkup(
+      <ExploreSurface
+        styleGroups={[]}
+        selectedStyle={null}
+        tracks={[]}
+        activeTab="discover"
+        selectedStyleId={null}
+        stylesLoading={false}
+        loading={false}
+        loadingMore={false}
+        styleError={null}
+        discovery={null}
+        discoveryLoading={false}
+        discoveryError={null}
+        sort="hot"
+        onSelectStyle={vi.fn()}
+        onRetryStyles={vi.fn()}
+        onSortChange={vi.fn()}
+        onLoadDiscovery={vi.fn()}
+        onRetryDiscovery={vi.fn()}
+        onSearchHot={vi.fn()}
+        onOpenPlaylist={vi.fn()}
+        onPickTrack={vi.fn()}
+        onTabChange={vi.fn()}
+        exploreSource="youtube"
+        onExploreSourceChange={vi.fn()}
+        youtubeDiscovery={{
+          quickPicks: tracks.slice(0, 1),
+          trendingTracks: tracks.slice(0, 1),
+          charts: [
+            {
+              id: "PLchart1",
+              name: "日本热门榜单",
+              source: "youtube",
+              trackCount: 0,
+              subscribed: false,
+              coverColor: "#FF0033",
+            },
+          ],
+          playlists: [],
+          moods: [{ id: "m1", name: "ACG 动漫", query: "ACG 动漫 音乐" }],
+        }}
+      />,
+    );
+    expect(exploreMarkup).toContain('aria-label="探索来源"');
+    expect(exploreMarkup).toContain("为你推荐 · 快捷精选");
+    expect(exploreMarkup).toContain("心情与流派");
+    expect(exploreMarkup).toContain("YouTube Charts 官方榜单");
+    expect(exploreMarkup).toContain("日本热门榜单");
   });
 });

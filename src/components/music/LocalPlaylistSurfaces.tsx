@@ -1,17 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, Link2, ListMusic, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowDown, ArrowLeft, ArrowUp, GripVertical, Link2, ListMusic, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { AriaSelect } from "@/components/ui/aria-select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
-import { createLocalTrackSearchIndex, searchLocalTrackIndex } from "@/lib/localSearch";
-import type { LocalPlaylist, LocalPlaylistRemoteRef } from "@/lib/localPlaylists";
+import type { LocalPlaylist, LocalPlaylistRemoteRef, PlaylistInsertPosition } from "@/lib/localPlaylists";
 import { resolveLocalPlaylistTracks } from "@/lib/localPlaylists";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
-import { cn } from "@/lib/utils";
+import { PlaylistTrackBrowser, type PickerPlaylistCatalog } from "./PlaylistTrackBrowser";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 import { SourceBadge } from "./SourceLogos";
 
@@ -26,10 +25,13 @@ export type LocalPlaylistSurfaceProps = {
   onCreate: (name: string, tracks?: Track[], remoteRef?: LocalPlaylistRemoteRef) => LocalPlaylist;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
-  onAdd: (id: string, tracks: Track[]) => void;
+  onAdd: (id: string, tracks: Track[], position?: PlaylistInsertPosition) => void;
   onRemove: (id: string, tracks: Track[]) => void;
+  onReorder?: (id: string, orderedTracks: Track[]) => void;
   onSyncReference: (id: string, tracks: Track[], title?: string) => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
+  pickerCatalog?: Omit<PickerPlaylistCatalog, "allTracks">;
+  headerTabs?: ReactNode;
 };
 
 export function LocalPlaylistSurface(props: LocalPlaylistSurfaceProps) {
@@ -46,10 +48,10 @@ function LocalPlaylistGallery({
   onOpen,
   onCreate,
   onDelete,
+  headerTabs,
 }: LocalPlaylistSurfaceProps) {
   const [name, setName] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [referenceOpen, setReferenceOpen] = useState(false);
   const fileTracks = useMemo(() => allTracks, [allTracks]);
 
   function submit(event: React.FormEvent) {
@@ -62,39 +64,38 @@ function LocalPlaylistGallery({
   }
 
   return (
-    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center justify-between gap-4">
+    <div className="aria-page-shell no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex items-center justify-between gap-4 pb-4">
         <div>
-          <Badge>Aria playlist</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">Aria 歌单</h1>
-          <p className="mt-3 text-neutral-500">保存在这台电脑，可混合本地、网易云、QQ 音乐和 B站歌曲。</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Aria 歌单</h1>
+          <p className="mt-1 text-xs text-neutral-500">保存在这台电脑的自建歌单，可自由添加本地与各音源曲目。</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="glass" onClick={() => setReferenceOpen(true)}>
-            <Link2 />引用B站歌单
-          </Button>
-          <Button onClick={() => setCreateOpen((current) => !current)} aria-expanded={createOpen} aria-controls="create-local-playlist-form">
+          <Button size="sm" onClick={() => setCreateOpen((current) => !current)} aria-expanded={createOpen} aria-controls="create-local-playlist-form">
             <Plus />新建
           </Button>
         </div>
       </div>
+      {headerTabs}
       {storageError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">浏览器存储空间不足，本次修改可能无法在重启后保留。</p>}
       {createOpen && (
-        <form id="create-local-playlist-form" className="mt-5 flex flex-col gap-3 rounded-2xl border border-white/70 bg-white/65 p-4 sm:flex-row" onSubmit={submit}>
-          <input autoFocus required maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：深夜歌单、通勤路上、周末循环" aria-label="Aria 歌单名称" className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none focus:border-violet-300" />
+        <form id="create-local-playlist-form" className="aria-flat-well mt-4 flex flex-col gap-3 rounded-2xl p-4 sm:flex-row" onSubmit={submit}>
+          <input autoFocus required maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：深夜歌单、通勤路上、周末循环" aria-label="Aria 歌单名称" className="aria-flat-input min-w-0 flex-1 rounded-xl px-4 py-2.5 text-sm outline-none" />
           <Button type="submit" size="sm" disabled={!name.trim()}>创建并添加歌曲</Button>
         </form>
       )}
-      <div className="mt-5 grid gap-4 md:grid-cols-3">
+      <div className="mt-5 grid gap-3.5 md:grid-cols-3">
         {playlists.map((playlist) => {
           const coverTrack = resolveLocalPlaylistTracks(playlist, fileTracks)[0];
           return (
-            <div key={playlist.id} className="group relative min-h-48">
-              <button type="button" className="h-full min-h-48 w-full overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white" onClick={() => onOpen(playlist.id)}>
-                {coverTrack ? <CoverArt track={coverTrack} className="size-16 rounded-2xl shadow-sm" /> : <span className="flex size-16 items-center justify-center rounded-2xl bg-violet-100 text-violet-600"><ListMusic className="size-7" /></span>}
-                <h2 className="mt-8 break-words pr-10 text-2xl font-semibold">{playlist.name}</h2>
-                <p className="mt-2 text-sm text-neutral-500">{playlist.trackIds.length} 首</p>
-                <Badge className="mt-5">{playlist.remoteRef ? "B站同步歌单" : "Aria 歌单"}</Badge>
+            <div key={playlist.id} className="group relative">
+              <button type="button" className="aria-flat-tile flex h-full w-full flex-col rounded-2xl p-4 text-left" onClick={() => onOpen(playlist.id)}>
+                {coverTrack ? <CoverArt track={coverTrack} className="size-14 rounded-xl" /> : <span className="flex size-14 items-center justify-center rounded-xl bg-violet-100 text-violet-600"><ListMusic className="size-6" /></span>}
+                <h2 className="mt-5 line-clamp-2 break-words pr-8 text-lg font-semibold leading-snug">{playlist.name}</h2>
+                <div className="mt-2 flex items-center justify-between gap-2 text-xs text-neutral-500">
+                  <span>{playlist.trackIds.length} 首</span>
+                  <span>{playlist.remoteRef ? "B站同步歌单" : "Aria 歌单"}</span>
+                </div>
               </button>
               <button
                 type="button"
@@ -113,31 +114,12 @@ function LocalPlaylistGallery({
         })}
       </div>
       {!playlists.length && <EmptyState text={fileTracks.length ? "还没有 Aria 歌单。点击“新建”，然后从本地或在线曲库中挑选歌曲。" : "先扫描本地文件夹或登录在线音源，再创建只属于你的 Aria 歌单。"} />}
-      {referenceOpen && (
-        <BilibiliLinkDialog
-          mode="reference"
-          onClose={() => setReferenceOpen(false)}
-          onReference={(resolved) => {
-            const created = onCreate(
-              resolved.title ?? (resolved.kind === "playlist" ? "B站合集" : "B站收藏夹"),
-              resolved.tracks,
-              {
-                source: "bilibili",
-                url: resolved.url,
-                kind: resolved.kind,
-                ...(resolved.title ? { title: resolved.title } : {}),
-              },
-            );
-            setReferenceOpen(false);
-            onOpen(created.id);
-          }}
-        />
-      )}
     </div>
   );
 }
 
 export function LocalPlaylistDetail({
+  playlists,
   playlist,
   allTracks,
   selectedTracks,
@@ -146,18 +128,30 @@ export function LocalPlaylistDetail({
   onDelete,
   onAdd,
   onRemove,
+  onReorder,
   onSyncReference,
   onPickTrack,
+  pickerCatalog,
   backLabel = "返回 Aria 歌单",
 }: LocalPlaylistSurfaceProps & { playlist: LocalPlaylist; backLabel?: string }) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [bilibiliImportOpen, setBilibiliImportOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(playlist.name);
+  const draggedId = useRef<string | null>(null);
   const virtual = useVirtualRows({ count: selectedTracks.length, rowHeight: 80, overscan: 8 });
   const selectedIds = useMemo(() => new Set(playlist.trackIds), [playlist.trackIds]);
+
+  function moveTrack(trackId: string, destination: number) {
+    if (!onReorder) return;
+    const from = selectedTracks.findIndex((track) => track.id === trackId);
+    if (from < 0 || destination < 0 || destination >= selectedTracks.length || from === destination) return;
+    const next = [...selectedTracks];
+    const [moving] = next.splice(from, 1);
+    next.splice(destination, 0, moving);
+    onReorder(playlist.id, next);
+  }
 
   async function syncReference() {
     if (!playlist.remoteRef || syncing) return;
@@ -184,78 +178,118 @@ export function LocalPlaylistDetail({
   }
 
   return (
-    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex shrink-0 flex-col gap-4">
+    <div className="aria-page-shell flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex shrink-0 flex-col gap-4 pb-4">
         <div className="flex items-center justify-between gap-3">
           <Button variant="ghost" size="sm" onClick={onClose}><ArrowLeft />{backLabel}</Button>
         </div>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex min-w-0 items-center gap-4">
-            {selectedTracks[0] ? <CoverArt track={selectedTracks[0]} className="size-20 shrink-0 rounded-2xl shadow-md" /> : <span className="flex size-20 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-600"><ListMusic /></span>}
+            {selectedTracks[0] ? <CoverArt track={selectedTracks[0]} className="size-20 shrink-0 rounded-2xl" /> : <span className="flex size-20 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-600"><ListMusic /></span>}
             <div className="min-w-0">
-              <Badge>{playlist.remoteRef ? "引用自B站 · 可同步" : "仅保存在本机"}</Badge>
               {renaming ? (
-                <form className="mt-2 flex gap-2" onSubmit={(event) => { event.preventDefault(); saveName(); }}>
-                  <input autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} aria-label="重命名 Aria 歌单" className="min-w-0 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xl font-semibold outline-none" />
+                <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); saveName(); }}>
+                  <input autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} aria-label="重命名 Aria 歌单" className="aria-flat-input min-w-0 rounded-xl px-3 py-1.5 text-xl font-semibold outline-none" />
                   <Button type="submit" size="sm">保存</Button>
                 </form>
               ) : (
-                <button type="button" className="mt-2 flex max-w-full items-center gap-2 text-left" title="重命名歌单" onClick={() => { setName(playlist.name); setRenaming(true); }}>
-                  <h1 className="break-words text-3xl font-semibold sm:text-4xl">{playlist.name}</h1><Pencil className="size-4 shrink-0 text-neutral-400" />
+                <button type="button" className="flex max-w-full items-center gap-2 text-left" title="重命名歌单" onClick={() => { setName(playlist.name); setRenaming(true); }}>
+                  <h1 className="break-words text-2xl font-semibold sm:text-3xl">{playlist.name}</h1><Pencil className="size-4 shrink-0 text-neutral-400" />
                 </button>
               )}
-              <p className="mt-2 text-sm text-neutral-500">{selectedTracks.length} 首可播放{playlist.trackIds.length !== selectedTracks.length ? ` · ${playlist.trackIds.length - selectedTracks.length} 首文件暂不可用` : ""}{playlist.remoteRef?.syncedAt ? ` · 上次同步 ${new Date(playlist.remoteRef.syncedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}</p>
+              <p className="mt-1.5 text-xs text-neutral-500">{playlist.remoteRef ? "引用自B站 · 可同步" : "本机歌单"} · {selectedTracks.length} 首可播放{playlist.trackIds.length !== selectedTracks.length ? ` · ${playlist.trackIds.length - selectedTracks.length} 首文件暂不可用` : ""}{playlist.remoteRef?.syncedAt ? ` · 上次同步 ${new Date(playlist.remoteRef.syncedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}</p>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <Button onClick={() => setPickerOpen(true)}><Plus />添加歌曲</Button>
+            <Button size="sm" onClick={() => setPickerOpen(true)}><Plus />添加歌曲</Button>
             {playlist.remoteRef && (
-              <Button variant="glass" onClick={() => void syncReference()} disabled={syncing}>
+              <Button variant="glass" size="sm" onClick={() => void syncReference()} disabled={syncing}>
                 {syncing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
                 {syncing ? "同步中" : "刷新B站歌单"}
               </Button>
             )}
-            <Button variant="glass" size="sm" onClick={() => setBilibiliImportOpen(true)}><Link2 />B站链接</Button>
             <Button variant="ghost" size="sm" aria-label="删除 Aria 歌单" title="删除歌单（不会删除音频文件）" onClick={() => { if (window.confirm(`删除 Aria 歌单“${playlist.name}”？音频文件不会被删除。`)) onDelete(playlist.id); }}><Trash2 />删除歌单</Button>
           </div>
         </div>
         {syncError && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-600">{syncError}</p>}
       </div>
-      <div ref={virtual.containerRef} className="no-scrollbar mt-6 min-h-0 flex-1 overflow-y-auto pr-1">
+      <div ref={virtual.containerRef} className="no-scrollbar mt-3 min-h-0 flex-1 overflow-y-auto pr-1">
         <div className="relative" style={{ height: virtual.totalHeight }}>
           {virtual.rows.map(({ index, offsetTop }) => {
             const track = selectedTracks[index];
             if (!track) return null;
             return (
-              <div key={track.id} role="button" tabIndex={0} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id, selectedTracks); } }} className="absolute inset-x-0 grid h-[4.5rem] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white" style={{ top: offsetTop }} onClick={() => onPickTrack(track.id, selectedTracks)}>
-                <span className="text-center text-sm text-neutral-400">{index + 1}</span>
+              <div
+                key={track.id}
+                role="button"
+                tabIndex={0}
+                draggable={Boolean(onReorder)}
+                onDragStart={(event) => {
+                  draggedId.current = track.id;
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", track.id);
+                }}
+                onDragEnd={() => { draggedId.current = null; }}
+                onDragOver={(event) => {
+                  if (onReorder && draggedId.current) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (draggedId.current) moveTrack(draggedId.current, index);
+                  draggedId.current = null;
+                }}
+                onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id, selectedTracks); } }}
+                className="aria-flat-row absolute inset-x-0 grid h-[4.5rem] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 text-left"
+                style={{ top: offsetTop }}
+                onClick={() => onPickTrack(track.id, selectedTracks)}
+              >
+                {onReorder ? (
+                  <span className="flex items-center justify-center text-neutral-400" title="拖动调整顺序">
+                    <GripVertical className="size-4 cursor-grab" />
+                  </span>
+                ) : (
+                  <span className="text-center text-sm text-neutral-400">{index + 1}</span>
+                )}
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0">
                   <p className="truncate font-semibold" title={track.title}><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></p>
                   <p className="truncate text-sm text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album}</p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 items-center gap-1.5">
                   <SourceBadge source={track.source} compact />
                   <Badge className="hidden shrink-0 whitespace-nowrap md:inline-flex">{formatAudioDetail(track)}</Badge>
                   <span className="hidden shrink-0 text-sm tabular-nums text-neutral-500 sm:inline">{track.duration}</span>
+                  {onReorder && (
+                    <>
+                      <Button variant="ghost" size="icon" title="上移" aria-label={`上移 ${track.title}`} disabled={index === 0} onClick={(event) => { event.stopPropagation(); moveTrack(track.id, index - 1); }}><ArrowUp className="size-3.5" /></Button>
+                      <Button variant="ghost" size="icon" title="下移" aria-label={`下移 ${track.title}`} disabled={index === selectedTracks.length - 1} onClick={(event) => { event.stopPropagation(); moveTrack(track.id, index + 1); }}><ArrowDown className="size-3.5" /></Button>
+                    </>
+                  )}
                   <Button variant="ghost" size="icon" aria-label={`从歌单移除 ${track.title}`} onClick={(event) => { event.stopPropagation(); onRemove(playlist.id, [track]); }}><X /></Button>
                 </div>
               </div>
             );
           })}
         </div>
-        {!selectedTracks.length && <EmptyState text="歌单还是空的。点击“添加歌曲”，可从本地和在线曲库中挑选。" />}
+        {!selectedTracks.length && <EmptyState text="歌单还是空的。点击“添加歌曲”，可从其他歌单或曲库中可视化挑选。" />}
       </div>
-      {bilibiliImportOpen && (
-        <BilibiliLinkDialog
-          onClose={() => setBilibiliImportOpen(false)}
-          onAdd={(tracks) => {
-            onAdd(playlist.id, tracks);
-            setBilibiliImportOpen(false);
+      {pickerOpen && (
+        <LocalTrackPickerDialog
+          tracks={allTracks}
+          existingIds={selectedIds}
+          currentPlaylistId={playlist.id}
+          localPlaylists={playlists}
+          pickerCatalog={pickerCatalog}
+          onClose={() => setPickerOpen(false)}
+          onAdd={(pickedTracks, position) => {
+            onAdd(playlist.id, pickedTracks, position);
+            setPickerOpen(false);
           }}
         />
       )}
-      {pickerOpen && <LocalTrackPickerDialog tracks={allTracks} existingIds={selectedIds} onClose={() => setPickerOpen(false)} onAdd={(tracks) => { onAdd(playlist.id, tracks); setPickerOpen(false); }} />}
     </div>
   );
 }
@@ -373,19 +407,36 @@ export function BilibiliLinkDialog({ onClose, onAdd, onReference, mode = "add" }
   );
 }
 
-function LocalTrackPickerDialog({ tracks, existingIds, onClose, onAdd }: {
+const INSERT_POSITION_STORAGE_KEY = "aria-playlist-insert-position";
+
+function readPreferredInsertPosition(): PlaylistInsertPosition {
+  try {
+    return window.localStorage.getItem(INSERT_POSITION_STORAGE_KEY) === "bottom" ? "bottom" : "top";
+  } catch {
+    return "top";
+  }
+}
+
+export function LocalTrackPickerDialog({
+  tracks,
+  existingIds,
+  currentPlaylistId,
+  localPlaylists,
+  pickerCatalog,
+  onClose,
+  onAdd,
+}: {
   tracks: Track[];
   existingIds: Set<string>;
+  currentPlaylistId: string;
+  localPlaylists: LocalPlaylist[];
+  pickerCatalog?: Omit<PickerPlaylistCatalog, "allTracks">;
   onClose: () => void;
-  onAdd: (tracks: Track[]) => void;
+  onAdd: (tracks: Track[], position: PlaylistInsertPosition) => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [query, setQuery] = useState("");
-  const [pending, setPending] = useState<Set<string>>(new Set());
-  const availableTracks = tracks;
-  const searchIndex = useMemo(() => createLocalTrackSearchIndex(availableTracks), [availableTracks]);
-  const visibleTracks = useMemo(() => query.trim() ? searchLocalTrackIndex(availableTracks, searchIndex, query, availableTracks.length) : availableTracks, [availableTracks, query, searchIndex]);
-  const virtual = useVirtualRows({ count: visibleTracks.length, rowHeight: 68, overscan: 8 });
+  const [selected, setSelected] = useState<Track[]>([]);
+  const [insertPosition, setInsertPosition] = useState<PlaylistInsertPosition>(readPreferredInsertPosition);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -393,50 +444,45 @@ function LocalTrackPickerDialog({ tracks, existingIds, onClose, onAdd }: {
     return () => dialog?.close();
   }, []);
 
-  function toggle(track: Track) {
-    if (existingIds.has(track.id)) return;
-    setPending((current) => {
-      const next = new Set(current);
-      if (next.has(track.id)) next.delete(track.id);
-      else next.add(track.id);
-      return next;
-    });
+  function updateInsertPosition(next: PlaylistInsertPosition) {
+    setInsertPosition(next);
+    try {
+      window.localStorage.setItem(INSERT_POSITION_STORAGE_KEY, next);
+    } catch {
+      // Best-effort preference persistence.
+    }
   }
 
   return (
     <dialog ref={dialogRef} aria-labelledby="local-track-picker-title" onCancel={(event) => { event.preventDefault(); onClose(); }} className="fixed inset-0 m-auto flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-black/25 p-4 backdrop-blur-sm backdrop:bg-transparent" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="flex h-[78vh] max-h-[760px] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-white/70 bg-[#faf9fd] p-5 shadow-2xl sm:p-6">
+      <section className="flex h-[82vh] max-h-[780px] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-white/70 bg-[#faf9fd] p-5 shadow-2xl sm:p-6">
         <div className="flex shrink-0 items-center justify-between gap-3">
-          <div><h2 id="local-track-picker-title" className="text-xl font-semibold">添加歌曲</h2><p className="mt-1 text-sm text-neutral-500">浏览全部 {availableTracks.length} 首歌曲，点击可多选。</p></div>
+          <div>
+            <h2 id="local-track-picker-title" className="text-xl font-semibold">添加歌曲到歌单</h2>
+            <p className="mt-1 text-xs text-neutral-500">可从其他歌单、已有曲库或跨源搜索中可视化挑选，点击顺序即为加入顺序。</p>
+          </div>
           <Button variant="ghost" size="icon" aria-label="关闭选歌窗口" onClick={onClose}><X /></Button>
         </div>
-        <label className="mt-4 flex shrink-0 items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2.5 focus-within:border-violet-400">
-          <Search className="size-4 shrink-0 text-neutral-400" />
-          <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索歌名、歌手、专辑或音质" aria-label="搜索歌曲" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
-          {query && <button type="button" aria-label="清空搜索" onClick={() => setQuery("")}><X className="size-4 text-neutral-400" /></button>}
-        </label>
-        <p className="mt-2 shrink-0 text-xs text-neutral-500">{query.trim() ? `找到 ${visibleTracks.length} 首` : "全部歌曲"} · 已选择 {pending.size} 首</p>
-        <div ref={virtual.containerRef} className="no-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
-          <div className="relative" style={{ height: virtual.totalHeight }}>
-            {virtual.rows.map(({ index, offsetTop }) => {
-              const track = visibleTracks[index];
-              if (!track) return null;
-              const existing = existingIds.has(track.id);
-              const checked = existing || pending.has(track.id);
-              return (
-                <button type="button" key={track.id} disabled={existing} aria-pressed={checked} onClick={() => toggle(track)} className={cn("absolute inset-x-0 grid h-16 grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-white px-3 py-2 text-left transition hover:bg-violet-50 disabled:opacity-60", checked && "bg-violet-50")} style={{ top: offsetTop }}>
-                  <CoverArt track={track} className="size-11 rounded-lg" />
-                  <span className="min-w-0"><span className="block truncate text-sm font-semibold" title={track.title}>{track.title}</span><span className="block truncate text-xs text-neutral-500" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album}</span></span>
-                  <span className="flex shrink-0 items-center gap-2 text-xs text-neutral-500"><SourceBadge source={track.source} compact />{existing && "已添加"}<span className={cn("flex size-5 items-center justify-center rounded border", checked ? "border-violet-500 bg-violet-500 text-white" : "border-neutral-300")}>{checked && <Check className="size-3" />}</span></span>
-                </button>
-              );
-            })}
-          </div>
-          {!visibleTracks.length && <EmptyState text={availableTracks.length ? "没有找到相关歌曲，换个关键词试试。" : "曲库为空，请先扫描本地文件夹或登录在线音源。"} />}
-        </div>
-        <div className="mt-4 flex shrink-0 items-center justify-between gap-3">
-          {pending.size > 0 && <button type="button" className="text-sm text-violet-600" onClick={() => setPending(new Set())}>清空选择</button>}
-          <div className="ml-auto flex gap-2"><Button variant="ghost" size="sm" onClick={onClose}>取消</Button><Button size="sm" disabled={!pending.size} onClick={() => onAdd(availableTracks.filter((track) => pending.has(track.id)))}><Plus />加入 {pending.size} 首</Button></div>
+        <PlaylistTrackBrowser
+          mode="all"
+          excludePlaylistId={currentPlaylistId}
+          existingIds={existingIds}
+          catalog={{
+            ...pickerCatalog,
+            localPlaylists: pickerCatalog?.localPlaylists ?? localPlaylists,
+            allTracks: tracks,
+          }}
+          selected={selected}
+          onSelectedChange={setSelected}
+          insertPosition={insertPosition}
+          onInsertPositionChange={updateInsertPosition}
+        />
+        <div className="mt-4 flex shrink-0 items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
+          <Button size="sm" disabled={!selected.length} onClick={() => onAdd(selected, insertPosition)}>
+            <Plus />
+            {insertPosition === "top" ? `插到顶部 (${selected.length} 首)` : `追加末尾 (${selected.length} 首)`}
+          </Button>
         </div>
       </section>
     </dialog>

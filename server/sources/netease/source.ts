@@ -1,7 +1,7 @@
 import { NETEASE_NO_PLAYABLE_URL_MESSAGE, neteaseClient } from "../../clients/neteaseClient";
 import { getNeteaseAccountSummary } from "../../services/neteaseService";
 import { HttpError } from "../../utils/httpError";
-import type { MusicSource, SourceSearchPage, SourceStreamMeta } from "../contract";
+import type { MusicSource, SourceSearchPage, SourceStreamMeta, SourceVideoMeta } from "../contract";
 import { neteaseManifest } from "./manifest";
 
 /**
@@ -33,6 +33,10 @@ export const neteaseSource: MusicSource = {
       throw new HttpError(404, NETEASE_NO_PLAYABLE_URL_MESSAGE, "NETEASE_URL_UNAVAILABLE");
     }
     return { ...meta, url: meta.url };
+  },
+
+  resolveVideoMeta(trackId, { qn, refresh }): Promise<SourceVideoMeta> {
+    return neteaseClient.getMvMeta(trackId, { qn, refresh });
   },
 
   async getLyrics(trackId) {

@@ -1,8 +1,8 @@
 export const memoryLimits = {
   neteaseWarmup: 120,
   artistRequest: 80,
-  artistAvatarLookup: 96,
-  artistAvatarCache: 64,
+  artistAvatarLookup: 256,
+  artistAvatarCache: 256,
   localCoverWarmup: 120,
   artworkSyncing: 240,
   lyricRetries: 240,

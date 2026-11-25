@@ -1,28 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { canPlayTrackVideo, resolveNextVideoMode } from "./features";
+import { canPlayTrackVideo, isStandaloneMvSource } from "./features";
 
-describe("Bilibili and YouTube video mode transitions", () => {
-  const biliA = { source: "bilibili" as const, videoUrl: "/api/sources/bilibili/tracks/BV1/video" };
-  const biliB = { source: "bilibili" as const, videoUrl: "/api/sources/bilibili/tracks/BV2/video" };
-  const youtubeA = { source: "youtube" as const, videoUrl: "/api/sources/youtube/tracks/dQw4w9WgXcQ/video" };
-  const neteaseSong = { source: "netease" as const, videoUrl: undefined };
-  const localSong = { source: "local" as const, videoUrl: undefined };
+describe("video capability feature gates", () => {
+  it("allows video mode for bilibili, youtube, netease and qq tracks when videoUrl is present", () => {
+    expect(canPlayTrackVideo({ source: "netease", videoUrl: "/api/sources/netease/tracks/1/video" })).toBe(true);
+    expect(canPlayTrackVideo({ source: "qq", videoUrl: "/api/sources/qq/tracks/mid1/video" })).toBe(true);
+    expect(canPlayTrackVideo({ source: "bilibili", videoUrl: "/api/sources/bilibili/tracks/bv1/video" })).toBe(true);
+    expect(canPlayTrackVideo({ source: "youtube", videoUrl: "/api/sources/youtube/tracks/yt1/video" })).toBe(true);
+    expect(canPlayTrackVideo({ source: "netease", videoUrl: undefined })).toBe(false);
+    expect(canPlayTrackVideo({ source: "local", videoUrl: "/fake" })).toBe(false);
+  });
 
-  it("maintains video across consecutive Bilibili/YouTube tracks and closes on other sources", () => {
-    expect(canPlayTrackVideo(biliA)).toBe(true);
-    expect(canPlayTrackVideo(youtubeA)).toBe(true);
-    expect(canPlayTrackVideo(neteaseSong)).toBe(false);
-
-    // Consecutive Bilibili or YouTube tracks preserve an active video stage.
-    expect(resolveNextVideoMode(true, biliB)).toBe(true);
-    expect(resolveNextVideoMode(true, youtubeA)).toBe(true);
-
-    // Switching to NetEase or local closes video mode cleanly.
-    const afterNetease = resolveNextVideoMode(true, neteaseSong);
-    expect(afterNetease).toBe(false);
-    expect(resolveNextVideoMode(true, localSong)).toBe(false);
-
-    // Returning to a video track keeps cover mode until manually opened.
-    expect(resolveNextVideoMode(afterNetease, biliA)).toBe(false);
+  it("identifies NetEase and QQ as standalone muxed MV sources", () => {
+    expect(isStandaloneMvSource("netease")).toBe(true);
+    expect(isStandaloneMvSource("qq")).toBe(true);
+    expect(isStandaloneMvSource("bilibili")).toBe(false);
+    expect(isStandaloneMvSource("youtube")).toBe(false);
+    expect(isStandaloneMvSource("local")).toBe(false);
   });
 });

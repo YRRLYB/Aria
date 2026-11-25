@@ -22,7 +22,7 @@ export const youtubeManifest: SourceManifest = {
     liked: true,
     playlistsRead: true,
     playlistsWrite: false,
-    recommendations: false,
+    recommendations: true,
     artistDetail: false,
     albumDetail: false,
     // AAC 128k / Opus ~70k / Opus ~160k tier selection.

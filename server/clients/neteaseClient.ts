@@ -22,7 +22,9 @@ import { quantizeBitrate } from "../utils/bitrate";
 import { clearCache, remember } from "../utils/memoryCache";
 import { clearPersistent, getPersistent, rememberPersistent, setPersistent } from "../utils/persistentCache";
 import { normalizeSongCreators, normalizeSongWiki } from "../utils/songEncyclopedia";
+import type { LyricLine } from "../../src/lib/lyricTypes";
 import type { SongEncyclopedia } from "../../src/lib/songEncyclopedia";
+import { SourceError, type SourceVideoMeta, type SourceVideoQuality } from "../sources/contract";
 
 /**
  * NetEase reports a missing stream for two very different reasons (paid-only
@@ -43,6 +45,8 @@ type NeteaseSong = {
   duration?: number;
   /** 付费标记:1 = VIP 专属(免费账号拿不到高音质甚至拿不到地址)。 */
   fee?: number;
+  mv?: number | string | null;
+  mvid?: number | string | null;
   lyrics?: string[] | string;
   l?: NeteaseQualityInfo | null;
   m?: NeteaseQualityInfo | null;
@@ -168,6 +172,15 @@ const maxPlaylistTracks = 5000;
 // 只对成功解析出的 URL 使用持久缓存；失败/空 URL 绝不能缓存 25 分钟，
 // 否则用户登录、网络恢复或频控解除后，点击同一首歌仍然“没反应”。
 const streamUrlPending = new Map<string, Promise<NeteaseStreamMeta>>();
+const lyricsPending = new Map<string, Promise<LyricLine[]>>();
+const lyricsEmptyUntil = new Map<string, number>();
+const LYRICS_EMPTY_TTL_MS = 2 * 60_000;
+const mvIdCache = new Map<string, number>();
+const mvMissingCache = new Map<string, number>();
+const mvUrlCache = new Map<string, { meta: SourceVideoMeta; expiresAt: number }>();
+const MV_ID_CACHE_MAX = 4000;
+const MV_MISSING_TTL_MS = 10 * 60_000;
+const MV_URL_TTL_MS = 15 * 60_000;
 // 用户主动播放/读取当前歌曲元数据后，后台预取要让路一段时间，避免把
 // 播放地址解析配额和频控窗口消耗在用户没点的歌上。
 let lastInteractiveStreamAt = 0;
@@ -182,6 +195,8 @@ type NeteaseStreamMeta = {
   quality: ProviderTrack["quality"];
   currentLevel: QualityLevel | null;
   availableLevels: QualityLevel[];
+  isTrial?: boolean;
+  trialDurationSec?: number | null;
 };
 
 export class NeteaseClient {
@@ -247,6 +262,34 @@ export class NeteaseClient {
           return (orderById.get(left.id) ?? 0) - (orderById.get(right.id) ?? 0);
         });
     });
+    return this.attachCachedMetadata(tracks);
+  }
+
+  /** Hydrates an ordered list of NetEase song IDs (e.g., Listen Together queue). */
+  async getTracksByIds(ids: string[]): Promise<ProviderTrack[]> {
+    const cleanIds = [...new Set(ids.map((id) => String(id).trim()).filter((id) => /^\d+$/.test(id)))];
+    if (!cleanIds.length) return [];
+    const cookie = await this.getOptionalCookie();
+    const orderById = new Map(cleanIds.map((id, index) => [id, index]));
+    const groups = chunk(cleanIds, 100);
+    const detailChunks: Array<{ body?: Record<string, unknown> }> = [];
+    for (let i = 0; i < groups.length; i += 4) {
+      const wave = await Promise.all(
+        groups.slice(i, i + 4).map((group) =>
+          withNeteaseTimeout(
+            neteaseApi.song_detail({
+              ids: group.join(","),
+              cookie: cookie || undefined,
+            }),
+          ),
+        ),
+      );
+      detailChunks.push(...wave);
+    }
+    const tracks = detailChunks
+      .flatMap((details) => (details.body?.songs as NeteaseSong[] | undefined) ?? [])
+      .map((song) => normalizeSong(song))
+      .sort((left, right) => (orderById.get(left.id) ?? 0) - (orderById.get(right.id) ?? 0));
     return this.attachCachedMetadata(tracks);
   }
 
@@ -980,8 +1023,40 @@ export class NeteaseClient {
     return tracks.map((track) => ({ ...track, bpm: track.bpm ?? null }));
   }
 
-  private async getLyricsCached(songId: string | number) {
-    return rememberPersistent(`netease:lyrics:v4:${songId}`, weekTtl, () => fetchNeteaseLyrics(songId));
+  private async getLyricsCached(songId: string | number): Promise<LyricLine[]> {
+    const key = `netease:lyrics:v5:${songId}`;
+    const cached = await getPersistent<LyricLine[]>(key);
+    if (Array.isArray(cached) && cached.length > 0) return cached;
+
+    const emptyUntil = lyricsEmptyUntil.get(key);
+    if (emptyUntil !== undefined) {
+      if (emptyUntil > Date.now()) return [];
+      lyricsEmptyUntil.delete(key);
+    }
+
+    const pending = lyricsPending.get(key);
+    if (pending) return pending;
+
+    const request = fetchNeteaseLyrics(songId)
+      .then(async (lines) => {
+        if (lines.length > 0) {
+          lyricsEmptyUntil.delete(key);
+          await setPersistent(key, weekTtl, lines);
+          return lines;
+        }
+        if (lyricsEmptyUntil.size >= 500) {
+          const oldest = lyricsEmptyUntil.keys().next().value;
+          if (oldest !== undefined) lyricsEmptyUntil.delete(oldest);
+        }
+        lyricsEmptyUntil.set(key, Date.now() + LYRICS_EMPTY_TTL_MS);
+        return [];
+      })
+      .finally(() => {
+        lyricsPending.delete(key);
+      });
+
+    lyricsPending.set(key, request);
+    return request;
   }
 
   private async getSongUrlCached(
@@ -1031,10 +1106,28 @@ export class NeteaseClient {
             sr?: number;
             size?: number;
             level?: string;
+            time?: number | null;
+            freeTrialInfo?: { start?: number; end?: number } | null;
           }>
         | undefined;
       const stream = data?.[0];
       const actualLevel = normalizeLevel(stream?.level) ?? (stream?.url ? level : null);
+      const freeTrial = stream?.freeTrialInfo;
+      const streamDurationMs = Number(stream?.time ?? 0);
+      const fullDurationMs = Number(song?.dt ?? song?.duration ?? 0);
+      const isTrial = Boolean(
+        freeTrial ||
+          (fullDurationMs > 60_000 && streamDurationMs > 0 && streamDurationMs <= 36_000),
+      );
+      const trialDurationSec = isTrial
+        ? Math.max(
+            1,
+            Math.round(
+              (freeTrial?.end ?? (streamDurationMs > 0 ? streamDurationMs / 1000 : 30)) -
+                (freeTrial?.start ?? 0),
+            ),
+          )
+        : null;
       const meta = {
         url: stream?.url ?? null,
         bitrate: normalizeBitrate(stream?.br),
@@ -1043,6 +1136,7 @@ export class NeteaseClient {
         quality: qualityFromLevel(actualLevel),
         currentLevel: actualLevel,
         availableLevels: uniqueLevels([...availableLevelsFromSong(song), ...(actualLevel ? [actualLevel] : [])]),
+        ...(isTrial ? { isTrial: true, trialDurationSec } : {}),
       } satisfies NeteaseStreamMeta;
       if (meta.url) await setPersistent(key, 25 * 60_000, meta);
       return meta;
@@ -1061,12 +1155,131 @@ export class NeteaseClient {
       return song;
     });
   }
+
+  async getMvMeta(
+    songId: string,
+    options: { qn?: number; refresh?: boolean } = {},
+  ): Promise<SourceVideoMeta> {
+    assertNeteaseId(songId);
+    const cookie = (await this.getOptionalCookie()) ?? "";
+    let mvId = mvIdCache.get(songId) ?? 0;
+
+    if (!mvId) {
+      const missingUntil = mvMissingCache.get(songId);
+      if (!options.refresh && missingUntil && missingUntil > Date.now()) {
+        throw new SourceError("UNAVAILABLE", "当前网易云歌曲暂无官方 MV", { source: "netease" });
+      }
+      mvMissingCache.delete(songId);
+
+      const song = await this.getSongDetailCached(songId, cookie);
+      mvId = nonnegativeNumber(song.mv ?? song.mvid) ?? 0;
+
+      if (!mvId && song.name) {
+        const artistNames = (song.ar ?? song.artists ?? []).map((a) => a.name).filter(Boolean);
+        const primaryArtist = artistNames[0] ?? "";
+        const keywords = `${song.name} ${primaryArtist}`.trim();
+        try {
+          const searchBody = await callNetease("cloudsearch", {
+            keywords,
+            type: 1004,
+            limit: 5,
+            offset: 0,
+            cookie: cookie || undefined,
+          });
+          const mvs = ((searchBody.result as { mvs?: Array<{ id?: number; name?: string; artistName?: string }> } | undefined)?.mvs ?? []);
+          const matched = mvs.find((mv) =>
+            mv.id && matchMvCandidate(song.name, artistNames, mv.name ?? "", mv.artistName ?? ""),
+          );
+          if (matched?.id) mvId = Number(matched.id);
+        } catch {
+          // MV fallback search is best-effort.
+        }
+      }
+
+      if (mvId > 0) {
+        rememberNeteaseMvId(songId, mvId);
+      } else {
+        if (mvMissingCache.size >= 1000) {
+          const oldest = mvMissingCache.keys().next().value;
+          if (oldest !== undefined) mvMissingCache.delete(oldest);
+        }
+        mvMissingCache.set(songId, Date.now() + MV_MISSING_TTL_MS);
+        throw new SourceError("UNAVAILABLE", "当前网易云歌曲暂无官方 MV", { source: "netease" });
+      }
+    }
+
+    const detailBody = await rememberPersistent(`netease:mv-detail:${mvId}`, 2 * 60 * 60_000, async () => {
+      const response = await neteaseApi.mv_detail(await withNeteaseIdentity({ mvid: mvId, cookie: cookie || undefined }));
+      return response.body as { data?: { brs?: Array<{ br?: number; size?: number }> } } | undefined;
+    });
+    const rawBrs = (detailBody?.data?.brs ?? [])
+      .map((entry) => Number(entry?.br ?? 0))
+      .filter((br) => Number.isFinite(br) && br > 0);
+    const uniqueBrs = [...new Set(rawBrs)].sort((a, b) => b - a);
+    const availableQualities: SourceVideoQuality[] = uniqueBrs.map((br) => ({ id: br, label: `${br}P` }));
+
+    const requestedBr =
+      options.qn && uniqueBrs.includes(options.qn)
+        ? options.qn
+        : (options.qn || uniqueBrs[0] || 1080);
+
+    const cacheKey = `${mvId}:${requestedBr}`;
+    if (!options.refresh) {
+      const cached = mvUrlCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.meta;
+      mvUrlCache.delete(cacheKey);
+    } else {
+      mvUrlCache.delete(cacheKey);
+    }
+
+    const mvUrlFn = (neteaseApi as unknown as {
+      mv_url?: (query: Record<string, unknown>) => Promise<{ body?: { data?: { url?: string | null; r?: number } } }>;
+    }).mv_url;
+    if (!mvUrlFn) {
+      throw new SourceError("UNAVAILABLE", "网易云 MV 解析模块不可用", { source: "netease" });
+    }
+
+    const candidateBrs = [...new Set([requestedBr, ...uniqueBrs, 1080, 720, 480, 240].filter((br) => br > 0 && br <= requestedBr))];
+    for (const br of candidateBrs) {
+      try {
+        const res = await mvUrlFn(await withNeteaseIdentity({ id: mvId, r: br, cookie: cookie || undefined }));
+        const data = res.body?.data;
+        const rawUrl = typeof data?.url === "string" ? data.url.trim() : "";
+        if (!rawUrl) continue;
+        const actualBr = Number(data?.r ?? br) || br;
+        const meta: SourceVideoMeta = {
+          url: rawUrl.replace(/^http:/i, "https:"),
+          mimeType: "video/mp4",
+          mode: "muxed",
+          quality: `${actualBr}P`,
+          qualityId: actualBr,
+          availableQualities: availableQualities.length ? availableQualities : [{ id: actualBr, label: `${actualBr}P` }],
+          expiresAt: Date.now() + MV_URL_TTL_MS,
+        };
+        if (mvUrlCache.size >= 400) {
+          const oldest = mvUrlCache.keys().next().value;
+          if (oldest !== undefined) mvUrlCache.delete(oldest);
+        }
+        mvUrlCache.set(cacheKey, { meta, expiresAt: meta.expiresAt! });
+        return meta;
+      } catch {
+        // Try next bitrate candidate.
+      }
+    }
+
+    throw new SourceError("UNAVAILABLE", "该 MV 暂时无法播放或受版权限制", { source: "netease" });
+  }
 }
 
 export function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> = {}): ProviderTrack {
   const availableLevels = availableLevelsFromSong(song);
   const currentLevel = extra.currentLevel ?? availableLevels.filter((level) => level !== "jymaster").at(-1) ?? null;
   const qualityInfo = qualityInfoForLevel(song, currentLevel) ?? song.hr ?? song.sq ?? song.h ?? song.m ?? song.l ?? null;
+  const mvId = nonnegativeNumber(song.mv ?? song.mvid);
+  const hasMv = mvId != null && mvId > 0;
+  if (hasMv && song.id != null) {
+    rememberNeteaseMvId(String(song.id), mvId);
+  }
   return {
     id: String(song.id),
     title: song.name,
@@ -1080,6 +1293,7 @@ export function normalizeSong(song: NeteaseSong, extra: Partial<ProviderTrack> =
     quality: qualityFromLevel(currentLevel),
     source: "netease",
     streamUrl: `/api/providers/netease/tracks/${song.id}/stream`,
+    ...(hasMv ? { hasVideo: true, videoUrl: `/api/sources/netease/tracks/${song.id}/video` } : {}),
     coverUrl: song.al?.picUrl ?? song.album?.picUrl ?? null,
     likedAt: extra.likedAt ?? null,
     bpm: normalizeBpm(extra.bpm ?? song.bpm),
@@ -1118,6 +1332,42 @@ function nonnegativeNumber(value: unknown): number | null {
   if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
+}
+
+function rememberNeteaseMvId(songId: string, mvId: number) {
+  if (!songId || !Number.isSafeInteger(mvId) || mvId <= 0) return;
+  if (mvIdCache.size >= MV_ID_CACHE_MAX) {
+    const oldest = mvIdCache.keys().next().value;
+    if (oldest !== undefined) mvIdCache.delete(oldest);
+  }
+  mvIdCache.set(songId, mvId);
+  mvMissingCache.delete(songId);
+}
+
+function normalizeMvMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[\s\-_·・()（）[\]【】'"`,.!！?？:：/\\]+/g, "")
+    .trim();
+}
+
+export function matchMvCandidate(
+  songName: string,
+  artistNames: string[],
+  mvName: string,
+  mvArtist: string,
+): boolean {
+  const normSong = normalizeMvMatchText(songName);
+  const normMv = normalizeMvMatchText(mvName);
+  if (!normSong || !normMv) return false;
+  const titleMatch = normMv === normSong || normMv.startsWith(normSong) || normSong.startsWith(normMv);
+  if (!titleMatch) return false;
+  const normMvArtist = normalizeMvMatchText(mvArtist);
+  if (!normMvArtist) return false;
+  return artistNames.some((artist) => {
+    const normArtist = normalizeMvMatchText(artist);
+    return Boolean(normArtist) && (normMvArtist.includes(normArtist) || normArtist.includes(normMvArtist));
+  });
 }
 
 function normalizeBpm(value: unknown): number | null {
@@ -1230,12 +1480,27 @@ function uniqueLevels(levels: QualityLevel[]) {
   return qualityOrder.filter((level) => levels.includes(level));
 }
 
+const NETEASE_PLACEHOLDER_AVATAR_RE = /(?:5639395138885805\.jpg|109951165434255510\.jpg|default_avatar)/i;
+
+/** Rejects empty URLs and NetEase's default blank silhouette artist images. */
+export function sanitizeNeteaseArtistAvatar(url?: string | null): string | null {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (!trimmed || NETEASE_PLACEHOLDER_AVATAR_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
 function normalizeArtist(artist: NeteaseArtist): ProviderArtist {
   return {
     id: String(artist.id),
     name: artist.name,
     source: "netease",
-    avatarUrl: artist.avatar ?? artist.cover ?? artist.img1v1Url ?? artist.picUrl ?? null,
+    avatarUrl:
+      sanitizeNeteaseArtistAvatar(artist.avatar) ??
+      sanitizeNeteaseArtistAvatar(artist.cover) ??
+      sanitizeNeteaseArtistAvatar(artist.picUrl) ??
+      sanitizeNeteaseArtistAvatar(artist.img1v1Url) ??
+      null,
     trackCount: artist.musicSize ?? null,
     albumCount: artist.albumSize ?? null,
   };

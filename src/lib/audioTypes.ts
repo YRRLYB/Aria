@@ -8,6 +8,7 @@ export type NativeAudioState = {
   duration: number;
   paused: boolean;
   volume: number;
+  speed?: number;
   exclusive: boolean;
   deviceId: string;
   bitrate: number | null;

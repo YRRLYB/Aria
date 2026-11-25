@@ -3,14 +3,18 @@ import { ProxyAgent } from "undici";
 import {
   clearYoutubeCookie,
   getYoutubeAccount,
+  getYoutubeDailyRecommendTracks,
+  getYoutubeDiscovery,
   getYoutubeLikedTracks,
   getYoutubePlaylistTracks,
   getYoutubePlaylists,
+  getYoutubeRoamTracks,
   normalizeYoutubeProxyInput,
   resetYoutubeStateForTests,
   resolveYoutubeStreamMeta,
   resolveYoutubeVideoMeta,
   saveYoutubeCookie,
+  saveYoutubeOauthSession,
   searchYoutubeTracks,
   setYoutubeLike,
 } from "./client";
@@ -932,5 +936,330 @@ describe("YouTube Music client", () => {
     const callsAfterLike = undiciMocks.fetch.mock.calls.length;
     await getYoutubePlaylists();
     expect(undiciMocks.fetch.mock.calls.length).toBeGreaterThan(callsAfterLike);
+  });
+
+  it("supports OAuth2 Bearer sessions, auto-refreshes expired tokens, fetches avatar/profile and clears both credentials on logout", async () => {
+    let savedStore: Record<string, unknown> = { youtubeCookie: null, youtubeOauth: null };
+    storeMocks.readStore.mockImplementation(async () => savedStore);
+    storeMocks.updateStore.mockImplementation(async (updater: (store: Record<string, unknown>) => Record<string, unknown>) => {
+      savedStore = updater(savedStore);
+      return savedStore;
+    });
+
+    undiciMocks.fetch.mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes("account_menu")) return new Response("", { status: 400 });
+      if (u.includes("googleapis.com/youtube/v3/channels")) {
+        return jsonResponse({
+          items: [
+            {
+              snippet: {
+                title: "YRRLYB",
+                customUrl: "@yrrlyb",
+                thumbnails: { high: { url: "https://lh3.googleusercontent.com/a/oauth-avatar" } },
+              },
+            },
+          ],
+        });
+      }
+      if (u.includes("oauth2.googleapis.com/token")) {
+        return jsonResponse({ access_token: "AT-FRESH", expires_in: 3600 });
+      }
+      if (u.includes("googleapis.com/youtube/v3/playlists")) {
+        return jsonResponse({
+          items: [
+            {
+              id: "PLoauth123",
+              snippet: { title: "OAuth 歌单", thumbnails: { high: { url: "https://i.ytimg.com/vi/abc/hqdefault.jpg" } } },
+              contentDetails: { itemCount: 7 },
+            },
+          ],
+        });
+      }
+      if (u.includes("music.youtube.com/youtubei/v1/browse")) {
+        return new Response("", { status: 400 });
+      }
+      return jsonResponse({});
+    });
+
+    const saved = await saveYoutubeOauthSession({
+      accessToken: "AT-INIT",
+      refreshToken: "RT-INIT",
+      expiresIn: 3600,
+      clientId: "cid",
+      clientSecret: "sec",
+    });
+    expect(saved).toMatchObject({
+      connected: true,
+      nickname: "YRRLYB",
+      userId: "@yrrlyb",
+      avatarUrl: "https://lh3.googleusercontent.com/a/oauth-avatar",
+    });
+
+    // Simulate expired access token -> auto refresh before playlist sync
+    savedStore = {
+      ...savedStore,
+      youtubeOauth: {
+        ...(savedStore.youtubeOauth as Record<string, unknown>),
+        accessToken: "AT-STALE",
+        expiresAt: Date.now() - 60_000,
+      },
+    };
+    resetYoutubeStateForTests();
+    const playlists = await getYoutubePlaylists();
+    expect(playlists.map((p) => p.id)).toEqual(["FEmusic_liked_songs", "PLoauth123"]);
+    expect(undiciMocks.fetch.mock.calls.some(([u]) => String(u).includes("oauth2.googleapis.com/token"))).toBe(true);
+
+    const cleared = await clearYoutubeCookie();
+    expect(cleared.connected).toBe(false);
+    expect(savedStore.youtubeCookie).toBeNull();
+    expect(savedStore.youtubeOauth).toBeNull();
+  });
+
+  it("provides discovery, daily recommendations, radio roam, anonymous public playlists, and www like fallback", async () => {
+    storeMocks.readStore.mockResolvedValue({ youtubeCookie: null, youtubeOauth: null });
+    resetYoutubeStateForTests();
+
+    undiciMocks.fetch.mockImplementation(async (url, init) => {
+      const u = String(url);
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+      if (u.includes("youtubei/v1/browse") && body.browseId === "FEmusic_home") {
+        return jsonResponse({
+          contents: {
+            singleColumnBrowseResultsRenderer: {
+              tabs: [
+                {
+                  tabRenderer: {
+                    content: {
+                      sectionListRenderer: {
+                        contents: [
+                          {
+                            musicCarouselShelfRenderer: {
+                              contents: [
+                                {
+                                  musicTwoRowItemRenderer: {
+                                    title: { runs: [{ text: "Quick Song" }] },
+                                    subtitle: { runs: [{ text: "Home Artist • 12万次观看" }] },
+                                    navigationEndpoint: { watchEndpoint: { videoId: "homeVid00001" } },
+                                    thumbnailRenderer: {
+                                      musicThumbnailRenderer: {
+                                        thumbnail: { thumbnails: [{ url: "https://i.ytimg.com/vi/homeVid00001/hqdefault.jpg", width: 480 }] },
+                                      },
+                                    },
+                                  },
+                                },
+                              ],
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (u.includes("youtubei/v1/browse") && body.browseId === "FEmusic_explore") {
+        return jsonResponse({
+          contents: {
+            singleColumnBrowseResultsRenderer: {
+              tabs: [
+                {
+                  tabRenderer: {
+                    content: {
+                      sectionListRenderer: {
+                        contents: [
+                          {
+                            gridRenderer: {
+                              items: [
+                                {
+                                  musicNavigationButtonRenderer: {
+                                    buttonText: { runs: [{ text: "ACG 动漫" }] },
+                                    clickCommand: { browseEndpoint: { browseId: "FEmusic_moods_and_genres_category", params: "mood-acg" } },
+                                  },
+                                },
+                                {
+                                  musicNavigationButtonRenderer: {
+                                    buttonText: { runs: [{ text: "排行榜" }] },
+                                    clickCommand: { browseEndpoint: { browseId: "FEmusic_charts" } },
+                                  },
+                                },
+                              ],
+                            },
+                          },
+                          {
+                            musicCarouselShelfRenderer: {
+                              contents: [
+                                {
+                                  musicTwoRowItemRenderer: {
+                                    title: { runs: [{ text: "New Album Mix" }] },
+                                    subtitle: { runs: [{ text: "专辑 • Vocaloid" }] },
+                                    navigationEndpoint: { browseEndpoint: { browseId: "MPREb_newAlbum01" } },
+                                    thumbnailRenderer: {
+                                      musicThumbnailRenderer: {
+                                        thumbnail: { thumbnails: [{ url: "https://lh3.googleusercontent.com/album-art", width: 226 }] },
+                                      },
+                                    },
+                                  },
+                                },
+                              ],
+                            },
+                          },
+                          {
+                            musicShelfRenderer: {
+                              contents: [shelfRow("trend000001", "Trending Song", "Trend Artist", "3:15")],
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (u.includes("youtubei/v1/browse") && body.browseId === "FEmusic_charts") {
+        return jsonResponse({
+          contents: {
+            singleColumnBrowseResultsRenderer: {
+              tabs: [
+                {
+                  tabRenderer: {
+                    content: {
+                      sectionListRenderer: {
+                        contents: [
+                          {
+                            musicCarouselShelfRenderer: {
+                              contents: [
+                                {
+                                  musicTwoRowItemRenderer: {
+                                    title: { runs: [{ text: "日本热门百首" }] },
+                                    subtitle: { runs: [{ text: "YouTube Charts" }] },
+                                    navigationEndpoint: { watchPlaylistEndpoint: { playlistId: "PLchartJP001" } },
+                                    thumbnailRenderer: {
+                                      musicThumbnailRenderer: {
+                                        thumbnail: { thumbnails: [{ url: "https://yt3.ggpht.com/chart-jp.jpg", width: 226 }] },
+                                      },
+                                    },
+                                  },
+                                },
+                              ],
+                            },
+                          },
+                          {
+                            musicShelfRenderer: {
+                              contents: [shelfRow("chart000001", "Chart Hit", "Chart Artist", "2:45")],
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (u.includes("youtubei/v1/next")) {
+        return jsonResponse({
+          contents: {
+            singleColumnMusicWatchNextResultsRenderer: {
+              tabbedRenderer: {
+                watchNextTabbedResultsRenderer: {
+                  tabs: [
+                    {
+                      tabRenderer: {
+                        content: {
+                          musicQueueRenderer: {
+                            content: {
+                              playlistPanelRenderer: {
+                                contents: [
+                                  {
+                                    playlistPanelVideoRenderer: {
+                                      videoId: "homeVid00001",
+                                      title: { runs: [{ text: "Quick Song" }] },
+                                      longBylineText: { runs: [{ text: "Home Artist • 12万次观看" }] },
+                                      lengthText: { runs: [{ text: "3:01" }] },
+                                    },
+                                  },
+                                  {
+                                    playlistPanelVideoRenderer: {
+                                      videoId: "roamNext0002",
+                                      title: { runs: [{ text: "Radio Followup" }] },
+                                      longBylineText: { runs: [{ text: "Radio Artist • Night Album • 2025" }] },
+                                      lengthText: { runs: [{ text: "4:10" }] },
+                                    },
+                                  },
+                                ],
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        });
+      }
+      if (u.includes("youtubei/v1/browse") && body.browseId === "VLPLchartJP001") {
+        return jsonResponse({
+          contents: {
+            singleColumnBrowseResultsRenderer: {
+              tabs: [
+                {
+                  tabRenderer: {
+                    content: {
+                      sectionListRenderer: {
+                        contents: [
+                          { musicPlaylistShelfRenderer: { contents: [shelfRow("chartRow0001", "Public Chart Track", "Artist JP", "3:12")] } },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (u.includes("music.youtube.com/youtubei/v1/like/like")) {
+        return new Response("", { status: 400 });
+      }
+      if (u.includes("www.youtube.com/youtubei/v1/like/like")) {
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse({});
+    });
+
+    const discovery = await getYoutubeDiscovery();
+    expect(discovery.quickPicks.map((t) => t.id)).toContain("homeVid00001");
+    expect(discovery.trendingTracks.map((t) => t.id)).toEqual(["trend000001", "chart000001"]);
+    expect(discovery.moods).toEqual([{ id: "mood-acg", name: "ACG 动漫", query: "ACG 动漫 音乐" }]);
+    expect(discovery.charts.map((c) => c.id)).toEqual(["PLchartJP001"]);
+    expect(discovery.playlists.map((p) => p.id)).toEqual(["MPREb_newAlbum01"]);
+
+    const daily = await getYoutubeDailyRecommendTracks();
+    expect(daily.map((t) => t.id)).toEqual(["homeVid00001", "trend000001", "chart000001"]);
+
+    const roam = await getYoutubeRoamTracks(10, ["youtube:homeVid00001"]);
+    expect(roam.map((t) => t.id)).not.toContain("homeVid00001");
+    expect(roam.map((t) => t.id)).toContain("roamNext0002");
+
+    const publicChart = await getYoutubePlaylistTracks("PLchartJP001");
+    expect(publicChart.tracks).toHaveLength(1);
+    expect(publicChart.tracks[0].title).toBe("Public Chart Track");
+
+    // Cookie like falls back cleanly from music.youtube.com to www.youtube.com when needed.
+    storeMocks.readStore.mockResolvedValue({ youtubeCookie: VALID_COOKIE, youtubeOauth: null });
+    resetYoutubeStateForTests();
+    await expect(setYoutubeLike("homeVid00001", true)).resolves.toEqual({ ok: true, liked: true });
   });
 });

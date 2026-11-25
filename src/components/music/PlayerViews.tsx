@@ -39,7 +39,8 @@ import {
   type QualityLevel,
 } from "@/lib/playerPresentation";
 import { sourceLabel } from "@/lib/trackLabels";
-import { BILIBILI_LYRICS_ENABLED, BILIBILI_VIDEO_ENABLED, canPlayTrackVideo } from "@/lib/features";
+import { formatYoutubeVideoOffset } from "@/lib/youtubeVideoOffset";
+import { BILIBILI_LYRICS_ENABLED, BILIBILI_VIDEO_ENABLED, canPlayTrackVideo, isStandaloneMvSource } from "@/lib/features";
 import { getPlaybackTime, subscribePlaybackTime, usePlaybackTime } from "@/lib/playbackClock";
 import { cn } from "@/lib/utils";
 const SongEncyclopediaDialog = lazy(() => import("./SongEncyclopediaDialog"));
@@ -284,6 +285,7 @@ function PlayerVideoCurtain({
   onToggleShuffle,
   onCycleRepeatMode,
   videoActive,
+  standaloneMvAudio = false,
   videoControlRef,
   videoUrl,
   videoQualities,
@@ -298,6 +300,12 @@ function PlayerVideoCurtain({
   onVideoDuration,
   onVideoEnded,
   onVideoError,
+  youtubeWebviewActive = false,
+  youtubeActiveQuality = null,
+  youtubeOffsetSeconds = 0,
+  onYoutubeOffsetChange,
+  onYoutubeQualities,
+  onYoutubeWebviewFallback,
   onSeek,
   durationSeconds,
   onTogglePlay,
@@ -321,6 +329,7 @@ function PlayerVideoCurtain({
   onToggleShuffle: () => void;
   onCycleRepeatMode: () => void;
   videoActive: boolean;
+  standaloneMvAudio?: boolean;
   videoControlRef: { current: VideoControl | null };
   videoUrl?: string;
   videoQualities: Array<{ id: number; label: string }>;
@@ -335,6 +344,12 @@ function PlayerVideoCurtain({
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
   onVideoError: (message: string) => void;
+  youtubeWebviewActive?: boolean;
+  youtubeActiveQuality?: string | null;
+  youtubeOffsetSeconds?: number;
+  onYoutubeOffsetChange?: (deltaOrReset: number | "reset") => void;
+  onYoutubeQualities?: (qualities: Array<{ id: number; label: string }>, activeLabel: string | null) => void;
+  onYoutubeWebviewFallback?: (reason: string) => void;
   onSeek: (time: number) => void;
   durationSeconds: number;
   onTogglePlay: () => void;
@@ -344,7 +359,7 @@ function PlayerVideoCurtain({
   onCloseImmersive?: () => void;
   onCloseVideo: () => void;
 }) {
-  const pipSupported = typeof document !== "undefined" && Boolean(document.pictureInPictureEnabled);
+  const pipSupported = !youtubeWebviewActive && typeof document !== "undefined" && Boolean(document.pictureInPictureEnabled);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const chromeHoveredRef = useRef(false);
@@ -433,7 +448,13 @@ function PlayerVideoCurtain({
           : "aria-mv-stage video-stage absolute inset-0 z-20 grid h-full max-h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden p-4 pb-7 sm:p-6 sm:pb-9 2xl:p-7 2xl:pb-10",
         controlsDimmed && "cursor-none",
       )}
-      aria-label={activeTrack.source === "youtube" ? "YouTube 实时视频舞台" : "B站实时视频舞台"}
+      aria-label={
+        activeTrack.source === "youtube"
+          ? "YouTube 实时视频舞台"
+          : isStandaloneMvSource(activeTrack.source)
+            ? `${sourceLabel[activeTrack.source]}官方 MV 舞台`
+            : "B站实时视频舞台"
+      }
     >
       {!immersive && (
         <div
@@ -451,7 +472,7 @@ function PlayerVideoCurtain({
         onPointerLeave={immersive ? () => { chromeHoveredRef.current = false; scheduleHideChrome(); } : undefined}
         className={cn(
           "relative z-20 flex flex-wrap items-start justify-between gap-3",
-          immersive && "absolute inset-x-0 top-0 bg-gradient-to-b from-black/78 via-black/38 to-transparent p-5 transition-all duration-300 ease-out sm:p-7",
+          immersive && "aria-immersive-header absolute inset-x-0 top-0 bg-gradient-to-b from-black/78 via-black/38 to-transparent p-5 transition-all duration-300 ease-out sm:p-7",
           controlsDimmed && "pointer-events-none -translate-y-2 opacity-0",
         )}
       >
@@ -459,7 +480,11 @@ function PlayerVideoCurtain({
           <p className={cn("flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em]", immersive ? "text-white/60" : "text-neutral-500")}>
             <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: palette.primary }} />
             <span className="truncate">
-              {sourceLabel[activeTrack.source]} · MV {immersive ? "沉浸画面" : "实时画面"} · {exclusiveMode ? "直通播放" : "独立音频输出"}
+              {youtubeWebviewActive
+                ? `YouTube Music · 音画融合${youtubeActiveQuality ? ` · ${youtubeActiveQuality}` : ""}`
+                : isStandaloneMvSource(activeTrack.source)
+                  ? `${sourceLabel[activeTrack.source]} · 官方 MV ${immersive ? "沉浸播放" : "原声播放"}`
+                  : `${sourceLabel[activeTrack.source]} · MV ${immersive ? "沉浸画面" : "实时画面"} · ${exclusiveMode ? "直通播放" : "独立音频输出"}`}
             </span>
           </p>
           <h2 className={cn("mt-1 truncate text-base font-semibold sm:text-lg", immersive ? "text-white" : "text-neutral-950")} title={activeTrack.title}>
@@ -475,7 +500,45 @@ function PlayerVideoCurtain({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {youtubeWebviewActive && onYoutubeOffsetChange && (
+            <div
+              role="group"
+              aria-label="音画偏移微调"
+              className={cn(
+                "flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[11px]",
+                immersive
+                  ? "border-white/15 bg-black/55 text-white/80"
+                  : "border-neutral-200/80 bg-white/75 text-neutral-700",
+              )}
+            >
+              <button
+                type="button"
+                aria-label="画面提前 0.1 秒"
+                onClick={() => onYoutubeOffsetChange(-0.1)}
+                className="rounded-full px-1.5 py-0.5 hover:bg-black/10"
+              >
+                -0.1s
+              </button>
+              <button
+                type="button"
+                aria-label="重置音画偏移"
+                title="点击归零音画偏移"
+                onClick={() => onYoutubeOffsetChange("reset")}
+                className="min-w-[3.1rem] text-center font-mono tabular-nums"
+              >
+                {formatYoutubeVideoOffset(youtubeOffsetSeconds)}
+              </button>
+              <button
+                type="button"
+                aria-label="画面延后 0.1 秒"
+                onClick={() => onYoutubeOffsetChange(0.1)}
+                className="rounded-full px-1.5 py-0.5 hover:bg-black/10"
+              >
+                +0.1s
+              </button>
+            </div>
+          )}
           {onVideoQualityChange && (
             <AriaSelect
               ariaLabel="视频画质"
@@ -487,22 +550,30 @@ function PlayerVideoCurtain({
               options={[
                 {
                   value: "",
-                  label: activeTrack.videoQuality ? `自动 · ${activeTrack.videoQuality}` : "自动画质",
+                  label: youtubeWebviewActive
+                    ? youtubeActiveQuality
+                      ? `自动 · ${youtubeActiveQuality}`
+                      : "自动画质"
+                    : activeTrack.videoQuality
+                      ? `自动 · ${activeTrack.videoQuality}`
+                      : "自动画质",
                 },
                 ...videoQualities.map((quality) => ({ value: String(quality.id), label: quality.label })),
               ]}
             />
           )}
-          <MvAudioQualitySelect
-            activeTrack={activeTrack}
-            qualityLevel={qualityLevel}
-            onQualityLevelChange={onQualityLevelChange}
-            videoAudioLevel={videoAudioLevel}
-            videoAudioLevels={videoAudioLevels}
-            videoAudioQuality={videoAudioQuality}
-            onVideoAudioLevelChange={onVideoAudioLevelChange}
-            variant={selectVariant}
-          />
+          {!standaloneMvAudio && (
+            <MvAudioQualitySelect
+              activeTrack={activeTrack}
+              qualityLevel={qualityLevel}
+              onQualityLevelChange={onQualityLevelChange}
+              videoAudioLevel={videoAudioLevel}
+              videoAudioLevels={videoAudioLevels}
+              videoAudioQuality={videoAudioQuality}
+              onVideoAudioLevelChange={onVideoAudioLevelChange}
+              variant={selectVariant}
+            />
+          )}
           {pipSupported && (
             <Button
               variant={immersive ? "ghost" : "glass"}
@@ -588,6 +659,7 @@ function PlayerVideoCurtain({
               key="active-video-stage"
               track={activeTrack}
               src={videoUrl}
+              standaloneAudio={standaloneMvAudio}
               active={videoActive}
               playing={playing}
               volume={volume}
@@ -595,8 +667,16 @@ function PlayerVideoCurtain({
               onDuration={onVideoDuration}
               onEnded={onVideoEnded}
               onError={onVideoError}
-              className={immersive ? "relative z-10 size-full bg-black object-contain" : "relative z-10 size-full bg-transparent"}
+              youtubeWebviewEnabled={youtubeWebviewActive}
+              youtubeQualityId={videoQualityId}
+              youtubeOffsetSeconds={youtubeOffsetSeconds}
+              onYoutubeQualities={onYoutubeQualities}
+              onYoutubeWebviewFallback={onYoutubeWebviewFallback}
+              className={immersive ? "absolute inset-0 z-10 size-full bg-black object-contain" : "absolute inset-0 z-10 size-full bg-transparent object-contain"}
             />
+            {youtubeWebviewActive && (
+              <div className="absolute inset-0 z-20" aria-hidden="true" />
+            )}
           </div>
         </div>
       </div>
@@ -683,10 +763,17 @@ export function PlayerSurface({
   onVideoAudioLevelChange,
   onVideoQualityChange,
   videoActive,
+  standaloneMvAudio = false,
   videoControlRef,
   onVideoDuration,
   onVideoEnded,
   onVideoError,
+  youtubeWebviewActive = false,
+  youtubeActiveQuality = null,
+  youtubeOffsetSeconds = 0,
+  onYoutubeOffsetChange,
+  onYoutubeQualities,
+  onYoutubeWebviewFallback,
   equalizerEnabled,
   onOpenEqualizer,
   onReplaceLocalArtwork,
@@ -724,6 +811,7 @@ export function PlayerSurface({
   onCloseImmersive?: () => void;
   videoMode: boolean;
   onToggleVideoMode: () => void;
+  standaloneMvAudio?: boolean;
   videoUrlOverride?: string;
   videoAudioUrlOverride?: string;
   videoQualities?: Array<{ id: number; label: string }>;
@@ -738,6 +826,12 @@ export function PlayerSurface({
   onVideoDuration: (seconds: number) => void;
   onVideoEnded: () => void;
   onVideoError: (message: string) => void;
+  youtubeWebviewActive?: boolean;
+  youtubeActiveQuality?: string | null;
+  youtubeOffsetSeconds?: number;
+  onYoutubeOffsetChange?: (deltaOrReset: number | "reset") => void;
+  onYoutubeQualities?: (qualities: Array<{ id: number; label: string }>, activeLabel: string | null) => void;
+  onYoutubeWebviewFallback?: (reason: string) => void;
   equalizerEnabled: boolean;
   onOpenEqualizer: () => void;
   onReplaceLocalArtwork: (trackId: string, file: File) => Promise<void>;
@@ -988,12 +1082,26 @@ export function PlayerSurface({
                     disabled={!canPlayVideo}
                     title={
                       !canPlayVideo
-                        ? "当前曲目无关联视频（支持 B站与 YouTube 曲目）"
-                        : videoMode
-                          ? "收起实时视频"
-                          : "播放实时视频（不中断音频输出）"
+                        ? "当前曲目暂无关联 MV 或视频（支持网易云、QQ 音乐、B站与 YouTube）"
+                        : isStandaloneMvSource(activeTrack.source)
+                          ? videoMode
+                            ? "收起 MV 画面"
+                            : "播放官方 MV"
+                          : videoMode
+                            ? "收起实时视频"
+                            : "播放实时视频（不中断音频输出）"
                     }
-                    aria-label={!canPlayVideo ? "当前曲目无视频" : videoMode ? "收起实时视频" : "播放实时视频"}
+                    aria-label={
+                      !canPlayVideo
+                        ? "当前曲目无视频"
+                        : isStandaloneMvSource(activeTrack.source)
+                          ? videoMode
+                            ? "收起 MV 画面"
+                            : "播放官方 MV"
+                          : videoMode
+                            ? "收起实时视频"
+                            : "播放实时视频"
+                    }
                     aria-pressed={showVideo}
                     className={cn(
                       "relative size-8 px-0",
@@ -1127,6 +1235,7 @@ export function PlayerSurface({
               onToggleShuffle={onToggleShuffle}
               onCycleRepeatMode={onCycleRepeatMode}
               videoActive={videoActive}
+              standaloneMvAudio={standaloneMvAudio}
               videoControlRef={videoControlRef}
               videoUrl={videoUrlOverride}
               videoQualities={videoQualities}
@@ -1141,6 +1250,12 @@ export function PlayerSurface({
               onVideoDuration={onVideoDuration}
               onVideoEnded={onVideoEnded}
               onVideoError={onVideoError}
+              youtubeWebviewActive={youtubeWebviewActive}
+              youtubeActiveQuality={youtubeActiveQuality}
+              youtubeOffsetSeconds={youtubeOffsetSeconds}
+              onYoutubeOffsetChange={onYoutubeOffsetChange}
+              onYoutubeQualities={onYoutubeQualities}
+              onYoutubeWebviewFallback={onYoutubeWebviewFallback}
               onSeek={onSeek}
               durationSeconds={durationSeconds}
               onTogglePlay={onTogglePlay}
@@ -1186,6 +1301,7 @@ export function ImmersivePlayerView({
   onSeek,
   videoMode,
   onToggleVideoMode,
+  standaloneMvAudio = false,
   videoControlRef,
   videoUrlOverride,
   videoAudioUrlOverride,
@@ -1227,6 +1343,7 @@ export function ImmersivePlayerView({
   onSeek: (time: number) => void;
   videoMode: boolean;
   onToggleVideoMode: () => void;
+  standaloneMvAudio?: boolean;
   videoControlRef: { current: VideoControl | null };
   videoUrlOverride?: string;
   videoAudioUrlOverride?: string;
@@ -1248,8 +1365,17 @@ export function ImmersivePlayerView({
       return DEFAULT_IMMERSIVE_LYRICS;
     }
     const normalized = normalizeBilingualLyrics(activeTrack.lyrics);
-    return normalized.length ? normalized : DEFAULT_IMMERSIVE_LYRICS;
-  }, [activeTrack.lyrics, activeTrack.source]);
+    if (normalized.length) return normalized;
+    return [
+      {
+        time: "00:00",
+        text:
+          activeTrack.id !== "idle" && activeTrack.lyricStatus === "searchable"
+            ? "正在加载歌词…"
+            : "纯音乐或暂无歌词",
+      },
+    ];
+  }, [activeTrack.id, activeTrack.lyricStatus, activeTrack.lyrics, activeTrack.source]);
   const activeLyricIndex = useSyncExternalStore(
     subscribePlaybackTime,
     () => getActiveLyricIndex(lyrics, getPlaybackTime()),
@@ -1276,6 +1402,7 @@ export function ImmersivePlayerView({
             track={activeTrack}
             src={videoUrlOverride}
             audioSrc={videoAudioUrlOverride}
+            standaloneAudio={standaloneMvAudio}
             active={videoActive}
             playing={playing}
             volume={volume}
@@ -1287,7 +1414,7 @@ export function ImmersivePlayerView({
           />
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-transparent to-black/80" />
 
-          <div className="absolute inset-x-0 top-0 z-10 flex flex-wrap items-start justify-between gap-4 p-5 sm:p-7">
+          <div className="aria-immersive-header absolute inset-x-0 top-0 z-10 flex flex-wrap items-start justify-between gap-4 p-5 sm:p-7">
             <div className="min-w-0">
               <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-white/55">
                 <span className="size-1.5 rounded-full" style={{ backgroundColor: palette.primary }} />
@@ -1318,16 +1445,18 @@ export function ImmersivePlayerView({
                   ]}
                 />
               )}
-              <MvAudioQualitySelect
-                activeTrack={activeTrack}
-                qualityLevel={qualityLevel}
-                onQualityLevelChange={onQualityLevelChange}
-                videoAudioLevel={videoAudioLevel}
-                videoAudioLevels={videoAudioLevels}
-                videoAudioQuality={videoAudioQuality}
-                onVideoAudioLevelChange={onVideoAudioLevelChange}
-                variant="dark"
-              />
+              {!standaloneMvAudio && (
+                <MvAudioQualitySelect
+                  activeTrack={activeTrack}
+                  qualityLevel={qualityLevel}
+                  onQualityLevelChange={onQualityLevelChange}
+                  videoAudioLevel={videoAudioLevel}
+                  videoAudioLevels={videoAudioLevels}
+                  videoAudioQuality={videoAudioQuality}
+                  onVideoAudioLevelChange={onVideoAudioLevelChange}
+                  variant="dark"
+                />
+              )}
               <Button
                 className="bg-white/12 text-white hover:bg-white/20"
                 size="icon"
@@ -1384,7 +1513,7 @@ export function ImmersivePlayerView({
             }}
           />
           <div className="relative z-10 grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-6 py-6 lg:px-10 2xl:px-14">
-            <div className="flex items-start justify-between gap-4">
+            <div className="aria-immersive-header flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="whitespace-nowrap text-sm text-white/55">{sourceLabel[activeTrack.source]} · {formatAudioDetail(activeTrack)}</p>
               </div>

@@ -26,6 +26,8 @@ type BiliAudio = {
   id: number;
   baseUrl?: string;
   base_url?: string;
+  backupUrl?: string[];
+  backup_url?: string[];
   bandwidth?: number;
   codecs?: string;
   mimeType?: string;
@@ -156,6 +158,8 @@ type BiliNavData = {
   mid?: number;
   uname?: string;
   face?: string;
+  vipStatus?: number;
+  vip?: { status?: number; type?: number };
   wbi_img?: { img_url?: string; sub_url?: string };
 };
 
@@ -207,6 +211,7 @@ type BiliQrSession = {
 
 let authCookieCache: { value: string; at: number } | null = null;
 let accountCache: { cookie: string; at: number; value: SourceAccount } | null = null;
+let capabilityCache: { cookie: string; at: number; tier: "vip" | "free" | "none" } | null = null;
 let likedCache: { cookie: string; at: number; tracks: ProviderTrack[] } | null = null;
 let ariaFolderCache: { cookie: string; at: number; folder: BiliFavFolder | null } | null = null;
 let ariaFolderCreatePromise: Promise<BiliFavFolder | null> | null = null;
@@ -374,6 +379,40 @@ async function biliAuthJson<T>(
   return body.data as T;
 }
 
+function capabilityFromNav(nav: BiliNavData | null | undefined): "vip" | "free" | "none" {
+  if (!nav?.isLogin || !nav.mid) return "none";
+  if (nav.vipStatus === 1 || nav.vip?.status === 1) return "vip";
+  return "free";
+}
+
+export async function peekBilibiliCapability(): Promise<{ tier: "vip" | "free" | "none"; resolved: boolean }> {
+  const auth = await readAuthCookie().catch(() => "");
+  if (!auth) return { tier: "none", resolved: true };
+  if (capabilityCache?.cookie === auth && Date.now() - capabilityCache.at < ACCOUNT_CACHE_MS) {
+    return { tier: capabilityCache.tier, resolved: true };
+  }
+  return { tier: "free", resolved: false };
+}
+
+export async function resolveBilibiliCapability(signal?: AbortSignal): Promise<"vip" | "free" | "none"> {
+  const auth = await readAuthCookie(true).catch(() => "");
+  if (!auth) {
+    capabilityCache = null;
+    return "none";
+  }
+  if (capabilityCache?.cookie === auth && Date.now() - capabilityCache.at < ACCOUNT_CACHE_MS) {
+    return capabilityCache.tier;
+  }
+  const cookie = mergeCookieHeaders(await ensureCookies(), auth);
+  const nav = await fetchBilibiliNav(cookie, signal);
+  const tier = capabilityFromNav(nav);
+  capabilityCache = { cookie: auth, at: Date.now(), tier };
+  if (nav) {
+    accountCache = { cookie: auth, at: Date.now(), value: accountFromNav(nav) };
+  }
+  return tier;
+}
+
 export async function getBilibiliAccount(signal?: AbortSignal): Promise<SourceAccount> {
   const auth = await readAuthCookie(true);
   if (!auth) return disconnectedAccount();
@@ -384,12 +423,14 @@ export async function getBilibiliAccount(signal?: AbortSignal): Promise<SourceAc
   const nav = await fetchBilibiliNav(cookie, signal);
   const account = accountFromNav(nav ?? {});
   accountCache = { cookie: auth, at: Date.now(), value: account };
+  capabilityCache = { cookie: auth, at: Date.now(), tier: capabilityFromNav(nav) };
   return account;
 }
 
 function clearBilibiliAuthCaches() {
   authCookieCache = null;
   accountCache = null;
+  capabilityCache = null;
   likedCache = null;
   ariaFolderCache = null;
   ariaFolderCreatePromise = null;
@@ -942,8 +983,8 @@ export async function getBilibiliLikedTracks(): Promise<ProviderTrack[]> {
 let favPlaylistsCache: { cookie: string; at: number; playlists: ProviderPlaylist[] } | null = null;
 
 /**
- * 登录账号自己的收藏夹清单（B站「歌单」）。默认收藏夹「Aria」不在此列——
- * 它是红心喜欢（我喜欢页）的镜像，重复展示只会造成混淆。
+ * 登录账号自己的收藏夹清单（B站「歌单」）。包含默认红心收藏夹「Aria」及其他自建收藏夹，
+ * 让B站收藏夹歌单、Super混合与单曲挑选器都能直接访问「Aria」里的曲目。
  */
 export async function getBilibiliFavPlaylists(): Promise<ProviderPlaylist[]> {
   const auth = await readAuthCookie();
@@ -958,22 +999,22 @@ export async function getBilibiliFavPlaylists(): Promise<ProviderPlaylist[]> {
     throw new SourceError("AUTH_REQUIRED", "B站登录已过期，请重新登录", { source: "bilibili" });
   }
   const folders = await listBilibiliFavFolders(account.userId);
-  const playlists: ProviderPlaylist[] = folders
-    .filter((folder) => !isAriaFavFolder(folder))
-    .map((folder) => ({
-      id: `folder:${folder.id}`,
-      name: folder.title?.trim() || "未命名收藏夹",
-      source: "bilibili",
-      trackCount: Number(folder.media_count ?? 0),
-      subscribed: false,
-      ownerId: account.userId,
-      owned: true,
-      canEdit: false,
-      coverColor: "#00AEEC",
-      coverUrl: null,
-      description: "B站收藏夹 · 登录账号实时读取",
-      creatorName: account.nickname ?? undefined,
-    }));
+  const playlists: ProviderPlaylist[] = folders.map((folder) => ({
+    id: `folder:${folder.id}`,
+    name: folder.title?.trim() || "未命名收藏夹",
+    source: "bilibili",
+    trackCount: Number(folder.media_count ?? 0),
+    subscribed: false,
+    ownerId: account.userId,
+    owned: true,
+    canEdit: false,
+    coverColor: "#00AEEC",
+    coverUrl: null,
+    description: isAriaFavFolder(folder)
+      ? "B站「Aria」红心收藏夹 · 登录账号实时读取"
+      : "B站收藏夹 · 登录账号实时读取",
+    creatorName: account.nickname ?? undefined,
+  }));
   favPlaylistsCache = { cookie: auth, at: Date.now(), playlists };
   return playlists;
 }
@@ -1043,6 +1084,7 @@ export async function setBilibiliLike(trackId: string, liked: boolean): Promise<
     body,
   });
   likedCache = null;
+  favPlaylistsCache = null;
   accountCache = null;
   return { ok: true, liked };
 }
@@ -1199,8 +1241,24 @@ export async function getBilibiliView(trackId: string, signal?: AbortSignal): Pr
   return normalized;
 }
 
-function audioBaseUrl(audio: BiliAudio) {
-  return audio.baseUrl ?? audio.base_url ?? "";
+function isMcdnHost(urlString: string): boolean {
+  try {
+    return new URL(urlString).hostname.toLowerCase().includes(".mcdn.bilivideo.");
+  } catch {
+    return false;
+  }
+}
+
+export function audioBaseUrl(audio: BiliAudio) {
+  const candidates = [
+    audio.baseUrl ?? audio.base_url ?? "",
+    ...(Array.isArray(audio.backupUrl) ? audio.backupUrl : []),
+    ...(Array.isArray(audio.backup_url) ? audio.backup_url : []),
+  ]
+    .map((url) => url.trim())
+    .filter(Boolean);
+  if (candidates.length === 0) return "";
+  return candidates.find((url) => !isMcdnHost(url)) ?? candidates[0];
 }
 
 function audioMime(audio: BiliAudio) {

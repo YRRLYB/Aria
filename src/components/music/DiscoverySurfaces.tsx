@@ -161,22 +161,21 @@ export function SearchSurface({
             : albums.length;
 
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-5">
+    <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
       <header className="flex shrink-0 items-center justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-xs tracking-widest text-neutral-400">SEARCH</p>
-          <h1 className="mt-2 truncate text-3xl font-semibold" title={query}>
+          <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl" title={query}>
             {query}
           </h1>
-          <p className="mt-2 text-sm text-neutral-500">{descriptions[mode]}</p>
+          <p className="mt-1 text-xs text-neutral-500">{descriptions[mode]}</p>
         </div>
-        <Search className="size-6 shrink-0 text-neutral-300" />
+        <Search className="size-5 shrink-0 text-neutral-300" />
       </header>
-      <div className="mt-5 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-neutral-200/65 pb-3">
+      <div className="aria-page-header mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 pb-3">
         <div
           role="tablist"
           aria-label="搜索类型"
-          className="flex flex-wrap items-center gap-1"
+          className="aria-segment flex flex-wrap items-center gap-1 rounded-full p-1"
         >
           {(
             [
@@ -194,10 +193,8 @@ export function SearchSurface({
               role="tab"
               aria-selected={mode === value}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium transition",
-                mode === value
-                  ? "bg-neutral-950 text-white"
-                  : "text-neutral-500 hover:bg-white hover:text-neutral-950",
+                "aria-segment-item inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium",
+                mode === value && "is-active",
               )}
               onClick={() => onModeChange?.(value)}
             >
@@ -233,10 +230,8 @@ export function SearchSurface({
                 type="button"
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                  active
-                    ? "border-neutral-950 bg-neutral-950 text-white"
-                    : "border-white/70 bg-white/60 text-neutral-500 hover:bg-white",
+                  "aria-chip inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium",
+                  active && "is-active",
                 )}
                 onClick={() => setSourceFilter(value)}
               >
@@ -431,16 +426,15 @@ export function ArtistsSurface({
     );
   const featuredArtists = artists.slice(0, 80);
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-5">
-      <header className="flex shrink-0 items-center justify-between">
+    <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
+      <header className="aria-page-header flex shrink-0 items-center justify-between pb-4">
         <div>
-          <Badge>Artists</Badge>
-          <h1 className="mt-3 text-3xl font-semibold">歌手</h1>
-          <p className="mt-2 text-sm text-neutral-500">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">歌手</h1>
+          <p className="mt-1 text-xs text-neutral-500">
             浏览本地、网易云与 QQ 音乐歌手，探索曲目、专辑和创作者资料。
           </p>
         </div>
-        <UserRound className="size-7 text-neutral-400" />
+        <UserRound className="size-6 text-neutral-400" />
       </header>
       <div className="no-scrollbar mt-5 grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto pr-1 xl:grid-cols-3 2xl:grid-cols-4">
         {featuredArtists.map((artist) => (
@@ -515,29 +509,34 @@ function ArtistDetailView({
   const sections = artistDetail?.sections ?? [];
   const description = artistDetail?.description ?? "";
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-3xl p-6">
+    <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
       <button
         type="button"
         onClick={onBack}
-        className="w-fit shrink-0 rounded-full bg-white/70 px-4 py-2 text-xs font-medium text-neutral-600"
+        className="aria-chip w-fit shrink-0 rounded-full px-4 py-1.5 text-xs font-medium"
       >
         返回歌手列表
       </button>
-      <header className="my-5 flex shrink-0 items-center gap-5">
+      <header className="my-4 flex shrink-0 items-center gap-5">
         <ArtistAvatar
           name={artist.name}
           avatarUrl={avatarUrl || artistDetail?.artist.avatarUrl || null}
-          className="size-24 rounded-2xl"
+          fallbackUrl={
+            artist.fallbackCoverUrl ??
+            tracks.find((track) => Boolean(track.coverUrl))?.coverUrl ??
+            null
+          }
+          className="size-20 rounded-2xl"
         />
         <div className="min-w-0">
-          <Badge>{artistSourceLabel(artist.source)}</Badge>
           <h1
-            className="mt-2 truncate text-3xl font-semibold"
+            className="truncate text-2xl font-semibold sm:text-3xl"
             title={artist.name}
           >
             {artist.name}
           </h1>
-          <p className="mt-2 text-xs text-neutral-500">
+          <p className="mt-1.5 text-xs text-neutral-500">
+            {artistSourceLabel(artist.source)} ·{" "}
             {artistDetail?.artist.trackCount ||
               tracks.length ||
               artist.trackCount ||
@@ -550,7 +549,7 @@ function ArtistDetailView({
       <div
         role="tablist"
         aria-label="歌手内容"
-        className="flex shrink-0 gap-2 border-b border-neutral-200/60 pb-3"
+        className="aria-page-header flex shrink-0 gap-2 pb-3"
       >
         {(
           [
@@ -566,10 +565,8 @@ function ArtistDetailView({
             aria-selected={tab === value}
             onClick={() => setTab(value)}
             className={cn(
-              "rounded-full px-4 py-2 text-xs font-medium",
-              tab === value
-                ? "bg-neutral-950 text-white"
-                : "text-neutral-500 hover:bg-white",
+              "aria-chip rounded-full px-4 py-1.5 text-xs font-medium",
+              tab === value && "is-active",
             )}
           >
             {label}
@@ -584,7 +581,7 @@ function ArtistDetailView({
           <>
             <DiscoveryError error={tracksError} onRetry={onRetryTracks} />
             <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="flex gap-1 rounded-full bg-white/60 p-1">
+              <div className="aria-segment flex gap-1 rounded-full p-1">
                 {(
                   [
                     ["all", "全部", tracks.length],
@@ -598,10 +595,8 @@ function ArtistDetailView({
                     key={value}
                     onClick={() => setSourceFilter(value)}
                     className={cn(
-                      "rounded-full px-3 py-1.5 text-xs",
-                      sourceFilter === value
-                        ? "bg-neutral-900 text-white"
-                        : "text-neutral-500",
+                      "aria-segment-item rounded-full px-3 py-1 text-xs font-medium",
+                      sourceFilter === value && "is-active",
                     )}
                   >
                     {label} {count}
@@ -750,7 +745,7 @@ function ArtistTrackGroup({
         ))}
       </div>
       {!tracks.length && (
-        <p className="rounded-xl bg-white/40 px-4 py-5 text-xs text-neutral-400">
+        <p className="aria-flat-well rounded-xl px-4 py-4 text-xs text-neutral-400">
           {loading ? "正在加载歌曲…" : "暂无此来源的歌曲"}
         </p>
       )}
@@ -770,7 +765,7 @@ function ArtistCard({
   return (
     <button
       type="button"
-      className="group flex min-w-0 items-center gap-3 rounded-2xl bg-white/55 p-3 text-left transition hover:bg-white"
+      className="aria-flat-tile group flex min-w-0 items-center gap-3 rounded-2xl p-3 text-left"
       onClick={() =>
         onPick({ ...artist, avatarUrl: artist.avatarUrl ?? avatarUrl })
       }
@@ -778,6 +773,7 @@ function ArtistCard({
       <ArtistAvatar
         name={artist.name}
         avatarUrl={avatarUrl}
+        fallbackUrl={artist.fallbackCoverUrl ?? null}
         className="size-16 rounded-xl"
       />
       <span className="min-w-0 flex-1">

@@ -29,6 +29,11 @@ class CdAudioRipper {
   }
 
   async ripTrack({ device, trackNumber, qualityMode = "high" }) {
+    if (process.platform !== "win32") {
+      throw new Error(
+        "Audio CD raw ripping is only supported on Windows; on macOS add the mounted /Volumes Audio CD folder directly.",
+      );
+    }
     const normalizedDevice = this.normalizeDevice(device);
     const safeTrackNumber = this.parseTrackNumber(trackNumber);
     const safeQualityMode = qualityMode === "low" ? "low" : "high";

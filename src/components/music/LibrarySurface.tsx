@@ -92,39 +92,38 @@ export function LibrarySurface({
   }
 
   return (
-    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+    <div className="aria-page-shell no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex flex-col gap-4 pb-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <Badge>Library</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">本地音乐</h1>
-          <p className="mt-3 text-neutral-500">{folderName}</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">本地音乐</h1>
+          <p className="mt-1 text-xs text-neutral-500">{folderName}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="glass" onClick={() => setMetadataOpen((value) => !value)}>
+          <Button variant="glass" size="sm" onClick={() => setMetadataOpen((value) => !value)}>
             {metadataOpen ? <X /> : <RefreshCw />}
             {metadataOpen ? "收起补全" : "批量补全"}
           </Button>
-          <Button variant="glass" onClick={() => setLookupOpen((value) => !value)}>
+          <Button variant="glass" size="sm" onClick={() => setLookupOpen((value) => !value)}>
             {lookupOpen ? <X /> : <Languages />}
             {lookupOpen ? "收起搜词" : "联网搜词"}
           </Button>
-          <Button onClick={onChooseFolder}>
+          <Button size="sm" onClick={onChooseFolder}>
             <FolderOpen />
             选择文件夹
           </Button>
         </div>
       </div>
 
-      <div className="mt-6 grid gap-3 md:grid-cols-4">
+      <div className="aria-flat-well mt-4 grid divide-y divide-black/5 rounded-2xl md:grid-cols-4 md:divide-x md:divide-y-0">
         <LibraryInfoCard label="专辑" value={`${albums.length} 张`} />
         <LibraryInfoCard label="本地曲目" value={`${fileTracks.length} 首`} />
         <LibraryInfoCard label="光盘曲目" value={`${cdTracks.length} 首`} />
         <LibraryInfoCard label="目录数量" value={`${libraryMeta.roots.length} 个`} />
       </div>
 
-      <div className="mt-5 rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
+      <div className="aria-flat-well mt-4 rounded-2xl p-3.5">
         {scanProgress?.status === "running" && (
-          <div className="mb-4 rounded-[1rem] border border-sky-200/70 bg-sky-50/70 p-3">
+          <div className="mb-3 rounded-xl border border-sky-200/70 bg-sky-50/70 p-3">
             <div className="flex items-center justify-between gap-3 text-sm">
               <span className="font-medium">{scanProgress.phase === "metadata" ? "正在读取歌曲信息" : scanProgress.phase === "saving" ? "正在写入音乐库" : "正在查找音频文件"}</span>
               <span className="text-sky-700">{scanProgress.total > 0 ? String(scanProgress.processed) + "/" + String(scanProgress.total) : "准备中"}</span>
@@ -141,10 +140,10 @@ export function LibrarySurface({
               onChange={(event) => setScanPath(event.target.value)}
               placeholder="输入本机音乐目录路径，例如 E:\\Music"
               aria-label="本地音乐目录路径"
-              className="w-full rounded-full border border-white/70 bg-white/70 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+              className="aria-flat-input w-full rounded-xl px-4 py-2.5 text-sm outline-none"
             />
           </div>
-          <Button onClick={submitScanPath} disabled={scanState === "scanning"}>
+          <Button size="sm" onClick={submitScanPath} disabled={scanState === "scanning"}>
             <RefreshCw className={cn(scanState === "scanning" && "animate-spin")} />
             {scanState === "scanning" ? "扫描中" : "扫描目录"}
           </Button>
@@ -171,46 +170,46 @@ export function LibrarySurface({
 
       {metadataOpen && <LocalMetadataPanel tracks={fileTracks} onMetadataUpdated={onMetadataUpdated} />}
 
-      <div className="mt-7 flex items-center justify-between gap-3">
-        <div className="rounded-full border border-white/70 bg-white/52 p-1 shadow-sm">
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <div className="aria-segment flex items-center gap-1 rounded-full p-1">
           <button
             className={cn(
-              "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition",
-              mode === "albums" && "bg-neutral-950 text-white",
+              "aria-segment-item inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium",
+              mode === "albums" && "is-active",
             )}
             onClick={() => setMode("albums")}
           >
-            <Album className="size-4" />
+            <Album className="size-3.5" />
             专辑
           </button>
           <button
             className={cn(
-              "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition",
-              mode === "tracks" && "bg-neutral-950 text-white",
+              "aria-segment-item inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium",
+              mode === "tracks" && "is-active",
             )}
             onClick={() => {
               setSelectedAlbumKey(null);
               setMode("tracks");
             }}
           >
-            <ListMusic className="size-4" />
+            <ListMusic className="size-3.5" />
             曲目
           </button>
           <button
             className={cn(
-              "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-neutral-500 transition",
-              mode === "cds" && "bg-neutral-950 text-white",
+              "aria-segment-item inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium",
+              mode === "cds" && "is-active",
             )}
             onClick={() => {
               setSelectedAlbumKey(null);
               setMode("cds");
             }}
           >
-            <Disc3 className="size-4" />
+            <Disc3 className="size-3.5" />
             光盘
           </button>
         </div>
-        <Badge>{mode === "albums" ? "点击专辑进入曲目" : mode === "cds" ? "CD 独立管理" : "按专辑顺序排列"}</Badge>
+        <span className="text-xs text-neutral-400">{mode === "albums" ? "点击专辑进入曲目" : mode === "cds" ? "CD 独立管理" : "按专辑顺序排列"}</span>
       </div>
 
       {mode === "albums" ? (
@@ -271,7 +270,7 @@ function AlbumLibraryView({
       {albums.map((album) => (
         <button
           key={album.key}
-          className="group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 text-left shadow-sm transition hover:bg-white"
+          className="aria-flat-tile group grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-2xl p-3 text-left"
           onClick={() => onSelectAlbum(album.key)}
         >
           <CoverArt track={album.coverTrack} className="size-16 rounded-2xl" />
@@ -302,22 +301,20 @@ function AlbumDetailView({
   const virtual = useVirtualRows({ count: album.tracks.length, rowHeight: 88, overscan: 10 });
 
   return (
-    <div className="mt-5 grid h-[calc(100vh-24rem)] min-h-[420px] gap-4 xl:grid-cols-[minmax(360px,0.42fr)_minmax(0,1fr)]">
-      <section className="relative min-h-0 overflow-hidden rounded-[1.5rem] bg-white/50 p-5 shadow-sm">
-        <div className="absolute inset-0 bg-gradient-to-br from-white/80 via-white/20 to-neutral-200/35" />
+    <div className="mt-5 grid h-[calc(100vh-24rem)] min-h-[420px] gap-5 xl:grid-cols-[minmax(320px,0.38fr)_minmax(0,1fr)]">
+      <section className="aria-flat-well relative min-h-0 overflow-hidden rounded-2xl p-5">
         <div className="relative z-10 flex h-full min-h-0 flex-col">
           <Button className="w-fit" variant="ghost" size="sm" onClick={onBack}>
             <ArrowLeft />
             返回专辑
           </Button>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-6 text-center">
-            <CoverArt track={album.coverTrack} className="size-56 rounded-[2.2rem] shadow-lg 2xl:size-72" />
-            <Badge className="mt-6">Album</Badge>
-            <h2 className="mt-4 max-w-[25rem] break-words text-3xl font-semibold leading-tight 2xl:text-5xl">
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-4 text-center">
+            <CoverArt track={album.coverTrack} className="size-48 rounded-3xl 2xl:size-60" />
+            <h2 className="mt-5 max-w-[25rem] break-words text-2xl font-semibold leading-tight 2xl:text-3xl">
               {album.title}
             </h2>
-            <p className="mt-3 max-w-[24rem] truncate text-neutral-500">{album.artist}</p>
-            <div className="mt-6 grid w-full max-w-sm grid-cols-2 gap-3 text-center">
+            <p className="mt-2 max-w-[24rem] truncate text-sm text-neutral-500">{album.artist}</p>
+            <div className="aria-flat-well mt-5 grid w-full max-w-sm grid-cols-2 divide-x divide-black/5 rounded-xl text-center">
               <LibraryInfoCard label="曲目" value={`${album.tracks.length} 首`} />
               <LibraryInfoCard label="时长" value={album.totalDuration} />
             </div>
@@ -325,10 +322,10 @@ function AlbumDetailView({
         </div>
       </section>
 
-      <section className="min-h-0 overflow-hidden rounded-[1.5rem] bg-white/50 p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="text-2xl font-semibold">歌曲</h3>
-          <Badge>{album.tracks.length}</Badge>
+      <section className="flex min-h-0 flex-col overflow-hidden">
+        <div className="aria-section-divider flex items-center justify-between gap-3 border-b pb-2.5">
+          <h3 className="text-base font-semibold">歌曲</h3>
+          <span className="text-xs text-neutral-400 tabular-nums">{album.tracks.length} 首</span>
         </div>
         <div
           ref={virtual.containerRef}
@@ -418,14 +415,14 @@ function CdLibraryView({
   const albums = useMemo(() => createAlbumGroups(tracks), [tracks]);
 
   return (
-    <section className="mt-5 rounded-[1.35rem] bg-white/50 p-4 shadow-sm">
+    <section className="aria-flat-well mt-5 rounded-2xl p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-semibold">光盘音乐</h2>
-          <p className="mt-2 text-sm text-neutral-500">扫描光盘只会更新 CD 曲目，不会清空已有本地音乐。</p>
+          <h2 className="text-xl font-semibold">光盘音乐</h2>
+          <p className="mt-1 text-xs text-neutral-500">扫描光盘只会更新 CD 曲目，不会清空已有本地音乐。</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">读取质量</span>
-            <div className="flex items-center gap-1 rounded-full bg-white/60 p-1">
+            <span className="text-xs font-medium text-neutral-400">读取质量</span>
+            <div className="aria-segment flex items-center gap-1 rounded-full p-1">
               {[
                 { value: "high" as const, label: "高音质" },
                 { value: "low" as const, label: "低音质" },
@@ -433,8 +430,8 @@ function CdLibraryView({
                 <button
                   key={option.value}
                   className={cn(
-                    "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
-                    readQuality === option.value && "bg-neutral-950 text-white shadow-sm",
+                    "aria-segment-item rounded-full px-3 py-1 text-xs font-medium",
+                    readQuality === option.value && "is-active",
                   )}
                   onClick={() => onReadQualityChange(option.value)}
                 >
@@ -444,7 +441,7 @@ function CdLibraryView({
             </div>
           </div>
         </div>
-        <Button variant="glass" onClick={onScanCd} disabled={scanState === "scanning"}>
+        <Button variant="glass" size="sm" onClick={onScanCd} disabled={scanState === "scanning"}>
           <Disc3 className={cn(scanState === "scanning" && "animate-spin")} />
           {scanState === "scanning" ? "扫描光盘中" : "扫描光盘"}
         </Button>
@@ -457,7 +454,7 @@ function CdLibraryView({
       <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(260px,0.44fr)_minmax(0,1fr)]">
         <div className="grid gap-3">
           {albums.map((album) => (
-            <div key={album.key} className="grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-[1.25rem] bg-white/55 p-3 shadow-sm">
+            <div key={album.key} className="aria-flat-tile grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3 rounded-2xl p-3">
               <CoverArt track={album.coverTrack} className="size-16 rounded-2xl" />
               <div className="min-w-0">
                 <p className="truncate font-semibold">{album.title}</p>
@@ -516,8 +513,8 @@ function TrackRow({
   return (
     <button
       className={cn(
-        "absolute left-0 right-0 grid h-20 grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.3rem] bg-white/45 p-3 text-left transition hover:bg-white/75",
-        active && "bg-white shadow-sm",
+        "aria-flat-row absolute left-0 right-0 grid h-20 grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-xl px-3 text-left",
+        active && "is-current",
       )}
       style={style}
       onClick={() => onPickTrack(track.id, queue)}
@@ -551,9 +548,9 @@ function TrackRow({
 
 function LibraryInfoCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[1.15rem] bg-white/52 p-4 shadow-sm">
-      <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">{label}</p>
-      <p className="mt-2 text-sm font-semibold text-neutral-700">{value}</p>
+    <div className="px-4 py-3">
+      <p className="text-xs text-neutral-400">{label}</p>
+      <p className="mt-1 text-sm font-semibold tabular-nums">{value}</p>
     </div>
   );
 }

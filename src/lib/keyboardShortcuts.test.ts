@@ -11,6 +11,8 @@ describe("keyboardShortcuts", () => {
   it("formats Electron accelerators for the settings UI", () => {
     expect(formatShortcut("Control+Alt+Space")).toBe("Ctrl + Alt + Space");
     expect(formatShortcut("Super+Shift+Right")).toBe("Win + Shift + Right");
+    expect(formatShortcut("Control+Alt+Space", true)).toBe("⌃ + ⌥ + Space");
+    expect(formatShortcut("CommandOrControl+Shift+Right", true)).toBe("⌘ + ⇧ + →");
   });
 
   it("prevents two commands from claiming the same accelerator", () => {

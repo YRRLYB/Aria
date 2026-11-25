@@ -18,6 +18,7 @@ import { ariaThemeOptions, type AriaTheme } from "@/lib/theme";
 import {
   defaultKeyboardShortcuts,
   formatShortcut,
+  isMacPlatform,
   shortcutDefinitions,
   shortcutFromKeyboardEvent,
   shortcutsConflict,
@@ -270,9 +271,18 @@ export function SettingsPanel({
   // macOS reaches the native engine through a Homebrew/system mpv binary, so the
   // "only the browser engine works" case is normal there and needs an explicit
   // hint instead of three silently disabled buttons.
-  const isMac = typeof document !== "undefined" && document.documentElement.dataset.platform === "darwin";
-  const outputModeLabel =
-    audioOutputMode === "exclusive" ? "WASAPI Exclusive" : audioOutputMode === "shared" ? "WASAPI Shared" : "System";
+  const isMac = isMacPlatform();
+  const outputModeLabel = isMac
+    ? audioOutputMode === "exclusive"
+      ? "CoreAudio 独占"
+      : audioOutputMode === "shared"
+        ? "CoreAudio 共享"
+        : "系统音频"
+    : audioOutputMode === "exclusive"
+      ? "WASAPI Exclusive"
+      : audioOutputMode === "shared"
+        ? "WASAPI Shared"
+        : "System";
   const showSection = (id: Exclude<SettingsSection, "all">) => section === "all" || section === id;
   const qualityModeLabel = !hifiEnabled ? "标准 320K" : masterQualityEnabled ? "臻品母带优先" : "Hi-Res 无损优先";
   const qualityStages = [
@@ -487,8 +497,8 @@ export function SettingsPanel({
                     <div className="settings-segment inline-flex rounded-xl p-1">
                       {[
                         { mode: "system" as const, label: "系统音频", Icon: Volume2 },
-                        { mode: "shared" as const, label: isMac ? "MPV 共享" : "WASAPI 共享", Icon: Radio },
-                        { mode: "exclusive" as const, label: isMac ? "MPV 独占" : "WASAPI 独占", Icon: Sparkles },
+                        { mode: "shared" as const, label: isMac ? "CoreAudio 共享" : "WASAPI 共享", Icon: Radio },
+                        { mode: "exclusive" as const, label: isMac ? "CoreAudio 独占" : "WASAPI 独占", Icon: Sparkles },
                       ].map(({ mode, label, Icon }) => {
                         const disabled = mode !== "system" && !nativeAudioSupported;
                         const active = audioOutputMode === mode;
@@ -513,7 +523,7 @@ export function SettingsPanel({
                   {!nativeAudioSupported && (
                     <p className="settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs leading-relaxed">
                       {isMac
-                        ? "未检测到 MPV：仅可使用浏览器音频引擎。执行 brew install mpv 后重启 Aria 即可解锁 MPV 输出。"
+                        ? "未检测到 MPV：仅可使用浏览器音频引擎。安装正式版 DMG 或执行 brew install mpv 后重启 Aria 即可解锁 CoreAudio 输出。"
                         : "未检测到 MPV：当前走浏览器音频引擎，共享与独占直通暂不可用。"}
                     </p>
                   )}
@@ -660,7 +670,9 @@ export function SettingsPanel({
             <section className="settings-section pb-7">
               <div className="pb-2">
                 <h2 className="text-base font-semibold tracking-tight text-neutral-950">系统与外观</h2>
-                <p className="mt-0.5 text-xs text-neutral-500">界面主题、后台托盘托管、局域网远程访问与版本更新。</p>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  {isMac ? "界面主题、后台菜单栏托管、局域网远程访问与版本更新。" : "界面主题、后台托盘托管、局域网远程访问与版本更新。"}
+                </p>
               </div>
 
               <div className="settings-divider">
@@ -696,9 +708,13 @@ export function SettingsPanel({
 
                 <div className="flex flex-wrap items-center justify-between gap-3 py-3.5">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-neutral-900">后台托盘托管</p>
+                    <p className="text-sm font-medium text-neutral-900">{isMac ? "后台菜单栏托管" : "后台托盘托管"}</p>
                     <p className="mt-0.5 text-xs text-neutral-500">
-                      {desktopReady ? "关闭窗口时保持托盘常驻与全局热键监听" : "当前为网页预览模式"} · 后端 {apiState === "online" ? "在线" : apiState === "offline" ? "离线" : "检测中"}
+                      {desktopReady
+                        ? isMac
+                          ? "关闭窗口时保持菜单栏与程序坞常驻，全球热键继续生效"
+                          : "关闭窗口时保持托盘常驻与全局热键监听"
+                        : "当前为网页预览模式"} · 后端 {apiState === "online" ? "在线" : apiState === "offline" ? "离线" : "检测中"}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -713,7 +729,7 @@ export function SettingsPanel({
                       onClick={() => window.ariaDesktop?.minimizeToTray?.()}
                     >
                       <SlidersHorizontal />
-                      隐藏到托盘
+                      {isMac ? "隐藏到菜单栏" : "隐藏到托盘"}
                     </Button>
                     <SettingSwitch
                       checked={backgroundEnabled}
@@ -742,6 +758,7 @@ function KeyboardShortcutSettings({
   shortcuts: KeyboardShortcuts;
   onChange: (shortcuts: KeyboardShortcuts) => void;
 }) {
+  const isMac = isMacPlatform();
   const [recording, setRecording] = useState<ShortcutCommand | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -759,7 +776,7 @@ function KeyboardShortcutSettings({
 
       const candidate = shortcutFromKeyboardEvent(event);
       if (!candidate) {
-        setMessage("请按住 Ctrl、Alt、Shift 或 Win，再按一个功能键。");
+        setMessage(isMac ? "请按住 ⌃、⌥、⇧ 或 ⌘，再按一个功能键。" : "请按住 Ctrl、Alt、Shift 或 Win，再按一个功能键。");
         return;
       }
       if (shortcutsConflict(shortcuts, recording, candidate)) {
@@ -774,11 +791,12 @@ function KeyboardShortcutSettings({
 
     window.addEventListener("keydown", captureShortcut, true);
     return () => window.removeEventListener("keydown", captureShortcut, true);
-  }, [onChange, recording, shortcuts]);
+  }, [isMac, onChange, recording, shortcuts]);
 
   const inAppShortcuts = [
     { key: "Space", action: "播放 / 暂停" },
-    { key: "Alt + ← / →", action: "上一首 / 下一首" },
+    { key: isMac ? "⌥ + ← / →" : "Alt + ← / →", action: "上一首 / 下一首" },
+    ...(isMac ? [{ key: "⌘ + ,", action: "打开设置" }] : []),
     { key: "I", action: "切换沉浸模式" },
     { key: "Esc", action: "退出全屏 / 沉浸" },
   ];
@@ -2201,11 +2219,20 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
   // QQ/B站扫码同一范式（二维码 + 轮询 + 自动完成）。
   const [deviceLogin, setDeviceLogin] = useState<{ key: string; userCode: string; verificationUrl: string; qrImage: string } | null>(null);
   const [deviceStarting, setDeviceStarting] = useState(false);
+  const [deviceChecking, setDeviceChecking] = useState(false);
   const [deviceStatus, setDeviceStatus] = useState("");
+  const devicePollInFlightRef = useRef(false);
+  const onAccountChangeRef = useRef(onAccountChange);
+  onAccountChangeRef.current = onAccountChange;
 
   async function startDeviceLogin() {
     setDeviceStarting(true);
     setMessage(null);
+    const synced = await syncDraftProxy();
+    if (!synced.ok) {
+      setDeviceStarting(false);
+      return;
+    }
     setDeviceStatus("正在向 Google 申请设备码…");
     try {
       const started = await api.startSourceQrLogin("youtube");
@@ -2215,7 +2242,7 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
         verificationUrl: started.verificationUrl ?? "",
         qrImage: started.qrImage,
       });
-      setDeviceStatus("用手机浏览器扫描二维码（或打开激活页）并输入代码确认。");
+      setDeviceStatus("用手机浏览器扫描二维码（或打开激活页）并输入代码确认，确认后约 5 秒自动登录。");
     } catch (error) {
       setDeviceLogin(null);
       setDeviceStatus("");
@@ -2235,40 +2262,68 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
     }
   }
 
-  // 轮询设备码状态；Google 要求 ≥5s 间隔，authorized 后服务端自动换取并保存
-  // Cookie，账号状态与歌单同步由 aria-sources-changed 广播接续完成。
+  async function pollDeviceLogin(key: string, manual = false, isCancelled?: () => boolean) {
+    if (devicePollInFlightRef.current) return;
+    devicePollInFlightRef.current = true;
+    if (manual) {
+      setDeviceChecking(true);
+      setDeviceStatus("正在向 Google 确认授权状态…");
+    }
+    try {
+      const result = await api.checkSourceQrLogin("youtube", key);
+      if (isCancelled?.()) return;
+      if (result.status === "waiting") {
+        if (manual) {
+          setDeviceStatus("尚未检测到确认：请确认手机上已点击「允许」，约 5 秒内会自动完成。");
+        }
+        return;
+      }
+      setDeviceLogin(null);
+      if (result.status === "success") {
+        let resolvedAccount = result.account;
+        if (!resolvedAccount?.connected) {
+          const fresh = await api.getSourceAccount("youtube").catch(() => null);
+          if (fresh?.account) resolvedAccount = fresh.account;
+        }
+        if (resolvedAccount) setAccount(resolvedAccount);
+        setHasStoredCookie(true);
+        onAccountChangeRef.current?.();
+        window.dispatchEvent(new Event("aria-sources-changed"));
+        setDeviceStatus("YouTube 登录成功，歌单与我喜欢已可同步。");
+        setMessage(`已登录：${resolvedAccount?.nickname ?? "YouTube 账号"}，歌单与我喜欢已可同步。`);
+      } else {
+        setDeviceStatus("");
+        setMessage(result.message);
+      }
+    } catch (error) {
+      if (isCancelled?.()) return;
+      if (manual) {
+        setDeviceStatus(error instanceof Error ? `检查失败：${error.message}` : "检查授权状态失败，请稍后重试。");
+      } else {
+        setDeviceStatus("轮询网络波动，正在自动重试…");
+      }
+    } finally {
+      devicePollInFlightRef.current = false;
+      if (manual && !isCancelled?.()) {
+        setDeviceChecking(false);
+      }
+    }
+  }
+
+  // 轮询设备码状态；Google 要求 ≥5s 间隔，仅依赖 key 本身，避免父组件重渲染
+  // 反复重建定时器打断轮询。
+  const deviceKey = deviceLogin?.key ?? null;
   useEffect(() => {
-    if (!deviceLogin) return;
+    if (!deviceKey) return;
     let cancelled = false;
     const timer = window.setInterval(() => {
-      void api
-        .checkSourceQrLogin("youtube", deviceLogin.key)
-        .then((result) => {
-          if (cancelled) return;
-          if (result.status === "waiting") return;
-          window.clearInterval(timer);
-          setDeviceLogin(null);
-          if (result.status === "success" && result.account) {
-            setAccount(result.account);
-            setHasStoredCookie(true);
-            onAccountChange?.();
-            window.dispatchEvent(new Event("aria-sources-changed"));
-            setDeviceStatus("YouTube 登录成功，歌单与我喜欢已可同步。");
-            setMessage(`已登录：${result.account.nickname ?? "YouTube 账号"}`);
-          } else {
-            setDeviceStatus(result.message);
-            setMessage(result.message);
-          }
-        })
-        .catch(() => {
-          // 轮询期间的瞬时网络抖动按等待处理，下一轮继续。
-        });
+      void pollDeviceLogin(deviceKey, false, () => cancelled);
     }, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [deviceLogin, onAccountChange]);
+  }, [deviceKey]);
 
   // 窗口登录（备用路径）：应用内打开真实 Chromium 窗口登录 Google 账号，
   // 成功后自动提取会话 Cookie；个别账号可能被 Google 风控拦截，主路径是
@@ -2363,12 +2418,8 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
             </Button>
           </div>
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => void startDeviceLogin()} disabled={deviceStarting || saving}>
-              <QrCode />
-              {deviceStarting ? "申请中…" : "设备码登录"}
-            </Button>
             {typeof window !== "undefined" && window.ariaDesktop?.youtubeLoginWindow && (
-              <Button size="sm" variant="subtle" onClick={() => void loginInWindow()} disabled={loginLoading || saving}>
+              <Button size="sm" onClick={() => void loginInWindow()} disabled={loginLoading || saving}>
                 <LogIn />
                 {loginLoading ? "等待登录…" : "窗口登录"}
               </Button>
@@ -2376,6 +2427,10 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
             <Button size="sm" variant="subtle" onClick={() => setShowCookieInput((value) => !value)}>
               <Cookie />
               Cookie 备用绑定
+            </Button>
+            <Button size="sm" variant="subtle" onClick={() => void startDeviceLogin()} disabled={deviceStarting || saving}>
+              <QrCode />
+              {deviceStarting ? "申请中…" : "设备码备用登录"}
             </Button>
             {account?.connected && (
               <Button size="sm" variant="subtle" onClick={() => void logout()} disabled={saving}>
@@ -2400,10 +2455,10 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
                   draggable={false}
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-neutral-800">手机浏览器扫码打开激活页</p>
+                  <p className="text-xs font-semibold text-neutral-800">设备码备用授权（Google TV 授权通道）</p>
                   <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-                    用任意设备打开 <span className="font-medium text-neutral-700">{deviceLogin.verificationUrl}</span>
-                    ，输入下方代码并确认授权（约 15 分钟内有效，全程在 Google 官方页面完成）。
+                    备用通道：借用 Google 官方 YouTube TV 设备码授权（手机确认页会显示 YouTube on TV）；如需完整同步 YouTube Music 推荐与红心，建议优先使用「窗口登录」。打开{" "}
+                    <span className="font-medium text-neutral-700">{deviceLogin.verificationUrl}</span> 输入代码并确认。
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <code className="rounded-lg bg-neutral-100 px-3 py-1.5 text-sm font-semibold tracking-[0.2em] text-neutral-800">
@@ -2412,6 +2467,10 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
                     <Button size="sm" variant="ghost" onClick={() => void copyUserCode()}>
                       <Copy />
                       复制代码
+                    </Button>
+                    <Button size="sm" variant="subtle" onClick={() => void pollDeviceLogin(deviceLogin.key, true)} disabled={deviceChecking || deviceStarting}>
+                      <RefreshCw className={deviceChecking ? "animate-spin" : undefined} />
+                      {deviceChecking ? "检查中…" : "我已确认"}
                     </Button>
                     <Button size="sm" variant="subtle" onClick={() => void startDeviceLogin()} disabled={deviceStarting}>
                       重新生成

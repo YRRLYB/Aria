@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.8.2",
+  "version": "0.8.5",
   "license": "CC-BY-NC-SA-4.0",
   "type": "module",
   "main": "electron/main.cjs",

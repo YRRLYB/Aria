@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
+import { canonicalTrackId } from "@/lib/ariaRoomSync";
 import { BILIBILI_LYRICS_ENABLED } from "@/lib/features";
 import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
 import { hasSyncedLyrics, writeCachedLyrics } from "@/lib/playerPresentation";
@@ -29,63 +30,140 @@ export function useLyricsSync(options: {
   const lyricRetryTimerRef = useRef<number | null>(null);
   const [lyricRetryTick, setLyricRetryTick] = useState(0);
 
+  function resolveBindingKey(trackId: string): string {
+    if (activeTrackRef.current.id === trackId) {
+      return canonicalTrackId(activeTrackRef.current);
+    }
+    const matchedLocal = options.localTracks.find((item) => item.id === trackId);
+    return matchedLocal ? canonicalTrackId(matchedLocal) : trackId;
+  }
+
   function applyLyricsToTrack(trackId: string, lyrics: Track["lyrics"], candidateId?: string) {
     const normalized = normalizeBilingualLyrics(lyrics);
     if (!normalized.length) return;
+    const bindingKey = resolveBindingKey(trackId);
     if (candidateId) {
-      lyricBindingsRef.current = { ...lyricBindingsRef.current, [trackId]: candidateId };
-      setLyricBindings((current) => ({ ...current, [trackId]: candidateId }));
+      lyricBindingsRef.current = { ...lyricBindingsRef.current, [bindingKey]: candidateId };
+      setLyricBindings((current) => ({ ...current, [bindingKey]: candidateId }));
     }
-    writeCachedLyrics(trackId, normalized);
-    applyTrackUpdate(trackId, (track) => (track.id === trackId ? { ...track, lyrics: normalized, lyricStatus: "linked" as const } : track), {
-      includeHistory: true,
-    });
+    writeCachedLyrics(bindingKey, normalized);
+    applyTrackUpdate(
+      trackId,
+      (track) =>
+        track.id === trackId || canonicalTrackId(track) === bindingKey
+          ? { ...track, lyrics: normalized, lyricStatus: "linked" as const }
+          : track,
+      { includeHistory: true },
+    );
   }
 
-  async function syncLyricsForTrack(track: Track): Promise<boolean> {
+  function markLyricsMissing(trackId: string) {
+    applyTrackUpdate(
+      trackId,
+      (track) => (track.id === trackId ? { ...track, lyrics: [], lyricStatus: "missing" as const } : track),
+      { includeHistory: false },
+    );
+  }
+
+  async function acquireLyricsForTrack(track: Track): Promise<"applied" | "empty" | "unavailable"> {
+    const bindingKey = canonicalTrackId(track);
+    const binding = lyricBindingsRef.current[bindingKey] ?? lyricBindingsRef.current[track.id];
+    if (binding) {
+      const result = await api.bindLyric(bindingKey, binding, binding);
+      const latestBinding = lyricBindingsRef.current[bindingKey] ?? lyricBindingsRef.current[track.id];
+      if (!result.accepted || latestBinding !== binding) return "unavailable";
+      const normalized = Array.isArray(result.lyrics) ? normalizeBilingualLyrics(result.lyrics) : [];
+      if (normalized.length) {
+        applyLyricsToTrack(track.id, normalized);
+        return "applied";
+      }
+      if (track.source === "local" || track.source === "youtube") {
+        markLyricsMissing(track.id);
+        return "empty";
+      }
+    }
+
     const providerId = track.providerId ?? (track.id.startsWith(`${track.source}:`) ? track.id.slice(track.source.length + 1) : undefined);
-    if (track.source === "qq" && providerId) {
+    if (track.source === "qq") {
+      if (!providerId) return "unavailable";
       const result = await api.getSourceLyrics("qq", providerId);
-      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
-      applyLyricsToTrack(track.id, result.lyrics);
-      return true;
+      const normalized = Array.isArray(result.lyrics) ? normalizeBilingualLyrics(result.lyrics) : [];
+      if (normalized.length) {
+        applyLyricsToTrack(track.id, normalized);
+        return "applied";
+      }
+      markLyricsMissing(track.id);
+      return "empty";
     }
     if (track.source === "bilibili") {
-      if (!BILIBILI_LYRICS_ENABLED || !providerId) return false;
+      if (!BILIBILI_LYRICS_ENABLED || !providerId) return "unavailable";
       const result = await api.getSourceLyrics("bilibili", providerId);
-      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
-      applyLyricsToTrack(track.id, result.lyrics);
-      return true;
+      const normalized = Array.isArray(result.lyrics) ? normalizeBilingualLyrics(result.lyrics) : [];
+      if (normalized.length) {
+        applyLyricsToTrack(track.id, normalized);
+        return "applied";
+      }
+      markLyricsMissing(track.id);
+      return "empty";
     }
-    if (track.source === "netease" && providerId) {
+    if (track.source === "netease") {
+      if (!providerId) return "unavailable";
       const result = await api.getNeteaseLyrics(providerId);
-      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
-      applyLyricsToTrack(track.id, result.lyrics);
-      return true;
+      const normalized = Array.isArray(result.lyrics) ? normalizeBilingualLyrics(result.lyrics) : [];
+      if (normalized.length) {
+        applyLyricsToTrack(track.id, normalized);
+        return "applied";
+      }
+      try {
+        const searchInput = { title: track.title, artist: track.artist, album: track.album };
+        const candidates = await api.searchLyrics(searchInput);
+        const best = selectAutomaticMetadataCandidate(searchInput, candidates.candidates);
+        if (best && !(lyricBindingsRef.current[bindingKey] ?? lyricBindingsRef.current[track.id])) {
+          const bound = await api.bindLyric(bindingKey, best.id, null);
+          const boundNormalized = Array.isArray(bound.lyrics) ? normalizeBilingualLyrics(bound.lyrics) : [];
+          if (
+            bound.accepted &&
+            boundNormalized.length &&
+            !(lyricBindingsRef.current[bindingKey] ?? lyricBindingsRef.current[track.id])
+          ) {
+            applyLyricsToTrack(track.id, boundNormalized, best.id);
+            return "applied";
+          }
+        }
+      } catch {
+        // Cross-source fallback is best-effort; confirmed empty primary still resolves cleanly.
+      }
+      markLyricsMissing(track.id);
+      return "empty";
     }
 
     if (track.source === "local" || track.source === "youtube") {
-      const binding = lyricBindingsRef.current[track.id];
-      if (binding) {
-        const result = await api.bindLyric(track.id, binding, binding);
-        if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
-        if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
-        applyLyricsToTrack(track.id, result.lyrics);
-        return true;
-      }
       const searchInput = track.source === "youtube"
         ? cleanYoutubeTrackQuery(track)
         : { title: track.title, artist: track.artist, album: track.album };
       const candidates = await api.searchLyrics(searchInput);
       const best = selectAutomaticMetadataCandidate(searchInput, candidates.candidates);
-      if (!best || lyricBindingsRef.current[track.id] !== binding) return false;
-      const result = await api.bindLyric(track.id, best.id, binding ?? null);
-      if (!result.accepted || lyricBindingsRef.current[track.id] !== binding) return false;
-      if (!Array.isArray(result.lyrics) || !result.lyrics.length) return false;
-      applyLyricsToTrack(track.id, result.lyrics, best.id);
-      return true;
+      if (!best || (lyricBindingsRef.current[bindingKey] ?? lyricBindingsRef.current[track.id]) !== binding) {
+        if (!best) markLyricsMissing(track.id);
+        return best ? "unavailable" : "empty";
+      }
+      const result = await api.bindLyric(bindingKey, best.id, binding ?? null);
+      if (!result.accepted || (lyricBindingsRef.current[bindingKey] ?? lyricBindingsRef.current[track.id]) !== binding) {
+        return "unavailable";
+      }
+      const normalized = Array.isArray(result.lyrics) ? normalizeBilingualLyrics(result.lyrics) : [];
+      if (!normalized.length) {
+        markLyricsMissing(track.id);
+        return "empty";
+      }
+      applyLyricsToTrack(track.id, normalized, best.id);
+      return "applied";
     }
-    return false;
+    return "unavailable";
+  }
+
+  async function syncLyricsForTrack(track: Track): Promise<boolean> {
+    return (await acquireLyricsForTrack(track)) === "applied";
   }
 
   useEffect(() => {
@@ -142,11 +220,14 @@ export function useLyricsSync(options: {
   const syncActiveTrackLyrics = useEffectEvent(() => {
     const activeTrack = options.activeTrack;
     if (activeTrack.source === "bilibili" && !BILIBILI_LYRICS_ENABLED) return;
+    const bindingKey = canonicalTrackId(activeTrack);
+    const hasBinding = Boolean(lyricBindings[bindingKey] || lyricBindings[activeTrack.id]);
     const hasLyrics = hasSyncedLyrics(activeTrack);
+    if (!hasLyrics && activeTrack.lyricStatus === "missing" && !hasBinding) return;
     const needsTranslation = activeTrack.source === "netease" && !activeTrack.lyrics.some((line) => Boolean(line.translation));
     const canRefreshTiming =
       activeTrack.source === "netease" ||
-      ((activeTrack.source === "local" || activeTrack.source === "youtube") && Boolean(lyricBindings[activeTrack.id]));
+      ((activeTrack.source === "local" || activeTrack.source === "youtube") && hasBinding);
     const needsTiming = canRefreshTiming && !activeTrack.lyrics.some((line) => line.timingVersion === 1);
     const needsEnrichment = needsTranslation || needsTiming;
     if (activeTrack.id === idleTrack.id || (hasLyrics && !needsEnrichment)) return;
@@ -161,9 +242,9 @@ export function useLyricsSync(options: {
       }
     }
     lyricSyncingRef.current.add(activeTrack.id);
-    syncLyricsForTrack(activeTrack)
-      .then((applied) => {
-        if (applied) {
+    acquireLyricsForTrack(activeTrack)
+      .then((outcome) => {
+        if (outcome === "applied" || outcome === "empty") {
           lyricRetryCountRef.current.delete(activeTrack.id);
           return;
         }

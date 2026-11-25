@@ -11,6 +11,7 @@ export type NeteaseAccountSummary = {
   userId: string | null;
   avatarUrl: string | null;
   cookiePreview: string | null;
+  isVip?: boolean;
 };
 
 const accountCacheTtl = 30_000;
@@ -54,6 +55,7 @@ function publicSummary(account: StoredNeteaseAccount): NeteaseAccountSummary {
     userId: account.userId,
     avatarUrl: account.avatarUrl,
     cookiePreview: account.cookiePreview,
+    ...(account.isVip !== undefined ? { isVip: account.isVip } : {}),
   };
 }
 
@@ -340,6 +342,7 @@ async function loadNeteaseAccountSummary(cookie: string): Promise<NeteaseAccount
           userId: String(profile.userId),
           avatarUrl: profile.avatarUrl ?? null,
           cookiePreview: maskCookie(cookie),
+          ...(profile.isVip !== undefined ? { isVip: profile.isVip } : {}),
         };
       }
     } catch {
@@ -357,23 +360,37 @@ async function loadNeteaseAccountSummary(cookie: string): Promise<NeteaseAccount
   };
 }
 
-function findNeteaseProfile(value: unknown): { userId?: number | string; nickname?: string; avatarUrl?: string } | undefined {
+function findNeteaseProfile(
+  value: unknown,
+): { userId?: number | string; nickname?: string; avatarUrl?: string; isVip?: boolean } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
+  const rootAccount =
+    (record.account && typeof record.account === "object"
+      ? (record.account as Record<string, unknown>)
+      : record.data &&
+          typeof record.data === "object" &&
+          (record.data as Record<string, unknown>).account &&
+          typeof (record.data as Record<string, unknown>).account === "object"
+        ? ((record.data as Record<string, unknown>).account as Record<string, unknown>)
+        : undefined);
   const candidates = [
     record.profile,
     record.account && typeof record.account === "object" ? (record.account as Record<string, unknown>).profile : undefined,
     record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>).profile : undefined,
-    record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>).account : undefined,
+    rootAccount,
   ];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
     const profile = candidate as Record<string, unknown>;
     if (profile.userId) {
+      const vipRaw = profile.vipType ?? rootAccount?.vipType ?? profile.redVipLevel;
+      const isVip = vipRaw !== undefined && vipRaw !== null ? Number(vipRaw) > 0 : undefined;
       return {
         userId: profile.userId as string | number,
         nickname: typeof profile.nickname === "string" ? profile.nickname : undefined,
         avatarUrl: typeof profile.avatarUrl === "string" ? profile.avatarUrl : undefined,
+        ...(isVip !== undefined ? { isVip } : {}),
       };
     }
   }

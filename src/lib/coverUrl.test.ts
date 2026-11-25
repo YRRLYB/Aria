@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { api } from "./api";
 import { artworkImageCandidates, cachedArtworkUrl, directArtworkUrl, sizedCoverUrl } from "./coverUrl";
 
 it("requests bounded local covers while preserving existing query parameters", () => {
@@ -84,4 +85,27 @@ it("does not bypass host validation when an invalid image proxy URL fails", () =
     expect(directArtworkUrl(`/api/providers/netease/cover?url=${encodeURIComponent(original)}`)).toBeUndefined();
   }
   expect(directArtworkUrl("/api/providers/netease/cover")).toBeUndefined();
+});
+
+it("resolves /api/aria-room/guest/cover and youtube.com/googlevideo.com artwork URLs cleanly", () => {
+  expect(cachedArtworkUrl("/api/aria-room/guest/cover/trk_1")).toBe(
+    api.resolveUrl("/api/aria-room/guest/cover/trk_1"),
+  );
+  expect(directArtworkUrl("/api/aria-room/guest/cover/trk_1")).toBe(
+    api.resolveUrl("/api/aria-room/guest/cover/trk_1"),
+  );
+  expect(
+    cachedArtworkUrl(
+      "/api/providers/netease/cover?url=https%3A%2F%2Fp1.music.126.net%2Fa.jpg",
+      320,
+    ),
+  ).toBe(
+    `${api.resolveUrl("/api/providers/netease/cover")}?url=${encodeURIComponent("https://p1.music.126.net/a.jpg")}&size=320y320`,
+  );
+  expect(cachedArtworkUrl("https://www.youtube.com/vi/abc/hqdefault.jpg")).toBe(
+    api.getSourceCoverUrl("youtube", "https://www.youtube.com/vi/abc/hqdefault.jpg"),
+  );
+  expect(directArtworkUrl("https://lh3.googlevideo.com/thumb.jpg")).toBe(
+    "https://lh3.googlevideo.com/thumb.jpg",
+  );
 });

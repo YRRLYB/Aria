@@ -20,12 +20,21 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     ipcRenderer.on("aria:playback-command", handler);
     return () => ipcRenderer.removeListener("aria:playback-command", handler);
   },
+  onOpenSettings: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("aria:open-settings", handler);
+    return () => ipcRenderer.removeListener("aria:open-settings", handler);
+  },
   showApp: () => ipcRenderer.invoke("aria:show"),
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
   chooseMusicFolder: () => ipcRenderer.invoke("aria:choose-music-folder"),
   qqLoginWindow: () => ipcRenderer.invoke("aria:qq-login-window"),
   youtubeLoginWindow: (proxy) => ipcRenderer.invoke("aria:youtube-login-window", { proxy: typeof proxy === "string" ? proxy : "" }),
+  youtubeStage: {
+    supported: true,
+    prepare: (payload) => ipcRenderer.invoke("aria:youtube-stage:prepare", payload || {}),
+  },
   getRemoteAccess: () => ipcRenderer.invoke("aria:get-remote-access"),
   setRemoteAccess: (enabled) => ipcRenderer.invoke("aria:set-remote-access", { enabled: Boolean(enabled) }),
   updateTaskbarPlayback: (payload) => ipcRenderer.invoke("aria:update-taskbar-playback", payload || {}),
@@ -65,6 +74,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     setPaused: (paused) => ipcRenderer.invoke("aria:native-audio:pause", Boolean(paused)),
     seek: (position) => ipcRenderer.invoke("aria:native-audio:seek", Number(position) || 0),
     setVolume: (volume) => ipcRenderer.invoke("aria:native-audio:volume", Number(volume) || 0),
+    setSpeed: (speed) => ipcRenderer.invoke("aria:native-audio:speed", Number(speed) || 1),
     configure: (payload) => ipcRenderer.invoke("aria:native-audio:configure", payload),
     stop: () => ipcRenderer.invoke("aria:native-audio:stop"),
     recoverOutput: (reason) => ipcRenderer.invoke("aria:native-audio:recover", reason || "manual"),

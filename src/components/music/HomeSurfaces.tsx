@@ -142,8 +142,7 @@ export function HomeSurface({
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,0.86fr)_minmax(0,1.14fr)] gap-4 overflow-hidden">
       <section className="glass home-hero grid min-h-0 overflow-hidden rounded-[1.5rem] lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
         <div className="relative z-10 p-5 sm:p-7">
-          <Badge>Home</Badge>
-          <h1 className="mt-5 max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
+          <h1 className="max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
             音乐从这里开始
           </h1>
           <p className="mt-3 max-w-xl text-neutral-500">
@@ -228,16 +227,16 @@ export function HomeSurface({
           </div>
         </div>
 
-        <div className="glass min-h-0 overflow-hidden rounded-[1.5rem] p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold">最近播放</h2>
-            <Badge>History</Badge>
+        <div className="aria-page-shell min-h-0 overflow-hidden rounded-[1.5rem] p-5">
+          <div className="aria-page-header flex items-center justify-between pb-3">
+            <h2 className="text-lg font-semibold">最近播放</h2>
+            <span className="text-xs text-neutral-400 tabular-nums">{recentHistory.length} 首</span>
           </div>
-          <div className="no-scrollbar mt-4 grid max-h-[calc(100%-3.5rem)] gap-2 overflow-y-auto pr-1">
+          <div className="no-scrollbar mt-3 grid max-h-[calc(100%-3.5rem)] gap-0.5 overflow-y-auto pr-1">
             {recentHistory.map((entry) => (
               <button
                 key={`${entry.track.id}-${entry.playedAt}`}
-                className="grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-2.5 text-left shadow-sm transition hover:bg-white"
+                className="aria-flat-row grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-xl px-2 py-2.5 text-left"
                 onClick={() => onPickTrack(entry.track.id)}
               >
                 <CoverArt track={entry.track} className="size-12 rounded-xl" />
@@ -330,18 +329,15 @@ export function HistorySurface({
 
   return (
     <section
-      className="history-surface glass flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7"
+      className="history-surface aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7"
       aria-label="播放历史"
     >
-      <header className="flex shrink-0 flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <header className="aria-page-header flex shrink-0 flex-col gap-4 pb-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="history-eyebrow">LISTENING JOURNAL</span>
-            <span className="text-xs text-neutral-400">
-              共 {history.length} 首 · 累计 {totalPlays} 次 · 今日 {todayCount} 首
-            </span>
-          </div>
-          <h1 className="mt-2 truncate text-2xl font-semibold tracking-tight sm:text-3xl">播放历史</h1>
+          <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">播放历史</h1>
+          <p className="mt-1 text-xs text-neutral-400 tabular-nums">
+            共 {history.length} 首 · 累计 {totalPlays} 次 · 今日 {todayCount} 首
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -469,7 +465,7 @@ function VirtualHistoryList({
               style={{ top: offsetTop }}
               onClick={() => onPickTrack(entry.track.id, queue)}
               className={cn(
-                "history-row group absolute left-0 right-0 grid h-[68px] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3.5 rounded-2xl border px-3 text-left transition",
+                "history-row group absolute left-0 right-0 grid h-[68px] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3.5 rounded-xl border-b px-3 text-left transition",
                 isCurrent && "is-current",
               )}
             >

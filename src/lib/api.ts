@@ -47,6 +47,7 @@ declare global {
         setPaused?: (paused: boolean) => Promise<unknown>;
         seek?: (position: number) => Promise<unknown>;
         setVolume?: (volume: number) => Promise<unknown>;
+        setSpeed?: (speed: number) => Promise<unknown>;
         configure?: (payload: {
           exclusive?: boolean;
           deviceId?: string;
@@ -81,6 +82,7 @@ declare global {
       closeWindow?: () => void;
       onWindowVisibilityChange?: (callback: (visible: boolean) => void) => () => void;
       onPlaybackCommand?: (callback: (command: "toggle" | "play" | "pause" | "previous" | "next" | "volumeUp" | "volumeDown" | "mute" | "like" | "mode" | "equalizer") => void) => () => void;
+      onOpenSettings?: (callback: () => void) => () => void;
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
@@ -88,6 +90,16 @@ declare global {
       qqLoginWindow?: () => Promise<{ ok: boolean; cookie?: string; message?: string }>;
       /** 应用内 YouTube 登录窗口；代理字符串（http://host:port）随窗口会话生效。 */
       youtubeLoginWindow?: (proxy?: string) => Promise<{ ok: boolean; cookie?: string; message?: string }>;
+      youtubeStage?: {
+        supported?: boolean;
+        prepare?: (payload?: { proxy?: string; force?: boolean }) => Promise<{
+          ok: boolean;
+          partition: string;
+          proxyLabel?: string;
+          hasCookie?: boolean;
+          message?: string;
+        }>;
+      };
       getRemoteAccess?: () => Promise<{ enabled: boolean; token: string; port: number; addresses: string[] }>;
       setRemoteAccess?: (enabled: boolean) => Promise<{ enabled: boolean; token: string }>;
       updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
@@ -384,12 +396,222 @@ export type ProviderDiscoveryBundle = {
   playlists: ProviderPlaylist[];
 };
 
+export type SourceDiscoveryMood = {
+  id: string;
+  name: string;
+  query: string;
+};
+
+export type SourceDiscoveryBundle = {
+  quickPicks: ProviderTrack[];
+  trendingTracks: ProviderTrack[];
+  charts: ProviderPlaylist[];
+  playlists: ProviderPlaylist[];
+  moods: SourceDiscoveryMood[];
+};
+
+export type ListenTogetherUser = {
+  userId: string;
+  nickname: string;
+  avatarUrl: string | null;
+};
+
+export type ListenTogetherPlayInfo = {
+  songId: string | null;
+  playStatus: "PLAY" | "PAUSE";
+  progressMs: number;
+  clientSeq: number;
+  serverSeq?: number;
+  commandType?: string | null;
+  operatorUserId?: string | null;
+  commandTime?: number | null;
+};
+
+export type ListenTogetherRoom = {
+  roomId: string;
+  inviterId: string | null;
+  creatorId: string | null;
+  status: string;
+  roomUsers: ListenTogetherUser[];
+  playInfo: ListenTogetherPlayInfo | null;
+  shareUrl: string;
+  serverTime: number;
+};
+
+export type ListenTogetherInvite = {
+  roomId: string;
+  inviterId: string;
+  songId: string | null;
+  songTitle?: string | null;
+  songCoverUrl?: string | null;
+  fromUser: ListenTogetherUser;
+  message: string;
+  time: number;
+};
+
+export type ListenTogetherContact = {
+  userId: string;
+  nickname: string;
+  avatarUrl: string | null;
+  lastMsgTime: number;
+  relation?: "mutual" | "recent" | "following";
+};
+
+export type ListenTogetherStateResponse = {
+  inRoom: boolean;
+  selfUserId?: string | null;
+  room: ListenTogetherRoom | null;
+  roomClosed?: boolean;
+  playlistVersion: number;
+  displayList: string[];
+  sharedTracks: ProviderTrack[];
+  activeTrack?: ProviderTrack | null;
+};
+
 // Connection layer: where the Aria backend lives and how to authenticate.
 // - Desktop (Electron): preload injects apiBase for the embedded loopback
 //   server, which never asks for a token (loopback is exempt).
 // - Web / Aria mobile: the backend is a remote Aria desktop over the LAN,
 //   configured at runtime and persisted in localStorage. URLs on that server
 //   gain ?token= because <audio>/<img> requests cannot send headers.
+export type AriaRoomNetworkMode = "cloudflare" | "direct" | "hybrid";
+export type AriaRoomControlMode = "host-only" | "collaborative";
+
+export type AriaRoomCapabilities = {
+  netease: "vip" | "free" | "none";
+  qq: "vip" | "free" | "none";
+  bilibili: "vip" | "free" | "none";
+  youtube: "reachable" | "unreachable";
+};
+
+export type AriaRoomDeliveryMode = "resolve_local" | "direct_url" | "stream_proxy";
+
+export type AriaRoomTrackDispatch = {
+  mode: AriaRoomDeliveryMode;
+  providerPeerId: string;
+  directUrl?: string | null;
+  safeHeaders?: Record<string, string>;
+  mimeType?: string | null;
+  expiresAt?: number | null;
+};
+
+export type AriaRoomTrackPayload = {
+  nonce: string;
+  id: string;
+  providerId?: string;
+  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube";
+  title: string;
+  artist: string;
+  album: string;
+  duration: string;
+  quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K" | "128K" | "AAC";
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  currentLevel?: "standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster" | null;
+  availableLevels?: Array<"standard" | "higher" | "exhigh" | "lossless" | "hires" | "jymaster">;
+  coverUrl?: string | null;
+  coverDataUrl?: string | null;
+  streamUrl?: string | null;
+  mimeType?: string | null;
+  addedByPeerId?: string;
+  addedByName?: string;
+  dispatch?: AriaRoomTrackDispatch | null;
+};
+
+export type AriaRoomMember = {
+  peerId: string;
+  nickname: string;
+  avatarUrl: string | null;
+  role: "host" | "guest";
+  joinedAt: number;
+  connectedVia: "direct" | "webrtc" | "ws";
+  readyNonce?: string | null;
+  shareEnabled?: boolean;
+  capabilities?: AriaRoomCapabilities;
+};
+
+export type AriaRoomPlaybackState = {
+  nonce: string | null;
+  track: AriaRoomTrackPayload | null;
+  nextTrack: AriaRoomTrackPayload | null;
+  queue: AriaRoomTrackPayload[];
+  playing: boolean;
+  positionSec: number;
+  updatedAtMs: number;
+  serverSeq: number;
+};
+
+export type AriaRoomSyncEvent = {
+  seq: number;
+  kind: "play_at" | "pause" | "seek" | "track_change";
+  nonce: string | null;
+  positionSec: number;
+  startAtHostMs: number;
+  serverTimeMs: number;
+};
+
+export type CloudflareIpProbeResult = {
+  ip: string | null;
+  label: string;
+  ok: boolean;
+  latencyMs: number | null;
+  statusCode?: number;
+  error?: string;
+};
+
+export type AriaSignalingProvider = "cloudflare" | "self-hosted";
+
+export type AriaRoomConfigSnapshot = {
+  signalingProvider: AriaSignalingProvider;
+  signalingUrl: string;
+  selfHostedSignalingUrl: string;
+  preferredIps: string[];
+  autoPreferredIp: boolean;
+  selectedPreferredIp: string | null;
+  directPort: number;
+  publicHost: string;
+  turnUrls: string[];
+  turnUsername: string;
+  turnCredential: string;
+};
+
+export type AriaRoomSnapshot = {
+  active: boolean;
+  role: "host" | "guest" | null;
+  roomId: string | null;
+  myPeerId: string | null;
+  maxMembers: number;
+  networkMode: AriaRoomNetworkMode;
+  controlMode: AriaRoomControlMode;
+  signalingState: "idle" | "connecting" | "connected" | "reconnecting" | "error";
+  signalingConnectedIp: string | null;
+  signalingLatencyMs: number | null;
+  signalingError: string | null;
+  directServer: {
+    active: boolean;
+    port: number;
+    roomToken: string | null;
+    lanAddresses: string[];
+    ipv6Addresses: string[];
+    publicHost: string | null;
+    shareString: string | null;
+    publicShareString?: string | null;
+    ipv4ShareString?: string | null;
+    ipv6ShareString?: string | null;
+    resolvedPublicEndpoint?: { host: string; port: number } | null;
+    error: string | null;
+  };
+  guestDirectBaseUrl: string | null;
+  guestDirectToken: string | null;
+  members: AriaRoomMember[];
+  playback: AriaRoomPlaybackState;
+  localCapabilities: AriaRoomCapabilities;
+  shareEnabled: boolean;
+  iceConfig: {
+    iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }>;
+  };
+};
+
 export type ApiConnection = {
   serverUrl: string;
   token: string;
@@ -1038,6 +1260,9 @@ export const api = {
     if (excludeIds.length) params.set("exclude", excludeIds.join(","));
     return request<{ sourceId: string; tracks: ProviderTrack[] }>(`/api/sources/${encodeURIComponent(sourceId)}/roam?${params}`);
   },
+  getSourceDiscovery(sourceId: string) {
+    return request<{ sourceId: string } & SourceDiscoveryBundle>(`/api/sources/${encodeURIComponent(sourceId)}/discovery`);
+  },
   getSourceCoverUrl(sourceId: string, sourceUrl: string) {
     return apiUrl(`/api/sources/${encodeURIComponent(sourceId)}/cover?url=${encodeURIComponent(sourceUrl)}`);
   },
@@ -1066,5 +1291,232 @@ export const api = {
       message: string;
       account: SourceAccountSummary | null;
     }>(`/api/settings/qq-qr/check?${params}`);
+  },
+  getListenTogetherStatus() {
+    return request<{ inRoom: boolean; room: ListenTogetherRoom | null; roomClosed?: boolean }>(
+      "/api/netease/listen-together/status",
+    );
+  },
+  getListenTogetherInvites(refresh = false) {
+    const params = refresh ? "?refresh=1" : "";
+    return request<{ invites: ListenTogetherInvite[]; contacts: ListenTogetherContact[] }>(
+      `/api/netease/listen-together/invites${params}`,
+    );
+  },
+  createListenTogetherRoom(body: {
+    songId?: string;
+    trackIds?: string[];
+    progressMs?: number;
+    playStatus?: "PLAY" | "PAUSE";
+  }) {
+    return request<ListenTogetherStateResponse>("/api/netease/listen-together/rooms", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  joinListenTogetherRoom(body: { input?: string; roomId?: string; inviterId?: string }) {
+    return request<ListenTogetherStateResponse>("/api/netease/listen-together/join", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  getListenTogetherRoomState(roomId: string, includePlaylist = false) {
+    const params = includePlaylist ? "?includePlaylist=1" : "";
+    return request<ListenTogetherStateResponse>(
+      `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/state${params}`,
+    );
+  },
+  sendListenTogetherHeartbeat(
+    roomId: string,
+    body: { songId: string; playStatus: "PLAY" | "PAUSE"; progressMs: number },
+  ) {
+    return request<{ ok: boolean; roomClosed?: boolean; playInfo?: ListenTogetherPlayInfo | null }>(
+      `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/heartbeat`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
+  sendListenTogetherPlayCommand(
+    roomId: string,
+    body: {
+      commandType: "PLAY" | "PAUSE" | "SEEK" | "GOTO";
+      progressMs: number;
+      playStatus: "PLAY" | "PAUSE";
+      formerSongId?: string;
+      targetSongId: string;
+      clientSeq: number;
+    },
+  ) {
+    return request<{ ok: boolean }>(
+      `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/command`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
+  syncListenTogetherPlaylist(
+    roomId: string,
+    body: {
+      commandType?: "REPLACE" | "PLAYMODE_CHANGE";
+      version: number;
+      displayList: string[];
+      randomList?: string[];
+    },
+  ) {
+    return request<{ ok: boolean }>(
+      `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/playlist`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
+  sendListenTogetherInviteMessage(
+    roomId: string,
+    body: {
+      targetUserId: string;
+      shareUrl?: string;
+      songId?: string;
+      songTitle?: string;
+      mode?: "song_card" | "short_link";
+    },
+  ) {
+    return request<{ ok: boolean; modeUsed?: "song_card" | "short_link" }>(
+      `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/invite-message`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
+  endListenTogetherRoom(roomId: string) {
+    return request<{ ok: boolean }>(
+      `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/end`,
+      { method: "POST" },
+    );
+  },
+  getAriaRoomStatus() {
+    return request<{
+      snapshot: AriaRoomSnapshot;
+      config: AriaRoomConfigSnapshot;
+      probeResults: CloudflareIpProbeResult[];
+    }>("/api/aria-room/status");
+  },
+  getAriaRoomConfig() {
+    return request<AriaRoomConfigSnapshot>("/api/aria-room/config");
+  },
+  updateAriaRoomConfig(patch: Partial<AriaRoomConfigSnapshot>) {
+    return request<AriaRoomConfigSnapshot>("/api/aria-room/config", {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
+  },
+  probeAriaRoomIps(signalingUrl?: string, provider?: AriaSignalingProvider) {
+    return request<{ results: CloudflareIpProbeResult[]; config: AriaRoomConfigSnapshot }>(
+      "/api/aria-room/probe-ips",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ...(signalingUrl ? { signalingUrl } : {}),
+          ...(provider ? { provider } : {}),
+        }),
+      },
+    );
+  },
+  createAriaRoom(body: {
+    peerId: string;
+    nickname: string;
+    avatarUrl?: string | null;
+    shareEnabled?: boolean;
+    capabilities?: AriaRoomCapabilities;
+    networkMode: AriaRoomNetworkMode;
+    controlMode?: AriaRoomControlMode;
+    directPort?: number;
+    publicHost?: string | null;
+    signalingUrl?: string | null;
+    preferredIp?: string | null;
+    track?: AriaRoomTrackPayload | null;
+    nextTrack?: AriaRoomTrackPayload | null;
+    queue?: AriaRoomTrackPayload[];
+    playing?: boolean;
+    positionSec?: number;
+  }) {
+    return request<AriaRoomSnapshot>("/api/aria-room/rooms/create", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  joinAriaRoom(body: {
+    peerId: string;
+    nickname: string;
+    avatarUrl?: string | null;
+    shareEnabled?: boolean;
+    capabilities?: AriaRoomCapabilities;
+    mode: "cloudflare" | "direct";
+    roomId?: string | null;
+    directHost?: string | null;
+    directPort?: number | null;
+    directToken?: string | null;
+    signalingUrl?: string | null;
+    preferredIp?: string | null;
+  }) {
+    return request<AriaRoomSnapshot>("/api/aria-room/rooms/join", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  leaveAriaRoom() {
+    return request<AriaRoomSnapshot>("/api/aria-room/rooms/leave", { method: "POST" });
+  },
+  prepareAriaRoomHostState(body: {
+    track: AriaRoomTrackPayload | null;
+    nextTrack?: AriaRoomTrackPayload | null;
+    queue?: AriaRoomTrackPayload[];
+    playing?: boolean;
+    positionSec?: number;
+    controlMode?: AriaRoomControlMode;
+  }) {
+    return request<AriaRoomSnapshot>("/api/aria-room/host/prepare", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  syncAriaRoomHostPlayback(body: {
+    kind: "play_at" | "pause" | "seek" | "track_change";
+    nonce: string | null;
+    positionSec: number;
+    startAtHostMs: number;
+  }) {
+    return request<AriaRoomSyncEvent>("/api/aria-room/host/sync", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  prefetchAriaRoomNext(nextTrack: AriaRoomTrackPayload) {
+    return request<{ nextTrack: AriaRoomTrackPayload | null }>("/api/aria-room/host/prefetch-next", {
+      method: "POST",
+      body: JSON.stringify({ nextTrack }),
+    });
+  },
+  updateAriaRoomCapabilities(body: {
+    shareEnabled: boolean;
+    capabilities?: Partial<AriaRoomCapabilities>;
+  }) {
+    return request<AriaRoomSnapshot>("/api/aria-room/capabilities", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  sendAriaRoomSignal(toPeerId: string, payload: unknown) {
+    return request<{ ok: boolean }>("/api/aria-room/signal", {
+      method: "POST",
+      body: JSON.stringify({ toPeerId, payload }),
+    });
+  },
+  sendAriaRoomControlRequest(action: string, payload?: unknown) {
+    return request<{ ok: boolean }>("/api/aria-room/control-request", {
+      method: "POST",
+      body: JSON.stringify({ action, payload }),
+    });
+  },
+  sendAriaRoomTrackReady(nonce: string, bufferedBytes: number) {
+    return request<{ ok: boolean }>("/api/aria-room/track-ready", {
+      method: "POST",
+      body: JSON.stringify({ nonce, bufferedBytes }),
+    });
+  },
+  sendAriaRoomClockPing() {
+    return request<{ pingId: string | null }>("/api/aria-room/clock-ping", { method: "POST" });
   },
 };

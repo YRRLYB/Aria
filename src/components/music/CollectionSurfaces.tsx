@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { Track } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
 import { api } from "@/lib/api";
-import type { LocalPlaylist, LocalPlaylistRemoteRef } from "@/lib/localPlaylists";
+import type { LocalPlaylist, LocalPlaylistRemoteRef, PlaylistInsertPosition } from "@/lib/localPlaylists";
 import { computeListeningInsights, formatListeningDuration } from "@/lib/listeningStats";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
 import { formatAudioDetail, mergeTracks } from "@/lib/playerPresentation";
@@ -17,7 +17,9 @@ import { SourceBadge, SourceLogo, SourceToggle, type SourceToggleOption } from "
 import { ArtworkImage } from "./ArtworkImage";
 import { PlaylistDetail } from "./PlaylistDetail";
 import { AddToPlaylistButton } from "./PlaylistActions";
-import { BilibiliLinkDialog, LocalPlaylistSurface, type LocalPlaylistSurfaceProps } from "./LocalPlaylistSurfaces";
+import { BilibiliLinkDialog, LocalPlaylistDetail, LocalPlaylistSurface, type LocalPlaylistSurfaceProps } from "./LocalPlaylistSurfaces";
+import type { PickerPlaylistCatalog } from "./PlaylistTrackBrowser";
+import { SuperMixSurface, type SuperMixSurfaceProps } from "./SuperMixSurfaces";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 
 // 我喜欢页的来源筛选。YouTube v1 不提供账号收藏（capabilities.liked=false），
@@ -44,21 +46,20 @@ export function CollectionSurface({
   refreshing?: boolean;
   onRefresh?: () => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
-  /** 双源切换:每日推荐/私人漫游等聚合页按 logo 切换网易云与 QQ。*/
-  sourceToggle?: { value: "netease" | "qq"; onChange: (source: "netease" | "qq") => void };
+  /** 多源切换:每日推荐/私人漫游等聚合页按 logo 切换网易云、QQ 与 YouTube。*/
+  sourceToggle?: { value: "netease" | "qq" | "youtube"; onChange: (source: "netease" | "qq" | "youtube") => void };
   emptyText?: string;
   loading?: boolean;
   error?: string | null;
 }) {
   return (
-    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex shrink-0 items-center justify-between gap-3">
+    <div className="aria-page-shell flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex shrink-0 items-center justify-between gap-3 pb-4">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">{icon}</div>
+          <div className="aria-flat-well flex size-10 shrink-0 items-center justify-center rounded-xl">{icon}</div>
           <div className="min-w-0">
-            <Badge>Collection</Badge>
-            <h1 className="mt-3 truncate text-4xl font-semibold sm:text-6xl">{title}</h1>
-            <p className="mt-3 text-neutral-500">{subtitle}</p>
+            <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+            <p className="mt-1 text-xs text-neutral-500">{subtitle}</p>
           </div>
         </div>
         {onRefresh && (
@@ -73,10 +74,9 @@ export function CollectionSurface({
           <SourceToggle
             value={sourceToggle.value}
             onChange={(source) => {
-              // 本切换器只提供在线双源选项，SourceToggle 的联合类型里还有 local/bilibili。
-              if (source === "netease" || source === "qq") sourceToggle.onChange(source);
+              if (source === "netease" || source === "qq" || source === "youtube") sourceToggle.onChange(source);
             }}
-            options={["netease", "qq"]}
+            options={["netease", "qq", "youtube"]}
             ariaLabel="推荐来源"
           />
         </div>
@@ -213,15 +213,15 @@ export function LikedSurface({
   const active = columns[likedSource];
 
   return (
-    <div className="glass flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex shrink-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="aria-page-shell flex h-full min-h-[620px] flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex shrink-0 flex-col gap-4 pb-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <Badge>Favorite</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">我喜欢</h1>
-          <p className="mt-3 text-neutral-500">全部来源聚合在一起，也可以按来源单独查看。</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">我喜欢</h1>
+          <p className="mt-1 text-xs text-neutral-500">全部来源聚合在一起，也可以按来源单独查看。</p>
         </div>
         <Button
           variant="glass"
+          size="sm"
           onClick={() => onRefresh?.(likedSource)}
           disabled={likedSource === "local" || refreshing}
           title={likedSource === "local" ? "本地红心由播放页维护" : likedSource === "all" ? "同时同步网易云、QQ 音乐、B站与 YouTube" : "重新同步当前音源的喜欢列表"}
@@ -250,10 +250,8 @@ export function LikedSurface({
               aria-pressed={activeSource}
               onClick={() => setLikedSource(source)}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                activeSource
-                  ? "border-neutral-950 bg-neutral-950 text-white"
-                  : "border-white/70 bg-white/60 text-neutral-500 hover:bg-white",
+                "aria-chip inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium",
+                activeSource && "is-active",
               )}
             >
               {logo && <SourceLogo source={logo} className="size-3.5" />}
@@ -321,15 +319,15 @@ function LikedColumn({
   }, [visibleSignature]);
 
   return (
-    <section className="flex min-h-0 flex-col rounded-[1.25rem] bg-white/52 p-4 shadow-sm">
-      <div className="flex shrink-0 items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">{title}</h2>
-          <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
+    <section className="flex min-h-0 flex-col">
+      <div className="aria-section-divider flex shrink-0 items-center justify-between gap-3 border-b pb-2.5">
+        <div className="flex flex-wrap items-baseline gap-2.5">
+          <h2 className="text-base font-semibold">{title}</h2>
+          <p className="text-xs text-neutral-500">{subtitle}</p>
         </div>
-        <Badge>{tracks.length} 首</Badge>
+        <span className="text-xs text-neutral-400 tabular-nums">{tracks.length} 首</span>
       </div>
-      <div ref={virtual.containerRef} className="no-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+      <div ref={virtual.containerRef} className="no-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
         <div className="relative" style={{ height: virtual.totalHeight }}>
           {virtual.rows.map(({ index, offsetTop }) => {
             const track = tracks[index];
@@ -337,7 +335,7 @@ function LikedColumn({
             return (
               <button
                 key={track.id}
-                className="absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_auto_1.75rem] items-center gap-3 rounded-[1rem] p-2 text-left transition hover:bg-white/75"
+                className="aria-flat-row absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_auto_1.75rem] items-center gap-3 rounded-xl px-2.5 text-left"
                 style={{ top: offsetTop }}
                 onClick={() => onPickTrack(track.id, tracks)}
               >
@@ -367,7 +365,7 @@ function LikedColumn({
   );
 }
 
-export type PlaylistSourceTab = "netease" | "local" | "qq" | "bilibili" | "youtube";
+export type PlaylistSourceTab = "super-mix" | "netease" | "local" | "qq" | "bilibili" | "youtube";
 
 /** YouTube Music 歌单标签的数据包：账号播放列表（只读）。*/
 export type PlaylistSurfacePropsYoutube = {
@@ -407,6 +405,14 @@ export type BilibiliPlaylistTabProps = {
   onSyncReference: (id: string, tracks: Track[], title?: string) => void;
   onOpenReferenced: (id: string) => void;
   onDeleteReferenced?: (id: string) => void;
+  selectedReferencedPlaylist?: LocalPlaylist | null;
+  selectedReferencedTracks?: Track[];
+  allTracks?: Track[];
+  onCloseReferenced?: () => void;
+  onRenameReferenced?: (id: string, name: string) => void;
+  onAddReferenced?: (id: string, tracks: Track[], position?: PlaylistInsertPosition) => void;
+  onRemoveReferenced?: (id: string, tracks: Track[]) => void;
+  onReorderReferenced?: (id: string, orderedTracks: Track[]) => void;
 };
 
 export function PlaylistSurface({
@@ -428,6 +434,7 @@ export function PlaylistSurface({
   onReorderTracks,
   onSubscribe,
   onDeletePlaylist,
+  superMix,
   local,
   qq,
   bilibili,
@@ -436,6 +443,7 @@ export function PlaylistSurface({
   sourceRequest = null,
 }: {
   playlists: ProviderPlaylist[];
+  superMix?: SuperMixSurfaceProps;
   local: LocalPlaylistSurfaceProps;
   selectedPlaylist: ProviderPlaylist | null;
   tracks: Track[];
@@ -528,12 +536,36 @@ export function PlaylistSurface({
     return playlists;
   }, [playlistFilter, playlists]);
 
+  const pickerCatalog = useMemo<Omit<PickerPlaylistCatalog, "allTracks">>(() => ({
+    neteasePlaylists: playlists,
+    localPlaylists: [...local.playlists, ...bilibili.referencedPlaylists],
+    qqPlaylists: qq.playlists,
+    bilibiliPlaylists: bilibili.playlists,
+    youtubePlaylists: youtube.playlists,
+  }), [playlists, local.playlists, bilibili.referencedPlaylists, qq.playlists, bilibili.playlists, youtube.playlists]);
+
+  if (playlistSource === "super-mix" && superMix) {
+    return (
+      <SuperMixSurface
+        {...superMix}
+        pickerCatalog={pickerCatalog}
+        headerTabs={<SourceTabs playlistSource="super-mix" onSelect={(source) => { setCreateOpen(false); setPlaylistSource(source); }} />}
+      />
+    );
+  }
+
   if (playlistSource === "local") {
-    return <LocalPlaylistSurface {...local} />;
+    return (
+      <LocalPlaylistSurface
+        {...local}
+        pickerCatalog={pickerCatalog}
+        headerTabs={<SourceTabs playlistSource="local" onSelect={(source) => { setCreateOpen(false); setPlaylistSource(source); }} />}
+      />
+    );
   }
 
   if (playlistSource === "bilibili") {
-    return <BilibiliPlaylistTab bilibili={bilibili} playCounts={playCounts} onRequireLogin={onRequireLogin} onSelectSource={setPlaylistSource} />;
+    return <BilibiliPlaylistTab bilibili={bilibili} playCounts={playCounts} pickerCatalog={pickerCatalog} onRequireLogin={onRequireLogin} onSelectSource={setPlaylistSource} />;
   }
 
   if (playlistSource === "youtube") {
@@ -549,12 +581,11 @@ export function PlaylistSurface({
         onSubscribe={async () => {}} onDelete={async () => {}} onRequireLogin={onRequireLogin} />;
     }
     return (
-      <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-        <div className="flex items-center justify-between gap-4">
+      <div className="aria-page-shell no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-7">
+        <div className="aria-page-header flex items-center justify-between gap-4 pb-4">
           <div>
-            <Badge>Playlist</Badge>
-            <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">QQ 音乐歌单</h1>
-            <p className="mt-3 text-sm text-neutral-500">只读同步：播放你 QQ 音乐账号里的歌单，整理请前往 QQ 音乐。</p>
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">QQ 音乐歌单</h1>
+            <p className="mt-1 text-xs text-neutral-500">只读同步：播放你 QQ 音乐账号里的歌单，整理请前往 QQ 音乐。</p>
           </div>
         </div>
         {qq.error && (
@@ -564,11 +595,11 @@ export function PlaylistSurface({
           </div>
         )}
         <SourceTabs playlistSource="qq" onSelect={setPlaylistSource} />
-        <div className="mt-4 grid gap-4 md:grid-cols-3">
+        <div className="mt-5 grid gap-3.5 md:grid-cols-3">
           {qq.playlists.map((playlist) => (
             <button
               key={playlist.id}
-              className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+              className="aria-flat-tile flex flex-col rounded-2xl p-4 text-left"
               onClick={() => qq.onOpen(playlist)}
             >
               {playlist.coverUrl ? (
@@ -580,14 +611,16 @@ export function PlaylistSurface({
                   decoding="async"
                   fetchPriority="low"
                   draggable={false}
-                  className="size-16 rounded-2xl object-cover shadow-sm"
+                  className="size-14 rounded-xl object-cover"
                 />
               ) : (
                 <Cloud className="size-6 text-neutral-500" />
               )}
-              <h2 className="mt-8 text-2xl font-semibold">{playlist.name}</h2>
-              <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount ? `${playlist.trackCount} 首` : "在 QQ 音乐中查看"}</p>
-              <Badge className="mt-5">{playlist.owned ? "创建歌单" : "收藏歌单"}</Badge>
+              <h2 className="mt-5 line-clamp-2 text-lg font-semibold leading-snug">{playlist.name}</h2>
+              <div className="mt-2 flex items-center justify-between gap-2 text-xs text-neutral-500">
+                <span>{playlist.trackCount ? `${playlist.trackCount} 首` : "在 QQ 音乐中查看"}</span>
+                <span>{playlist.owned ? "创建歌单" : "收藏歌单"}</span>
+              </div>
             </button>
           ))}
         </div>
@@ -605,13 +638,12 @@ export function PlaylistSurface({
   }
 
   return (
-    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center justify-between gap-4">
+    <div className="aria-page-shell no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex items-center justify-between gap-4 pb-4">
         <div>
-          <Badge>Playlist</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">歌单</h1>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">歌单</h1>
         </div>
-        <Button onClick={() => {
+        <Button size="sm" onClick={() => {
           setCreateError(null);
           setCreateOpen((current) => !current);
         }} aria-expanded={createOpen} aria-controls="create-playlist-form" disabled={creating}>
@@ -620,7 +652,7 @@ export function PlaylistSurface({
         </Button>
       </div>
       {createOpen && (
-        <section id="create-playlist-form" className="mt-6 rounded-2xl border border-white/70 bg-white/65 p-5">
+        <section id="create-playlist-form" className="aria-flat-well mt-5 rounded-2xl p-5">
           <h2 className="text-lg font-semibold">新建网易云歌单</h2>
           {!canCreatePlaylist ? (
             <div className="mt-3 flex items-center justify-between gap-4">
@@ -644,7 +676,7 @@ export function PlaylistSurface({
                 disabled={creating}
                 aria-invalid={Boolean(createError)}
                 aria-describedby={createError ? "playlist-create-error" : undefined}
-                className="w-full rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-60"
+                className="aria-flat-input w-full rounded-xl px-4 py-2.5 text-sm outline-none disabled:opacity-60"
               />
               <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-600">
                 <input type="checkbox" checked={isPrivate} onChange={(event) => setIsPrivate(event.target.checked)} disabled={creating} className="size-4 accent-[var(--accent)]" />
@@ -673,8 +705,8 @@ export function PlaylistSurface({
             key={value}
             type="button"
             className={cn(
-              "rounded-full border px-3 py-1.5 text-sm transition",
-              playlistFilter === value ? "border-neutral-950 bg-neutral-950 text-white" : "border-white/70 bg-white/65 text-neutral-500 hover:bg-white",
+              "aria-chip rounded-full px-3 py-1.5 text-xs font-medium",
+              playlistFilter === value && "is-active",
             )}
             onClick={() => setPlaylistFilter(value as typeof playlistFilter)}
           >
@@ -682,11 +714,11 @@ export function PlaylistSurface({
           </button>
         ))}
       </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
+      <div className="mt-4 grid gap-3.5 md:grid-cols-3">
         {visiblePlaylists.map((playlist) => (
           <button
             key={playlist.id}
-            className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+            className="aria-flat-tile flex flex-col rounded-2xl p-4 text-left"
             onClick={() => onOpenPlaylist(playlist)}
           >
             {playlist.coverUrl ? (
@@ -698,14 +730,16 @@ export function PlaylistSurface({
                 decoding="async"
                 fetchPriority="low"
                 draggable={false}
-                className="size-16 rounded-2xl object-cover shadow-sm"
+                className="size-14 rounded-xl object-cover"
               />
             ) : (
               <Cloud className="size-6 text-neutral-500" />
             )}
-            <h2 className="mt-8 text-2xl font-semibold">{playlist.name}</h2>
-            <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount} 首</p>
-            <Badge className="mt-5">{playlist.subscribed ? "收藏歌单" : "创建歌单"}</Badge>
+            <h2 className="mt-5 line-clamp-2 text-lg font-semibold leading-snug">{playlist.name}</h2>
+            <div className="mt-2 flex items-center justify-between gap-2 text-xs text-neutral-500">
+              <span>{playlist.trackCount} 首</span>
+              <span>{playlist.subscribed ? "收藏歌单" : "创建歌单"}</span>
+            </div>
           </button>
         ))}
       </div>
@@ -720,7 +754,7 @@ function SourceTabs({ playlistSource, onSelect }: {
 }) {
   return (
     <div className="mt-6">
-      <SourceToggle value={playlistSource} onChange={onSelect} options={["netease", "qq", "bilibili", "youtube", "local"]} ariaLabel="歌单来源" />
+      <SourceToggle value={playlistSource} onChange={onSelect} options={["super-mix", "netease", "qq", "bilibili", "youtube", "local"]} ariaLabel="歌单来源" />
     </div>
   );
 }
@@ -767,17 +801,16 @@ function YoutubePlaylistTab({
   }
 
   return (
-    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center justify-between gap-4">
+    <div className="aria-page-shell no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex items-center justify-between gap-4 pb-4">
         <div>
-          <Badge>YouTube playlist</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">YouTube 歌单</h1>
-          <p className="mt-3 text-sm text-neutral-500">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">YouTube 歌单</h1>
+          <p className="mt-1 text-xs text-neutral-500">
             登录后同步你账号里的音乐播放列表；「喜欢的音乐」固定排在最前面。
           </p>
         </div>
         {youtube.connected && (
-          <Button variant="glass" onClick={youtube.onRefresh} disabled={youtube.loading} aria-label="刷新 YouTube 歌单列表">
+          <Button variant="glass" size="sm" onClick={youtube.onRefresh} disabled={youtube.loading} aria-label="刷新 YouTube 歌单列表">
             {youtube.loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
             同步歌单
           </Button>
@@ -796,11 +829,11 @@ function YoutubePlaylistTab({
         </div>
       )}
       <SourceTabs playlistSource="youtube" onSelect={onSelectSource} />
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
+      <div className="mt-5 grid gap-3.5 md:grid-cols-3">
         {youtube.playlists.map((playlist) => (
           <button
             key={playlist.id}
-            className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+            className="aria-flat-tile flex flex-col rounded-2xl p-4 text-left"
             onClick={() => youtube.onOpen(playlist)}
           >
             {playlist.coverUrl ? (
@@ -812,16 +845,18 @@ function YoutubePlaylistTab({
                 decoding="async"
                 fetchPriority="low"
                 draggable={false}
-                className="size-16 rounded-2xl object-cover shadow-sm"
+                className="size-14 rounded-xl object-cover"
               />
             ) : (
-              <span className="flex size-16 items-center justify-center rounded-2xl bg-[#ffe0e6] text-[#FF0033]">
-                <SourceLogo source="youtube" className="size-7" />
+              <span className="flex size-14 items-center justify-center rounded-xl bg-[#ffe0e6] text-[#FF0033]">
+                <SourceLogo source="youtube" className="size-6" />
               </span>
             )}
-            <h2 className="mt-8 break-words text-2xl font-semibold">{playlist.name}</h2>
-            <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount ? `${playlist.trackCount} 首` : playlist.id === "FEmusic_liked_songs" ? "喜欢的音乐" : "打开查看曲目"}</p>
-            <Badge className="mt-5">YouTube Music</Badge>
+            <h2 className="mt-5 line-clamp-2 break-words text-lg font-semibold leading-snug">{playlist.name}</h2>
+            <div className="mt-2 flex items-center justify-between gap-2 text-xs text-neutral-500">
+              <span>{playlist.trackCount ? `${playlist.trackCount} 首` : playlist.id === "FEmusic_liked_songs" ? "喜欢的音乐" : "打开查看曲目"}</span>
+              <span>YouTube Music</span>
+            </div>
           </button>
         ))}
       </div>
@@ -843,11 +878,13 @@ function YoutubePlaylistTab({
 function BilibiliPlaylistTab({
   bilibili,
   playCounts,
+  pickerCatalog,
   onRequireLogin,
   onSelectSource,
 }: {
   bilibili: BilibiliPlaylistTabProps;
   playCounts: Record<string, number>;
+  pickerCatalog?: Omit<PickerPlaylistCatalog, "allTracks">;
   onRequireLogin: () => void;
   onSelectSource: (source: PlaylistSourceTab) => void;
 }) {
@@ -899,24 +936,53 @@ function BilibiliPlaylistTab({
     );
   }
 
+  if (bilibili.selectedReferencedPlaylist) {
+    const referencedPlaylist = bilibili.selectedReferencedPlaylist;
+    return (
+      <LocalPlaylistDetail
+        key={referencedPlaylist.id}
+        playlists={bilibili.referencedPlaylists}
+        allTracks={bilibili.allTracks ?? []}
+        selectedPlaylist={referencedPlaylist}
+        selectedTracks={bilibili.selectedReferencedTracks ?? []}
+        storageError={false}
+        playlist={referencedPlaylist}
+        backLabel="返回B站歌单"
+        onOpen={bilibili.onOpenReferenced}
+        onClose={() => bilibili.onCloseReferenced?.()}
+        onCreate={(name, tracks = [], remoteRef) => (remoteRef ? bilibili.onCreateReference(name, tracks, remoteRef) : referencedPlaylist)}
+        onRename={(id, name) => bilibili.onRenameReferenced?.(id, name)}
+        onDelete={(id) => {
+          bilibili.onDeleteReferenced?.(id);
+          bilibili.onCloseReferenced?.();
+        }}
+        onAdd={(id, tracks, position) => bilibili.onAddReferenced?.(id, tracks, position)}
+        onRemove={(id, tracks) => bilibili.onRemoveReferenced?.(id, tracks)}
+        onReorder={bilibili.onReorderReferenced}
+        pickerCatalog={pickerCatalog}
+        onSyncReference={bilibili.onSyncReference}
+        onPickTrack={bilibili.onPickTrack}
+      />
+    );
+  }
+
   return (
-    <div className="glass no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-8">
-      <div className="flex items-center justify-between gap-4">
+    <div className="aria-page-shell no-scrollbar h-full min-h-[620px] overflow-y-auto rounded-[1.5rem] p-5 sm:p-7">
+      <div className="aria-page-header flex items-center justify-between gap-4 pb-4">
         <div>
-          <Badge>Bilibili playlist</Badge>
-          <h1 className="mt-5 text-4xl font-semibold sm:text-6xl">B站歌单</h1>
-          <p className="mt-3 text-sm text-neutral-500">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">B站歌单</h1>
+          <p className="mt-1 text-xs text-neutral-500">
             登录后自动同步你的收藏夹；粘贴链接可以引入别人的公开收藏夹或合集。
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {bilibili.connected && (
-            <Button variant="glass" onClick={bilibili.onRefresh} disabled={bilibili.loading} aria-label="刷新B站收藏夹列表">
+            <Button variant="glass" size="sm" onClick={bilibili.onRefresh} disabled={bilibili.loading} aria-label="刷新B站收藏夹列表">
               {bilibili.loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
               同步收藏夹
             </Button>
           )}
-          <Button onClick={() => setImportOpen(true)}>
+          <Button size="sm" onClick={() => setImportOpen(true)}>
             <Link2 />引入B站歌单
           </Button>
         </div>
@@ -935,24 +1001,26 @@ function BilibiliPlaylistTab({
       )}
       {syncError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-600">{syncError}</p>}
       <SourceTabs playlistSource="bilibili" onSelect={onSelectSource} />
-      <section className="mt-6" aria-labelledby="bilibili-own-playlists">
+      <section className="aria-section-divider mt-6 border-b pb-6" aria-labelledby="bilibili-own-playlists">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="bilibili-own-playlists" className="text-lg font-semibold">我的收藏夹</h2>
+          <h2 id="bilibili-own-playlists" className="text-base font-semibold">我的收藏夹</h2>
           <span className="text-xs text-neutral-400">登录账号实时读取 · 只读</span>
         </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
+        <div className="mt-3 grid gap-3.5 md:grid-cols-3">
           {bilibili.playlists.map((playlist) => (
             <button
               key={playlist.id}
-              className="min-h-48 overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+              className="aria-flat-tile flex flex-col rounded-2xl p-4 text-left"
               onClick={() => bilibili.onOpen(playlist)}
             >
-              <span className="flex size-16 items-center justify-center rounded-2xl bg-[#e6f7ff] text-[#00AEEC]">
-                <SourceLogo source="bilibili" className="size-7" />
+              <span className="flex size-12 items-center justify-center rounded-xl bg-[#e6f7ff] text-[#00AEEC]">
+                <SourceLogo source="bilibili" className="size-6" />
               </span>
-              <h3 className="mt-8 break-words text-2xl font-semibold">{playlist.name}</h3>
-              <p className="mt-2 text-sm text-neutral-500">{playlist.trackCount ? `${playlist.trackCount} 首` : "空收藏夹"}</p>
-              <Badge className="mt-5">B站收藏夹</Badge>
+              <h3 className="mt-4 line-clamp-2 break-words text-lg font-semibold leading-snug">{playlist.name}</h3>
+              <div className="mt-2 flex items-center justify-between gap-2 text-xs text-neutral-500">
+                <span>{playlist.trackCount ? `${playlist.trackCount} 首` : "空收藏夹"}</span>
+                <span>B站收藏夹</span>
+              </div>
             </button>
           ))}
         </div>
@@ -964,28 +1032,30 @@ function BilibiliPlaylistTab({
           />
         )}
       </section>
-      <section className="mt-8" aria-labelledby="bilibili-referenced-playlists">
+      <section className="mt-6" aria-labelledby="bilibili-referenced-playlists">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="bilibili-referenced-playlists" className="text-lg font-semibold">引入的B站歌单</h2>
+          <h2 id="bilibili-referenced-playlists" className="text-base font-semibold">引入的B站歌单</h2>
           <span className="text-xs text-neutral-400">别人的收藏夹 / 合集 · 可刷新同步</span>
         </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
+        <div className="mt-3 grid gap-3.5 md:grid-cols-3">
           {bilibili.referencedPlaylists.map((playlist) => (
-            <div key={playlist.id} className="group relative min-h-48">
+            <div key={playlist.id} className="group relative">
               <button
                 type="button"
-                className="h-full min-h-48 w-full overflow-hidden rounded-[1.75rem] bg-white/52 p-5 text-left shadow-sm transition hover:-translate-y-1 hover:bg-white"
+                className="aria-flat-tile flex h-full w-full flex-col rounded-2xl p-4 text-left"
                 onClick={() => bilibili.onOpenReferenced(playlist.id)}
               >
-                <span className="flex size-16 items-center justify-center rounded-2xl bg-[#e6f7ff] text-[#00AEEC]">
-                  <SourceLogo source="bilibili" className="size-7" />
+                <span className="flex size-12 items-center justify-center rounded-xl bg-[#e6f7ff] text-[#00AEEC]">
+                  <SourceLogo source="bilibili" className="size-6" />
                 </span>
-                <h3 className="mt-8 break-words pr-10 text-2xl font-semibold">{playlist.name}</h3>
-                <p className="mt-2 text-sm text-neutral-500">{playlist.trackIds.length} 首</p>
-                <Badge className="mt-5">
-                  {playlist.remoteRef?.kind === "playlist" ? "B站合集镜像" : "B站收藏夹镜像"}
-                  {playlist.remoteRef?.syncedAt ? ` · ${new Date(playlist.remoteRef.syncedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}` : ""}
-                </Badge>
+                <h3 className="mt-4 line-clamp-2 break-words pr-12 text-lg font-semibold leading-snug">{playlist.name}</h3>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-500">
+                  <span>{playlist.trackIds.length} 首</span>
+                  <span>
+                    {playlist.remoteRef?.kind === "playlist" ? "B站合集镜像" : "B站收藏夹镜像"}
+                    {playlist.remoteRef?.syncedAt ? ` · ${new Date(playlist.remoteRef.syncedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}` : ""}
+                  </span>
+                </div>
               </button>
               <div className="absolute right-4 top-4 z-10 flex gap-1.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
                 <button
@@ -1403,7 +1473,7 @@ function VirtualTrackList({
               role="button"
               tabIndex={0}
               onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id, tracks); } }}
-              className="absolute left-0 right-0 grid h-20 grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-white/52 p-3 text-left shadow-sm transition hover:bg-white"
+              className="aria-flat-row absolute left-0 right-0 grid h-20 grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-3 text-left"
               style={{ top: offsetTop }}
               onClick={() => onPickTrack(track.id, tracks)}
             >

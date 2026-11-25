@@ -10,7 +10,18 @@ export function canPlayTrackVideo(
   track: Pick<Track, "source" | "videoUrl">,
   enabled = BILIBILI_VIDEO_ENABLED,
 ): boolean {
-  return Boolean(enabled && (track.source === "bilibili" || track.source === "youtube") && track.videoUrl);
+  return Boolean(
+    enabled &&
+      (track.source === "bilibili" ||
+        track.source === "youtube" ||
+        track.source === "netease" ||
+        track.source === "qq") &&
+      track.videoUrl,
+  );
+}
+
+export function isStandaloneMvSource(source: Track["source"]): boolean {
+  return source === "netease" || source === "qq";
 }
 
 /**

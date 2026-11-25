@@ -7,6 +7,7 @@ export type ArtistSummary = {
   name: string;
   source: "local" | "netease" | "qq" | "mixed";
   avatarUrl?: string | null;
+  fallbackCoverUrl?: string | null;
   trackCount: number;
   albumCount?: number | null;
   providerId?: string | null;
@@ -14,6 +15,13 @@ export type ArtistSummary = {
   // from one provider, so the display source alone cannot route API requests.
   providerSource?: "netease" | "qq" | null;
 };
+
+export function isUsableArtistCoverUrl(url?: string | null): url is string {
+  if (typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.startsWith("data:image/svg")) return false;
+  return true;
+}
 
 export function artistProviderSource(artist: Pick<ArtistSummary, "source" | "providerSource">): "netease" | "qq" {
   if (artist.providerSource === "qq") return "qq";
@@ -53,10 +61,12 @@ export function mergeArtists(artistsToMerge: ArtistSummary[]) {
     const replaceProvider =
       !current.providerId ||
       (artist.providerSource === "netease" && current.providerSource !== "netease");
+    const fallbackCoverUrl = current.fallbackCoverUrl ?? artist.fallbackCoverUrl;
     byName.set(key, {
       ...current,
       source: current.source === artist.source ? current.source : "mixed",
       avatarUrl: current.avatarUrl ?? artist.avatarUrl,
+      ...(fallbackCoverUrl !== undefined ? { fallbackCoverUrl } : {}),
       trackCount: Math.max(current.trackCount, artist.trackCount),
       albumCount: Math.max(current.albumCount ?? 0, artist.albumCount ?? 0),
       providerId: replaceProvider ? artist.providerId : current.providerId,
@@ -78,6 +88,7 @@ export function createLocalArtistSummaries(tracks: Track[]) {
           name: artistName,
           source: "local" as const,
           avatarUrl: null,
+          fallbackCoverUrl: null,
           trackCount: 0,
           albumCount: 0,
           providerId: null,
@@ -86,6 +97,9 @@ export function createLocalArtistSummaries(tracks: Track[]) {
         } satisfies ArtistSummary & { albums: Set<string> });
       current.trackCount += 1;
       current.albums.add(track.album);
+      if (!current.fallbackCoverUrl && isUsableArtistCoverUrl(track.coverUrl)) {
+        current.fallbackCoverUrl = track.coverUrl;
+      }
       artists.set(key, current);
     }
   }

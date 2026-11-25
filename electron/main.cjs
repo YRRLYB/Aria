@@ -10,6 +10,13 @@ const zlib = require("node:zlib");
 const { createLogger, serializeError } = require("./logger.cjs");
 const { MpvAudioEngine } = require("./mpvEngine.cjs");
 const { buildQqLoginCookie } = require("./qqLoginCookies.cjs");
+const {
+  YOUTUBE_STAGE_PARTITION,
+  isAllowedYoutubeStageUrl,
+  isAllowedYoutubeStageNavigation,
+  isBlockedYoutubeStageAdUrl,
+  parseYoutubeCookieHeader,
+} = require("./youtubeStageHelper.cjs");
 // The packaged build carries a bundled electron-updater; development can use
 // the readable source module and the root node_modules dependency.
 let setupUpdates;
@@ -131,7 +138,9 @@ if (!gotLock) {
 }
 
 app.setName("Aria");
-app.setAppUserModelId("com.yrrlyb.aria");
+if (process.platform === "win32" && typeof app.setAppUserModelId === "function") {
+  app.setAppUserModelId("com.yrrlyb.aria");
+}
 // Windows/Linux render their own window chrome, so the app menu is dropped
 // entirely there. macOS needs the standard application menu or the Edit roles
 // (Cmd+C/V/X), Cmd+Q and the About panel all stop working.
@@ -140,6 +149,15 @@ if (process.platform === "darwin") {
     { label: app.name, submenu: [
       { role: "about" },
       { type: "separator" },
+      {
+        label: "设置…",
+        accelerator: "Command+,",
+        click: () => {
+          showWindow();
+          mainWindow?.webContents.send("aria:open-settings");
+        },
+      },
+      { type: "separator" },
       { role: "hide" },
       { role: "hideOthers" },
       { role: "unhide" },
@@ -147,6 +165,14 @@ if (process.platform === "darwin") {
       { role: "quit" },
     ] },
     { role: "editMenu" },
+    { label: "播放", submenu: [
+      { label: "播放 / 暂停", click: () => sendPlaybackCommand("toggle") },
+      { label: "上一首", click: () => sendPlaybackCommand("previous") },
+      { label: "下一首", click: () => sendPlaybackCommand("next") },
+      { type: "separator" },
+      { label: "提高音量", click: () => sendPlaybackCommand("volumeUp") },
+      { label: "降低音量", click: () => sendPlaybackCommand("volumeDown") },
+    ] },
     { label: "View", submenu: [
       { role: "reload" },
       { role: "toggleDevTools" },
@@ -198,6 +224,7 @@ function ensureWindowsTaskbarPreviewPolicy() {
 // overlay / lock screen (SMTC) on Windows.
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=192 --optimize-for-size --expose-gc");
 app.commandLine.appendSwitch("enable-features", "MediaSessionService");
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 // Aria is a mainland-first NetEase client. The app session is switched to
 // direct network once Electron is ready (configureDirectNetwork), because a
 // stale system proxy made artwork and the first library refresh appear frozen.
@@ -259,14 +286,22 @@ function resolvePreload() {
   return path.join(__dirname, "preload.cjs");
 }
 
+function resolveBuildAsset(filename) {
+  if (app.isPackaged) {
+    const unpacked = path.join(process.resourcesPath, "app.asar.unpacked", "build", filename);
+    if (fs.existsSync(unpacked)) return unpacked;
+  }
+  return path.join(__dirname, "..", "build", filename);
+}
+
 function resolveIcon() {
   // Windows wants a multi-size .ico; macOS/Linux read the PNG.
-  if (process.platform === "win32") return path.join(__dirname, "..", "build", "icon.ico");
-  return path.join(__dirname, "..", "build", "icon.png");
+  if (process.platform === "win32") return resolveBuildAsset("icon.ico");
+  return resolveBuildAsset("icon.png");
 }
 
 function resolveTrayIcon() {
-  return path.join(__dirname, "..", "build", "icon.png");
+  return resolveBuildAsset("icon.png");
 }
 
 function trayIcon() {
@@ -327,13 +362,22 @@ function writeRemoteAccessFile(config) {
 }
 
 function lanAddresses() {
-  const addresses = [];
-  for (const entries of Object.values(os.networkInterfaces())) {
+  const rankName = (name) => {
+    const lower = String(name || "").toLowerCase();
+    if (/^(?:utun|awdl|llw|bridge|docker|veth|br-|lo|gif|stf|anpi)/.test(lower)) return 2;
+    if (/^(?:en\d+|eth\d+|wlan\d+|wi-?fi|ethernet)/.test(lower)) return 0;
+    return 1;
+  };
+  const candidates = [];
+  for (const [ifName, entries] of Object.entries(os.networkInterfaces())) {
     for (const entry of entries || []) {
-      if (entry.family === "IPv4" && !entry.internal) addresses.push(entry.address);
+      if (entry.family === "IPv4" && !entry.internal && !entry.address.startsWith("169.254.")) {
+        candidates.push({ address: entry.address, rank: rankName(ifName) });
+      }
     }
   }
-  return addresses;
+  candidates.sort((a, b) => a.rank - b.rank);
+  return Array.from(new Set(candidates.map((item) => item.address)));
 }
 
 function ensureRemoteAccessToken() {
@@ -491,7 +535,7 @@ function executeGlobalShortcut(command) {
 function sanitizeGlobalShortcut(value, fallback) {
   if (typeof value !== "string") return fallback;
   const candidate = value.trim();
-  if (!candidate || candidate.length > 80 || !/(Control|Alt|Shift|Super)/i.test(candidate)) return fallback;
+  if (!candidate || candidate.length > 80 || !/(Control|Alt|Shift|Super|Command|Cmd|CommandOrControl|Option)/i.test(candidate)) return fallback;
   return candidate;
 }
 
@@ -597,12 +641,14 @@ function createTaskbarButtonIcon(kind) {
   return icon;
 }
 
-const taskbarIcons = {
-  previous: createTaskbarButtonIcon("previous"),
-  play: createTaskbarButtonIcon("play"),
-  pause: createTaskbarButtonIcon("pause"),
-  next: createTaskbarButtonIcon("next"),
-};
+const taskbarIcons = process.platform === "win32"
+  ? {
+      previous: createTaskbarButtonIcon("previous"),
+      play: createTaskbarButtonIcon("play"),
+      pause: createTaskbarButtonIcon("pause"),
+      next: createTaskbarButtonIcon("next"),
+    }
+  : null;
 
 function taskbarDescription() {
   const title = String(taskbarPlayback.title || "").trim();
@@ -751,6 +797,7 @@ async function createWindow() {
       preload: resolvePreload(),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
   });
   if (process.platform !== "darwin") {
@@ -828,9 +875,49 @@ async function createWindow() {
     }
   });
 
+  mainWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    if (params.partition !== YOUTUBE_STAGE_PARTITION || !isAllowedYoutubeStageUrl(params.src)) {
+      writeLog("desktop.log", `youtube stage rejected: partition=${params.partition || "(none)"} src=${params.src || "(none)"}`);
+      event.preventDefault();
+      return;
+    }
+    delete webPreferences.preload;
+    delete webPreferences.preloadURL;
+    webPreferences.preload = path.join(__dirname, "youtubeStagePreload.cjs");
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.allowRunningInsecureContent = false;
+  });
+
+  mainWindow.webContents.on("did-attach-webview", (_event, guestWebContents) => {
+    writeLog("desktop.log", `youtube stage attached: ${guestWebContents.getURL() || "(pending)"}`);
+    guestWebContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    guestWebContents.on("will-navigate", (navEvent, navUrl, _isInPlace, isMainFrame) => {
+      if (isMainFrame !== false && !isAllowedYoutubeStageNavigation(navUrl)) {
+        writeLog("desktop.log", `youtube stage blocked nav: ${navUrl}`);
+        navEvent.preventDefault();
+      }
+    });
+    guestWebContents.on("did-fail-load", (_ev, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3) return;
+      writeLog("desktop.log", `youtube stage did-fail-load: ${errorCode} ${errorDescription} url=${validatedURL}`);
+    });
+    guestWebContents.on("render-process-gone", (_ev, details) => {
+      writeLog("desktop.log", `youtube stage render-process-gone: ${details?.reason || "unknown"}`);
+    });
+  });
+
   mainWindow.on("close", (event) => {
     if (!isQuitting && backgroundEnabled) {
       event.preventDefault();
+      if (process.platform === "darwin" && mainWindow.isFullScreen()) {
+        mainWindow.once("leave-full-screen", () => {
+          if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+        });
+        mainWindow.setFullScreen(false);
+        return;
+      }
       mainWindow.hide();
     }
   });
@@ -916,7 +1003,9 @@ ipcMain.handle("aria:choose-music-folder", async () => {
 // 服务端纯 HTTP 复刻只能拿到 p_skey 缺失或授权链不返回 code。
 // 这里在应用内开一个真实 Chromium 窗口完成扫码，登录成功后从会话里取 Cookie。
 const QQ_LOGIN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  process.platform === "darwin"
+    ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 ipcMain.handle("aria:qq-login-window", async () => {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, message: "主窗口不可用" };
@@ -1904,6 +1993,80 @@ ipcMain.handle("aria:youtube-login-window", async (_event, payload) => {
   });
 });
 
+let youtubeStagePreparedKey = "";
+let youtubeStageProxyLabel = "";
+let youtubeStageAdBlockerInstalled = false;
+
+function readStoredYoutubeStageConfig() {
+  try {
+    const storeFile = path.join(app.getPath("userData"), "data", "store.json");
+    if (!fs.existsSync(storeFile)) return { youtubeProxy: "", youtubeCookie: "" };
+    const parsed = JSON.parse(fs.readFileSync(storeFile, "utf8")) || {};
+    return {
+      youtubeProxy: typeof parsed.youtubeProxy === "string" ? parsed.youtubeProxy : "",
+      youtubeCookie: typeof parsed.youtubeCookie === "string" ? parsed.youtubeCookie : "",
+    };
+  } catch {
+    return { youtubeProxy: "", youtubeCookie: "" };
+  }
+}
+
+ipcMain.handle("aria:youtube-stage:prepare", async (_event, payload) => {
+  const stageSession = session.fromPartition(YOUTUBE_STAGE_PARTITION);
+  if (!youtubeStageAdBlockerInstalled) {
+    youtubeStageAdBlockerInstalled = true;
+    stageSession.webRequest.onBeforeRequest((details, callback) => {
+      callback({ cancel: isBlockedYoutubeStageAdUrl(details.url) });
+    });
+  }
+  const stored = readStoredYoutubeStageConfig();
+  const rawProxy = typeof payload?.proxy === "string" && payload.proxy.trim() ? payload.proxy : stored.youtubeProxy;
+  const storedCookie = stored.youtubeCookie.trim();
+  const cookieHash = crypto.createHash("sha256").update(storedCookie).digest("hex");
+  const normalizedProxy = normalizeYoutubeProxyUrl(rawProxy) || "auto";
+  const key = `${normalizedProxy}|${cookieHash}`;
+
+  if (!payload?.force && key === youtubeStagePreparedKey) {
+    return {
+      ok: true,
+      partition: YOUTUBE_STAGE_PARTITION,
+      proxyLabel: youtubeStageProxyLabel,
+      hasCookie: Boolean(storedCookie),
+    };
+  }
+
+  const resolved = await resolveWorkingYoutubeLoginProxy(stageSession, rawProxy);
+  await stageSession.setProxy(resolved.proxyConfig).catch(() => {});
+  await stageSession.clearHostResolverCache?.().catch(() => {});
+  await stageSession.closeAllConnections?.().catch(() => {});
+
+  try {
+    const existing = await stageSession.cookies.get({ domain: "youtube.com" });
+    await Promise.all(
+      existing.map((cookie) => {
+        const host = String(cookie.domain || "www.youtube.com").replace(/^\./, "");
+        const cookieUrl = `https://${host}${cookie.path || "/"}`;
+        return stageSession.cookies.remove(cookieUrl, cookie.name).catch(() => {});
+      }),
+    );
+  } catch {
+    // Best-effort cookie cleanup before re-seeding.
+  }
+
+  const entries = parseYoutubeCookieHeader(storedCookie);
+  await Promise.all(entries.map((entry) => stageSession.cookies.set(entry).catch(() => {})));
+
+  youtubeStagePreparedKey = key;
+  youtubeStageProxyLabel = resolved.label;
+  writeLog("desktop.log", `youtube stage prepared: proxy=${resolved.label} cookie=${Boolean(storedCookie)}`);
+  return {
+    ok: true,
+    partition: YOUTUBE_STAGE_PARTITION,
+    proxyLabel: resolved.label,
+    hasCookie: Boolean(storedCookie),
+  };
+});
+
 ipcMain.handle("aria:get-remote-access", () => {
   const config = ensureRemoteAccessToken();
   return {
@@ -2098,6 +2261,10 @@ ipcMain.handle("aria:native-audio:volume", async (_event, volume) => {
   return getNativeAudioEngine().setVolume(Number(volume) || 0);
 });
 
+ipcMain.handle("aria:native-audio:speed", async (_event, speed) => {
+  return getNativeAudioEngine().setSpeed(Number(speed) || 1);
+});
+
 ipcMain.handle("aria:native-audio:configure", async (_event, payload) => {
   return getNativeAudioEngine().applyOutputSettings(payload || {});
 });
@@ -2114,6 +2281,14 @@ app.on("second-instance", showWindow);
 
 app.whenReady().then(async () => {
   attachPowerRecoveryHandlers();
+  if (!app.isPackaged && process.platform === "darwin" && app.dock?.setIcon) {
+    try {
+      const dockIcon = nativeImage.createFromPath(resolveBuildAsset("icon-1024.png"));
+      if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+    } catch {
+      // Optional dev Dock icon.
+    }
+  }
   // Registry/shell maintenance is not part of the first paint path.
   setImmediate(ensureWindowsTaskbarPreviewPolicy);
   await configureDirectNetwork();
@@ -2146,6 +2321,7 @@ app.on("will-quit", () => {
   }
   stopYoutubeProxyRelay();
   nativeAudioEngine?.teardown?.();
+  nowPlayingAddon?.detach?.();
   iconicThumbAddon?.detachMediaSession?.();
   iconicThumbAddon?.detach?.();
 });

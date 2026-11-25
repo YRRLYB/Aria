@@ -11,6 +11,7 @@ import {
   getQqLyrics,
   getQqRoamTracks,
   resolveQqStreamMeta,
+  resolveQqVideoMeta,
   saveQqCookie,
   searchQqAlbums,
   searchQqArtists,
@@ -43,6 +44,10 @@ export const qqSource: MusicSource = {
 
   resolveStreamMeta(trackId, options) {
     return resolveQqStreamMeta(trackId, options);
+  },
+
+  resolveVideoMeta(trackId, options, signal) {
+    return resolveQqVideoMeta(trackId, options, signal);
   },
 
   getLyrics(trackId) {

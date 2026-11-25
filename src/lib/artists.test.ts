@@ -85,16 +85,22 @@ describe("artists", () => {
 
   it("creates local artist summaries from split artist names", () => {
     const tracks = [
-      { id: "1", title: "A", artist: "Alice / Bob", album: "One" },
+      { id: "1", title: "A", artist: "Alice / Bob", album: "One", coverUrl: "https://example.com/one.jpg" },
       { id: "2", title: "B", artist: "Alice", album: "Two" },
     ] as Track[];
 
     const summaries = createLocalArtistSummaries(tracks).sort((left, right) => left.name.localeCompare(right.name));
 
-    expect(summaries.map((artist) => [artist.name, artist.trackCount, artist.albumCount])).toEqual([
-      ["Alice", 2, 2],
-      ["Bob", 1, 1],
+    expect(summaries.map((artist) => [artist.name, artist.trackCount, artist.albumCount, artist.fallbackCoverUrl])).toEqual([
+      ["Alice", 2, 2, "https://example.com/one.jpg"],
+      ["Bob", 1, 1, "https://example.com/one.jpg"],
     ]);
+
+    const merged = mergeArtists([
+      summaries[0],
+      { id: "netease:1", name: "Alice", source: "netease", avatarUrl: null, trackCount: 5, albumCount: 3, providerId: "1", providerSource: "netease" },
+    ]);
+    expect(merged[0]?.fallbackCoverUrl).toBe("https://example.com/one.jpg");
   });
 
   it("formats artist source labels", () => {

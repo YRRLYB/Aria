@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
-import { UserRound } from "lucide-react";
 import { ArtworkImage } from "./ArtworkImage";
 import type { Track } from "@/data/music";
 import { copyArtworkToClipboard, copyTrackTextToClipboard, type TrackCopyField } from "@/lib/clipboard";
@@ -113,33 +112,70 @@ export function EmptyState({ text }: { text: string }) {
   );
 }
 
+const ARTIST_FALLBACK_GRADIENTS = [
+  "from-violet-500/85 via-fuchsia-500/75 to-indigo-700/90",
+  "from-sky-500/85 via-cyan-500/75 to-blue-700/90",
+  "from-emerald-500/85 via-teal-500/75 to-cyan-700/90",
+  "from-amber-500/85 via-orange-500/75 to-rose-700/90",
+  "from-rose-500/85 via-pink-500/75 to-purple-700/90",
+  "from-indigo-500/85 via-blue-500/75 to-slate-700/90",
+  "from-fuchsia-500/85 via-purple-500/75 to-violet-700/90",
+  "from-teal-500/85 via-emerald-500/75 to-sky-700/90",
+] as const;
+
+function pickArtistGradient(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  }
+  return ARTIST_FALLBACK_GRADIENTS[Math.abs(hash) % ARTIST_FALLBACK_GRADIENTS.length];
+}
+
 export function ArtistAvatar({
   name,
   avatarUrl,
+  fallbackUrl = null,
   className,
 }: {
   name: string;
   avatarUrl: string | null;
+  fallbackUrl?: string | null;
   className?: string;
 }) {
-  const [failed, setFailed] = useState(false);
-  const imageSrc = cachedArtworkUrl(avatarUrl);
+  const [primaryFailed, setPrimaryFailed] = useState(false);
+  const [fallbackFailed, setFallbackFailed] = useState(false);
+  const primarySrc = cachedArtworkUrl(avatarUrl);
+  const secondarySrc = cachedArtworkUrl(fallbackUrl);
 
   useEffect(() => {
-    setFailed(false);
+    setPrimaryFailed(false);
   }, [avatarUrl]);
+
+  useEffect(() => {
+    setFallbackFailed(false);
+  }, [fallbackUrl]);
+
+  const activeSrc =
+    primarySrc && !primaryFailed
+      ? { src: primarySrc, raw: avatarUrl, onFail: () => setPrimaryFailed(true) }
+      : secondarySrc && !fallbackFailed
+        ? { src: secondarySrc, raw: fallbackUrl, onFail: () => setFallbackFailed(true) }
+        : null;
+
+  const monogram = (name.trim().slice(0, 1) || "♪").toUpperCase();
 
   return (
     <div
       className={cn(
-        "relative flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br from-neutral-200 via-white to-neutral-300 text-neutral-500 shadow-sm",
+        "relative flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br text-white shadow-sm",
+        activeSrc ? "from-neutral-200 via-white to-neutral-300 text-neutral-500" : pickArtistGradient(name),
         className,
       )}
     >
-      {imageSrc && !failed ? (
+      {activeSrc ? (
         <ArtworkImage
-          src={imageSrc}
-          fallbackSrc={avatarUrl}
+          src={activeSrc.src}
+          fallbackSrc={activeSrc.raw}
           alt=""
           loading="lazy"
           decoding="async"
@@ -147,15 +183,15 @@ export function ArtistAvatar({
           draggable={false}
           className="absolute inset-0 size-full object-cover"
           onDragStart={(event) => event.preventDefault()}
-          onError={() => setFailed(true)}
+          onError={activeSrc.onFail}
         />
       ) : (
-        <>
-          <UserRound className="size-1/2" />
-          <span className="absolute bottom-2 right-2 rounded-full bg-white/85 px-2 py-1 text-xs font-semibold">
-            {name.slice(0, 1).toUpperCase()}
+        <div className="relative flex size-full items-center justify-center select-none">
+          <div className="absolute inset-[18%] rounded-full border border-white/25 bg-white/10" aria-hidden="true" />
+          <span className="relative text-lg font-semibold tracking-tight text-white drop-shadow-sm">
+            {monogram}
           </span>
-        </>
+        </div>
       )}
     </div>
   );
@@ -247,7 +283,7 @@ export function CoverArt({
           {fit === "contain" && (
             <ArtworkImage
               src={imageSrc}
-              fallbackSrc={track.coverUrl}
+              fallbackSrc={track.coverFallbackUrl ?? track.coverUrl}
               cacheSize={large ? 512 : 300}
               alt=""
               loading={large ? "eager" : "lazy"}
@@ -260,7 +296,7 @@ export function CoverArt({
           )}
           <ArtworkImage
             src={imageSrc}
-              fallbackSrc={track.coverUrl}
+              fallbackSrc={track.coverFallbackUrl ?? track.coverUrl}
               cacheSize={large ? 512 : 300}
             alt=""
             loading={large ? "eager" : "lazy"}

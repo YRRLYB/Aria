@@ -80,7 +80,30 @@ export function shortcutFromKeyboardEvent(event: KeyboardEvent) {
   return [...modifiers, key].join("+");
 }
 
-export function formatShortcut(shortcut: string) {
+export function isMacPlatform(): boolean {
+  if (typeof document !== "undefined" && document.documentElement.dataset.platform === "darwin") {
+    return true;
+  }
+  if (typeof window !== "undefined") {
+    const win = window as Window & { ariaDesktop?: { platform?: string } };
+    if (win.ariaDesktop?.platform === "darwin") return true;
+  }
+  return false;
+}
+
+export function formatShortcut(shortcut: string, isMac = isMacPlatform()) {
+  if (isMac) {
+    return shortcut
+      .replace(/CommandOrControl|Command|Cmd|Super/gi, "⌘")
+      .replace(/Control/gi, "⌃")
+      .replace(/Alt|Option/gi, "⌥")
+      .replace(/Shift/gi, "⇧")
+      .replace(/Left/g, "←")
+      .replace(/Right/g, "→")
+      .replace(/Up/g, "↑")
+      .replace(/Down/g, "↓")
+      .replace(/\+/g, " + ");
+  }
   return shortcut
     .replace(/Control/g, "Ctrl")
     .replace(/Alt/g, "Alt")

@@ -11,6 +11,7 @@ import {
   levelsUpTo,
   type AriaLevel,
   type SourceAccount,
+  type SourceVideoMeta,
 } from "../contract";
 import { decodeAg1Response, encodeAg1Request, zzcSign } from "./signing";
 
@@ -48,6 +49,7 @@ type QqSearchSong = {
   interval?: number;
   singer?: QqSinger[];
   album?: { mid?: string; title?: string; name?: string };
+  mv?: { id?: number; vid?: string | null };
   pay?: { pay_play?: number };
   file?: {
     media_mid?: string;
@@ -272,6 +274,19 @@ const searchPageCacheMax = 160;
 // 每次切页面都探测一次 QQ 资料很容易撞上 2001；按 Cookie 缓存 30 秒，
 // 登录/退出时由 saveQqCookie/clearQqCookie 主动失效。
 let accountCache: { cookie: string; expiresAt: number; value: SourceAccount } | null = null;
+const mvVidCache = new Map<string, string>();
+const mvMissingCache = new Map<string, number>();
+const qqMvUrlCache = new Map<string, { qualities: Array<{ filetype: number; label: string; url: string }>; expiresAt: number }>();
+const QQ_MV_VID_CACHE_MAX = 2000;
+const QQ_MV_MISSING_TTL_MS = 10 * 60_000;
+const QQ_MV_URL_TTL_MS = 15 * 60_000;
+const QQ_MV_QUALITY_LABELS: Record<number, string> = {
+  10: "360P",
+  20: "480P",
+  30: "720P",
+  40: "1080P",
+  50: "1080P+",
+};
 // 窗口重新聚焦时可能连续触发多次同步；短缓存既保持“刚点完红心”的新鲜度，
 // 又避免同一秒内反复打 QQ 个人主页。
 let likedTracksCache: { cookie: string; expiresAt: number; tracks: ProviderTrack[] } | null = null;
@@ -308,6 +323,10 @@ function rememberVipProbe(state: "capable" | "incapable") {
 
 function rememberFileInfo(song: QqSearchSong) {
   if (!song.mid) return;
+  const mvVid = song.mv?.vid?.trim();
+  if (mvVid) {
+    rememberQqMvVid(song.mid, mvVid);
+  }
   if (song.pay) {
     payCache.set(song.mid, song.pay.pay_play === 0);
     if (payCache.size > 1000) {
@@ -377,6 +396,10 @@ export function normalizeQqSong(song: QqSearchSong): ProviderTrack {
   const currentLevel = availableLevels.at(-1) ?? null;
   const albumMid = song.album?.mid ?? null;
   const durationSeconds = Math.max(0, Math.round(song.interval ?? 0));
+  const mvVid = song.mv?.vid?.trim() || "";
+  if (mvVid && song.mid) {
+    rememberQqMvVid(song.mid, mvVid);
+  }
   return {
     id: song.mid ?? "",
     title: song.name ?? "未知歌曲",
@@ -388,6 +411,7 @@ export function normalizeQqSong(song: QqSearchSong): ProviderTrack {
     quality: currentLevel ? qualityLabel(currentLevel) : "320K",
     source: "qq",
     streamUrl: `/api/sources/qq/tracks/${song.mid}/stream`,
+    ...(mvVid && song.mid ? { hasVideo: true, videoUrl: `/api/sources/qq/tracks/${song.mid}/video` } : {}),
     coverUrl: albumMid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albumMid}.jpg` : null,
     likedAt: null,
     bpm: null,
@@ -922,6 +946,138 @@ function clearQqReadCaches() {
   accountCache = null;
   likedTracksCache = null;
   playlistsCache = null;
+  mvVidCache.clear();
+  mvMissingCache.clear();
+  qqMvUrlCache.clear();
+}
+
+function rememberQqMvVid(songMid: string, vid: string) {
+  const cleanMid = songMid.trim();
+  const cleanVid = vid.trim();
+  if (!cleanMid || !cleanVid) return;
+  if (mvVidCache.size >= QQ_MV_VID_CACHE_MAX) {
+    const oldest = mvVidCache.keys().next().value;
+    if (oldest !== undefined) mvVidCache.delete(oldest);
+  }
+  mvVidCache.set(cleanMid, cleanVid);
+  mvMissingCache.delete(cleanMid);
+}
+
+export async function resolveQqVideoMeta(
+  trackId: string,
+  options: { qn?: number; refresh?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<SourceVideoMeta> {
+  const songmid = trackId.trim();
+  if (!songmid || /[/?#]/.test(songmid)) {
+    throw new SourceError("UNAVAILABLE", "无效的 QQ 音乐歌曲 ID", { source: "qq" });
+  }
+  const cookie = (await optionalQqCookie())?.cookie;
+  let vid = mvVidCache.get(songmid) ?? "";
+
+  if (!vid) {
+    const missingUntil = mvMissingCache.get(songmid);
+    if (!options.refresh && missingUntil && missingUntil > Date.now()) {
+      throw new SourceError("UNAVAILABLE", "当前 QQ 音乐歌曲暂无官方 MV", { source: "qq" });
+    }
+    mvMissingCache.delete(songmid);
+
+    const detail = await musicu<{ track_info?: { mv?: { vid?: string | null } } }>(
+      "songinfo",
+      "music.pf_song_detail_svr",
+      "get_song_detail_yqq",
+      { song_mid: songmid, song_type: 0 },
+      { cookie, signal: signal ?? AbortSignal.timeout(SEARCH_TIMEOUT_MS) },
+    );
+    vid = detail?.track_info?.mv?.vid?.trim() || "";
+    if (vid) {
+      rememberQqMvVid(songmid, vid);
+    } else {
+      if (mvMissingCache.size >= 1000) {
+        const oldest = mvMissingCache.keys().next().value;
+        if (oldest !== undefined) mvMissingCache.delete(oldest);
+      }
+      mvMissingCache.set(songmid, Date.now() + QQ_MV_MISSING_TTL_MS);
+      throw new SourceError("UNAVAILABLE", "当前 QQ 音乐歌曲暂无官方 MV", { source: "qq" });
+    }
+  }
+
+  let qualities: Array<{ filetype: number; label: string; url: string }> | null = null;
+  if (!options.refresh) {
+    const cached = qqMvUrlCache.get(vid);
+    if (cached && cached.expiresAt > Date.now()) {
+      qualities = cached.qualities;
+    } else {
+      qqMvUrlCache.delete(vid);
+    }
+  } else {
+    qqMvUrlCache.delete(vid);
+  }
+
+  if (!qualities) {
+    const response = await fetch(`${MUSICU_URL}?format=json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Referer: REFERER,
+        "User-Agent": USER_AGENT,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      body: JSON.stringify({
+        comm: { ct: 24, cv: 4747474 },
+        mvUrl: {
+          module: "gosrf.Stream.MvUrlProxy",
+          method: "GetMvUrls",
+          param: { vids: [vid], request_typet: 10001, addrtype: 3, format: 264, maxFiletype: 60 },
+        },
+      }),
+      signal: signal ?? AbortSignal.timeout(STREAM_RESOLVE_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new SourceError("UPSTREAM_FAILED", `QQ音乐 MV 接口请求失败 (${response.status})`, { source: "qq" });
+    }
+    const payload = (await response.json().catch(() => null)) as {
+      mvUrl?: {
+        code?: number;
+        data?: Record<string, { mp4?: Array<{ filetype?: number; freeflow_url?: string[] }> }>;
+      };
+    } | null;
+    const mp4List = payload?.mvUrl?.data?.[vid]?.mp4 ?? [];
+    const byType = new Map<number, { filetype: number; label: string; url: string }>();
+    for (const item of mp4List) {
+      const filetype = Number(item?.filetype ?? 0);
+      const url = (item?.freeflow_url ?? []).find((candidate) => typeof candidate === "string" && /^https?:\/\//i.test(candidate));
+      if (!filetype || !url) continue;
+      if (!byType.has(filetype)) {
+        byType.set(filetype, {
+          filetype,
+          label: QQ_MV_QUALITY_LABELS[filetype] ?? `${filetype}P`,
+          url,
+        });
+      }
+    }
+    qualities = [...byType.values()].sort((a, b) => b.filetype - a.filetype);
+    if (!qualities.length) {
+      throw new SourceError("UNAVAILABLE", "该 QQ 音乐 MV 暂时无法播放", { source: "qq" });
+    }
+    if (qqMvUrlCache.size >= 400) {
+      const oldest = qqMvUrlCache.keys().next().value;
+      if (oldest !== undefined) qqMvUrlCache.delete(oldest);
+    }
+    qqMvUrlCache.set(vid, { qualities, expiresAt: Date.now() + QQ_MV_URL_TTL_MS });
+  }
+
+  const chosen = (options.qn ? qualities.find((q) => q.filetype === options.qn) : null) ?? qualities[0];
+  return {
+    url: chosen.url,
+    headers: STREAM_HEADERS,
+    mimeType: "video/mp4",
+    mode: "muxed",
+    quality: chosen.label,
+    qualityId: chosen.filetype,
+    availableQualities: qualities.map((q) => ({ id: q.filetype, label: q.label })),
+    expiresAt: Date.now() + QQ_MV_URL_TTL_MS,
+  };
 }
 
 export async function saveQqCookie(cookie: string): Promise<SourceAccount> {
@@ -1723,10 +1879,13 @@ type QqLegacySong = {
   size_flac?: number | string;
   size_hires?: number | string;
   file?: QqSearchSong["file"];
+  vid?: string | null;
+  mv?: { id?: number; vid?: string | null };
   pay?: { pay_play?: number; payplay?: number };
 };
 
-function normalizeLegacyQqSong(song: QqLegacySong): QqSearchSong {
+export function normalizeLegacyQqSong(song: QqLegacySong): QqSearchSong {
+  const vid = song.mv?.vid?.trim() || song.vid?.trim() || "";
   return {
     id: song.id ?? song.songid,
     mid: song.mid ?? song.songmid,
@@ -1739,6 +1898,7 @@ function normalizeLegacyQqSong(song: QqLegacySong): QqSearchSong {
       title: song.album?.title ?? song.album?.name ?? song.albumname,
       name: song.album?.name ?? song.albumname,
     },
+    ...(vid ? { mv: { id: song.mv?.id, vid } } : {}),
     pay: song.pay
       ? { pay_play: song.pay.pay_play ?? song.pay.payplay }
       : undefined,

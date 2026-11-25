@@ -23,12 +23,15 @@ const config = {
     "vendor/**/*",
     "build/**/*",
     "package.json",
+    "!deploy/**/*",
+    "!cloudflare/**/*",
     "!node_modules/**/*",
   ],
   asarUnpack: [
     "dist-server/**/*",
     "vendor/mpv/**/*",
     "electron/native/**/*.node",
+    "build/**/*",
   ],
   beforePack: "./scripts/before-pack.cjs",
   afterPack: "./scripts/after-pack.cjs",
@@ -52,6 +55,9 @@ const config = {
   nsis: {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
+    installerIcon: "build/icon.ico",
+    uninstallerIcon: "build/icon.ico",
+    installerHeaderIcon: "build/icon.ico",
     artifactName: "Aria-${version}-${arch}.${ext}",
     shortcutName: "Aria",
     uninstallDisplayName: "Aria",
@@ -63,6 +69,14 @@ const config = {
     minimumSystemVersion: "12.0",
     hardenedRuntime: true,
     gatekeeperAssess: false,
+    entitlements: "build/entitlements.mac.plist",
+    entitlementsInherit: "build/entitlements.mac.plist",
+    extendInfo: {
+      NSLocalNetworkUsageDescription: "Aria 需要访问局域网以支持「Aria 官方一起听」房主直连与手机端局域网遥控。",
+      NSAppTransportSecurity: {
+        NSAllowsLocalNetworking: true,
+      },
+    },
     target: [
       {
         target: "dmg",

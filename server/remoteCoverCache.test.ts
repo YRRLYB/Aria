@@ -162,4 +162,20 @@ describe("persistent remote image cache", () => {
     expect(files.filter((file) => file.endsWith(".json"))).toHaveLength(2);
     expect(files).not.toContain(path.basename(oldest.filePath!));
   });
+
+  it("caches YouTube Google profile avatars on lh3.googleusercontent.com when googleusercontent.com is allowed", async () => {
+    const avatarUrl = "https://lh3.googleusercontent.com/a/ACg8ocTestAvatar=s192-c";
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => imageResponse());
+    const cache = new RemoteCoverCache({
+      directory,
+      allowedHosts: ["ytimg.com", "ggpht.com", "googleusercontent.com", "usercontent.goog"],
+      sizing: null,
+      errorPrefix: "YOUTUBE_COVER",
+      fetcher,
+    });
+    const cached = await cache.read(avatarUrl);
+    expect(cached.contentType).toBe("image/jpeg");
+    expect(await readFile(cached.filePath!)).toEqual(artwork);
+    expect(fetcher).toHaveBeenCalledWith(avatarUrl, expect.objectContaining({ redirect: "manual" }));
+  });
 });

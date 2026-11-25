@@ -79,24 +79,45 @@ export function CloudLogo({ className }: { className?: string }) {
   );
 }
 
-export type SourceToggleOption = "local" | "netease" | "qq" | "bilibili" | "youtube";
+export function SuperMixLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={cn("size-4 shrink-0", className)} aria-hidden="true">
+      <defs>
+        <linearGradient id="aria-supermix-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#E60026" />
+          <stop offset="35%" stopColor="#0DAF52" />
+          <stop offset="68%" stopColor="#00AEEC" />
+          <stop offset="100%" stopColor="#7C5CE6" />
+        </linearGradient>
+      </defs>
+      <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="url(#aria-supermix-grad)" />
+      <circle cx="9.6" cy="12" r="4.1" fill="none" stroke="#fff" strokeWidth="1.65" opacity="0.95" />
+      <circle cx="14.4" cy="12" r="4.1" fill="none" stroke="#fff" strokeWidth="1.65" opacity="0.95" />
+      <circle cx="12" cy="12" r="1.3" fill="#fff" />
+    </svg>
+  );
+}
+
+export type SourceToggleOption = "local" | "netease" | "qq" | "bilibili" | "youtube" | "super-mix";
 export type SourceLogoOption = Track["source"];
 
-const SOURCE_META: Record<SourceLogoOption, { label: string; shortLabel: string }> = {
+const SOURCE_META: Record<SourceLogoOption | "super-mix", { label: string; shortLabel: string }> = {
   local: { label: "本地", shortLabel: "本地" },
   cloud: { label: "云盘", shortLabel: "云盘" },
   netease: { label: "网易云", shortLabel: "网易云" },
   qq: { label: "QQ 音乐", shortLabel: "QQ" },
   bilibili: { label: "B站", shortLabel: "B站" },
   youtube: { label: "YouTube", shortLabel: "YT" },
+  "super-mix": { label: "Super混合", shortLabel: "Super" },
 };
 
-export function SourceLogo({ source, className }: { source: SourceLogoOption; className?: string }) {
+export function SourceLogo({ source, className }: { source: SourceLogoOption | "super-mix"; className?: string }) {
   if (source === "netease") return <NeteaseLogo className={className} />;
   if (source === "qq") return <QqLogo className={className} />;
   if (source === "bilibili") return <BilibiliLogo className={className} />;
   if (source === "youtube") return <YoutubeLogo className={className} />;
   if (source === "cloud") return <CloudLogo className={className} />;
+  if (source === "super-mix") return <SuperMixLogo className={className} />;
   return <LocalLogo className={className} />;
 }
 

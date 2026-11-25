@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  audioBaseUrl,
   checkBilibiliQrLogin,
   getBilibiliAccount,
   getBilibiliFavPlaylists,
@@ -500,7 +501,7 @@ describe("Bilibili client", () => {
     expect(headers?.Cookie).toContain("SESSDATA=test-sess");
   });
 
-  it("lists the account's favourite folders as read-only playlists, hiding the Aria folder", async () => {
+  it("lists the account's favourite folders as read-only playlists, including the Aria folder", async () => {
     storeMocks.readStore.mockResolvedValue({
       bilibiliCookie: "SESSDATA=test-sess; bili_jct=test-csrf; DedeUserID=42",
     });
@@ -525,8 +526,18 @@ describe("Bilibili client", () => {
       }));
 
     const playlists = await getBilibiliFavPlaylists();
-    expect(playlists.map((playlist) => playlist.id)).toEqual(["folder:456", "folder:789"]);
+    expect(playlists.map((playlist) => playlist.id)).toEqual(["folder:123", "folder:456", "folder:789"]);
     expect(playlists[0]).toMatchObject({
+      name: "Aria",
+      source: "bilibili",
+      trackCount: 9,
+      owned: true,
+      canEdit: false,
+      coverColor: "#00AEEC",
+      description: "B站「Aria」红心收藏夹 · 登录账号实时读取",
+      creatorName: "测试用户",
+    });
+    expect(playlists[1]).toMatchObject({
       name: "夜行歌单",
       source: "bilibili",
       trackCount: 12,
@@ -830,5 +841,25 @@ describe("Bilibili client", () => {
       currentLevel: "lossless",
       bitrate: 384_000,
     });
+  });
+
+  it("prefers non-mcdn CDN backup URLs when selecting DASH audio", () => {
+    expect(
+      audioBaseUrl({
+        id: 30280,
+        baseUrl: "https://upos-sz-estgoss.mcdn.bilivideo.cn/audio.m4s",
+        backupUrl: [
+          "https://mcdn-other.mcdn.bilivideo.cn/audio.m4s",
+          "https://upos-sz-mirrorali.bilivideo.com/audio.m4s",
+        ],
+      }),
+    ).toBe("https://upos-sz-mirrorali.bilivideo.com/audio.m4s");
+
+    expect(
+      audioBaseUrl({
+        id: 30280,
+        baseUrl: "https://only.mcdn.bilivideo.cn/audio.m4s",
+      }),
+    ).toBe("https://only.mcdn.bilivideo.cn/audio.m4s");
   });
 });

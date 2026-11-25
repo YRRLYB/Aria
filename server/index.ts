@@ -5,10 +5,12 @@ import { z } from "zod";
 import { readLibrary } from "./libraryStore";
 import { searchLyricCandidates } from "./lyrics";
 import { bindLocalLyrics } from "./services/lyricBindingService";
-import { NETEASE_NO_PLAYABLE_URL_MESSAGE, neteaseClient } from "./clients/neteaseClient";
+import { NETEASE_NO_PLAYABLE_URL_MESSAGE, neteaseClient, sanitizeNeteaseArtistAvatar } from "./clients/neteaseClient";
 import { invalidateNeteaseIdentity, normalizeRealIp } from "./clients/neteaseIdentity";
 import { getProvider, listProviders } from "./providers";
 import { createLibraryRouter } from "./routes/library";
+import { createAriaRoomRouter } from "./routes/ariaRoom";
+import { createListenTogetherRouter } from "./routes/listenTogether";
 import { createLocalMetadataRouter } from "./routes/localMetadata";
 import { createRemoteCoverRouter } from "./routes/remoteCover";
 import {
@@ -58,7 +60,7 @@ const bilibiliCoverCache = new RemoteCoverCache({
 // fetcher re-reads the proxy setting on every call, so changes apply live.
 const youtubeCoverCache = new RemoteCoverCache({
   directory: path.join(cacheDir, "covers-youtube"),
-  allowedHosts: ["ytimg.com", "ggpht.com", "usercontent.goog"],
+  allowedHosts: ["ytimg.com", "ggpht.com", "googleusercontent.com", "usercontent.goog"],
   sizing: null,
   errorPrefix: "YOUTUBE_COVER",
   fetcher: youtubeCoverFetcher,
@@ -129,7 +131,7 @@ app.get("/api/settings", async (_req, res, next) => {
       // session expired — the settings card distinguishes this from signed-out.
       hasQqCookie: Boolean(store.qqCookie),
       hasBilibiliCookie: Boolean(store.bilibiliCookie),
-      hasYoutubeCookie: Boolean(store.youtubeCookie),
+      hasYoutubeCookie: Boolean(store.youtubeCookie || store.youtubeOauth?.refreshToken || store.youtubeOauth?.accessToken),
       // Never block the first renderer paint on a provider round trip. The
       // account endpoint below validates the cookie in the background.
       neteaseAccount: await peekNeteaseAccountSummary(),
@@ -506,6 +508,8 @@ app.post("/api/providers/netease/cache/warmup", async (req, res, next) => {
 });
 
 app.use("/api/providers/netease/cover", createRemoteCoverRouter(remoteCoverCache));
+app.use("/api/netease/listen-together", createListenTogetherRouter());
+app.use("/api/aria-room", createAriaRoomRouter({ localApiPort: port }));
 
 app.post("/api/settings/netease-cookie", async (req, res, next) => {
   try {
@@ -671,8 +675,50 @@ app.get("/api/artists/lookup", async (req, res, next) => {
         name: z.string().min(1).max(120),
       })
       .parse(req.query);
-    const [artist] = await neteaseClient.searchArtists(query.name, 1);
-    res.json({ artist: artist ?? null });
+    const normalizedQuery = query.name.trim().toLowerCase();
+    const candidates = await neteaseClient.searchArtists(query.name, 5);
+    let artist =
+      candidates.find((item) => item.name.trim().toLowerCase() === normalizedQuery && sanitizeNeteaseArtistAvatar(item.avatarUrl)) ??
+      candidates.find((item) => sanitizeNeteaseArtistAvatar(item.avatarUrl)) ??
+      candidates.find((item) => item.name.trim().toLowerCase() === normalizedQuery) ??
+      candidates[0] ??
+      null;
+    if (artist) {
+      const cleanAvatar = sanitizeNeteaseArtistAvatar(artist.avatarUrl);
+      if (cleanAvatar !== artist.avatarUrl) {
+        artist = { ...artist, avatarUrl: cleanAvatar };
+      }
+    }
+    if (artist?.id && !artist.avatarUrl) {
+      try {
+        const topTracks = await neteaseClient.getArtistTopTracks(artist.id);
+        const trackCover = topTracks.map((track) => sanitizeNeteaseArtistAvatar(track.coverUrl)).find(Boolean) ?? null;
+        if (trackCover) {
+          artist = { ...artist, avatarUrl: trackCover };
+        }
+      } catch {
+        // Best-effort top track cover fallback.
+      }
+    }
+    if (!artist || !artist.avatarUrl) {
+      try {
+        const qqSource = getSource("qq");
+        const qqPage = qqSource?.search
+          ? await qqSource.search({ query: query.name, mode: "artists", limit: 3, offset: 0 })
+          : null;
+        const qqArtists = qqPage?.artists ?? [];
+        const qqMatch =
+          qqArtists.find((item) => item.name.trim().toLowerCase() === normalizedQuery && item.avatarUrl) ??
+          qqArtists.find((item) => Boolean(item.avatarUrl)) ??
+          null;
+        if (qqMatch) {
+          artist = qqMatch;
+        }
+      } catch {
+        // Best-effort QQ artist fallback.
+      }
+    }
+    res.json({ artist });
   } catch (error) {
     next(error);
   }

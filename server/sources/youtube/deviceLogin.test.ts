@@ -7,7 +7,7 @@ import {
 } from "./deviceLogin";
 
 const clientMocks = vi.hoisted(() => ({
-  saveYoutubeCookie: vi.fn(async () => ({
+  saveYoutubeOauthSession: vi.fn(async () => ({
     connected: true,
     nickname: "device-user",
     userId: null,
@@ -17,7 +17,7 @@ const clientMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./client", () => ({
-  saveYoutubeCookie: clientMocks.saveYoutubeCookie,
+  saveYoutubeOauthSession: clientMocks.saveYoutubeOauthSession,
   youtubeRawFetch: clientMocks.youtubeRawFetch,
 }));
 
@@ -143,7 +143,7 @@ describe("YouTube device-code login", () => {
   it("reports expired for an unknown session key without saving anything", async () => {
     const result = await checkYoutubeDeviceLogin("never-started");
     expect(result).toMatchObject({ code: 65, status: "expired" });
-    expect(clientMocks.saveYoutubeCookie).not.toHaveBeenCalled();
+    expect(clientMocks.saveYoutubeOauthSession).not.toHaveBeenCalled();
   });
 
   it("maps authorization_pending to waiting without saving", async () => {
@@ -152,14 +152,16 @@ describe("YouTube device-code login", () => {
 
     const result = await checkYoutubeDeviceLogin("DC-START");
     expect(result).toMatchObject({ code: 66, status: "waiting", account: null });
-    expect(clientMocks.saveYoutubeCookie).not.toHaveBeenCalled();
+    expect(clientMocks.saveYoutubeOauthSession).not.toHaveBeenCalled();
   });
 
-  it("after approval follows OAuthLogin → MergeSession, collects Set-Cookie per hop and saves the session", async () => {
+  it("after approval follows OAuthLogin → MergeSession when available and saves both OAuth and cookie", async () => {
     await startSession();
     clientMocks.youtubeRawFetch.mockImplementation((url) => {
       const value = String(url);
-      if (value === TOKEN_URL) return Promise.resolve(jsonResponse({ access_token: "AT-123" }));
+      if (value === TOKEN_URL) {
+        return Promise.resolve(jsonResponse({ access_token: "AT-123", refresh_token: "RT-123", expires_in: 3600 }));
+      }
       if (value === OAUTH_LOGIN_URL) {
         return Promise.resolve(
           redirectResponse(MERGE_URL, ["SID=goosid; Domain=.google.com; Path=/; Secure; HttpOnly"]),
@@ -179,31 +181,42 @@ describe("YouTube device-code login", () => {
     expect(oauthInit?.headers).toMatchObject({ authorization: "Bearer AT-123" });
     expect(oauthInit?.redirect).toBe("manual");
 
-    const saved = clientMocks.saveYoutubeCookie.mock.calls[0][0] as string;
-    expect(saved).toContain("SID=ytsid");
-    expect(saved).toContain("SAPISID=sap");
-    expect(saved).toContain("LOGIN_INFO=li");
+    const saved = clientMocks.saveYoutubeOauthSession.mock.calls[0][0] as {
+      accessToken: string;
+      refreshToken: string | null;
+      cookie: string | null;
+    };
+    expect(saved.accessToken).toBe("AT-123");
+    expect(saved.refreshToken).toBe("RT-123");
+    expect(saved.cookie).toContain("SID=ytsid");
+    expect(saved.cookie).toContain("SAPISID=sap");
+    expect(saved.cookie).toContain("LOGIN_INFO=li");
     // The transient .google.com cookie must not leak into the youtube.com header.
-    expect(saved).not.toContain("SID=goosid");
+    expect(saved.cookie).not.toContain("SID=goosid");
   });
 
-  it("surfaces a clear message and saves nothing when the minted cookie set is incomplete", async () => {
+  it("completes login via OAuth2 Bearer session even when legacy OAuthLogin fails or returns incomplete cookies", async () => {
     await startSession();
     clientMocks.youtubeRawFetch.mockImplementation((url) => {
       const value = String(url);
-      if (value === TOKEN_URL) return Promise.resolve(jsonResponse({ access_token: "AT-456" }));
-      if (value === OAUTH_LOGIN_URL) return Promise.resolve(redirectResponse(MERGE_URL));
-      if (value === MERGE_URL) return Promise.resolve(redirectResponse(YOUTUBE_URL));
-      if (value === YOUTUBE_URL) {
-        return Promise.resolve(landedResponse([YT_COOKIES[0]])); // only SID, no login markers
+      if (value === TOKEN_URL) {
+        return Promise.resolve(jsonResponse({ access_token: "AT-456", refresh_token: "RT-456", expires_in: 3600 }));
       }
+      if (value === OAUTH_LOGIN_URL) return Promise.resolve(jsonResponse({ error: "forbidden" }, 403));
       throw new Error(`unexpected fetch: ${value}`);
     });
 
     const result = await checkYoutubeDeviceLogin("DC-START");
-    expect(result.status).toBe("expired");
-    expect(result.message).toContain("会话建立失败");
-    expect(clientMocks.saveYoutubeCookie).not.toHaveBeenCalled();
+    expect(result.status).toBe("success");
+    expect(result.code).toBe(0);
+    expect(result.account).toMatchObject({ connected: true, nickname: "device-user" });
+    expect(clientMocks.saveYoutubeOauthSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessToken: "AT-456",
+        refreshToken: "RT-456",
+        cookie: null,
+      }),
+    );
   });
 
   it("returns expired with the denial message when the user rejects on the phone", async () => {

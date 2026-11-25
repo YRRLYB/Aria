@@ -401,6 +401,18 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
     }
   });
 
+  router.get("/:sourceId/discovery", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      if (!source.getDiscovery) {
+        throw new SourceError("UNSUPPORTED", `${source.manifest.name}暂不支持探索发现`, { source: source.manifest.id });
+      }
+      res.json({ sourceId: req.params.sourceId, ...(await source.getDiscovery()) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   return router;
 }
 

@@ -3,9 +3,12 @@ import { SourceError } from "../contract";
 import {
   clearYoutubeCookie,
   getYoutubeAccount,
+  getYoutubeDailyRecommendTracks,
+  getYoutubeDiscovery,
   getYoutubeLikedTracks,
   getYoutubePlaylistTracks,
   getYoutubePlaylists,
+  getYoutubeRoamTracks,
   resolveYoutubeStreamMeta,
   resolveYoutubeVideoMeta,
   saveYoutubeCookie,
@@ -76,6 +79,18 @@ export const youtubeSource: MusicSource = {
 
   getPlaylistTracks(playlistId) {
     return getYoutubePlaylistTracks(playlistId);
+  },
+
+  getDailyRecommendTracks() {
+    return getYoutubeDailyRecommendTracks();
+  },
+
+  getRoamTracks(limit, excludeIds) {
+    return getYoutubeRoamTracks(limit, excludeIds);
+  },
+
+  getDiscovery() {
+    return getYoutubeDiscovery();
   },
 
   // 设备码（RFC 8628）扫码式登录：复用 QQ/B站的泛型 /qr/start + /qr/check

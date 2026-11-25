@@ -17,9 +17,33 @@ export type LocalPlaylistRemoteRef = {
   syncedAt?: number;
 };
 
+export type LocalPlaylistKind = "standard" | "super-mix";
+
+export type SuperMixStrategy = "interleave" | "shuffle" | "sequential";
+
+export type SuperMixSourceRef = {
+  key: string;
+  source: "local" | "netease" | "qq" | "bilibili" | "youtube";
+  playlistId: string;
+  name: string;
+  coverUrl?: string | null;
+  trackCount?: number;
+};
+
+export type LocalPlaylistSuperMix = {
+  sources: SuperMixSourceRef[];
+  strategy: SuperMixStrategy;
+  dedupe: boolean;
+  manualTrackIds?: string[];
+  syncedAt?: number;
+  dedupedCount?: number;
+  sourceCounts?: Partial<Record<Track["source"], number>>;
+};
+
 export type LocalPlaylist = {
   id: string;
   name: string;
+  kind?: LocalPlaylistKind;
   trackIds: string[];
   /**
    * Remote tracks need their metadata/stream route after a restart, before the
@@ -28,6 +52,7 @@ export type LocalPlaylist = {
    */
   trackSnapshots?: Record<string, Track>;
   remoteRef?: LocalPlaylistRemoteRef;
+  superMix?: LocalPlaylistSuperMix;
   createdAt: number;
   updatedAt: number;
 };
@@ -58,13 +83,16 @@ export function createLocalPlaylist(
   now = Date.now(),
   trackSnapshots?: Record<string, Track>,
   remoteRef?: LocalPlaylistRemoteRef,
+  superMix?: LocalPlaylistSuperMix,
 ): LocalPlaylist {
   return {
     id: createPlaylistId(),
     name: name.trim().slice(0, 80) || "未命名歌单",
+    ...(superMix ? { kind: "super-mix" as const } : {}),
     trackIds: [...new Set(trackIds)],
     ...(trackSnapshots && Object.keys(trackSnapshots).length ? { trackSnapshots } : {}),
     ...(remoteRef ? { remoteRef } : {}),
+    ...(superMix ? { superMix } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -101,6 +129,75 @@ function sanitizeRemoteRef(value: unknown): LocalPlaylistRemoteRef | undefined {
   };
 }
 
+const VALID_SUPER_MIX_SOURCES = new Set<SuperMixSourceRef["source"]>(["local", "netease", "qq", "bilibili", "youtube"]);
+const VALID_SUPER_MIX_STRATEGIES = new Set<SuperMixStrategy>(["interleave", "shuffle", "sequential"]);
+
+function sanitizeSuperMix(value: unknown): LocalPlaylistSuperMix | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<LocalPlaylistSuperMix>;
+  if (!Array.isArray(candidate.sources)) return undefined;
+  const seenKeys = new Set<string>();
+  const sources: SuperMixSourceRef[] = [];
+  for (const item of candidate.sources.slice(0, 100)) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Partial<SuperMixSourceRef>;
+    if (
+      typeof raw.source !== "string" ||
+      !VALID_SUPER_MIX_SOURCES.has(raw.source as SuperMixSourceRef["source"]) ||
+      typeof raw.playlistId !== "string" ||
+      !raw.playlistId.trim() ||
+      typeof raw.name !== "string"
+    ) {
+      continue;
+    }
+    const key = typeof raw.key === "string" && raw.key.trim() ? raw.key.trim() : `${raw.source}:${raw.playlistId.trim()}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    sources.push({
+      key: key.slice(0, 240),
+      source: raw.source as SuperMixSourceRef["source"],
+      playlistId: raw.playlistId.trim().slice(0, 200),
+      name: raw.name.trim().slice(0, 120) || "未命名来源",
+      ...(typeof raw.coverUrl === "string" && raw.coverUrl.trim() && !raw.coverUrl.startsWith("data:")
+        ? { coverUrl: raw.coverUrl.trim().slice(0, 2048) }
+        : {}),
+      ...(typeof raw.trackCount === "number" && Number.isFinite(raw.trackCount) && raw.trackCount >= 0
+        ? { trackCount: Math.round(raw.trackCount) }
+        : {}),
+    });
+  }
+  const strategy: SuperMixStrategy =
+    typeof candidate.strategy === "string" && VALID_SUPER_MIX_STRATEGIES.has(candidate.strategy as SuperMixStrategy)
+      ? (candidate.strategy as SuperMixStrategy)
+      : "interleave";
+  const sourceCounts =
+    candidate.sourceCounts && typeof candidate.sourceCounts === "object"
+      ? Object.fromEntries(
+          Object.entries(candidate.sourceCounts).filter(
+            ([src, count]) =>
+              (src === "local" || src === "cloud" || src === "netease" || src === "qq" || src === "bilibili" || src === "youtube") &&
+              typeof count === "number" &&
+              Number.isFinite(count) &&
+              count > 0,
+          ),
+        )
+      : undefined;
+  const manualTrackIds = Array.isArray(candidate.manualTrackIds)
+    ? [...new Set(candidate.manualTrackIds.filter((id): id is string => typeof id === "string" && Boolean(id)))].slice(0, 2_000)
+    : undefined;
+  return {
+    sources,
+    strategy,
+    dedupe: candidate.dedupe !== false,
+    ...(manualTrackIds?.length ? { manualTrackIds } : {}),
+    ...(typeof candidate.syncedAt === "number" && Number.isFinite(candidate.syncedAt) ? { syncedAt: candidate.syncedAt } : {}),
+    ...(typeof candidate.dedupedCount === "number" && Number.isFinite(candidate.dedupedCount) && candidate.dedupedCount > 0
+      ? { dedupedCount: Math.round(candidate.dedupedCount) }
+      : {}),
+    ...(sourceCounts && Object.keys(sourceCounts).length ? { sourceCounts } : {}),
+  };
+}
+
 export function sanitizeLocalPlaylists(value: unknown): LocalPlaylist[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 500).flatMap((item) => {
@@ -113,12 +210,17 @@ export function sanitizeLocalPlaylists(value: unknown): LocalPlaylist[] {
       : [];
     const trackSnapshots = sanitizeSnapshots(candidate.trackSnapshots, new Set(trackIds));
     const remoteRef = sanitizeRemoteRef(candidate.remoteRef);
+    const superMix = sanitizeSuperMix(candidate.superMix);
+    const kind: LocalPlaylistKind | undefined =
+      candidate.kind === "super-mix" || superMix ? "super-mix" : undefined;
     return [{
       id: candidate.id,
       name: candidate.name.trim().slice(0, 80) || "未命名歌单",
+      ...(kind ? { kind } : {}),
       trackIds,
       ...(trackSnapshots ? { trackSnapshots } : {}),
       ...(remoteRef ? { remoteRef } : {}),
+      ...(superMix ? { superMix } : {}),
       createdAt: typeof candidate.createdAt === "number" && Number.isFinite(candidate.createdAt) ? candidate.createdAt : now,
       updatedAt: typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt) ? candidate.updatedAt : now,
     }];
@@ -187,9 +289,11 @@ export function writeLocalPlaylists(playlists: LocalPlaylist[], storage: Playlis
       return {
         id: playlist.id,
         name: playlist.name,
+        ...(playlist.kind === "super-mix" || playlist.superMix ? { kind: "super-mix" as const } : {}),
         trackIds: playlist.trackIds,
         ...(trackSnapshots && Object.keys(trackSnapshots).length ? { trackSnapshots } : {}),
         ...(playlist.remoteRef ? { remoteRef: playlist.remoteRef } : {}),
+        ...(playlist.superMix ? { superMix: playlist.superMix } : {}),
         createdAt: playlist.createdAt,
         updatedAt: playlist.updatedAt,
       } satisfies LocalPlaylist;
@@ -199,6 +303,23 @@ export function writeLocalPlaylists(playlists: LocalPlaylist[], storage: Playlis
   } catch {
     return false;
   }
+}
+
+export type PlaylistInsertPosition = "top" | "bottom";
+
+/**
+ * Merges newly picked track IDs into an existing playlist while preserving the
+ * user's selection order (`1, 2, 3...`) and avoiding duplicate entries.
+ */
+export function mergePlaylistTrackIds(
+  existingIds: string[],
+  addedIds: string[],
+  position: PlaylistInsertPosition = "top",
+): string[] {
+  const existingSet = new Set(existingIds);
+  const newOnly = [...new Set(addedIds)].filter((id) => Boolean(id) && !existingSet.has(id));
+  if (!newOnly.length) return existingIds;
+  return position === "top" ? [...newOnly, ...existingIds] : [...existingIds, ...newOnly];
 }
 
 export function resolveLocalPlaylistTracks(playlist: LocalPlaylist | null | undefined, tracks: Track[]) {

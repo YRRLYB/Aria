@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 const hostPlatform = process.platform;
 Object.defineProperty(process, "platform", { value: "win32" });
 const {
+  buildIpcPipePath,
   buildMpvArguments,
   MpvAudioEngine,
   NATIVE_AUDIO_CLIENT_NAME,
@@ -201,5 +202,67 @@ describe("native mpv output", () => {
 
     engine.handleMessage({ event: "file-loaded" });
     expect(events.at(-1)).toMatchObject({ kind: "loaded", active: true, trackId: "youtube:dQw4w9WgXcQ", position: 0 });
+  });
+
+  it("clamps micro-speed updates, deduplicates unchanged rates, and resets speed on performLoad", async () => {
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: vi.fn() });
+    engine.ensureProcess = vi.fn().mockResolvedValue(undefined);
+    engine.command = vi.fn().mockResolvedValue([]);
+
+    // Inactive engine updates target state without sending IPC.
+    await engine.setSpeed(1.02);
+    expect(engine.state.speed).toBe(1.02);
+    expect(engine.command).not.toHaveBeenCalled();
+
+    // Active engine sends clamped IPC set_property speed and ignores sub-0.001 deltas.
+    engine.state.active = true;
+    engine.process = { killed: false };
+    engine.socket = { destroyed: false };
+    await engine.setSpeed(3.5);
+    expect(engine.state.speed).toBe(2);
+    expect(engine.command).toHaveBeenCalledWith("set_property", "speed", 2);
+
+    engine.command.mockClear();
+    await engine.setSpeed(2.0002);
+    expect(engine.command).not.toHaveBeenCalled();
+
+    await engine.setSpeed(0.1);
+    expect(engine.state.speed).toBe(0.5);
+    expect(engine.command).toHaveBeenCalledWith("set_property", "speed", 0.5);
+
+    engine.applyOutputSettings = vi.fn().mockResolvedValue(undefined);
+    await engine.performLoad(
+      {
+        trackId: "trk-reset",
+        url: "https://cdn.example/song.flac",
+        position: 0,
+        paused: false,
+        volume: 1,
+      },
+      engine.loadToken,
+    );
+    expect(engine.state.speed).toBe(1);
+    expect(engine.command).toHaveBeenCalledWith("set_property", "speed", 1);
+  });
+
+  it("uses CoreAudio arguments and short Unix IPC socket paths on macOS", () => {
+    const darwinSock = buildIpcPipePath("darwin", 4321, 1730000000000);
+    expect(darwinSock).toMatch(/^\/tmp\/aria-mpv-4321-[a-z0-9]+\.sock$/);
+    expect(darwinSock.length).toBeLessThan(104);
+
+    const darwinArgsDefault = buildMpvArguments(darwinSock, false, new Set(["audio-client-name"]), "darwin");
+    expect(darwinArgsDefault).toContain("--ao=coreaudio");
+    expect(darwinArgsDefault).not.toContain("--audio-exclusive=yes");
+    expect(darwinArgsDefault).not.toContain("--audio-exclusive=no");
+
+    const darwinArgsExclusive = buildMpvArguments(
+      darwinSock,
+      true,
+      new Set(["audio-client-name", "audio-exclusive", "media-controls"]),
+      "darwin",
+    );
+    expect(darwinArgsExclusive).toContain("--ao=coreaudio");
+    expect(darwinArgsExclusive).toContain("--audio-exclusive=yes");
+    expect(darwinArgsExclusive).toContain("--media-controls=no");
   });
 });

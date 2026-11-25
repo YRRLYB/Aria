@@ -91,6 +91,7 @@ export type SourceAccount = {
   nickname: string | null;
   userId: string | null;
   avatarUrl: string | null;
+  isVip?: boolean;
 };
 
 export type SourceQrLoginStart = {
@@ -135,6 +136,9 @@ export type SourceStreamMeta = {
   quality?: ProviderTrack["quality"] | null;
   currentLevel?: AriaLevel | null;
   availableLevels?: AriaLevel[];
+  /** True when provider only returned a 30s preview clip (e.g. NetEase freeTrialInfo). */
+  isTrial?: boolean;
+  trialDurationSec?: number | null;
   /** Unix ms after which the URL is assumed stale; proxies re-resolve past it. */
   expiresAt?: number | null;
   /**
@@ -231,6 +235,20 @@ export class SourceError extends Error {
   }
 }
 
+export type SourceDiscoveryMood = {
+  id: string;
+  name: string;
+  query: string;
+};
+
+export type SourceDiscoveryBundle = {
+  quickPicks: ProviderTrack[];
+  trendingTracks: ProviderTrack[];
+  charts: ProviderPlaylist[];
+  playlists: ProviderPlaylist[];
+  moods: SourceDiscoveryMood[];
+};
+
 export type MusicSource = {
   readonly manifest: SourceManifest;
   search(query: SourceSearchQuery, signal?: AbortSignal): Promise<SourceSearchPage>;
@@ -273,6 +291,8 @@ export type MusicSource = {
   getDailyRecommendTracks?(signal?: AbortSignal): Promise<ProviderTrack[]>;
   /** 私人漫游:随机发现,excludeIds 为最近播放的 TrackKey。 */
   getRoamTracks?(limit: number, excludeIds: string[], signal?: AbortSignal): Promise<ProviderTrack[]>;
+  /** 探索发现聚合（精选推荐、流行榜单、歌单与流派）。 */
+  getDiscovery?(signal?: AbortSignal): Promise<SourceDiscoveryBundle>;
   saveCookie?(cookie: string): Promise<SourceAccount>;
   clearCookie?(): Promise<SourceAccount>;
   startQrLogin?(): Promise<SourceQrLoginStart>;

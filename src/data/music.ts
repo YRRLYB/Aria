@@ -15,6 +15,7 @@ export type { LyricLine, LyricWord } from "../lib/lyricTypes";
 
 export type Track = {
   id: string;
+  originTrackId?: string;
   providerId?: string;
   albumId?: string | null;
   artistIds?: string[];
@@ -34,6 +35,7 @@ export type Track = {
   hasVideo?: boolean;
   videoQuality?: string | null;
   coverUrl?: string;
+  coverFallbackUrl?: string;
   trackNumber?: number | null;
   discNumber?: number | null;
   bitrate?: number | null;
@@ -80,7 +82,8 @@ export type ViewId =
   | "radar"
   | "cloud"
   | "stats"
-  | "settings";
+  | "settings"
+  | "listenTogether";
 
 export const navItems = [
   { id: "home" as const, label: "主页", icon: Home },

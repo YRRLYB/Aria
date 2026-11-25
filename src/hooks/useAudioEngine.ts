@@ -39,7 +39,9 @@ export function useAudioEngine(options: {
   pageVisible: boolean;
   analyserEnabled: boolean;
   videoMode: boolean;
+  externalAudioActive?: boolean;
   pendingSeekRef: { current: number };
+  pendingSeekTrackIdRef?: { current: string | null };
   setPlaying: (updater: (playing: boolean) => boolean) => void;
   setDurationSeconds: (seconds: number) => void;
   exclusiveMode: boolean;
@@ -54,6 +56,7 @@ export function useAudioEngine(options: {
   // Resolves the next queue entry (already URL-resolved) for gapless mpv
   // preloading; null when the next track cannot be preloaded.
   getNextPreload: () => { trackId: string; url: string } | null;
+  onNativeTrackLoaded?: (trackId: string, durationSec: number) => void;
 }) {
   const activeTrack = options.activeTrack;
   const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
@@ -176,6 +179,11 @@ export function useAudioEngine(options: {
   const knownDeviceIdsRef = useRef<Set<string> | null>(null);
   const selectedSinkIdRef = useRef(selectedSinkId);
   selectedSinkIdRef.current = selectedSinkId;
+  const externalAudioActive = Boolean(options.externalAudioActive);
+  const enginePlaying = options.playing && !externalAudioActive;
+  const externalAudioActiveRef = useRef(externalAudioActive);
+  externalAudioActiveRef.current = externalAudioActive;
+  const prevExternalAudioRef = useRef({ active: externalAudioActive, trackId: options.activeTrack.id });
 
   // The static `supported` flag only knows the platform. The engine's
   // isSupported() checks the platform mpv binary, which macOS ships without
@@ -203,7 +211,10 @@ export function useAudioEngine(options: {
   useEffect(() => {
     const previous = previousStreamRef.current;
     if (previous.trackId !== activeTrack.id) {
-      options.pendingSeekRef.current = 0;
+      if (options.pendingSeekTrackIdRef?.current !== activeTrack.id) {
+        options.pendingSeekRef.current = 0;
+        if (options.pendingSeekTrackIdRef) options.pendingSeekTrackIdRef.current = null;
+      }
     } else if (previous.url && activeStreamUrl && previous.url !== activeStreamUrl) {
       const trackStartedPlaying = nativePlaybackEnabled
         ? Boolean(nativeAudioState?.active && nativeAudioState.trackId === activeTrack.id)
@@ -230,6 +241,7 @@ export function useAudioEngine(options: {
       setNativeAudioState(state);
     }
     const currentTrackMatches = Boolean(state.trackId && state.trackId === options.activeTrackId);
+    if (externalAudioActiveRef.current) return;
     const shouldSyncPlayback =
       nativePlaybackEnabled &&
       currentTrackMatches &&
@@ -245,6 +257,12 @@ export function useAudioEngine(options: {
       syncNativePlaybackClock(state, audio?.getAttribute("src") ? audio : null);
       if (typeof state.duration === "number" && state.duration > 0) {
         options.setDurationSeconds(state.duration);
+      }
+      if (state.kind === "loaded") {
+        options.onNativeTrackLoaded?.(
+          options.activeTrackId,
+          typeof state.duration === "number" ? state.duration : 0,
+        );
       }
       // Aria owns playback intent (including SMTC commands). An acknowledgement
       // of an older pause must not undo a newer play click during native loading.
@@ -440,7 +458,12 @@ export function useAudioEngine(options: {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    const nativeAnalyserBridgeReady = Boolean(nativePlaybackEnabled && audioSourceRef.current && nativeSilenceGainRef.current);
+    const nativeAnalyserBridgeReady = Boolean(
+      nativePlaybackEnabled &&
+        audioSourceRef.current &&
+        nativeSilenceGainRef.current &&
+        analyserOutputModeRef.current === "silent",
+    );
     const nativeAnalyserReady =
       !nativePlaybackEnabled ||
       Boolean(
@@ -453,7 +476,13 @@ export function useAudioEngine(options: {
     if (outputGainRef.current) outputGainRef.current.gain.setTargetAtTime(perceptualVolume(options.volume), audioContextRef.current!.currentTime, 0.03);
     // The mpv path owns audible lossless playback. Chromium only needs a
     // lightweight analyser source, so avoid pre-buffering the whole stream.
-    audio.preload = nativePlaybackEnabled ? (nativeAnalyserReady ? "metadata" : "none") : "metadata";
+    audio.preload = nativePlaybackEnabled
+      ? nativeAnalyserReady
+        ? "metadata"
+        : "none"
+      : options.activeTrack.id.startsWith("aria-room:")
+        ? "auto"
+        : "metadata";
 
     if (!audioElementStreamUrl || !nativeAnalyserReady || (nativePlaybackEnabled && !effectiveAnalyserEnabled)) {
       audio.pause();
@@ -466,7 +495,7 @@ export function useAudioEngine(options: {
 
     const alignNativeAnalyser = () => {
       if (!nativePlaybackEnabled || audio.readyState < 1) return;
-      const target = Math.max(0, getPlaybackTime() + (options.playing ? 0.04 : 0));
+      const target = Math.max(0, getPlaybackTime() + (enginePlaying ? 0.04 : 0));
       const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : target;
       const clampedTarget = Math.min(target, duration);
       if (Math.abs(audio.currentTime - clampedTarget) >= 0.08) {
@@ -505,7 +534,7 @@ export function useAudioEngine(options: {
     }
 
     let cancelPlayback: (() => void) | undefined;
-    if (options.playing) {
+    if (enginePlaying) {
       cancelPlayback = requestMediaPlayback(audio, () => {
         if (!nativePlaybackEnabled) options.setPlaying(() => false);
       });
@@ -525,7 +554,7 @@ export function useAudioEngine(options: {
     nativePlaybackEnabled,
     effectiveAnalyserEnabled,
     options.volume,
-    options.playing,
+    enginePlaying,
   ]);
 
   useEffect(() => () => {
@@ -546,6 +575,7 @@ export function useAudioEngine(options: {
         return;
       }
       options.pendingSeekRef.current = 0;
+      if (options.pendingSeekTrackIdRef) options.pendingSeekTrackIdRef.current = null;
       commitPlaybackTime(target, true);
     };
     applyPendingSeek();
@@ -573,8 +603,8 @@ export function useAudioEngine(options: {
     getNextPreload: () => null as { trackId: string; url: string } | null,
   });
   preloadInputsRef.current = {
-    enabled: nativePlaybackEnabled && options.gaplessEnabled,
-    playing: options.playing,
+    enabled: nativePlaybackEnabled && options.gaplessEnabled && !externalAudioActive,
+    playing: enginePlaying,
     durationSeconds: options.durationSeconds,
     activeTrackId: options.activeTrack.id,
     generation: nativeAudioState?.gaplessGeneration ?? 0,
@@ -635,7 +665,7 @@ export function useAudioEngine(options: {
     // A paused player restored after an app restart should not create an mpv
     // session. It avoids a phantom analyser and preserves the exact paused
     // state until the user explicitly presses play.
-    if (!options.playing && !nativeAudioState?.active) {
+    if (!enginePlaying && !nativeAudioState?.active) {
       nativeLoadedUrlRef.current = null;
       return;
     }
@@ -670,12 +700,13 @@ export function useAudioEngine(options: {
     nativeLoadedUrlRef.current = nextLoadKey;
     const startPosition = options.pendingSeekRef.current || 0;
     options.pendingSeekRef.current = 0;
+    if (options.pendingSeekTrackIdRef) options.pendingSeekTrackIdRef.current = null;
     nativeAudio
       .load?.({
         trackId: options.activeTrack.id,
         url: nextUrl,
         position: startPosition,
-        paused: !options.playing,
+        paused: !enginePlaying,
         volume: options.volume,
         exclusive: options.exclusiveMode,
         deviceId: selectedSinkId,
@@ -712,16 +743,16 @@ export function useAudioEngine(options: {
     nativeAudioState?.trackId,
     options.exclusiveMode,
     options.volume,
-    options.playing,
+    enginePlaying,
     selectedSinkId,
     syncNativeAudioState,
   ]);
 
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!nativePlaybackEnabled || !nativeAudio?.supported || (!options.playing && !nativeAudioState?.active)) return;
-    nativeAudio.setPaused?.(!options.playing).catch(() => undefined);
-  }, [nativeAudioState?.active, nativePlaybackEnabled, options.playing]);
+    if (!nativePlaybackEnabled || !nativeAudio?.supported || (!enginePlaying && !nativeAudioState?.active)) return;
+    nativeAudio.setPaused?.(!enginePlaying).catch(() => undefined);
+  }, [nativeAudioState?.active, nativePlaybackEnabled, enginePlaying]);
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativePlaybackEnabled || !nativeAudio?.supported || !nativeAudioState?.active) return;
@@ -741,13 +772,39 @@ export function useAudioEngine(options: {
     // Dragging a band produces a stream of updates; mpv rebuilds its `af`
     // chain for each one, so debounce to keep the native path smooth.
     const timer = window.setTimeout(() => {
+      const nativeBackend = window.ariaDesktop?.platform === "darwin" ? "CoreAudio" : "WASAPI";
       window.ariaDesktop?.nativeAudio?.configure?.({
         equalizerEnabled: options.equalizerEnabled,
         equalizerBands: options.equalizerBands,
-      }).catch(() => setEqualizerError("均衡器未能应用到 WASAPI 输出，请切换歌曲后重试。"));
+      }).catch(() => setEqualizerError(`均衡器未能应用到 ${nativeBackend} 输出，请切换歌曲后重试。`));
     }, 120);
     return () => window.clearTimeout(timer);
   }, [nativePlaybackEnabled, nativeAudioState?.active, options.equalizerEnabled, options.equalizerBands]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.playbackRate = 1;
+      if ("preservesPitch" in audio) audio.preservesPitch = true;
+    }
+    window.ariaDesktop?.nativeAudio?.setSpeed?.(1).catch(() => undefined);
+  }, [options.activeTrack.id]);
+
+  const setPlaybackSpeed = useEffectEvent((rate: number) => {
+    const clamped = Number.isFinite(rate)
+      ? Math.max(0.9, Math.min(1.1, Math.round(rate * 1000) / 1000))
+      : 1;
+    const audio = audioRef.current;
+    if (audio) {
+      if ("preservesPitch" in audio) audio.preservesPitch = true;
+      if (Math.abs(audio.playbackRate - clamped) >= 0.001) {
+        audio.playbackRate = clamped;
+      }
+    }
+    if (nativePlaybackEnabled) {
+      window.ariaDesktop?.nativeAudio?.setSpeed?.(clamped).catch(() => undefined);
+    }
+  });
 
   const seekNativeTrack = useEffectEvent(async (seconds: number) => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
@@ -763,17 +820,53 @@ export function useAudioEngine(options: {
       const state = await nativeAudio.seek(position);
       if (nativeSeekSequenceRef.current !== seekSequence) return false;
       options.pendingSeekRef.current = 0;
+      if (options.pendingSeekTrackIdRef) options.pendingSeekTrackIdRef.current = null;
       if (state) syncNativeAudioState(state as NativeAudioState);
       return true;
     } catch {
       if (nativeSeekSequenceRef.current !== seekSequence) return false;
       options.pendingSeekRef.current = 0;
+      if (options.pendingSeekTrackIdRef) options.pendingSeekTrackIdRef.current = null;
       // Keep future native progress subscribed even when one seek is rejected.
       const state = await nativeAudio.getState?.().catch(() => undefined);
       if (state && nativeSeekSequenceRef.current === seekSequence) syncNativeAudioState(state as NativeAudioState);
       return false;
     }
   });
+
+  useEffect(() => {
+    const previous = prevExternalAudioRef.current;
+    prevExternalAudioRef.current = { active: externalAudioActive, trackId: options.activeTrack.id };
+    if (
+      !previous.active ||
+      externalAudioActive ||
+      previous.trackId !== options.activeTrack.id ||
+      options.activeTrack.id === options.idleTrackId
+    ) {
+      return;
+    }
+    const resumePos = getPlaybackTime();
+    if (resumePos <= 0) return;
+    if (nativePlaybackEnabled) {
+      if (nativeAudioState?.active && nativeAudioState.trackId === options.activeTrack.id) {
+        void seekNativeTrack(resumePos);
+      } else {
+        options.pendingSeekRef.current = resumePos;
+      }
+      return;
+    }
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.readyState >= 1) {
+      try {
+        audio.currentTime = resumePos;
+      } catch {
+        // Metadata load effect will apply pendingSeekRef fallback.
+      }
+    } else {
+      options.pendingSeekRef.current = resumePos;
+    }
+  }, [externalAudioActive, nativeAudioState?.active, nativeAudioState?.trackId, nativePlaybackEnabled, options.activeTrack.id, options.idleTrackId]);
 
   // mpv unloads its file at EOF. A seek to zero after that point operates on
   // the idle player and cannot start a single-track repeat, so reload the
@@ -795,6 +888,7 @@ export function useAudioEngine(options: {
     nativeLoadedUrlRef.current = nextLoadKey;
     preloadKeyRef.current = null;
     options.pendingSeekRef.current = 0;
+    if (options.pendingSeekTrackIdRef) options.pendingSeekTrackIdRef.current = null;
     commitPlaybackTime(0, true);
 
     try {
@@ -826,10 +920,9 @@ export function useAudioEngine(options: {
 
   useEffect(() => {
     const shouldSleepGraph =
-      !options.playing ||
+      !enginePlaying ||
       !audioElementStreamUrl ||
-      (!options.pageVisible && !options.normalizationEnabled) ||
-      (nativePlaybackEnabled && !effectiveAnalyserEnabled);
+      (nativePlaybackEnabled && (!effectiveAnalyserEnabled || !options.pageVisible));
     if (!audioSourceRef.current && shouldSleepGraph) {
       return;
     }
@@ -850,7 +943,8 @@ export function useAudioEngine(options: {
     }
     if (!nativePlaybackEnabled && options.normalizationEnabled && !normalizerRef.current && !normalizerLoadRef.current) {
       if (!context.audioWorklet) {
-        setNormalizationError("当前输出环境不支持音量标准化，请使用 WASAPI 输出。" );
+        const nativeBackend = window.ariaDesktop?.platform === "darwin" ? "CoreAudio" : "WASAPI";
+        setNormalizationError(`当前输出环境不支持音量标准化，请使用 ${nativeBackend} 输出。`);
       } else {
         const load = context.audioWorklet.addModule(loudnessProcessorUrl).then(() => {
           if (audioContextRef.current !== context) return;
@@ -924,6 +1018,9 @@ export function useAudioEngine(options: {
       } catch {
         // The silent sink may already be disconnected.
       }
+      if (!nativePlaybackEnabled) {
+        nativeSilenceGainRef.current = null;
+      }
       try {
         equalizerOutput?.disconnect();
       } catch {
@@ -954,9 +1051,19 @@ export function useAudioEngine(options: {
       analyserOutputModeRef.current = desiredOutputMode;
     }
     if (nativePlaybackEnabled) {
-      audio.muted = false;
-      audio.volume = 1;
+      const silentSinkVerified = Boolean(
+        !shouldSleepGraph &&
+          audioSourceRef.current &&
+          nativeSilenceGainRef.current &&
+          analyserOutputModeRef.current === "silent",
+      );
+      if (nativeSilenceGainRef.current) {
+        nativeSilenceGainRef.current.gain.value = 0;
+      }
+      audio.muted = !silentSinkVerified;
+      audio.volume = silentSinkVerified ? 1 : 0;
     } else {
+      audio.muted = false;
       audio.volume = 1;
     }
   }, [
@@ -965,7 +1072,7 @@ export function useAudioEngine(options: {
     nativePlaybackEnabled,
     effectiveAnalyserEnabled,
     options.pageVisible,
-    options.playing,
+    enginePlaying,
     options.normalizationEnabled,
     options.equalizerEnabled,
     normalizerReady,
@@ -1089,6 +1196,7 @@ export function useAudioEngine(options: {
     nativePlaybackEnabled,
     restartNativeTrack,
     seekNativeTrack,
+    setPlaybackSpeed,
     activeStreamUrl,
     audioElementStreamUrl,
     playbackError,

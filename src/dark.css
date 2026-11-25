@@ -128,6 +128,20 @@ html.dark {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.dark .app-header-actions > .relative > button.app-listen-together-btn.is-active {
+  border-color: rgba(180, 155, 243, 0.28);
+  background: rgba(180, 155, 243, 0.18);
+  color: #e4daff;
+}
+
+.dark .app-header-actions > .relative > button.app-listen-together-btn.is-active:hover {
+  background: rgba(180, 155, 243, 0.26);
+}
+
+.dark .app-header-actions > .relative > button.app-listen-together-btn.is-viewing {
+  box-shadow: 0 0 0 2px rgba(180, 155, 243, 0.34);
+}
+
 .dark .glass {
   border-color: rgba(255, 255, 255, 0.07);
   background: linear-gradient(180deg, rgba(27, 27, 38, 0.94), rgba(22, 22, 30, 0.92));
@@ -1151,32 +1165,27 @@ html.dark {
   color: #ffb3b3;
 }
 
-.dark .history-eyebrow,
-.dark .explore-eyebrow {
-  background: rgba(180, 155, 243, 0.16);
-  color: #cdb8ff;
-}
-
 .dark .history-search {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(20, 21, 30, 0.88);
+  color: #f2f0fa;
 }
 
 .dark .history-search:focus-within {
-  border-color: rgba(180, 155, 243, 0.72);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(180, 155, 243, 0.6);
+  background: rgba(24, 25, 36, 0.96);
   box-shadow: 0 0 0 3px rgba(180, 155, 243, 0.14);
 }
 
 .dark .history-filter-pill {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
   color: #a9a6bd;
 }
 
 .dark .history-filter-pill:hover {
-  background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(180, 155, 243, 0.34);
+  background: rgba(255, 255, 255, 0.09);
   color: #ffffff;
 }
 
@@ -1187,47 +1196,46 @@ html.dark {
 }
 
 .dark .history-row {
-  border-color: rgba(255, 255, 255, 0.07);
-  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.06);
+  background: transparent;
 }
 
 .dark .history-row:hover {
-  border-color: rgba(180, 155, 243, 0.28);
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .dark .history-row.is-current {
-  border-color: rgba(180, 155, 243, 0.42);
+  border-color: rgba(180, 155, 243, 0.35);
   background: rgba(180, 155, 243, 0.14);
 }
 
 .dark .explore-tablist,
 .dark .explore-sort-group {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .dark .explore-tab,
 .dark .explore-sort-btn {
-  color: #a6a3b8;
+  color: #9a9db0;
 }
 
 .dark .explore-tab:hover,
 .dark .explore-sort-btn:hover {
-  color: #ffffff;
+  color: #f3f4f8;
 }
 
 .dark .explore-tab.is-active,
 .dark .explore-sort-btn.is-active {
-  background: #7c63d8;
+  background: rgba(180, 155, 243, 0.22);
   color: #ffffff;
-  box-shadow: 0 4px 14px rgba(124, 99, 216, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(180, 155, 243, 0.36);
 }
 
 .dark .explore-section {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.07);
+  background: transparent;
 }
 
 .dark .explore-style-banner,
@@ -1278,14 +1286,13 @@ html.dark {
 }
 
 .dark .explore-playlist-card {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .dark .explore-playlist-card:hover {
   border-color: rgba(180, 155, 243, 0.34);
-  background: rgba(255, 255, 255, 0.09);
-  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.36);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .dark .explore-card-play {
@@ -1373,4 +1380,112 @@ html.dark {
 .dark .settings-qr-box {
   background: #ffffff;
 }
+
+/* Shared minimalist page & list surfaces in dark mode */
+.dark .aria-page-shell {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(16, 17, 24, 0.88);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.48);
+}
+
+.dark .aria-page-header {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .aria-section-divider {
+  border-color: rgba(255, 255, 255, 0.07);
+}
+
+.dark .aria-flat-tile {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dark .aria-flat-tile:hover {
+  border-color: rgba(180, 155, 243, 0.34);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.dark .aria-flat-row {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+  background: transparent;
+}
+
+.dark .aria-flat-row:hover {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.dark .aria-flat-row.is-current {
+  background: rgba(180, 155, 243, 0.14);
+}
+
+.dark .aria-flat-well {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.dark .aria-flat-input {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(20, 21, 30, 0.88);
+  color: #f2f0fa;
+}
+
+.dark .aria-flat-input::placeholder {
+  color: #8f8ca3;
+}
+
+.dark .aria-flat-input:focus {
+  border-color: rgba(180, 155, 243, 0.6);
+  background: rgba(24, 25, 36, 0.96);
+}
+
+.dark .aria-segment {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dark .aria-segment-item {
+  color: #9a9db0;
+}
+
+.dark .aria-segment-item:hover:not(:disabled) {
+  color: #f3f4f8;
+}
+
+.dark .aria-segment-item.is-active {
+  background: rgba(180, 155, 243, 0.22);
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(180, 155, 243, 0.36);
+}
+
+.dark .aria-chip {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+  color: #a9a6bd;
+}
+
+.dark .aria-chip:hover {
+  border-color: rgba(180, 155, 243, 0.34);
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
+}
+
+.dark .aria-chip.is-active {
+  border-color: rgba(180, 155, 243, 0.55);
+  background: #7c63d8;
+  color: #ffffff;
+}
+
+.dark .lt-poster-card {
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.42);
+}
+
+.dark .lt-queue-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dark .lt-queue-row.is-current {
+  background: rgba(180, 155, 243, 0.16);
+}
+
 

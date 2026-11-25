@@ -1,0 +1,17 @@
+name = "aria-signal-worker"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Bind your own domain here or in the Cloudflare Dashboard:
+# routes = [
+#   { pattern = "signal.yourdomain.com/*", zone_name = "yourdomain.com" }
+# ]
+
+[durable_objects]
+bindings = [
+  { name = "ROOMS", class_name = "AriaSignalRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AriaSignalRoom"]

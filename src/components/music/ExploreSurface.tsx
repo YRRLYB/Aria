@@ -18,7 +18,16 @@ import { formatAudioDetail } from "@/lib/playerPresentation";
 import { cn } from "@/lib/utils";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { ArtworkImage } from "./ArtworkImage";
+import { SourceToggle } from "./SourceLogos";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
+
+export type YoutubeExploreDiscovery = {
+  quickPicks: Track[];
+  trendingTracks: Track[];
+  charts: ProviderPlaylist[];
+  playlists: ProviderPlaylist[];
+  moods: Array<{ id: string; name: string; query: string }>;
+};
 
 export type ExploreStyle = {
   id: string;
@@ -62,6 +71,13 @@ export function ExploreSurface({
   onOpenPlaylist,
   onPickTrack,
   onTabChange,
+  exploreSource = "netease",
+  onExploreSourceChange,
+  youtubeDiscovery = null,
+  youtubeDiscoveryLoading = false,
+  youtubeDiscoveryError = null,
+  onRetryYoutubeDiscovery,
+  onOpenYoutubePlaylist,
 }: {
   styleGroups: ExploreStyleGroup[];
   selectedStyle: ExploreSelectedStyle | null;
@@ -86,6 +102,13 @@ export function ExploreSurface({
   onOpenPlaylist: (playlist: ProviderPlaylist) => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
   onTabChange: (tab: ExploreTab) => void;
+  exploreSource?: "netease" | "youtube";
+  onExploreSourceChange?: (source: "netease" | "youtube") => void;
+  youtubeDiscovery?: YoutubeExploreDiscovery | null;
+  youtubeDiscoveryLoading?: boolean;
+  youtubeDiscoveryError?: string | null;
+  onRetryYoutubeDiscovery?: () => void;
+  onOpenYoutubePlaylist?: (playlist: ProviderPlaylist) => void;
 }) {
   const tabId = useId();
   const tabListRef = useRef<HTMLDivElement | null>(null);
@@ -116,20 +139,31 @@ export function ExploreSurface({
 
   return (
     <section
-      className="explore-surface glass flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7"
+      className="explore-surface aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7"
       aria-label="探索音乐"
     >
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-4">
+      <header className="aria-page-header flex shrink-0 flex-wrap items-center justify-between gap-4 pb-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="explore-eyebrow">EXPLORE · 网易云音乐</span>
-          </div>
-          <h1 className="mt-1.5 truncate text-2xl font-semibold tracking-tight sm:text-3xl">探索发现</h1>
-          <p className="mt-1 text-xs text-neutral-500">榜单风向、精选歌单与细分曲风漫游</p>
+          <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">探索发现</h1>
+          <p className="mt-1 text-xs text-neutral-500">
+            {exploreSource === "youtube"
+              ? "YouTube Music · 为你推荐、心情流派与全球音乐榜单"
+              : "网易云音乐 · 榜单风向、精选歌单与细分曲风漫游"}
+          </p>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2.5">
-          {activeTab === "discover" && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2.5">
+          {onExploreSourceChange && (
+            <SourceToggle
+              value={exploreSource}
+              onChange={(source) => {
+                if (source === "netease" || source === "youtube") onExploreSourceChange(source);
+              }}
+              options={["netease", "youtube"]}
+              ariaLabel="探索来源"
+            />
+          )}
+          {exploreSource === "netease" && activeTab === "discover" && (
             <Button
               type="button"
               variant="glass"
@@ -143,60 +177,88 @@ export function ExploreSurface({
               <RefreshCw className={cn("size-3.5", discoveryLoading && "animate-spin")} />
             </Button>
           )}
-          <div
-            ref={tabListRef}
-            onKeyDown={handleTabKeyDown}
-            className="explore-tablist flex shrink-0 items-center gap-1 rounded-full border p-1"
-            role="tablist"
-            aria-label="探索模式"
-          >
-            <button
+          {exploreSource === "youtube" && onRetryYoutubeDiscovery && (
+            <Button
               type="button"
-              role="tab"
-              id={`${tabId}-discover-tab`}
-              data-explore-tab="discover"
-              aria-controls={`${tabId}-discover-panel`}
-              aria-selected={activeTab === "discover"}
-              tabIndex={activeTab === "discover" ? 0 : -1}
-              className={cn(
-                "explore-tab inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition",
-                activeTab === "discover" && "is-active",
-              )}
-              onClick={() => {
-                onTabChange("discover");
-                onLoadDiscovery();
-              }}
+              variant="glass"
+              size="sm"
+              className="size-9 px-0"
+              aria-label="刷新 YouTube 探索推荐"
+              title="刷新 YouTube Music 推荐"
+              disabled={youtubeDiscoveryLoading}
+              onClick={onRetryYoutubeDiscovery}
             >
-              <Compass className="size-3.5" /> 榜单与精选
-            </button>
-            <button
-              type="button"
-              role="tab"
-              id={`${tabId}-styles-tab`}
-              data-explore-tab="styles"
-              aria-controls={`${tabId}-styles-panel`}
-              aria-selected={activeTab === "styles"}
-              tabIndex={activeTab === "styles" ? 0 : -1}
-              className={cn(
-                "explore-tab inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition",
-                activeTab === "styles" && "is-active",
-              )}
-              onClick={() => onTabChange("styles")}
+              <RefreshCw className={cn("size-3.5", youtubeDiscoveryLoading && "animate-spin")} />
+            </Button>
+          )}
+          {exploreSource === "netease" && (
+            <div
+              ref={tabListRef}
+              onKeyDown={handleTabKeyDown}
+              className="explore-tablist flex shrink-0 items-center gap-1 rounded-full border p-1"
+              role="tablist"
+              aria-label="探索模式"
             >
-              <Disc3 className="size-3.5" /> 曲风漫游
-            </button>
-          </div>
+              <button
+                type="button"
+                role="tab"
+                id={`${tabId}-discover-tab`}
+                data-explore-tab="discover"
+                aria-controls={`${tabId}-discover-panel`}
+                aria-selected={activeTab === "discover"}
+                tabIndex={activeTab === "discover" ? 0 : -1}
+                className={cn(
+                  "explore-tab inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition",
+                  activeTab === "discover" && "is-active",
+                )}
+                onClick={() => {
+                  onTabChange("discover");
+                  onLoadDiscovery();
+                }}
+              >
+                <Compass className="size-3.5" /> 榜单与精选
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id={`${tabId}-styles-tab`}
+                data-explore-tab="styles"
+                aria-controls={`${tabId}-styles-panel`}
+                aria-selected={activeTab === "styles"}
+                tabIndex={activeTab === "styles" ? 0 : -1}
+                className={cn(
+                  "explore-tab inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition",
+                  activeTab === "styles" && "is-active",
+                )}
+                onClick={() => onTabChange("styles")}
+              >
+                <Disc3 className="size-3.5" /> 曲风漫游
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
-      {/* Discover Tab */}
-      <div
-        id={`${tabId}-discover-panel`}
-        role="tabpanel"
-        aria-labelledby={`${tabId}-discover-tab`}
-        hidden={activeTab !== "discover"}
-        className={cn("mt-5 min-h-0 flex-1 flex-col gap-5 overflow-hidden", activeTab === "discover" ? "flex" : "hidden")}
-      >
+      {exploreSource === "youtube" ? (
+        <YoutubeDiscoveryPanel
+          discovery={youtubeDiscovery}
+          loading={youtubeDiscoveryLoading}
+          error={youtubeDiscoveryError}
+          onRetry={onRetryYoutubeDiscovery}
+          onSearchMood={onSearchHot}
+          onOpenPlaylist={onOpenYoutubePlaylist ?? onOpenPlaylist}
+          onPickTrack={onPickTrack}
+        />
+      ) : (
+        <>
+          {/* Discover Tab */}
+          <div
+            id={`${tabId}-discover-panel`}
+            role="tabpanel"
+            aria-labelledby={`${tabId}-discover-tab`}
+            hidden={activeTab !== "discover"}
+            className={cn("mt-5 min-h-0 flex-1 flex-col gap-5 overflow-hidden", activeTab === "discover" ? "flex" : "hidden")}
+          >
         {activeTab === "discover" && (
           <>
             {discoveryError && <ErrorMessage message={discoveryError} onRetry={onRetryDiscovery} disabled={discoveryLoading} />}
@@ -207,7 +269,7 @@ export function ExploreSurface({
             )}
             {discovery && (
               <div className="no-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto pr-1">
-                <section className="explore-section rounded-2xl border p-4 sm:p-5">
+                <section className="explore-section border-b pb-6">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <span className="explore-icon-pill">
@@ -269,7 +331,7 @@ export function ExploreSurface({
       >
         {activeTab === "styles" && (
           <>
-            <div className="explore-section no-scrollbar max-h-[144px] shrink-0 space-y-2.5 overflow-y-auto rounded-2xl border p-3.5 sm:p-4" aria-busy={stylesLoading}>
+            <div className="explore-section no-scrollbar max-h-[144px] shrink-0 space-y-2.5 overflow-y-auto border-b pb-3.5" aria-busy={stylesLoading}>
               {stylesLoading && !styleGroups.length && (
                 <div className="flex items-center gap-2 py-2 text-xs text-neutral-400">
                   <LoaderCircle className="size-3.5 animate-spin" /> 正在加载曲风分类…
@@ -302,8 +364,8 @@ export function ExploreSurface({
               {!stylesLoading && !styleGroups.length && !styleError && <EmptyState text="暂无曲风数据" />}
             </div>
 
-            <div className="explore-section flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border">
-              <div className="explore-style-banner flex shrink-0 flex-wrap items-center justify-between gap-4 border-b px-4 py-3.5 sm:px-5">
+            <div className="explore-section flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="explore-style-banner flex shrink-0 flex-wrap items-center justify-between gap-4 border-b pb-3">
                 <div className="min-w-0 flex-1">
                   <h2 className="truncate text-lg font-semibold">{selectedStyle?.name ?? "选择一个曲风"}</h2>
                   {selectedStyle?.description && (
@@ -354,6 +416,170 @@ export function ExploreSurface({
           </>
         )}
       </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function YoutubeDiscoveryPanel({
+  discovery,
+  loading,
+  error,
+  onRetry,
+  onSearchMood,
+  onOpenPlaylist,
+  onPickTrack,
+}: {
+  discovery: YoutubeExploreDiscovery | null;
+  loading: boolean;
+  error: string | null;
+  onRetry?: () => void;
+  onSearchMood: (query: string) => void;
+  onOpenPlaylist: (playlist: ProviderPlaylist) => void;
+  onPickTrack: (id: string, queue?: Track[]) => void;
+}) {
+  return (
+    <div className="mt-5 flex min-h-0 flex-1 flex-col gap-5 overflow-hidden">
+      {error && onRetry && <ErrorMessage message={error} onRetry={onRetry} disabled={loading} />}
+      {loading && !discovery && (
+        <div className="flex min-h-48 flex-1 items-center justify-center text-sm text-neutral-400">
+          <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在连接 YouTube Music 推荐与榜单…
+        </div>
+      )}
+      {discovery && (
+        <div className="no-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto pr-1">
+          {discovery.moods.length > 0 && (
+            <section className="explore-section border-b pb-6">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="explore-icon-pill">
+                    <Disc3 className="size-3.5" />
+                  </span>
+                  <h2 className="text-base font-semibold">心情与流派</h2>
+                </div>
+                <span className="text-[11px] text-neutral-400">点击流派探索相关曲目</span>
+              </div>
+              <div className="mt-3.5 flex flex-wrap gap-2">
+                {discovery.moods.map((mood) => (
+                  <button
+                    key={mood.id}
+                    type="button"
+                    className="explore-hot-chip inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition"
+                    onClick={() => onSearchMood(mood.query)}
+                  >
+                    <span>{mood.name}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {discovery.quickPicks.length > 0 && (
+            <YoutubeTrackGridSection
+              title="为你推荐 · 快捷精选"
+              subtitle="依据 YouTube Music 精选动态生成"
+              icon={<Compass className="size-4" />}
+              tracks={discovery.quickPicks}
+              onPickTrack={onPickTrack}
+            />
+          )}
+
+          {discovery.charts.length > 0 && (
+            <DiscoveryPlaylistSection
+              title="YouTube Charts 官方榜单"
+              subtitle="热门单曲与全球风向榜"
+              icon={<Trophy className="size-4" />}
+              playlists={discovery.charts}
+              onOpenPlaylist={onOpenPlaylist}
+              emptyText="暂无 YouTube 官方榜单"
+            />
+          )}
+
+          {discovery.playlists.length > 0 && (
+            <DiscoveryPlaylistSection
+              title="新发行与推荐歌单"
+              subtitle="新专辑、单曲与精选合辑"
+              icon={<ListMusic className="size-4" />}
+              playlists={discovery.playlists}
+              onOpenPlaylist={onOpenPlaylist}
+              emptyText="暂无 YouTube 推荐歌单"
+            />
+          )}
+
+          {discovery.trendingTracks.length > 0 && (
+            <YoutubeTrackGridSection
+              title="时下流行单曲"
+              subtitle="YouTube Music 实时热门单曲"
+              icon={<Flame className="size-4" />}
+              tracks={discovery.trendingTracks}
+              onPickTrack={onPickTrack}
+            />
+          )}
+
+          {!discovery.moods.length &&
+            !discovery.quickPicks.length &&
+            !discovery.charts.length &&
+            !discovery.playlists.length &&
+            !discovery.trendingTracks.length && <EmptyState text="暂无 YouTube 推荐内容，请确认代理运行正常后点击右上角刷新。" />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function YoutubeTrackGridSection({
+  title,
+  subtitle,
+  icon,
+  tracks,
+  onPickTrack,
+}: {
+  title: string;
+  subtitle: string;
+  icon: ReactNode;
+  tracks: Track[];
+  onPickTrack: (id: string, queue?: Track[]) => void;
+}) {
+  return (
+    <section className="explore-section min-h-0 border-b pb-6 last:border-b-0">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="explore-icon-pill">{icon}</span>
+          <div>
+            <h2 className="text-base font-semibold leading-tight">{title}</h2>
+            <p className="text-[11px] text-neutral-400">{subtitle}</p>
+          </div>
+        </div>
+        <Button size="sm" variant="glass" onClick={() => tracks[0] && onPickTrack(tracks[0].id, tracks)}>
+          <Play className="size-3.5 fill-current" /> 播放全部
+        </Button>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        {tracks.slice(0, 12).map((track, index) => (
+          <button
+            key={`${track.id}-${index}`}
+            type="button"
+            className="aria-flat-row group grid grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 py-2 text-left transition"
+            onClick={() => onPickTrack(track.id, tracks)}
+            aria-label={`播放 ${track.title}`}
+          >
+            <CoverArt track={track} className="size-12 rounded-xl" />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold" title={track.title}>
+                <CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText>
+              </span>
+              <span className="mt-0.5 block truncate text-xs text-neutral-500">
+                <CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText>
+              </span>
+            </span>
+            <span className="text-xs tabular-nums text-neutral-400">
+              {track.duration !== "--:--" ? track.duration : "MV"}
+            </span>
+          </button>
+        ))}
+      </div>
     </section>
   );
 }
@@ -374,7 +600,7 @@ function DiscoveryPlaylistSection({
   emptyText: string;
 }) {
   return (
-    <section className="explore-section min-h-0 rounded-2xl border p-4 sm:p-5">
+    <section className="explore-section min-h-0 border-b pb-6 last:border-b-0">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
           <span className="explore-icon-pill">{icon}</span>
@@ -383,7 +609,7 @@ function DiscoveryPlaylistSection({
             <p className="text-[11px] text-neutral-400">{subtitle}</p>
           </div>
         </div>
-        <Badge>{playlists.length} 个</Badge>
+        <span className="text-xs text-neutral-400 tabular-nums">{playlists.length} 个</span>
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">

@@ -22,7 +22,7 @@ function isBilibiliArtworkSource(source: URL) {
 
 function isYoutubeArtworkSource(source: URL) {
   return ["http:", "https:"].includes(source.protocol) && !source.username && !source.password && !source.port &&
-    ["ytimg.com", "ggpht.com", "googleusercontent.com"].some(
+    ["ytimg.com", "ggpht.com", "googleusercontent.com", "googleusercontent.goog", "youtube.com", "googlevideo.com"].some(
       (host) => source.hostname === host || source.hostname.endsWith(`.${host}`),
     );
 }
@@ -31,6 +31,17 @@ function isYoutubeArtworkSource(source: URL) {
 // restored from older snapshots. Sizes share the same keys across surfaces.
 export function cachedArtworkUrl(url: string | null | undefined, size = 320): string | undefined {
   if (!url) return undefined;
+  if (url.startsWith("/api/")) {
+    const resolvedApi = api.resolveUrl(url);
+    if (/\/api\/providers\/netease\/cover(?:\?|$)/.test(resolvedApi)) {
+      const [base, query = ""] = resolvedApi.split("?");
+      const params = new URLSearchParams(query);
+      const pixels = Math.max(32, Math.min(1024, Math.round(size)));
+      params.set("size", `${pixels}y${pixels}`);
+      return `${base}?${params}`;
+    }
+    return resolvedApi;
+  }
   try {
     const source = new URL(url);
     if (isQqArtworkSource(source)) {
@@ -115,6 +126,9 @@ export function directArtworkUrl(url: string | null | undefined, size = 320): st
       if (!isYoutubeArtworkSource(original)) return undefined;
       original.protocol = "https:";
       return original.href;
+    }
+    if (source.pathname.startsWith("/api/aria-room/guest/cover/")) {
+      return api.resolveUrl(url);
     }
     if (isQqArtworkSource(source)) {
       source.protocol = "https:";

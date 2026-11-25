@@ -45,12 +45,11 @@ export function CloudSurface({
   }
 
   return (
-    <section className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-8" aria-label="音乐云盘">
-      <div className="flex shrink-0 items-start justify-between gap-5">
+    <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7" aria-label="音乐云盘">
+      <div className="aria-page-header flex shrink-0 items-start justify-between gap-5 pb-4">
         <div className="min-w-0">
-          <Badge>Cloud Library</Badge>
-          <h1 className="mt-4 text-4xl font-semibold tracking-tight">音乐云盘</h1>
-          <p className="mt-3 text-sm text-neutral-500">{connected ? "听见你收藏的每一份原声。" : "登录网易云，随时播放你上传的音乐。"}</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">音乐云盘</h1>
+          <p className="mt-1 text-xs text-neutral-500">{connected ? "听见你收藏的每一份原声。" : "登录网易云，随时播放你上传的音乐。"}</p>
         </div>
         {connected && (
           <Button variant="glass" size="sm" disabled={loading} onClick={() => { setPlayError(null); void refreshCloud(); }} aria-label="刷新云盘">
@@ -61,14 +60,14 @@ export function CloudSurface({
       </div>
 
       {!connected ? (
-        <div className="mt-10 flex min-h-0 flex-1 flex-col items-center justify-center gap-5 rounded-2xl bg-white/45 text-center">
+        <div className="aria-flat-well mt-8 flex min-h-0 flex-1 flex-col items-center justify-center gap-5 rounded-2xl text-center">
           <Cloud className="size-12 text-[var(--accent)]" />
           <p className="text-neutral-500">连接网易云账号后即可读取音乐云盘。</p>
           <Button onClick={onRequireLogin}>登录网易云</Button>
         </div>
       ) : (
         <>
-          <div className="mt-6 flex shrink-0 items-center gap-5 rounded-2xl bg-white/45 px-5 py-4">
+          <div className="aria-flat-well mt-4 flex shrink-0 items-center gap-4 rounded-2xl px-4 py-3">
             <HardDrive className="size-5 shrink-0 text-neutral-400" />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-3 text-sm">
@@ -79,10 +78,10 @@ export function CloudSurface({
             </div>
           </div>
 
-          <div className="mt-5 flex shrink-0 items-center gap-3">
-            <label className="flex min-w-0 flex-1 items-center gap-3 rounded-xl bg-white/70 px-4 py-3 text-neutral-400">
+          <div className="mt-4 flex shrink-0 items-center gap-3">
+            <label className="aria-flat-input flex min-w-0 flex-1 items-center gap-3 rounded-xl px-4 py-2.5 text-neutral-400">
               <Search className="size-4 shrink-0" />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索云盘歌曲、歌手或文件名" aria-label="搜索云盘歌曲" maxLength={120} className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 outline-none placeholder:text-neutral-400" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索云盘歌曲、歌手或文件名" aria-label="搜索云盘歌曲" maxLength={120} className="min-w-0 flex-1 bg-transparent text-sm text-inherit outline-none placeholder:text-neutral-400" />
               {query && <button type="button" className="rounded-full p-1 hover:bg-black/5" onClick={() => setQuery("")} aria-label="清空云盘搜索"><X className="size-3.5" /></button>}
             </label>
             <Button size="sm" disabled={!visibleTracks.length || Boolean(pendingTrackId)} onClick={() => { const first = visibleTracks[0]; if (first) void playTrack(first); }}>
@@ -104,7 +103,7 @@ export function CloudSurface({
                 if (!track) return null;
                 const file = metadata.get(track.id);
                 const pending = pendingTrackId === track.id;
-                return <div key={track.id} role="button" tabIndex={0} aria-label={`播放 ${track.title}`} aria-busy={pending} onClick={() => void playTrack(track)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); void playTrack(track); } }} className={cn("absolute left-0 right-0 grid h-[70px] grid-cols-[1.75rem_3rem_minmax(0,1fr)_minmax(7rem,0.5fr)_auto] items-center gap-3 rounded-xl px-3 text-left transition hover:bg-white/85", activeTrackId === track.id ? "bg-[var(--accent-soft)]" : "bg-white/40")} style={{ top: offsetTop }}>
+                return <div key={track.id} role="button" tabIndex={0} aria-label={`播放 ${track.title}`} aria-busy={pending} onClick={() => void playTrack(track)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); void playTrack(track); } }} className={cn("aria-flat-row absolute left-0 right-0 grid h-[70px] grid-cols-[1.75rem_3rem_minmax(0,1fr)_minmax(7rem,0.5fr)_auto] items-center gap-3 rounded-xl px-3 text-left", activeTrackId === track.id && "is-current")} style={{ top: offsetTop }}>
                   <span className="flex justify-center text-xs text-neutral-400">{pending ? <LoaderCircle className="size-4 animate-spin" /> : index + 1}</span>
                   <CoverArt track={track} className="size-12 rounded-lg" />
                   <div className="min-w-0"><p className="truncate text-sm font-semibold"><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></p><p className="mt-1 truncate text-xs text-neutral-500"><CopyableTrackText track={track} field="artist">{track.artist}</CopyableTrackText></p></div>

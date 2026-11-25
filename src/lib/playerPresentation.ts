@@ -10,6 +10,7 @@ export type BilibiliDefaultAudioLevel = "hires" | "lossless" | "exhigh" | "stand
 export type CoverPalette = { primary: string; secondary: string };
 export type PlayerSideView = "lyrics" | "queue";
 export type AudioOutputMode = "system" | "shared" | "exclusive";
+export type YoutubeStageMode = "native" | "hifi";
 
 export const bilibiliVideoQualityOptions: Array<{ value: string; label: string }> = [
   { value: "120", label: "超清优先 (4K / 1080P60)" },
@@ -45,8 +46,28 @@ const lyricCacheKey = "aria-lyrics-cache";
 const audioSettingsKey = "aria-audio-settings";
 export const maxCachedQueueTracks = 400;
 const DEFAULT_WAVEFORM = [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52];
-const EMPTY_LYRICS: LyricLine[] = [{ time: "00:00", text: "" }];
+const EMPTY_LYRICS: LyricLine[] = [];
 const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
+const LEGACY_PLACEHOLDER_LYRIC_TEXTS = new Set([
+  "歌词等待同步",
+  "网易云歌曲已接入真实账号数据",
+  "后续会按歌曲 ID 同步滚动歌词",
+  "QQ音乐歌词会在播放时自动获取",
+  "B站视频字幕会在播放时自动获取",
+  "歌词等待匹配",
+  "播放时会自动跨源匹配同步歌词",
+  "也可在歌词栏右上角手动搜词绑定",
+  "本地歌词等待匹配",
+  "可以在本地音乐页联网搜词后绑定",
+  "绑定后会保存到本地索引",
+]);
+
+export function isLegacyPlaceholderLyrics(lyrics?: LyricLine[]): boolean {
+  if (!Array.isArray(lyrics) || !lyrics.length) return false;
+  const nonEmpty = lyrics.filter((line) => typeof line?.text === "string" && line.text.trim().length > 0);
+  if (!nonEmpty.length) return false;
+  return nonEmpty.every((line) => LEGACY_PLACEHOLDER_LYRIC_TEXTS.has(line.text.trim()));
+}
 
 export const qualityOptions: Array<{ value: QualityLevel; label: string }> = [
   { value: "standard", label: "标准" },
@@ -147,7 +168,11 @@ export function selectPlaybackQuality(
 }
 
 export function hasSyncedLyrics(track: Pick<Track, "lyrics" | "lyricStatus">) {
-  return track.lyricStatus === "linked" && track.lyrics.some((line) => line.text.trim().length > 0);
+  return (
+    track.lyricStatus === "linked" &&
+    !isLegacyPlaceholderLyrics(track.lyrics) &&
+    track.lyrics.some((line) => line.text.trim().length > 0)
+  );
 }
 
 export function restoreTrackLyrics(track: Track, fallbackLyrics: LyricLine[] = []): Track {
@@ -288,6 +313,15 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
     return undefined;
   }
 
+  const rawLyrics = Array.isArray(track.lyrics) ? track.lyrics : EMPTY_LYRICS;
+  const cleanLyrics = isLegacyPlaceholderLyrics(rawLyrics) ? EMPTY_LYRICS : rawLyrics;
+  const normalizedStatus: Track["lyricStatus"] =
+    track.lyricStatus === "linked" && !cleanLyrics.some((line) => typeof line?.text === "string" && line.text.trim().length > 0)
+      ? "searchable"
+      : track.lyricStatus === "linked" || track.lyricStatus === "searchable" || track.lyricStatus === "missing"
+        ? track.lyricStatus
+        : "searchable";
+
   return {
     id: track.id,
     providerId: typeof track.providerId === "string" ? track.providerId : undefined,
@@ -327,11 +361,8 @@ function normalizeTrackSnapshot(value: unknown): Track | undefined {
       Array.isArray(track.waveform) && track.waveform.some((item) => typeof item === "number")
         ? track.waveform.filter((item): item is number => typeof item === "number")
         : DEFAULT_WAVEFORM,
-    lyrics: Array.isArray(track.lyrics) ? track.lyrics : EMPTY_LYRICS,
-    lyricStatus:
-      track.lyricStatus === "linked" || track.lyricStatus === "searchable" || track.lyricStatus === "missing"
-        ? track.lyricStatus
-        : "searchable",
+    lyrics: cleanLyrics,
+    lyricStatus: normalizedStatus,
   };
 }
 
@@ -362,7 +393,8 @@ export function readCachedLyrics(trackId?: string) {
   if (!trackId) return [];
   if (!BILIBILI_LYRICS_ENABLED && trackId.startsWith("bilibili:")) return [];
   const cached = readLyricsCache()[trackId];
-  return Array.isArray(cached) ? normalizeBilingualLyrics(cached) : [];
+  if (!Array.isArray(cached) || isLegacyPlaceholderLyrics(cached)) return [];
+  return normalizeBilingualLyrics(cached);
 }
 
 export function writeCachedLyrics(trackId: string, lyrics: LyricLine[]) {
@@ -457,6 +489,8 @@ export function readCachedAudioSettings() {
       outputMode?: AudioOutputMode;
       bilibiliDefaultVideoQn?: BilibiliDefaultVideoQn;
       bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
+      youtubeStageMode?: YoutubeStageMode;
+      youtubeStageModeV2?: YoutubeStageMode;
     };
     const outputMode =
       parsed.outputMode === "shared" || parsed.outputMode === "exclusive" || parsed.outputMode === "system"
@@ -478,6 +512,11 @@ export function readCachedAudioSettings() {
       bilibiliDefaultAudioLevel: validBilibiliAudioLevels.has(parsed.bilibiliDefaultAudioLevel as BilibiliDefaultAudioLevel)
         ? (parsed.bilibiliDefaultAudioLevel as BilibiliDefaultAudioLevel)
         : "hires",
+      youtubeStageMode: parsed.youtubeStageMode === "hifi" ? ("hifi" as const) : ("native" as const),
+      youtubeStageModeV2:
+        parsed.youtubeStageModeV2 === "native" || parsed.youtubeStageModeV2 === "hifi"
+          ? parsed.youtubeStageModeV2
+          : undefined,
     };
   } catch {
     return {};
@@ -494,6 +533,8 @@ export function writeCachedAudioSettings(settings: {
   outputMode: AudioOutputMode;
   bilibiliDefaultVideoQn?: BilibiliDefaultVideoQn;
   bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
+  youtubeStageMode?: YoutubeStageMode;
+  youtubeStageModeV2?: YoutubeStageMode;
 }) {
   try {
     const existing = readCachedAudioSettings();
@@ -503,6 +544,10 @@ export function writeCachedAudioSettings(settings: {
         ...settings,
         bilibiliDefaultVideoQn: settings.bilibiliDefaultVideoQn ?? existing.bilibiliDefaultVideoQn ?? 120,
         bilibiliDefaultAudioLevel: settings.bilibiliDefaultAudioLevel ?? existing.bilibiliDefaultAudioLevel ?? "hires",
+        youtubeStageMode: settings.youtubeStageMode ?? existing.youtubeStageMode ?? "native",
+        ...(settings.youtubeStageModeV2 ?? existing.youtubeStageModeV2
+          ? { youtubeStageModeV2: settings.youtubeStageModeV2 ?? existing.youtubeStageModeV2 }
+          : {}),
       }),
     );
   } catch {
@@ -771,7 +816,13 @@ export function mergeTrackRecord(existing: Track, incoming: Track): Track {
   const keepLinkedLyrics =
     existing.lyricStatus === "linked" &&
     existingLyrics.length > 0 &&
-    (incoming.lyricStatus !== "linked" || incomingLyrics.length === 0);
+    !isLegacyPlaceholderLyrics(existingLyrics) &&
+    (incoming.lyricStatus !== "linked" || incomingLyrics.length === 0 || isLegacyPlaceholderLyrics(incomingLyrics));
+  const keepMissingLyrics =
+    existing.lyricStatus === "missing" &&
+    existingLyrics.length === 0 &&
+    incoming.lyricStatus === "searchable" &&
+    incomingLyrics.length === 0;
   return {
     ...existing,
     ...incoming,
@@ -785,8 +836,18 @@ export function mergeTrackRecord(existing: Track, incoming: Track): Track {
     currentLevel: incoming.currentLevel ?? existing.currentLevel,
     bitrate: incoming.bitrate ?? existing.bitrate,
     sampleRate: incoming.sampleRate ?? existing.sampleRate,
-    lyrics: keepLinkedLyrics ? existingLyrics : incomingLyrics.length ? incomingLyrics : existingLyrics,
-    lyricStatus: keepLinkedLyrics ? existing.lyricStatus : incoming.lyricStatus ?? existing.lyricStatus,
+    lyrics: keepMissingLyrics
+      ? []
+      : keepLinkedLyrics
+        ? existingLyrics
+        : incomingLyrics.length
+          ? incomingLyrics
+          : existingLyrics,
+    lyricStatus: keepMissingLyrics
+      ? "missing"
+      : keepLinkedLyrics
+        ? existing.lyricStatus
+        : incoming.lyricStatus ?? existing.lyricStatus,
   };
 }
 

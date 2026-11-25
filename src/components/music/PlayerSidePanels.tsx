@@ -138,6 +138,7 @@ export function PlayerSidePanel({
   track,
   palette,
   lyricDisplayMode,
+  mvLyricsUnavailable = false,
   playing = false,
   tracks,
   activeTrackId,
@@ -153,6 +154,7 @@ export function PlayerSidePanel({
   track: Track;
   palette: CoverPalette;
   lyricDisplayMode: "original" | "bilingual";
+  mvLyricsUnavailable?: boolean;
   playing?: boolean;
   tracks: Track[];
   activeTrackId: string;
@@ -166,7 +168,7 @@ export function PlayerSidePanel({
   return (
     <aside className="glass hidden min-h-0 min-w-0 flex-col rounded-[1.5rem] p-4 lg:flex">
       <div className="flex items-center justify-between gap-3 border-b border-neutral-950/6 pb-3">
-        <h2 className="text-base font-semibold tracking-tight">{mode === "lyrics" ? (track.lyrics.some((line) => line.words?.length) ? "逐字歌词" : "同步歌词") : "下一首"}</h2>
+        <h2 className="text-base font-semibold tracking-tight">{mode === "lyrics" ? (track.lyrics.some((line) => line.words?.length) && !mvLyricsUnavailable ? "逐字歌词" : "同步歌词") : "下一首"}</h2>
         <div className="flex rounded-full bg-neutral-950/[0.045] p-0.5">
           <button
             className={cn(
@@ -194,6 +196,7 @@ export function PlayerSidePanel({
           track={track}
           palette={palette}
           lyricDisplayMode={lyricDisplayMode}
+          mvLyricsUnavailable={mvLyricsUnavailable}
           playing={playing}
           onSeek={onSeek}
           onBindLyrics={onBindLyrics}
@@ -217,6 +220,7 @@ function SidebarLyrics({
   track,
   palette,
   lyricDisplayMode,
+  mvLyricsUnavailable = false,
   playing,
   onSeek,
   onBindLyrics,
@@ -224,13 +228,14 @@ function SidebarLyrics({
   track: Track;
   palette: CoverPalette;
   lyricDisplayMode: "original" | "bilingual";
+  mvLyricsUnavailable?: boolean;
   playing: boolean;
   onSeek: (time: number) => void;
   onBindLyrics?: (trackId: string, lyrics: Track["lyrics"], candidateId: string) => void;
 }) {
   const bilibiliLyricsOff = track.source === "bilibili" && !BILIBILI_LYRICS_ENABLED;
   const canSearchManualLyrics =
-    Boolean(onBindLyrics) && track.id !== "idle" && (track.source === "youtube" || track.source === "local");
+    Boolean(onBindLyrics) && track.id !== "idle" && !bilibiliLyricsOff && !mvLyricsUnavailable;
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTitle, setSearchTitle] = useState("");
   const [searchArtist, setSearchArtist] = useState("");
@@ -288,8 +293,8 @@ function SidebarLyrics({
   }
 
   const lines = useMemo(
-    () => (bilibiliLyricsOff ? [] : normalizeBilingualLyrics(track.lyrics)),
-    [bilibiliLyricsOff, track.lyrics],
+    () => (bilibiliLyricsOff || mvLyricsUnavailable ? [] : normalizeBilingualLyrics(track.lyrics)),
+    [bilibiliLyricsOff, mvLyricsUnavailable, track.lyrics],
   );
   const activeLyricIndex = useSyncExternalStore(
     subscribePlaybackTime,
@@ -301,9 +306,9 @@ function SidebarLyrics({
   const manualScrollUntilRef = useRef(0);
 
   useEffect(() => {
-    if (Date.now() < manualScrollUntilRef.current) return;
+    if (mvLyricsUnavailable || Date.now() < manualScrollUntilRef.current) return;
     lineRefs.current[activeLyricIndex]?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [activeLyricIndex, track.id]);
+  }, [activeLyricIndex, mvLyricsUnavailable, track.id]);
 
   const holdManualScroll = () => {
     manualScrollUntilRef.current = Date.now() + 3500;
@@ -404,6 +409,13 @@ function SidebarLyrics({
           <p className="text-sm font-medium text-neutral-500">B站曲目默认不加载歌词</p>
           <p className="mt-1.5 text-xs text-neutral-400">可点击右上角「下一首」查看待播队列，或点左上角摄像机开启实时视频。</p>
         </div>
+      ) : mvLyricsUnavailable ? (
+        <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 text-center">
+          <p className="text-sm font-medium text-neutral-500">MV 模式下暂不支持歌词同步</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-neutral-400">
+            官方 MV 时长与原曲版本存在差异，收起 MV 画面返回音频播放后将自动恢复同步歌词。
+          </p>
+        </div>
       ) : (
         <div
           className="aria-lyric-scroll no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
@@ -448,7 +460,20 @@ function SidebarLyrics({
               </button>
             );
           })}
-          {!lines.length && <p className="text-center text-sm text-neutral-500">歌词同步中</p>}
+          {!lines.length && (
+            <div className="flex flex-col items-center justify-center px-4 py-6 text-center">
+              <p className="text-sm font-medium text-neutral-500">
+                {track.id === "idle"
+                  ? "暂无播放"
+                  : track.lyricStatus === "missing"
+                    ? "纯音乐或暂无同步歌词"
+                    : "正在加载歌词…"}
+              </p>
+              {track.id !== "idle" && track.lyricStatus === "missing" && canSearchManualLyrics && (
+                <p className="mt-1.5 text-xs text-neutral-400">可点右上角「搜词」手动匹配绑定</p>
+              )}
+            </div>
+          )}
           <div className="h-14 shrink-0" />
         </div>
       )}

@@ -3,12 +3,15 @@ import type { Track } from "@/data/music";
 import {
   createLocalPlaylist,
   createPlaylistTrackSnapshots,
+  mergePlaylistTrackIds,
   mergeReferenceSync,
   readLocalPlaylists,
   resolveLocalPlaylistTracks,
   writeLocalPlaylists,
   type LocalPlaylist,
   type LocalPlaylistRemoteRef,
+  type LocalPlaylistSuperMix,
+  type PlaylistInsertPosition,
 } from "@/lib/localPlaylists";
 
 export function useLocalPlaylists(tracks: Track[]) {
@@ -41,6 +44,41 @@ export function useLocalPlaylists(tracks: Track[]) {
     return playlist;
   }
 
+  function createSuperMix(name: string, tracksToMix: Track[], superMix: LocalPlaylistSuperMix) {
+    const now = Date.now();
+    const playlist = createLocalPlaylist(
+      name,
+      tracksToMix.map((track) => track.id),
+      now,
+      createPlaylistTrackSnapshots(tracksToMix),
+      undefined,
+      { ...superMix, syncedAt: superMix.syncedAt ?? now },
+    );
+    setPlaylists((current) => [playlist, ...current]);
+    return playlist;
+  }
+
+  function updateSuperMix(id: string, tracksToMix: Track[], superMix: LocalPlaylistSuperMix, name?: string) {
+    const now = Date.now();
+    const snapshots = createPlaylistTrackSnapshots(tracksToMix);
+    const trimmedName = name?.trim().slice(0, 80);
+    setPlaylists((current) =>
+      current.map((playlist) =>
+        playlist.id === id
+          ? {
+              ...playlist,
+              kind: "super-mix",
+              name: trimmedName || playlist.name,
+              trackIds: [...new Set(tracksToMix.map((track) => track.id))],
+              trackSnapshots: Object.keys(snapshots).length ? snapshots : undefined,
+              superMix: { ...superMix, syncedAt: superMix.syncedAt ?? now },
+              updatedAt: now,
+            }
+          : playlist,
+      ),
+    );
+  }
+
   function syncReference(id: string, tracksToSync: Track[], title?: string) {
     setPlaylists((current) => current.map((playlist) =>
       playlist.id === id ? mergeReferenceSync(playlist, tracksToSync, title) : playlist,
@@ -55,17 +93,31 @@ export function useLocalPlaylists(tracks: Track[]) {
       : playlist));
   }
 
-  function addTracks(id: string, tracksToAdd: Track[]) {
+  function addTracks(id: string, tracksToAdd: Track[], position: PlaylistInsertPosition = "top") {
     if (!tracksToAdd.length) return;
+    const addedIds = tracksToAdd.map((track) => track.id);
     const snapshots = createPlaylistTrackSnapshots(tracksToAdd);
-    setPlaylists((current) => current.map((playlist) => playlist.id === id
-      ? {
-          ...playlist,
-          trackIds: [...new Set([...playlist.trackIds, ...tracksToAdd.map((track) => track.id)])],
-          trackSnapshots: { ...(playlist.trackSnapshots ?? {}), ...snapshots },
-          updatedAt: Date.now(),
-        }
-      : playlist));
+    setPlaylists((current) => current.map((playlist) => {
+      if (playlist.id !== id) return playlist;
+      const nextTrackIds = mergePlaylistTrackIds(playlist.trackIds, addedIds, position);
+      const nextManualIds = playlist.superMix
+        ? [...new Set([...(playlist.superMix.manualTrackIds ?? []), ...addedIds])].slice(0, 2_000)
+        : undefined;
+      return {
+        ...playlist,
+        trackIds: nextTrackIds,
+        trackSnapshots: { ...(playlist.trackSnapshots ?? {}), ...snapshots },
+        ...(playlist.superMix
+          ? {
+              superMix: {
+                ...playlist.superMix,
+                ...(nextManualIds?.length ? { manualTrackIds: nextManualIds } : {}),
+              },
+            }
+          : {}),
+        updatedAt: Date.now(),
+      };
+    }));
   }
 
   function removeTracks(id: string, tracksToRemove: Track[]) {
@@ -75,10 +127,19 @@ export function useLocalPlaylists(tracks: Track[]) {
       const trackSnapshots = playlist.trackSnapshots
         ? Object.fromEntries(Object.entries(playlist.trackSnapshots).filter(([trackId]) => !ids.has(trackId)))
         : undefined;
+      const nextManualIds = playlist.superMix?.manualTrackIds?.filter((trackId) => !ids.has(trackId));
       return {
         ...playlist,
         trackIds: playlist.trackIds.filter((trackId) => !ids.has(trackId)),
         ...(trackSnapshots && Object.keys(trackSnapshots).length ? { trackSnapshots } : { trackSnapshots: undefined }),
+        ...(playlist.superMix
+          ? {
+              superMix: {
+                ...playlist.superMix,
+                manualTrackIds: nextManualIds?.length ? nextManualIds : undefined,
+              },
+            }
+          : {}),
         updatedAt: Date.now(),
       };
     }));
@@ -108,6 +169,8 @@ export function useLocalPlaylists(tracks: Track[]) {
     storageError,
     setSelectedId,
     create,
+    createSuperMix,
+    updateSuperMix,
     rename,
     addTracks,
     removeTracks,
