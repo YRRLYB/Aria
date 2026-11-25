@@ -16,8 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/YRRLYB/Aria/releases/latest">去下载最新版 (.exe / 发布页)</a> ·
+  <a href="https://github.com/YRRLYB/Aria/releases/latest">去下载最新版 (.exe / .dmg / 发布页)</a> ·
   <a href="#features">看看它都能干嘛 ↓</a> ·
+  <a href="#listen-together-deploy">自建一起听中转教程 ↓</a> ·
   <a href="CHANGELOG.md">翻翻改动记录 →</a> ·
   <a href="https://github.com/YRRLYB/Aria-Mobile">配套安卓端 Aria-Mobile ↗</a> ·
   <a href="#sponsor">请作者喝杯奶茶 ↓</a>
@@ -49,7 +50,8 @@
 - **硬核一点的科学 Hi-Fi 均衡器**：`31Hz – 16kHz` 十段 RBJ 双二阶滤波（Biquad），带实时总频响 Bode 曲线、单频点钟形响应叠加、削波余量监控（Headroom / Clipping）、A/B 旁路瞬间对比、多套内置预设和 JSON 导入导出，系统音频和 WASAPI 全链路生效。
 - **跟拍更紧的 60fps 动态频谱**：`2048` 点 FFT 搭配 Mel 感知频率分布，紧了 WASAPI 与 mpv 的时间同步阈值，低频不会糊成一大块。
 
-### 歌词、统计与平时顺手的小细节
+### 歌词、一起听与平时顺手的小细节
+- **Aria 官方一起听**：内置 **Cloudflare 信令**、**自建信令节点**与**房主直连**三种互通模式，支持房间队列协同点歌、NTP 对时与微调变速同步、YouTube 封面本地代理主色提取，以及网易云 VIP / QQ 会员 / B站大会员（`Hi-Res` / `杜比`）高音质跨端中继（严格剥离敏感登录请求头，同时保留网易云官方一起听入口）。
 - **逐字 & 配对双语歌词**：支持逐字推进和外文+中文译文成对排版，一键切换「仅原文 / 双语」；本地老歌还能联网补全封面、简介和歌词。
 - **听歌方格 & 听歌洞察**：主页内嵌本月聆听声迹，点开放大看全年 1 月 1 日 — 12 月 31 日的听歌分布，还能按年翻看；也有重构过的「听歌洞察」统计页，方便回头看看最近都偏爱听什么。
 - **亮暗双主题 & 手机协同**：浅色和深色主题实时切换，深色封面下会自动保底按钮文字对比度，不怕按钮隐身；平时也能通过局域网配对连上安卓端——[点这里去 Aria-Mobile 仓库](https://github.com/YRRLYB/Aria-Mobile) 看看配套客户端。
@@ -61,6 +63,74 @@
 
 - **Windows 版**：直接去 [Releases 发布页](https://github.com/YRRLYB/Aria/releases/latest) 下最新的 `Aria-x.x.x-x64.exe`；装好之后在应用里打开「设置 → 版本与更新」就能直接检查并自动升级。
 - **macOS（Intel / Apple Silicon）**：两个架构都已经配好 DMG 打包流程，可以直接去 Releases 下载对应架构的安装包，或者拉下代码后通过 `npm run dist:mac:x64` / `npm run dist:mac:arm64` 本地构建。
+
+---
+
+<a id="listen-together-deploy"></a>
+## 🌐 一起听自部署中转（信令节点）教程
+
+> **为什么正式版不自带默认中转？**  
+> 为保护隐私并避免公用免费节点拥塞或泄漏个人服务器地址，公开发布包**不内置任何默认中继服务器**，也不会把 `deploy/` 和 `cloudflare/` 打包进客户端安装程序。  
+> **中转 / 信令节点仅转发轻量房间指令**：只负责 6 位房间码发现、成员状态同步、时钟校准包与 WebRTC SDP/ICE 握手，**不中转音频数据流**（在线歌曲由播放端或直链拉取，单房间每小时信令流量通常仅几十 KB）。
+
+你可以根据自己的网络条件从以下 3 种方式中任选其一（**同一房间内的房主与听友需填入相同的信令地址**）：
+
+### 方案一：Linux / Windows 服务器一键部署（推荐，零第三方依赖）
+
+仅需一台有公网 IP 的轻量服务器（**Node.js >= 18**；若系统尚未安装 Node，脚本内会尽量提示或自动处理基础依赖）：
+
+- **Linux 服务器（配置 systemd 开机常驻，默认端口 `8787`）**：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YRRLYB/Aria/main/deploy/aria-signal-node/install-linux.sh | sudo bash
+```
+
+  若已克隆本仓库，也可进入目录后本地安装 / 指定端口：
+
+```bash
+cd deploy/aria-signal-node
+sudo bash install-linux.sh --port 8787
+```
+
+  常用运维：`systemctl status aria-signal`（查看状态）、`journalctl -u aria-signal -f`（查看日志）、`sudo bash install-linux.sh --uninstall`（在脚本目录执行彻底卸载）。
+
+- **Windows 服务器（管理员 PowerShell 安装为开机自启计划任务，默认端口 `8787`）**：
+
+```powershell
+powershell -NoProfile -Command "irm https://raw.githubusercontent.com/YRRLYB/Aria/main/deploy/aria-signal-node/install-windows.ps1 -OutFile install-windows.ps1; powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Port 8787"
+```
+
+  常用运维：`Get-ScheduledTask -TaskName AriaSignalNode`（查看状态）、`Get-Content C:\AriaSignalNode\logs\signal.log -Tail 50`（查看日志）、`powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall`（卸载）。
+
+> **端口放行与域名反代**：  
+> - 请在云厂商安全组与系统防火墙放行 **TCP 8787**（或你自定义的端口）；部署后可直接用 `http://你的公网IP:8787`，无需域名与 SSL 证书。  
+> - 如希望走 `https://` 域名，可用 Nginx / Caddy 反代至 `http://127.0.0.1:8787` 并开启 WebSocket 升级头（`Upgrade` / `Connection`），完整 Nginx 示例见 [自建信令节点详细说明](deploy/aria-signal-node/README.md)。
+
+### 方案二：Cloudflare Workers + Durable Objects（免服务器免费托管）
+
+如果没有 VPS，可以直接白嫖 Cloudflare Workers 免费额度（基于 Durable Objects WebSocket Hibernation）：
+
+```bash
+npm i -g wrangler
+wrangler login
+cd cloudflare/aria-signal-worker
+wrangler deploy
+```
+
+- **强烈建议绑定自定义域名**：默认 `*.workers.dev` 在部分国内网络可能受阻；在 Cloudflare Dashboard → `Workers & Pages` → `aria-signal-worker` → `Settings` → `Domains & Routes` 绑定已接入 Cloudflare 的个人子域名（如 `signal.yourdomain.com`），并在 [wrangler.toml](cloudflare/aria-signal-worker/wrangler.toml) 按需配置路由。详细步骤见 [Cloudflare 信令部署说明](cloudflare/aria-signal-worker/README.md)。
+
+### 方案三：房主直连（免一切信令服务器）
+
+如果房主本地网络具备公网 IPv4 / 公网 IPv6，或者大家就在同一局域网 / 组网内：
+- 无需部署任何信令节点，在防火墙或路由器放行直连端口（默认 **TCP 3639**）后，直接选择「**房主直连**」创建房间，复制直连令牌发给听友粘贴加入即可。
+
+### Aria 客户端填写步骤
+
+1. 打开 Aria → 左侧 **一起听 → Aria 官方一起听 → 网络设置**；
+2. 根据上方所选方案填写并保存：
+   - **使用自建服务器（方案一）**：切到「自建信令节点」，填写 `http://你的服务器IP:8787`（支持只写 `IP:端口`）或 HTTPS 反代域名，点击 **测速优选 IP** 可验证返回 **`自建节点直连`**（自建节点会自动跳过 Cloudflare Anycast 优选）；
+   - **使用 Cloudflare Worker（方案二）**：切到「Cloudflare 信令」，填写 `https://signal.yourdomain.com`，点击 **测速优选 IP** 自动挑选延迟最低的可用 IP；
+3. 点击 **保存配置** 后，即可在「云端 / 混合」模式下创建房间并通过 6 位房间码跨网络同步听歌。
 
 ---
 
@@ -103,10 +173,12 @@ npm run dist:mac        # 打出 macOS DMG（自动按架构准备 mpv）
 - `src/`：React 界面、亮暗主题样式、实时频谱、Hi-Fi EQ 与播放状态管理
 - `server/`：本地 Node / Express 服务、多音源聚合、扫码认证、曲库扫描与歌词解析
 - `electron/`：桌面窗口控制、系统托盘、mpv WASAPI 原生音频桥接与自动更新
+- `deploy/` & `cloudflare/`：自建一起听信令节点一键部署脚本与 Cloudflare Worker 源码（不随桌面安装包打包）
 - `aria-icons/` & `build/`：应用图标套件与打包资源
 - `scripts/`：构建、mpv 准备和安装包制作脚本
 - **更多延伸阅读**：
   - [完整版本更新日志（CHANGELOG）](CHANGELOG.md)
+  - [自建信令节点部署文档](deploy/aria-signal-node/README.md) · [Cloudflare Worker 信令说明](cloudflare/aria-signal-worker/README.md)
   - [安卓伙伴 Aria-Mobile（GitHub 仓库）](https://github.com/YRRLYB/Aria-Mobile)
 
 ---

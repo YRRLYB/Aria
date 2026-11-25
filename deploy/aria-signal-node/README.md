@@ -19,7 +19,7 @@ sudo bash install-linux.sh --port 8787
 如果是空白机器，也可单命令远程安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YRRLYB/Aria/test/macos-0.8.5/deploy/aria-signal-node/install-linux.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/YRRLYB/Aria/main/deploy/aria-signal-node/install-linux.sh | sudo bash
 ```
 
 常用运维命令：

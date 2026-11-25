@@ -12,7 +12,7 @@ try {
 
 $TaskName = "AriaSignalNode"
 $FirewallRuleName = "Aria Signal Node (TCP $Port)"
-$RawServerUrl = "https://raw.githubusercontent.com/YRRLYB/Aria/test/macos-0.8.5/deploy/aria-signal-node/server.mjs"
+$RawServerUrl = "https://raw.githubusercontent.com/YRRLYB/Aria/main/deploy/aria-signal-node/server.mjs"
 $targetServerMjs = Join-Path $InstallDir "server.mjs"
 
 function Stop-AriaSignalProcesses {

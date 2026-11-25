@@ -4,7 +4,7 @@ set -euo pipefail
 PORT="${PORT:-8787}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/aria-signal-node}"
 SERVICE_NAME="aria-signal"
-RAW_SERVER_URL="https://raw.githubusercontent.com/YRRLYB/Aria/test/macos-0.8.5/deploy/aria-signal-node/server.mjs"
+RAW_SERVER_URL="https://raw.githubusercontent.com/YRRLYB/Aria/main/deploy/aria-signal-node/server.mjs"
 UNINSTALL=0
 
 while [ "$#" -gt 0 ]; do
