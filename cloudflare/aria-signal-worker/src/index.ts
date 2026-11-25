@@ -136,7 +136,10 @@ export class AriaSignalRoom {
     const senderPeerId = tags[0] ?? "";
 
     if (type === "ping") {
-      this.sendJson(ws, { type: "pong", ts: parsed.ts ?? Date.now() });
+      const t1 = Date.now();
+      const t0 = typeof parsed.t0 === "number" ? parsed.t0 : typeof parsed.ts === "number" ? parsed.ts : t1;
+      const t2 = Date.now();
+      this.sendJson(ws, { type: "pong", ts: parsed.ts ?? t1, t0, t1, t2, serverTs: t2 });
       return;
     }
     if (type === "pong") return;

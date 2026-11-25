@@ -312,7 +312,10 @@ export function createAriaSignalServer(options = {}) {
     const senderPeerId = ws.peerId;
 
     if (type === "ping") {
-      ws.sendJson({ type: "pong", ts: parsed.ts ?? Date.now() });
+      const t1 = Date.now();
+      const t0 = typeof parsed.t0 === "number" ? parsed.t0 : typeof parsed.ts === "number" ? parsed.ts : t1;
+      const t2 = Date.now();
+      ws.sendJson({ type: "pong", ts: parsed.ts ?? t1, t0, t1, t2, serverTs: t2 });
       return;
     }
     if (type === "pong") return;

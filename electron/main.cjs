@@ -2292,7 +2292,22 @@ app.whenReady().then(async () => {
   // Registry/shell maintenance is not part of the first paint path.
   setImmediate(ensureWindowsTaskbarPreviewPolicy);
   await configureDirectNetwork();
-  setupUpdates({ writeLog });
+  setupUpdates({
+    writeLog,
+    resolveLocalProxy: () => resolveYoutubeLoginProxy(""),
+    onBeforeInstall: () => {
+      isQuitting = true;
+      stopYoutubeProxyRelay();
+      nativeAudioEngine?.teardown?.();
+      if (backendProcess && !backendProcess.killed) {
+        try {
+          backendProcess.kill();
+        } catch {
+          // Ignore child process teardown errors before installer takes over.
+        }
+      }
+    },
+  });
   await createWindow();
   syncGlobalShortcuts(globalShortcutConfig);
 });

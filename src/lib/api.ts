@@ -114,6 +114,7 @@ declare global {
         check: () => Promise<UpdateState>;
         download: () => Promise<UpdateState>;
         install: () => Promise<boolean>;
+        openReleases?: () => Promise<boolean>;
         onState: (callback: (state: UpdateState) => void) => () => void;
       };
       configureGlobalShortcuts?: (payload: KeyboardShortcuts) => Promise<unknown>;
@@ -153,6 +154,7 @@ export type UpdateState = {
   error: string | null;
   checkedAt: number | null;
   reason: string | null;
+  manualDownloadOnly?: boolean;
 };
 
 export type ApiScannedTrack = {

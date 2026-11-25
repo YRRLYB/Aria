@@ -1075,4 +1075,205 @@ describe("AriaRoomManager Direct Port, Bit-Exact Range, Security & 5-Member Cap"
       await guestMgr.leaveRoom();
     }
   });
+
+  it("synchronizes both host and guest to single-hop server timestamps embedded in WSS heartbeat pong without double-hop clock_ping", async () => {
+    const serverShiftMs = 30_000;
+    let doubleHopClockPings = 0;
+    const rooms = new Map<string, Map<string, ReturnType<typeof acceptWebSocketUpgrade>>>();
+    const mockCf = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    mockCf.on("upgrade", (req, socket, head) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const room = url.searchParams.get("room") ?? "HBCLOCK";
+      const peer = url.searchParams.get("peer") ?? "unknown";
+      const ws = acceptWebSocketUpgrade(req, socket as net.Socket, head);
+      if (!rooms.has(room)) rooms.set(room, new Map());
+      rooms.get(room)!.set(peer, ws);
+      ws.on("message", (raw: string) => {
+        const msg = JSON.parse(raw) as Record<string, unknown>;
+        if (msg.type === "ping") {
+          const t1 = Date.now() + serverShiftMs;
+          const t0 = typeof msg.t0 === "number" ? msg.t0 : typeof msg.ts === "number" ? msg.ts : t1;
+          const t2 = Date.now() + serverShiftMs;
+          ws.sendJson({ type: "pong", ts: msg.ts ?? t1, t0, t1, t2, serverTs: t2 });
+          return;
+        }
+        if (msg.type === "clock_ping") {
+          doubleHopClockPings += 1;
+        }
+        for (const [otherId, otherWs] of rooms.get(room) ?? []) {
+          if (otherId !== peer && otherWs.isOpen) {
+            if (msg.type === "hello") {
+              otherWs.sendJson({ type: "peer_joined", member: msg.member });
+            } else {
+              otherWs.send(raw);
+            }
+          }
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => mockCf.listen(0, "127.0.0.1", () => resolve()));
+    const cfAddr = mockCf.address() as net.AddressInfo;
+
+    const hostMgr = new AriaRoomManager({ localApiPort: 0 });
+    const guestMgr = new AriaRoomManager({ localApiPort: 0 });
+    const guestSseEvents: Array<{ event: string; data: unknown }> = [];
+    const detachGuestSse = guestMgr.attachSseClient({
+      writableEnded: false,
+      writeHead: () => undefined,
+      write: (chunk: string) => {
+        const evMatch = /^event:\s*(.+)$/m.exec(chunk);
+        const dataMatch = /^data:\s*(.+)$/m.exec(chunk);
+        if (evMatch && dataMatch) {
+          guestSseEvents.push({ event: evMatch[1], data: JSON.parse(dataMatch[1]) });
+        }
+        return true;
+      },
+      setHeader: () => undefined,
+      flushHeaders: () => undefined,
+    } as unknown as import("express").Response);
+
+    try {
+      const hostSnap = await hostMgr.createRoom({
+        peerId: "hb-host",
+        nickname: "HbHost",
+        networkMode: "cloudflare",
+        signalingUrl: `ws://127.0.0.1:${cfAddr.port}`,
+        track: {
+          nonce: "trk_hb_1",
+          id: "netease:1001",
+          source: "netease",
+          title: "HB Sync",
+          artist: "Artist",
+          album: "Album",
+          duration: "03:00",
+          quality: "Lossless",
+        },
+        playing: true,
+        positionSec: 0,
+      });
+
+      const localNowAfterHost = Date.now();
+      expect(hostSnap.playback.updatedAtMs - localNowAfterHost).toBeGreaterThan(serverShiftMs - 2_000);
+      expect(hostSnap.playback.updatedAtMs - localNowAfterHost).toBeLessThan(serverShiftMs + 2_000);
+
+      const syncEv = hostMgr.hostBroadcastPlaybackSync({
+        kind: "play_at",
+        nonce: "trk_hb_1",
+        positionSec: 1.5,
+        startAtHostMs: Date.now() + 200,
+      });
+      expect(syncEv.serverTimeMs - Date.now()).toBeGreaterThan(serverShiftMs - 1_500);
+      expect(syncEv.startAtHostMs - Date.now()).toBeGreaterThan(serverShiftMs - 1_200);
+
+      await guestMgr.joinRoom({
+        peerId: "hb-guest",
+        nickname: "HbGuest",
+        mode: "cloudflare",
+        roomId: hostSnap.roomId!,
+        signalingUrl: `ws://127.0.0.1:${cfAddr.port}`,
+      });
+      guestMgr.sendClockPing();
+      await new Promise((r) => setTimeout(r, 120));
+
+      const clockPongs = guestSseEvents.filter((e) => e.event === "clock_pong");
+      expect(clockPongs.length).toBeGreaterThan(0);
+      const latestPong = clockPongs.at(-1)!.data as { t0: number; t1: number; t2: number; t3: number };
+      const measuredOffset = (latestPong.t1 - latestPong.t0 + (latestPong.t2 - latestPong.t3)) / 2;
+      expect(Math.abs(measuredOffset - serverShiftMs)).toBeLessThan(500);
+      expect(doubleHopClockPings).toBe(0);
+    } finally {
+      detachGuestSse();
+      await hostMgr.leaveRoom();
+      await guestMgr.leaveRoom();
+      await new Promise<void>((resolve) => mockCf.close(() => resolve()));
+    }
+  });
+
+  it("falls back to legacy double-hop clock_ping when signaling server returns bare pong without serverTs", async () => {
+    let forwardedClockPings = 0;
+    const rooms = new Map<string, Map<string, ReturnType<typeof acceptWebSocketUpgrade>>>();
+    const mockCf = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    mockCf.on("upgrade", (req, socket, head) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const room = url.searchParams.get("room") ?? "LEGACY";
+      const peer = url.searchParams.get("peer") ?? "unknown";
+      const ws = acceptWebSocketUpgrade(req, socket as net.Socket, head);
+      if (!rooms.has(room)) rooms.set(room, new Map());
+      rooms.get(room)!.set(peer, ws);
+      ws.on("message", (raw: string) => {
+        const msg = JSON.parse(raw) as Record<string, unknown>;
+        if (msg.type === "ping") {
+          ws.sendJson({ type: "pong", ts: msg.ts ?? Date.now() });
+          return;
+        }
+        if (msg.type === "clock_ping") {
+          forwardedClockPings += 1;
+        }
+        for (const [otherId, otherWs] of rooms.get(room) ?? []) {
+          if (otherId !== peer && otherWs.isOpen) {
+            if (msg.type === "hello") {
+              otherWs.sendJson({ type: "peer_joined", member: msg.member });
+            } else {
+              otherWs.send(raw);
+            }
+          }
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => mockCf.listen(0, "127.0.0.1", () => resolve()));
+    const cfAddr = mockCf.address() as net.AddressInfo;
+
+    const hostMgr = new AriaRoomManager({ localApiPort: 0 });
+    const guestMgr = new AriaRoomManager({ localApiPort: 0 });
+    const guestSseEvents: Array<{ event: string; data: unknown }> = [];
+    const detachGuestSse = guestMgr.attachSseClient({
+      writableEnded: false,
+      writeHead: () => undefined,
+      write: (chunk: string) => {
+        const evMatch = /^event:\s*(.+)$/m.exec(chunk);
+        const dataMatch = /^data:\s*(.+)$/m.exec(chunk);
+        if (evMatch && dataMatch) {
+          guestSseEvents.push({ event: evMatch[1], data: JSON.parse(dataMatch[1]) });
+        }
+        return true;
+      },
+      setHeader: () => undefined,
+      flushHeaders: () => undefined,
+    } as unknown as import("express").Response);
+
+    try {
+      const hostSnap = await hostMgr.createRoom({
+        peerId: "legacy-host",
+        nickname: "LegacyHost",
+        networkMode: "cloudflare",
+        signalingUrl: `ws://127.0.0.1:${cfAddr.port}`,
+      });
+      await guestMgr.joinRoom({
+        peerId: "legacy-guest",
+        nickname: "LegacyGuest",
+        mode: "cloudflare",
+        roomId: hostSnap.roomId!,
+        signalingUrl: `ws://127.0.0.1:${cfAddr.port}`,
+      });
+      guestMgr.sendClockPing();
+      await new Promise((r) => setTimeout(r, 150));
+
+      const clockPongs = guestSseEvents.filter((e) => e.event === "clock_pong");
+      expect(forwardedClockPings).toBeGreaterThanOrEqual(1);
+      expect(clockPongs.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      detachGuestSse();
+      await hostMgr.leaveRoom();
+      await guestMgr.leaveRoom();
+      await new Promise<void>((resolve) => mockCf.close(() => resolve()));
+    }
+  });
 });

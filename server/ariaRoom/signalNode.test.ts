@@ -148,6 +148,16 @@ describe("aria-signal-node standalone relay", () => {
         });
         const clockPong = await guestPongPromise;
         expect(clockPong.t1).toBe(110);
+
+        const hbPongPromise = waitForJsonMessage(guestWs, (m) => m.type === "pong");
+        const clientSendTs = Date.now();
+        guestWs.sendJson({ type: "ping", ts: clientSendTs, t0: clientSendTs });
+        const hbPong = await hbPongPromise;
+        expect(hbPong.t0).toBe(clientSendTs);
+        expect(typeof hbPong.t1).toBe("number");
+        expect(typeof hbPong.t2).toBe("number");
+        expect(typeof hbPong.serverTs).toBe("number");
+        expect(Number(hbPong.t2)).toBeGreaterThanOrEqual(Number(hbPong.t1));
       } finally {
         hostWs.close();
         guestWs.close();

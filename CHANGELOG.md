@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.8.6（桌面端自更新修复 · 一起听 WSS 心跳单跳服务器对时）
+
+- **桌面端自动更新链路修复**：启动与手动检查更新改为探测真实 Release 资产地址，按「系统代理 → Aria 已配置的 YouTube 本地代理 → 直连」顺序自动选择可达通道；遇到 `net::ERR_*` 等瞬时网络错误时自动失效旧通道并重试一次，下载失败后支持直接点击「重试下载」；安装更新前同步优雅关闭原生音频引擎、后端与代理子进程，消除覆盖安装文件锁冲突；macOS 端新增基于 GitHub Releases API 的新版本检查与「前往下载」引导，设置页同时提供「打开发布页」入口。
+- **Aria 官方一起听 WSS 心跳单跳服务器对时**：自建轻量信令节点（`deploy/aria-signal-node/server.mjs`）与 Cloudflare Worker 信令（`cloudflare/aria-signal-worker/src/index.ts`）在心跳 `ping`/`pong` 中附带 `t0`/`t1`/`t2`/`serverTs` 服务器时间戳；房主与听众在建连瞬间通过 3 次突发采样与后续 18s 心跳滑动最小 RTT 窗口单跳校准至统一服务器时间轴，大幅降低跨网对时往返延迟与时钟漂移，并自动兼容旧版信令节点回退双跳对时。
+
 ## 0.8.5（Aria 官方一起听 · macOS 双架构适配 · 跨源高音质中继与歌单交互升级）
 
 - **Aria 官方一起听（`AriaRoom`）多网络互通**：支持 **Cloudflare 优选 IP 信令**、**自建轻量 WebSocket 信令节点**（[deploy/aria-signal-node](deploy/aria-signal-node) 提供 Linux / Windows 一键安装脚本，独立于客户端发布包）与 **房主直连**（IPv4/IPv6 独立 HTTP/WS 端口 + 随机 Token 隔离）；房主/协同选歌与播放进度通过 RTT 过滤 NTP 对表 + 3 档微调变速保持同步，并支持「超级混合歌单」多选曲目导入房间。

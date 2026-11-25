@@ -411,6 +411,50 @@ export function buildSignalingWsUrl(
   return parsed.toString();
 }
 
+export function computeHeartbeatClockSample(sample: {
+  t0: number;
+  t1: number;
+  t2: number;
+  t3: number;
+}): { rttMs: number; offsetMs: number } {
+  const rttMs = Math.max(1, sample.t3 - sample.t0 - (sample.t2 - sample.t1));
+  const offsetMs = (sample.t1 - sample.t0 + (sample.t2 - sample.t3)) / 2;
+  return { rttMs, offsetMs };
+}
+
+class HeartbeatClockTracker {
+  private samples: Array<{ rttMs: number; offsetMs: number }> = [];
+  private readonly maxSamples: number;
+
+  constructor(maxSamples = 8) {
+    this.maxSamples = maxSamples;
+  }
+
+  record(sample: { t0: number; t1: number; t2: number; t3: number }): {
+    rttMs: number;
+    offsetMs: number;
+  } {
+    const next = computeHeartbeatClockSample(sample);
+    this.samples.push(next);
+    if (this.samples.length > this.maxSamples) {
+      this.samples.shift();
+    }
+    const sorted = [...this.samples].sort((a, b) => a.rttMs - b.rttMs);
+    const minRtt = sorted[0].rttMs;
+    const lowRttSamples = sorted.filter((s) => s.rttMs <= minRtt * 2 + 25).slice(0, 3);
+    const bestSlice = lowRttSamples.length > 0 ? lowRttSamples : [sorted[0]];
+    const avgOffset = bestSlice.reduce((sum, s) => sum + s.offsetMs, 0) / bestSlice.length;
+    return {
+      rttMs: Math.round(minRtt),
+      offsetMs: Math.round(avgOffset),
+    };
+  }
+
+  reset(): void {
+    this.samples = [];
+  }
+}
+
 export class AriaRoomManager {
   private readonly localApiPort: number;
   private readonly customLocalResolver?: (track: AriaRoomTrackPayload) => Promise<RelayResolveOutcome>;
@@ -452,6 +496,14 @@ export class AriaRoomManager {
   private signalingConsecutiveFailures = 0;
   private signalingTargetUrl: string | null = null;
   private manualLeave = false;
+  private serverClockTracker = new HeartbeatClockTracker();
+  private serverClockSynced = false;
+  private serverClockOffsetMs = 0;
+  private serverClockRttMs: number | null = null;
+  private serverSupportsClockPong: boolean | null = null;
+  private playbackAnchorUsesServerClock = false;
+  private signalingBurstTimers: ReturnType<typeof setTimeout>[] = [];
+  private firstPongResolvers: Array<() => void> = [];
 
   // Host Direct Server
   private directServer: http.Server | null = null;
@@ -972,6 +1024,8 @@ export class AriaRoomManager {
     if (currentTrack) {
       currentTrack = await this.maybeAttachCoverDataUrl(currentTrack);
     }
+    const roomNow = this.getRoomClockNowMs();
+    this.playbackAnchorUsesServerClock = this.serverClockSynced;
     this.playback = {
       nonce: currentTrack?.nonce ?? null,
       track: currentTrack,
@@ -979,7 +1033,7 @@ export class AriaRoomManager {
       queue,
       playing: Boolean(input.playing),
       positionSec: Math.max(0, Number(input.positionSec ?? 0)),
-      updatedAtMs: Date.now(),
+      updatedAtMs: roomNow,
       serverSeq: 1,
     };
     this.refreshAllowedNonces();
@@ -1103,6 +1157,7 @@ export class AriaRoomManager {
 
   async leaveRoom(): Promise<AriaRoomSnapshot> {
     this.manualLeave = true;
+    this.clearSignalingBurstTimers();
     if (this.signalingReconnectTimer) {
       clearTimeout(this.signalingReconnectTimer);
       this.signalingReconnectTimer = null;
@@ -1138,6 +1193,15 @@ export class AriaRoomManager {
     this.signalingError = null;
     this.signalingTargetUrl = null;
     this.signalingConsecutiveFailures = 0;
+    this.serverClockTracker.reset();
+    this.serverClockSynced = false;
+    this.serverClockOffsetMs = 0;
+    this.serverClockRttMs = null;
+    this.serverSupportsClockPong = null;
+    this.playbackAnchorUsesServerClock = false;
+    for (const resolvePong of this.firstPongResolvers.splice(0)) {
+      resolvePong();
+    }
     this.guestDirectBaseUrl = null;
     this.guestDirectToken = null;
     for (const pending of this.pendingResolves.values()) {
@@ -1208,7 +1272,8 @@ export class AriaRoomManager {
       if (resolvedNext?.ok) nextTrack = resolvedNext.track;
     }
 
-    const now = Date.now();
+    const now = this.getRoomClockNowMs();
+    this.playbackAnchorUsesServerClock = this.serverClockSynced;
     const isSameTrack = Boolean(currentTrack?.nonce && currentTrack.nonce === this.playback.nonce);
     const extrapolatedPos =
       isSameTrack && this.playback.playing && this.playback.updatedAtMs > 0
@@ -1533,13 +1598,24 @@ export class AriaRoomManager {
       throw new HttpError(409, "当前不在房主房间中", "NOT_ROOM_HOST");
     }
 
+    const localNow = Date.now();
+    const roomNow = this.getRoomClockNowMs();
     const seq = this.playback.serverSeq + 1;
-    const serverTimeMs = Date.now();
-    const anchorTimeMs =
-      event.kind === "play_at" && event.startAtHostMs > 0 ? event.startAtHostMs : serverTimeMs;
+    let anchorTimeMs = roomNow;
+    let mappedStartAtHostMs = event.startAtHostMs;
+    if (event.kind === "play_at" && event.startAtHostMs > 0) {
+      if (this.serverClockSynced) {
+        const leadMs = Math.max(-5_000, Math.min(5_000, event.startAtHostMs - localNow));
+        anchorTimeMs = Math.round(roomNow + leadMs);
+        mappedStartAtHostMs = anchorTimeMs;
+      } else {
+        anchorTimeMs = event.startAtHostMs;
+      }
+    }
     this.playback.serverSeq = seq;
     this.playback.positionSec = event.positionSec;
     this.playback.updatedAtMs = anchorTimeMs;
+    this.playbackAnchorUsesServerClock = this.serverClockSynced;
     if (event.kind === "play_at") this.playback.playing = true;
     else if (event.kind === "pause") this.playback.playing = false;
 
@@ -1548,8 +1624,8 @@ export class AriaRoomManager {
       kind: event.kind,
       nonce: event.nonce,
       positionSec: event.positionSec,
-      startAtHostMs: event.startAtHostMs,
-      serverTimeMs,
+      startAtHostMs: mappedStartAtHostMs,
+      serverTimeMs: roomNow,
     };
 
     const envelope = { type: "playback_sync", roomId: this.roomId, event: fullEvent };
@@ -1599,11 +1675,50 @@ export class AriaRoomManager {
     });
   }
 
+  private getRoomClockNowMs(): number {
+    return this.serverClockSynced ? Math.round(Date.now() + this.serverClockOffsetMs) : Date.now();
+  }
+
+  private clearSignalingBurstTimers(): void {
+    for (const t of this.signalingBurstTimers.splice(0)) {
+      clearTimeout(t);
+    }
+  }
+
+  private sendHeartbeatPing(ws: AriaWebSocket): void {
+    if (!ws.isOpen) return;
+    const now = Date.now();
+    ws.ping();
+    ws.sendJson({ type: "ping", ts: now, t0: now });
+  }
+
+  private waitForInitialPong(timeoutMs = 250): Promise<void> {
+    if (this.serverSupportsClockPong !== null) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      timer.unref?.();
+      this.firstPongResolvers.push(done);
+    });
+  }
+
   sendClockPing(): string | null {
     if (!this.active || this.role !== "guest" || !this.signalingWs?.isOpen || !this.myPeerId) {
       return null;
     }
     const pingId = crypto.randomBytes(6).toString("hex");
+    if (this.serverSupportsClockPong !== false) {
+      this.sendHeartbeatPing(this.signalingWs);
+      return pingId;
+    }
     this.signalingWs.sendJson({
       type: "clock_ping",
       roomId: this.roomId,
@@ -2052,6 +2167,7 @@ export class AriaRoomManager {
       });
 
       this.attachActiveSignalingWs(ws, connectedIp, latencyMs, options.usePreferredIp);
+      await this.waitForInitialPong(250);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.signalingConsecutiveFailures += 1;
@@ -2084,6 +2200,7 @@ export class AriaRoomManager {
     latencyMs: number,
     usePreferredIp: boolean,
   ): void {
+    this.clearSignalingBurstTimers();
     if (this.signalingWs) {
       try {
         this.signalingWs.close(1000, "Superseded");
@@ -2099,6 +2216,44 @@ export class AriaRoomManager {
     this.signalingError = null;
     this.signalingConsecutiveFailures = 0;
     this.signalingLastPongAt = Date.now();
+    this.serverClockTracker.reset();
+    this.serverClockSynced = false;
+    this.serverClockOffsetMs = 0;
+    this.serverClockRttMs = null;
+    this.serverSupportsClockPong = null;
+
+    ws.on("pong", () => {
+      this.signalingLastPongAt = Date.now();
+    });
+
+    ws.on("message", (raw: string) => {
+      this.signalingLastPongAt = Date.now();
+      this.handleSignalingMessage(raw, ws);
+    });
+
+    ws.on("close", (_code: number, reason: string) => {
+      this.clearSignalingBurstTimers();
+      if (this.signalingWs === ws) {
+        this.signalingWs = null;
+      }
+      if (this.signalingHeartbeatTimer) {
+        clearInterval(this.signalingHeartbeatTimer);
+        this.signalingHeartbeatTimer = null;
+      }
+      for (const resolvePong of this.firstPongResolvers.splice(0)) {
+        resolvePong();
+      }
+      if (this.manualLeave || !this.active) return;
+
+      this.signalingState = "reconnecting";
+      this.signalingError = reason || "信令连接断开，正在无感重连...";
+      this.emitSse("state", this.getSnapshot());
+      this.scheduleSignalingReconnect(usePreferredIp);
+    });
+
+    ws.on("error", (err: Error) => {
+      this.signalingError = err.message;
+    });
 
     ws.sendJson({
       type: "hello",
@@ -2117,6 +2272,17 @@ export class AriaRoomManager {
       ...(this.role === "host" ? { state: this.buildSharedStatePayload() } : {}),
     });
 
+    this.sendHeartbeatPing(ws);
+    for (const delayMs of [250, 650]) {
+      const burst = setTimeout(() => {
+        if (this.signalingWs === ws && ws.isOpen && this.active) {
+          this.sendHeartbeatPing(ws);
+        }
+      }, delayMs);
+      burst.unref?.();
+      this.signalingBurstTimers.push(burst);
+    }
+
     if (this.signalingHeartbeatTimer) clearInterval(this.signalingHeartbeatTimer);
     this.signalingHeartbeatTimer = setInterval(() => {
       if (!ws.isOpen) return;
@@ -2124,38 +2290,8 @@ export class AriaRoomManager {
         ws.close(4000, "Heartbeat timeout");
         return;
       }
-      ws.ping();
-      ws.sendJson({ type: "ping", ts: Date.now() });
+      this.sendHeartbeatPing(ws);
     }, 18_000);
-
-    ws.on("pong", () => {
-      this.signalingLastPongAt = Date.now();
-    });
-
-    ws.on("message", (raw: string) => {
-      this.signalingLastPongAt = Date.now();
-      this.handleSignalingMessage(raw, ws);
-    });
-
-    ws.on("close", (_code: number, reason: string) => {
-      if (this.signalingWs === ws) {
-        this.signalingWs = null;
-      }
-      if (this.signalingHeartbeatTimer) {
-        clearInterval(this.signalingHeartbeatTimer);
-        this.signalingHeartbeatTimer = null;
-      }
-      if (this.manualLeave || !this.active) return;
-
-      this.signalingState = "reconnecting";
-      this.signalingError = reason || "信令连接断开，正在无感重连...";
-      this.emitSse("state", this.getSnapshot());
-      this.scheduleSignalingReconnect(usePreferredIp);
-    });
-
-    ws.on("error", (err: Error) => {
-      this.signalingError = err.message;
-    });
 
     this.emitSse("state", this.getSnapshot());
   }
@@ -2242,11 +2378,57 @@ export class AriaRoomManager {
 
     const type = String(msg.type ?? "");
     if (type === "ping") {
-      sourceWs.sendJson({ type: "pong", ts: msg.ts ?? Date.now() });
+      const t1 = this.getRoomClockNowMs();
+      const t0 = typeof msg.t0 === "number" ? msg.t0 : typeof msg.ts === "number" ? msg.ts : t1;
+      const t2 = this.getRoomClockNowMs();
+      sourceWs.sendJson({ type: "pong", ts: msg.ts ?? t1, t0, t1, t2, serverTs: t2 });
       return;
     }
     if (type === "pong") {
-      this.signalingLastPongAt = Date.now();
+      const t3 = Date.now();
+      this.signalingLastPongAt = t3;
+      const prevSupport = this.serverSupportsClockPong;
+      if (typeof msg.serverTs === "number" || typeof msg.t1 === "number") {
+        const t0 = typeof msg.t0 === "number" ? msg.t0 : typeof msg.ts === "number" ? msg.ts : t3;
+        const t1 = typeof msg.t1 === "number" ? msg.t1 : (msg.serverTs as number);
+        const t2 = typeof msg.t2 === "number" ? msg.t2 : t1;
+        this.serverSupportsClockPong = true;
+        const estimate = this.serverClockTracker.record({ t0, t1, t2, t3 });
+        this.serverClockOffsetMs = estimate.offsetMs;
+        this.serverClockRttMs = estimate.rttMs;
+        this.serverClockSynced = true;
+        this.signalingLatencyMs = estimate.rttMs;
+        if (this.role === "host" && !this.playbackAnchorUsesServerClock && this.playback.updatedAtMs > 0) {
+          this.playback.updatedAtMs = Math.round(this.playback.updatedAtMs + this.serverClockOffsetMs);
+          this.playbackAnchorUsesServerClock = true;
+          this.broadcastRoomState();
+          this.emitSse("state", this.getSnapshot());
+        }
+        if (this.role === "guest") {
+          this.emitSse("clock_pong", {
+            pingId: "hb",
+            t0,
+            t1,
+            t2,
+            t3,
+            source: "server",
+          });
+        }
+      } else {
+        this.serverSupportsClockPong = false;
+        if (prevSupport !== false && this.role === "guest" && !this.serverClockSynced && this.myPeerId && sourceWs.isOpen) {
+          sourceWs.sendJson({
+            type: "clock_ping",
+            roomId: this.roomId,
+            fromPeerId: this.myPeerId,
+            pingId: crypto.randomBytes(6).toString("hex"),
+            t0: t3,
+          });
+        }
+      }
+      for (const resolvePong of this.firstPongResolvers.splice(0)) {
+        resolvePong();
+      }
       return;
     }
 
@@ -2319,7 +2501,7 @@ export class AriaRoomManager {
     }
 
     if (type === "clock_ping" && this.role === "host") {
-      const t1 = Date.now();
+      const t1 = this.getRoomClockNowMs();
       sourceWs.sendJson({
         type: "clock_pong",
         roomId: this.roomId,
@@ -2327,7 +2509,7 @@ export class AriaRoomManager {
         pingId: msg.pingId,
         t0: msg.t0,
         t1,
-        t2: Date.now(),
+        t2: this.getRoomClockNowMs(),
       });
       return;
     }

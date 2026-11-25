@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     check: () => ipcRenderer.invoke("aria:update:check"),
     download: () => ipcRenderer.invoke("aria:update:download"),
     install: () => ipcRenderer.invoke("aria:update:install"),
+    openReleases: () => ipcRenderer.invoke("aria:update:open-releases"),
     onState: (callback) => {
       const handler = (_event, payload) => callback(payload);
       ipcRenderer.on("aria:update-state", handler);

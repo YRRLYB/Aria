@@ -84,14 +84,29 @@ function UpdateCard() {
             <RefreshCw className={cn((busy || state?.status === "checking") && "animate-spin")} />
             检查更新
           </Button>
-          {state?.status === "available" && (
+          {state?.status === "available" && state.manualDownloadOnly && (
+            <Button size="sm" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.openReleases?.() ?? Promise.resolve(false))}>
+              <Download />前往下载 {state.availableVersion}
+            </Button>
+          )}
+          {state?.status === "available" && !state.manualDownloadOnly && (
             <Button size="sm" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.download())}>
               <Download />下载 {state.availableVersion}
+            </Button>
+          )}
+          {state?.status === "error" && state.availableVersion && !state.manualDownloadOnly && (
+            <Button size="sm" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.download())}>
+              <Download />重试下载
             </Button>
           )}
           {state?.status === "downloaded" && (
             <Button size="sm" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.install())}>
               重启并安装
+            </Button>
+          )}
+          {(state?.status === "error" || state?.manualDownloadOnly) && window.ariaDesktop?.updates?.openReleases && (
+            <Button size="sm" variant="glass" disabled={busy} onClick={() => void run(() => window.ariaDesktop!.updates!.openReleases!())}>
+              打开发布页
             </Button>
           )}
         </div>
