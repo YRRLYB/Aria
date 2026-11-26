@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import type net from "node:net";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -1389,6 +1389,8 @@ describe("AriaRoomManager Direct Port, Bit-Exact Range, Security & 5-Member Cap"
       const chunkEntry = byteCache.getEntry("chunk_serial_1");
       expect(chunkEntry?.completed).toBe(true);
       expect(chunkEntry?.downloadedBytes).toBe(8);
+      expect(chunkEntry?.writeHandle ?? null).toBeNull();
+      expect(await readFile(chunkEntry!.filePath, "utf8")).toBe("ABCDEFGH");
     } finally {
       await byteCache.clearAll();
       await mgr.leaveRoom();

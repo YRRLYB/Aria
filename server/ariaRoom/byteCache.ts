@@ -338,6 +338,7 @@ export class TrackByteCache {
   private readonly cacheDir: string;
   private readonly entries = new Map<string, BufferedTrackEntry>();
   private readonly covers = new Map<string, CachedCover>();
+  private readonly pendingGuestEntries = new Map<string, Promise<BufferedTrackEntry>>();
   private pinnedNonces = new Set<string>();
 
   constructor(sessionKey = crypto.randomBytes(6).toString("hex")) {
@@ -768,40 +769,60 @@ export class TrackByteCache {
       throw new HttpError(400, "Invalid track nonce", "INVALID_NONCE");
     }
 
-    let entry = this.entries.get(cleanNonce);
-    if (!entry) {
-      await fs.mkdir(this.cacheDir, { recursive: true });
-      const filePath = path.join(this.cacheDir, `guest-${cleanNonce}.bin`);
-      await fs.writeFile(filePath, Buffer.alloc(0));
-      entry = {
-        nonce: cleanNonce,
-        track,
-        kind: "temp-file",
-        filePath,
-        mimeType: meta?.mimeType || track.mimeType || "application/octet-stream",
-        bitrate: meta?.bitrate ?? track.bitrate ?? null,
-        sampleRate: meta?.sampleRate ?? track.sampleRate ?? null,
-        currentLevel: meta?.currentLevel ?? track.currentLevel ?? null,
-        totalBytes: meta?.totalBytes ?? null,
-        downloadedBytes: 0,
-        completed: false,
-        failedError: null,
-        createdAt: Date.now(),
-        lastAccessAt: Date.now(),
-        abortController: null,
-        waiters: new Set(),
-        writeHandle: null,
-      };
-      this.entries.set(cleanNonce, entry);
-      await this.evictOldEntries();
-    } else {
-      entry.lastAccessAt = Date.now();
-      if (meta?.mimeType) entry.mimeType = meta.mimeType;
-      if (meta?.bitrate) entry.bitrate = meta.bitrate;
-      if (meta?.sampleRate) entry.sampleRate = meta.sampleRate;
-      if (meta?.currentLevel) entry.currentLevel = meta.currentLevel;
-      if (meta?.totalBytes !== undefined && meta.totalBytes !== null) entry.totalBytes = meta.totalBytes;
+    const applyMeta = (target: BufferedTrackEntry) => {
+      target.lastAccessAt = Date.now();
+      if (meta?.mimeType) target.mimeType = meta.mimeType;
+      if (meta?.bitrate) target.bitrate = meta.bitrate;
+      if (meta?.sampleRate) target.sampleRate = meta.sampleRate;
+      if (meta?.currentLevel) target.currentLevel = meta.currentLevel;
+      if (meta?.totalBytes !== undefined && meta.totalBytes !== null) target.totalBytes = meta.totalBytes;
+    };
+
+    const existing = this.entries.get(cleanNonce);
+    if (existing) {
+      applyMeta(existing);
+      return existing;
     }
+
+    let pending = this.pendingGuestEntries.get(cleanNonce);
+    if (!pending) {
+      const initPromise = (async (): Promise<BufferedTrackEntry> => {
+        await fs.mkdir(this.cacheDir, { recursive: true });
+        const filePath = path.join(this.cacheDir, `guest-${cleanNonce}.bin`);
+        await fs.writeFile(filePath, Buffer.alloc(0));
+        const created: BufferedTrackEntry = {
+          nonce: cleanNonce,
+          track,
+          kind: "temp-file",
+          filePath,
+          mimeType: meta?.mimeType || track.mimeType || "application/octet-stream",
+          bitrate: meta?.bitrate ?? track.bitrate ?? null,
+          sampleRate: meta?.sampleRate ?? track.sampleRate ?? null,
+          currentLevel: meta?.currentLevel ?? track.currentLevel ?? null,
+          totalBytes: meta?.totalBytes ?? null,
+          downloadedBytes: 0,
+          completed: false,
+          failedError: null,
+          createdAt: Date.now(),
+          lastAccessAt: Date.now(),
+          abortController: null,
+          waiters: new Set(),
+          writeHandle: null,
+        };
+        this.entries.set(cleanNonce, created);
+        await this.evictOldEntries();
+        return created;
+      })();
+      pending = initPromise.finally(() => {
+        if (this.pendingGuestEntries.get(cleanNonce) === pending) {
+          this.pendingGuestEntries.delete(cleanNonce);
+        }
+      });
+      this.pendingGuestEntries.set(cleanNonce, pending);
+    }
+
+    const entry = await pending;
+    applyMeta(entry);
     return entry;
   }
 
@@ -840,15 +861,16 @@ export class TrackByteCache {
       }
 
       if (params.eof) {
-        if (entry.writeHandle) {
-          const handle = entry.writeHandle;
-          entry.writeHandle = null;
-          await handle.close().catch(() => undefined);
-        }
         if (entry.totalBytes === null) {
           entry.totalBytes = entry.downloadedBytes;
         }
         entry.completed = true;
+      }
+
+      if (entry.completed && entry.writeHandle) {
+        const handle = entry.writeHandle;
+        entry.writeHandle = null;
+        await handle.close().catch(() => undefined);
       }
 
       notifyEntryWaiters(entry);
@@ -1154,6 +1176,7 @@ export class TrackByteCache {
     for (const nonce of Array.from(this.entries.keys())) {
       await this.deleteEntry(nonce);
     }
+    this.pendingGuestEntries.clear();
     this.covers.clear();
     await fs.rm(this.cacheDir, { recursive: true, force: true }).catch(() => undefined);
   }
