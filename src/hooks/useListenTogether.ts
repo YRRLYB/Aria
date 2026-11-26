@@ -68,15 +68,23 @@ export function useListenTogether(options: {
   const seekDebounceTimerRef = useRef<number | null>(null);
   const lastProcessedPlaySigRef = useRef<string | null>(null);
   const lastLocalSentRef = useRef<LocalSentPlaySnapshot | null>(null);
+  const lastLocalPlaylistSyncAtRef = useRef(0);
+  const expectedDisplayListKeyRef = useRef("");
   const selfUserIdRef = useRef<string | null>(null);
   const seenInviteRoomsRef = useRef<Set<string>>(new Set());
   const dismissedInviteRoomsRef = useRef<Set<string>>(new Set());
   const initialInboxScannedRef = useRef(false);
 
   const resetRoomState = useCallback((notice?: string) => {
+    if (seekDebounceTimerRef.current !== null) {
+      window.clearTimeout(seekDebounceTimerRef.current);
+      seekDebounceTimerRef.current = null;
+    }
     roomRef.current = null;
     lastProcessedPlaySigRef.current = null;
     lastLocalSentRef.current = null;
+    lastLocalPlaylistSyncAtRef.current = 0;
+    expectedDisplayListKeyRef.current = "";
     selfUserIdRef.current = null;
     setRoom(null);
     setSharedTracks([]);
@@ -84,6 +92,15 @@ export function useListenTogether(options: {
     setLastDriftMs(null);
     setPendingSourceExit(null);
     if (notice) callbacksRef.current.onNotice(notice);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (seekDebounceTimerRef.current !== null) {
+        window.clearTimeout(seekDebounceTimerRef.current);
+        seekDebounceTimerRef.current = null;
+      }
+    };
   }, []);
 
   const refreshInvites = useCallback(async (forceRefreshContacts = false) => {
@@ -202,15 +219,30 @@ export function useListenTogether(options: {
       }
 
       const hydratedUi = state.sharedTracks.map((track, idx) => providerTrackToUiTrack(track, idx));
+      const incomingDisplayKey = hydratedUi
+        .map((t) => t.providerId ?? "")
+        .filter((id) => /^\d+$/.test(id))
+        .join(",");
+      const insideLocalPlaylistGrace =
+        Date.now() - lastLocalPlaylistSyncAtRef.current < 6_000 &&
+        Boolean(expectedDisplayListKeyRef.current) &&
+        incomingDisplayKey !== expectedDisplayListKeyRef.current;
+
       let nextShared = sharedTracksRef.current;
-      if (hydratedUi.length) {
+      if (hydratedUi.length > 0 && !insideLocalPlaylistGrace) {
         nextShared = hydratedUi;
         sharedTracksRef.current = hydratedUi;
         setSharedTracks(hydratedUi);
       }
-      if (state.playlistVersion > 0 && state.playlistVersion !== playlistVersionRef.current) {
+      const playlistFetched = state.sharedTracks.length > 0 || state.displayList.length === 0;
+      if (
+        !insideLocalPlaylistGrace &&
+        playlistFetched &&
+        state.playlistVersion !== playlistVersionRef.current
+      ) {
+        playlistVersionRef.current = state.playlistVersion;
         setPlaylistVersion(state.playlistVersion);
-        if (hydratedUi.length) {
+        if (hydratedUi.length > 0) {
           callbacksRef.current.onApplyRemoteQueue(hydratedUi);
         }
       }
@@ -357,6 +389,7 @@ export function useListenTogether(options: {
             return;
           }
           const now = Date.now();
+          if (now - lastLocalCommandAtRef.current < 3500) return;
           lastLocalSentRef.current = {
             songId,
             playStatus,
@@ -585,6 +618,59 @@ export function useListenTogether(options: {
       .catch(() => {});
   }
 
+  function syncRoomPlaylistQueue(roomId: string, queueTracks: Track[], anchorSongId?: string | null) {
+    const neteaseTracks: Track[] = [];
+    const seenIds = new Set<string>();
+    for (const track of queueTracks) {
+      if (track.source !== "netease" || !track.providerId || !/^\d+$/.test(track.providerId)) continue;
+      if (seenIds.has(track.providerId)) continue;
+      seenIds.add(track.providerId);
+      neteaseTracks.push(track);
+      if (neteaseTracks.length >= 500) break;
+    }
+    if (!neteaseTracks.length && anchorSongId && /^\d+$/.test(anchorSongId)) {
+      return;
+    }
+    if (!neteaseTracks.length) return;
+
+    const displayList = neteaseTracks.map((t) => t.providerId!);
+    const nextKey = displayList.join(",");
+    const currentKey = sharedTracksRef.current
+      .map((t) => t.providerId ?? "")
+      .filter((id) => /^\d+$/.test(id))
+      .join(",");
+    if (nextKey === currentKey) return;
+
+    sharedTracksRef.current = neteaseTracks;
+    setSharedTracks(neteaseTracks);
+    lastLocalPlaylistSyncAtRef.current = Date.now();
+    expectedDisplayListKeyRef.current = nextKey;
+
+    const requestedVersion = Math.max(1, playlistVersionRef.current + 1);
+    void api
+      .syncListenTogetherPlaylist(roomId, {
+        commandType: "REPLACE",
+        version: requestedVersion,
+        displayList,
+      })
+      .then((res) => {
+        if (roomRef.current?.roomId !== roomId) return;
+        const confirmedVersion = typeof res?.version === "number" && res.version > 0 ? res.version : requestedVersion;
+        playlistVersionRef.current = confirmedVersion;
+        setPlaylistVersion(confirmedVersion);
+      })
+      .catch((err) => {
+        console.warn("[ListenTogether] sync playlist failed:", err);
+        callbacksRef.current.onNotice("网易云一起听歌单同步失败，请点击「立即对齐」重试。");
+      });
+  }
+
+  function reportQueueChange(nextQueueTracks: Track[]) {
+    const active = roomRef.current;
+    if (!active || isSuppressedEcho()) return;
+    syncRoomPlaylistQueue(active.roomId, nextQueueTracks, activeTrackRef.current.providerId);
+  }
+
   function reportTrackChange(nextTrack: Track, formerProviderId: string | null, nextQueueTracks?: Track[]) {
     const active = roomRef.current;
     if (!active || isSuppressedEcho() || nextTrack.source !== "netease" || !nextTrack.providerId) return;
@@ -594,6 +680,7 @@ export function useListenTogether(options: {
     lastLocalCommandAtRef.current = now;
     lastLocalSentRef.current = {
       songId: targetId,
+      formerSongId: formerProviderId,
       playStatus: "PLAY",
       progressMs: 0,
       clientSeq: seq,
@@ -611,20 +698,7 @@ export function useListenTogether(options: {
       .catch(() => {});
 
     if (nextQueueTracks?.length) {
-      const displayList = nextQueueTracks
-        .filter((t) => t.source === "netease" && t.providerId && /^\d+$/.test(t.providerId))
-        .map((t) => t.providerId!);
-      if (displayList.length) {
-        const nextVersion = Math.max(1, playlistVersionRef.current + 1);
-        setPlaylistVersion(nextVersion);
-        void api
-          .syncListenTogetherPlaylist(active.roomId, {
-            commandType: "REPLACE",
-            version: nextVersion,
-            displayList,
-          })
-          .catch(() => {});
-      }
+      syncRoomPlaylistQueue(active.roomId, nextQueueTracks, targetId);
     }
   }
 
@@ -716,6 +790,7 @@ export function useListenTogether(options: {
     syncNow,
     sendInviteToContact,
     reportPlayPause,
+    reportQueueChange,
     reportTrackChange,
     reportSeek,
     guardTrackSelection,

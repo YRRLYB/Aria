@@ -175,7 +175,7 @@ export function ListenTogetherView({
   if (compactLobbyCard && !room) {
     return (
       <div className="glass flex h-full flex-col overflow-hidden rounded-[26px]">
-        <div className="relative flex min-h-[196px] flex-col justify-between bg-[linear-gradient(135deg,#3d1723_0%,#7b253a_55%,#23131d_100%)] p-5 text-white">
+        <div className="relative flex flex-col justify-between gap-5 bg-[linear-gradient(135deg,#3d1723_0%,#7b253a_55%,#23131d_100%)] p-5 text-white sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-black/25 px-2.5 py-1 text-[11px] font-medium text-white/90 backdrop-blur-md">
               <span className="size-1.5 rounded-full bg-rose-300 shadow-[0_0_8px_#fda4af]" />
@@ -186,7 +186,7 @@ export function ListenTogetherView({
             </span>
           </div>
 
-          <div className="mt-6 flex flex-wrap items-end justify-between gap-4">
+          <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0 flex-1">
               <h2 className="text-xl font-semibold tracking-tight text-white">
                 网易云一起听
@@ -218,9 +218,9 @@ export function ListenTogetherView({
           </div>
         </div>
 
-        <div className="flex flex-1 flex-col justify-between gap-3.5 border-t border-[var(--line)] bg-[var(--surface)]/55 p-4 sm:p-5">
+        <div className="flex flex-1 flex-col justify-between bg-[var(--surface)]/65">
           {recoverableRoom && (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+            <div className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 sm:mx-5">
               <span className="min-w-0 truncate text-xs text-[var(--text-primary)]">
                 检测到旧房间 {recoverableRoom.roomId}
               </span>
@@ -243,6 +243,7 @@ export function ListenTogetherView({
           {connected ? (
             <>
               <form
+                className="p-4 sm:px-5 sm:py-4"
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (!joinInput.trim() || loading) return;
@@ -254,7 +255,7 @@ export function ListenTogetherView({
               >
                 <div className="flex items-center justify-between gap-2">
                   <label
-                    htmlFor="listen-together-join-input"
+                    htmlFor="listen-together-compact-join-input"
                     className="text-sm font-semibold text-[var(--text-primary)]"
                   >
                     加入好友房间
@@ -266,13 +267,13 @@ export function ListenTogetherView({
                 <div className="mt-2.5 space-y-2">
                   <div className="flex gap-2">
                     <input
-                      id="listen-together-join-input"
+                      id="listen-together-compact-join-input"
                       value={joinInput}
                       onChange={(event) => setJoinInput(event.target.value)}
                       placeholder="粘贴一起听分享链接或 roomId"
                       className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--surface-muted)] px-3.5 py-2 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]/65 focus:border-[var(--accent)]"
                     />
-                    <Button type="submit" disabled={!joinInput.trim() || loading}>
+                    <Button type="submit" variant="subtle" disabled={!joinInput.trim() || loading}>
                       {loading ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
                       加入
                     </Button>
@@ -288,7 +289,7 @@ export function ListenTogetherView({
                 </div>
               </form>
 
-              <div className="border-t border-[var(--line)] pt-2.5">
+              <div className="border-t border-[var(--line)] p-4 sm:px-5 sm:py-4">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-[var(--text-secondary)]">
                     收到的私信邀请{invites.length > 0 ? ` (${invites.length})` : ""}
@@ -312,7 +313,7 @@ export function ListenTogetherView({
                 </div>
 
                 {invites.length > 0 && (
-                  <div className="mt-2 max-h-[120px] space-y-1.5 overflow-y-auto pr-0.5">
+                  <div className="mt-2.5 max-h-[120px] space-y-1.5 overflow-y-auto pr-0.5">
                     {invites.map((inv) => (
                       <div
                         key={inv.roomId}
@@ -353,7 +354,7 @@ export function ListenTogetherView({
               </div>
             </>
           ) : (
-            <div className="flex flex-1 items-center justify-between gap-3">
+            <div className="flex flex-1 items-center justify-between gap-3 p-4 sm:p-5">
               <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
                 登录网易云音乐账号后，即可创建或加入「一起听」房间，与好友手机 / 桌面端实时同频。
               </p>
@@ -456,6 +457,7 @@ export function ListenTogetherView({
                 src={currentNeteaseTrack.coverUrl}
                 alt=""
                 aria-hidden="true"
+                referrerPolicy="no-referrer"
                 className="pointer-events-none absolute inset-0 size-full scale-125 object-cover opacity-[0.12] blur-3xl dark:opacity-[0.2]"
               />
             )}
@@ -464,8 +466,8 @@ export function ListenTogetherView({
               {/* Paired Listeners Bridge */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/75 px-4 py-3 backdrop-blur-md">
                 {(() => {
-                  const host = room.roomUsers[0];
-                  const guest = room.roomUsers[1];
+                  const host = room.roomUsers.find((u) => u.userId === room.creatorId) ?? room.roomUsers[0];
+                  const guest = room.roomUsers.find((u) => u.userId !== host?.userId);
                   return (
                     <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-2.5">
@@ -699,6 +701,8 @@ export function ListenTogetherView({
                                   try {
                                     await onSendInviteMessage(contact.userId, inviteMode);
                                     setInvitedUserIds((prev) => ({ ...prev, [contact.userId]: true }));
+                                  } catch {
+                                    // Error surface is handled by parent caller.
                                   } finally {
                                     setSendingUserId(null);
                                   }

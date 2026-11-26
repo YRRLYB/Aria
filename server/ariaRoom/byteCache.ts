@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
@@ -69,6 +69,7 @@ export type BufferedTrackEntry = {
   abortController: AbortController | null;
   waiters: Set<() => void>;
   writeHandle?: Awaited<ReturnType<typeof fs.open>> | null;
+  writeQueue?: Promise<void>;
 };
 
 export type HostSliceResult = {
@@ -152,6 +153,55 @@ function parseByteRange(rangeHeader: string, totalBytes: number | null): { start
     start,
     end: totalBytes !== null && end !== null ? Math.min(end, totalBytes - 1) : end,
   };
+}
+
+function createConnectSignal(parentSignal: AbortSignal, timeoutMs: number): {
+  signal: AbortSignal;
+  clear: () => void;
+} {
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parentSignal.reason ?? new Error("Aborted"));
+  if (parentSignal.aborted) {
+    controller.abort(parentSignal.reason ?? new Error("Aborted"));
+    return { signal: controller.signal, clear: () => undefined };
+  }
+  parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new Error("Upstream connect timeout")), timeoutMs);
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+      parentSignal.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
+function waitForResponseDrain(res: ServerResponse, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error("Aborted"));
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      res.off("drain", onDrain);
+      res.off("close", onAbort);
+      res.off("error", onError);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new Error("Aborted"));
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    res.once("drain", onDrain);
+    res.once("close", onAbort);
+    res.once("error", onError);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function notifyEntryWaiters(entry: BufferedTrackEntry): void {
@@ -429,23 +479,178 @@ export class TrackByteCache {
     }
   }
 
+  private async writeResponseStreamToEntry(
+    entry: BufferedTrackEntry,
+    response: globalThis.Response,
+    resolvedMeta: {
+      mimeType?: string | null;
+      bitrate?: number | null;
+      sampleRate?: number | null;
+      currentLevel?: string | null;
+    },
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!response.ok || !response.body) {
+      throw new Error(`Upstream failed (${response.status})`);
+    }
+
+    const contentType = resolvedMeta.mimeType || response.headers.get("content-type");
+    if (contentType) entry.mimeType = contentType;
+    const contentLengthHeader = response.headers.get("content-length");
+    const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
+    if (Number.isFinite(contentLength) && contentLength > 0) {
+      entry.totalBytes = contentLength;
+    }
+
+    const headerBitrate = Number(response.headers.get("x-aria-bitrate"));
+    const headerSampleRate = Number(response.headers.get("x-aria-sample-rate"));
+    const headerLevel = response.headers.get("x-aria-level");
+
+    if (resolvedMeta.bitrate) entry.bitrate = resolvedMeta.bitrate;
+    else if (Number.isFinite(headerBitrate) && headerBitrate > 0) entry.bitrate = headerBitrate;
+
+    if (resolvedMeta.sampleRate) entry.sampleRate = resolvedMeta.sampleRate;
+    else if (Number.isFinite(headerSampleRate) && headerSampleRate > 0) entry.sampleRate = headerSampleRate;
+
+    if (resolvedMeta.currentLevel) entry.currentLevel = resolvedMeta.currentLevel;
+    else if (headerLevel) entry.currentLevel = headerLevel;
+
+    const handle = await fs.open(entry.filePath, "w");
+    let writeOffset = 0;
+    try {
+      const reader = response.body.getReader();
+      while (true) {
+        if (signal.aborted) throw new Error("Aborted");
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || value.byteLength === 0) continue;
+
+        const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        await handle.write(buf, 0, buf.byteLength, writeOffset);
+        writeOffset += buf.byteLength;
+        entry.downloadedBytes = writeOffset;
+        notifyEntryWaiters(entry);
+      }
+      if (entry.totalBytes === null) {
+        entry.totalBytes = entry.downloadedBytes;
+      }
+      entry.completed = true;
+      notifyEntryWaiters(entry);
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  async prepareDirectUrlTrack(
+    track: AriaRoomTrackPayload,
+    url: string,
+    headers?: Record<string, string>,
+    meta?: {
+      mimeType?: string | null;
+      bitrate?: number | null;
+      sampleRate?: number | null;
+      currentLevel?: string | null;
+      fetcher?: (url: string, init?: RequestInit) => Promise<globalThis.Response>;
+      sanitizeHeaders?: boolean;
+    },
+  ): Promise<BufferedTrackEntry> {
+    const cleanNonce = sanitizeNonce(track.nonce);
+    if (!cleanNonce) {
+      throw new HttpError(400, "Invalid track nonce", "INVALID_NONCE");
+    }
+
+    const existing = this.entries.get(cleanNonce);
+    if (existing && !existing.failedError) {
+      existing.lastAccessAt = Date.now();
+      return existing;
+    }
+    if (existing?.failedError) {
+      await this.deleteEntry(cleanNonce);
+    }
+
+    await fs.mkdir(this.cacheDir, { recursive: true });
+    const filePath = path.join(this.cacheDir, `direct-${cleanNonce}.bin`);
+    const abortController = new AbortController();
+
+    const entry: BufferedTrackEntry = {
+      nonce: cleanNonce,
+      track,
+      kind: "temp-file",
+      filePath,
+      mimeType: meta?.mimeType || track.mimeType || "application/octet-stream",
+      bitrate: meta?.bitrate ?? track.bitrate ?? null,
+      sampleRate: meta?.sampleRate ?? track.sampleRate ?? null,
+      currentLevel: meta?.currentLevel ?? track.currentLevel ?? null,
+      totalBytes: null,
+      downloadedBytes: 0,
+      completed: false,
+      failedError: null,
+      createdAt: Date.now(),
+      lastAccessAt: Date.now(),
+      abortController,
+      waiters: new Set(),
+    };
+
+    this.entries.set(cleanNonce, entry);
+    await this.evictOldEntries();
+
+    const safeHeaders = meta?.sanitizeHeaders === false ? headers : sanitizeSafeHeaders(headers);
+    const upstreamFetch = meta?.fetcher ?? fetch;
+    const runFetch = async () => {
+      const connect = createConnectSignal(abortController.signal, 8_000);
+      try {
+        const response = await upstreamFetch(url, {
+          headers: safeHeaders,
+          signal: connect.signal,
+        });
+        connect.clear();
+        await this.writeResponseStreamToEntry(
+          entry,
+          response,
+          {
+            mimeType: meta?.mimeType ?? track.mimeType ?? null,
+            bitrate: meta?.bitrate ?? track.bitrate ?? null,
+            sampleRate: meta?.sampleRate ?? track.sampleRate ?? null,
+            currentLevel: meta?.currentLevel ?? track.currentLevel ?? null,
+          },
+          abortController.signal,
+        );
+      } catch (error) {
+        connect.clear();
+        if (!abortController.signal.aborted) {
+          entry.failedError = error instanceof Error ? error.message : String(error);
+        }
+        notifyEntryWaiters(entry);
+      }
+    };
+    void runFetch();
+    return entry;
+  }
+
   private async pumpUpstreamToTempFile(
     entry: BufferedTrackEntry,
     localApiPort: number,
     signal: AbortSignal,
   ): Promise<void> {
-    let writeStream: ReturnType<typeof createWriteStream> | null = null;
     try {
       let response: globalThis.Response | null = null;
       let resolved: Awaited<ReturnType<typeof resolveExternalUpstream>> | null = null;
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         resolved = await resolveExternalUpstream(entry.track, localApiPort, attempt > 0);
+        if (resolved.isTrial) {
+          throw new HttpError(403, "Source returned trial clip", "TRIAL_ONLY");
+        }
         const upstreamFetch = resolved.fetcher ?? fetch;
-        response = await upstreamFetch(resolved.url, {
-          headers: resolved.headers,
-          signal,
-        });
+        const connect = createConnectSignal(signal, 8_000);
+        try {
+          response = await upstreamFetch(resolved.url, {
+            headers: resolved.headers,
+            signal: connect.signal,
+          });
+        } finally {
+          connect.clear();
+        }
         if (response.ok) break;
         if ((response.status === 403 || response.status === 410) && attempt === 0) {
           await response.body?.cancel();
@@ -459,65 +664,8 @@ export class TrackByteCache {
         throw new Error(`Upstream failed (${response?.status ?? "network"})`);
       }
 
-      const contentType = resolved.mimeType || response.headers.get("content-type");
-      if (contentType) entry.mimeType = contentType;
-      const contentLengthHeader = response.headers.get("content-length");
-      const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
-      if (Number.isFinite(contentLength) && contentLength > 0) {
-        entry.totalBytes = contentLength;
-      }
-
-      const headerBitrate = Number(response.headers.get("x-aria-bitrate"));
-      const headerSampleRate = Number(response.headers.get("x-aria-sample-rate"));
-      const headerLevel = response.headers.get("x-aria-level");
-
-      if (resolved.bitrate) entry.bitrate = resolved.bitrate;
-      else if (Number.isFinite(headerBitrate) && headerBitrate > 0) entry.bitrate = headerBitrate;
-
-      if (resolved.sampleRate) entry.sampleRate = resolved.sampleRate;
-      else if (Number.isFinite(headerSampleRate) && headerSampleRate > 0) entry.sampleRate = headerSampleRate;
-
-      if (resolved.currentLevel) entry.currentLevel = resolved.currentLevel;
-      else if (headerLevel) entry.currentLevel = headerLevel;
-
-      writeStream = createWriteStream(entry.filePath, { flags: "w" });
-      const reader = response.body.getReader();
-
-      while (true) {
-        if (signal.aborted) throw new Error("Aborted");
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value || value.byteLength === 0) continue;
-
-        const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-        if (!writeStream.write(buf)) {
-          await new Promise<void>((resolve, reject) => {
-            writeStream!.once("drain", resolve);
-            writeStream!.once("error", reject);
-          });
-        }
-        entry.downloadedBytes += buf.byteLength;
-        notifyEntryWaiters(entry);
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        writeStream!.end((err?: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
-      if (entry.totalBytes === null) {
-        entry.totalBytes = entry.downloadedBytes;
-      }
-      entry.completed = true;
-      notifyEntryWaiters(entry);
+      await this.writeResponseStreamToEntry(entry, response, resolved, signal);
     } catch (error) {
-      try {
-        writeStream?.destroy();
-      } catch {
-        // ignore
-      }
       if (!signal.aborted) {
         entry.failedError = error instanceof Error ? error.message : String(error);
       }
@@ -676,30 +824,37 @@ export class TrackByteCache {
       totalBytes: params.totalBytes,
     });
 
-    if (params.chunk.byteLength > 0) {
-      if (!entry.writeHandle) {
-        entry.writeHandle = await fs.open(entry.filePath, "r+");
-      }
-      await entry.writeHandle.write(params.chunk, 0, params.chunk.byteLength, params.offset);
-      const newExtent = params.offset + params.chunk.byteLength;
-      if (newExtent > entry.downloadedBytes) {
-        entry.downloadedBytes = newExtent;
-      }
-    }
+    const prevQueue = entry.writeQueue ?? Promise.resolve();
+    const runWrite = prevQueue.catch(() => undefined).then(async () => {
+      if (this.entries.get(entry.nonce) !== entry) return;
 
-    if (params.eof) {
-      if (entry.writeHandle) {
-        const handle = entry.writeHandle;
-        entry.writeHandle = null;
-        await handle.close().catch(() => undefined);
+      if (params.chunk.byteLength > 0) {
+        if (!entry.writeHandle) {
+          entry.writeHandle = await fs.open(entry.filePath, "r+");
+        }
+        await entry.writeHandle.write(params.chunk, 0, params.chunk.byteLength, params.offset);
+        const newExtent = params.offset + params.chunk.byteLength;
+        if (newExtent > entry.downloadedBytes) {
+          entry.downloadedBytes = newExtent;
+        }
       }
-      if (entry.totalBytes === null) {
-        entry.totalBytes = entry.downloadedBytes;
-      }
-      entry.completed = true;
-    }
 
-    notifyEntryWaiters(entry);
+      if (params.eof) {
+        if (entry.writeHandle) {
+          const handle = entry.writeHandle;
+          entry.writeHandle = null;
+          await handle.close().catch(() => undefined);
+        }
+        if (entry.totalBytes === null) {
+          entry.totalBytes = entry.downloadedBytes;
+        }
+        entry.completed = true;
+      }
+
+      notifyEntryWaiters(entry);
+    });
+    entry.writeQueue = runWrite;
+    await runWrite;
     return entry;
   }
 
@@ -827,7 +982,7 @@ export class TrackByteCache {
             if (bytesRead > 0) {
               const out = bytesRead === chunkBuf.byteLength ? Buffer.from(chunkBuf) : Buffer.from(chunkBuf.subarray(0, bytesRead));
               if (!res.write(out)) {
-                await new Promise<void>((resolve) => res.once("drain", resolve));
+                await waitForResponseDrain(res, controller.signal);
               }
               cursor += bytesRead;
               continue;
@@ -840,7 +995,7 @@ export class TrackByteCache {
           }
           const waitTimeoutMs =
             !entry.completed && cursor > entry.downloadedBytes + 512 * 1024
-              ? 2_500
+              ? 10_000
               : SLICE_WAIT_TIMEOUT_MS;
           await waitForEntryProgress(entry, controller.signal, waitTimeoutMs);
         }

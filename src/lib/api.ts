@@ -81,6 +81,7 @@ declare global {
       toggleMaximizeWindow?: () => void;
       closeWindow?: () => void;
       onWindowVisibilityChange?: (callback: (visible: boolean) => void) => () => void;
+      onWindowFocusChange?: (callback: (focused: boolean) => void) => () => void;
       onPlaybackCommand?: (callback: (command: "toggle" | "play" | "pause" | "previous" | "next" | "volumeUp" | "volumeDown" | "mute" | "like" | "mode" | "equalizer") => void) => () => void;
       onOpenSettings?: (callback: () => void) => () => void;
       showApp?: () => void;
@@ -144,7 +145,7 @@ export class ApiError extends Error {
 
 export type UpdateState = {
   supported: boolean;
-  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "up-to-date" | "error" | "unsupported";
+  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "installing" | "up-to-date" | "error" | "unsupported";
   currentVersion: string;
   availableVersion: string | null;
   releaseName: string | null;
@@ -530,6 +531,9 @@ export type AriaRoomMember = {
   readyNonce?: string | null;
   shareEnabled?: boolean;
   capabilities?: AriaRoomCapabilities;
+  online?: boolean;
+  presence?: "active" | "away" | "offline";
+  lastSeenAt?: number;
 };
 
 export type AriaRoomPlaybackState = {
@@ -1362,7 +1366,7 @@ export const api = {
       randomList?: string[];
     },
   ) {
-    return request<{ ok: boolean }>(
+    return request<{ ok: boolean; version?: number; displayList?: string[] }>(
       `/api/netease/listen-together/rooms/${encodeURIComponent(roomId)}/playlist`,
       { method: "POST", body: JSON.stringify(body) },
     );
@@ -1424,6 +1428,8 @@ export const api = {
     capabilities?: AriaRoomCapabilities;
     networkMode: AriaRoomNetworkMode;
     controlMode?: AriaRoomControlMode;
+    roomId?: string | null;
+    rejoin?: boolean;
     directPort?: number;
     publicHost?: string | null;
     signalingUrl?: string | null;
@@ -1437,6 +1443,18 @@ export const api = {
     return request<AriaRoomSnapshot>("/api/aria-room/rooms/create", {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  },
+  updateAriaRoomPresence(presence: "active" | "away") {
+    return request<{ ok: boolean }>("/api/aria-room/presence", {
+      method: "POST",
+      body: JSON.stringify({ presence }),
+    });
+  },
+  kickAriaRoomMember(peerId: string) {
+    return request<{ ok: boolean }>("/api/aria-room/kick-member", {
+      method: "POST",
+      body: JSON.stringify({ peerId }),
     });
   },
   joinAriaRoom(body: {

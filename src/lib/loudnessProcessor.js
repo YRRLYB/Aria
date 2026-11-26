@@ -1,7 +1,13 @@
-// A slow RMS controller: do not turn silence or background noise into music.
+// A slow RMS controller: smoothly ramp up from silence/noise floor so
+// quiet intros never suffer a sudden +12 dB step discontinuity at rms=0.003.
 // Keep the user volume downstream so changing it cannot trigger compensation.
 export function desiredLoudnessGain(rms) {
-  return rms < 0.003 ? 1 : Math.min(4, Math.max(0.25, 0.12 / rms));
+  if (!Number.isFinite(rms) || rms <= 0.002) return 1;
+  const rawGain = Math.min(4, Math.max(0.25, 0.12 / rms));
+  if (rms >= 0.015) return rawGain;
+  const t = (rms - 0.002) / (0.015 - 0.002);
+  const smooth = t * t * (3 - 2 * t);
+  return 1 + (rawGain - 1) * smooth;
 }
 
 export class LoudnessController {

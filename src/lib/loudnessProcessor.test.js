@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { desiredLoudnessGain, LoudnessController } from "./loudnessProcessor.js";
 
 describe("loudness normalization", () => {
-  it("leaves silence and noise alone and bounds compensation", () => {
+  it("leaves silence and noise alone, ramps smoothly near 0.003, and bounds compensation", () => {
     expect(desiredLoudnessGain(0)).toBe(1);
     expect(desiredLoudnessGain(0.002)).toBe(1);
-    expect(desiredLoudnessGain(0.01)).toBe(4);
+    const jumpDb = 20 * Math.log10(desiredLoudnessGain(0.0031) / desiredLoudnessGain(0.0029));
+    expect(Math.abs(jumpDb)).toBeLessThan(1.5);
+    expect(desiredLoudnessGain(0.015)).toBe(4);
     expect(desiredLoudnessGain(1)).toBe(0.25);
   });
 

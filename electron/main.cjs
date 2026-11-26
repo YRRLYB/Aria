@@ -511,12 +511,19 @@ function showWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
   sendWindowVisibility(true);
+  sendWindowFocus(true);
 }
 
 function sendWindowVisibility(visible) {
   const isVisible = Boolean(visible);
   nativeAudioEngine?.setWindowVisible?.(isVisible);
   mainWindow?.webContents.send("aria:window-visibility", isVisible);
+}
+
+function sendWindowFocus(focused) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send("aria:window-focus", Boolean(focused));
 }
 
 function sendPlaybackCommand(command) {
@@ -921,14 +928,24 @@ async function createWindow() {
       mainWindow.hide();
     }
   });
-  mainWindow.on("hide", () => sendWindowVisibility(false));
-  mainWindow.on("minimize", () => sendWindowVisibility(false));
+  mainWindow.on("hide", () => {
+    sendWindowVisibility(false);
+    sendWindowFocus(false);
+  });
+  mainWindow.on("minimize", () => {
+    sendWindowVisibility(false);
+    sendWindowFocus(false);
+  });
+  mainWindow.on("blur", () => sendWindowFocus(false));
+  mainWindow.on("focus", () => sendWindowFocus(true));
   mainWindow.on("show", () => {
     sendWindowVisibility(true);
+    sendWindowFocus(true);
     scheduleTaskbarSync("show");
   });
   mainWindow.on("restore", () => {
     sendWindowVisibility(true);
+    sendWindowFocus(true);
     scheduleTaskbarSync("restore");
   });
   mainWindow.on("closed", () => {

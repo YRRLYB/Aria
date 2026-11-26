@@ -30,7 +30,7 @@ function sanitizeEqualizerBands(value) {
 
 function buildEqualizerFilter(bands) {
   return bands
-    .map((gain, index) => `equalizer=f=${EQUALIZER_FREQUENCIES[index]}:width_type=o:width=1:g=${gain}`)
+    .map((gain, index) => `equalizer=f=${EQUALIZER_FREQUENCIES[index]}:width_type=q:width=1.1:g=${gain}`)
     .join(",");
 }
 
@@ -197,6 +197,7 @@ class MpvAudioEngine {
     this.pendingPause = true;
     this.pauseToken = 0;
     this.seekToken = 0;
+    this.volumeToken = 0;
     this.normalizationQueue = Promise.resolve();
     this.lastRecoveryAt = 0;
     // When the renderer preloads the next track, mpv advances its internal
@@ -637,9 +638,9 @@ class MpvAudioEngine {
         Array.isArray(equalizerBands) ? equalizerBands : this.state.equalizerBands,
       );
     }
-    if (typeof volume === "number") {
-      this.state.volume = volume;
-      await this.command("set_property", "volume", volume);
+    if (typeof volume === "number" && Number.isFinite(volume)) {
+      this.state.volume = Math.max(0, Math.min(100, volume));
+      await this.command("set_property", "volume", this.state.volume);
     }
     if (typeof exclusive === "boolean") {
       const supportedOptions = IS_WINDOWS ? null : readSupportedMpvOptions(this.resolveExecutable());
@@ -677,7 +678,6 @@ class MpvAudioEngine {
         }
       }
     }
-    this.writeLog("native-audio.log", `native output: ${this.state.exclusive ? "exclusive" : "shared"} device=${this.state.deviceId}`);
     if (typeof deviceId === "string") {
       this.state.deviceId = this.normalizeDeviceId(deviceId);
       await this.command("set_property", "audio-device", this.state.deviceId);
@@ -686,6 +686,7 @@ class MpvAudioEngine {
         this.state.deviceId = resolvedDevice;
       }
     }
+    this.writeLog("native-audio.log", `native output: ${this.state.exclusive ? "exclusive" : "shared"} device=${this.state.deviceId}`);
     this.emit({ kind: "settings" });
     return this.snapshot();
   }
@@ -705,8 +706,15 @@ class MpvAudioEngine {
     const task = this.normalizationQueue.then(async () => {
       // Label only Aria's filter so toggling never removes other mpv filters.
       const filters = await this.command("get_property", "af");
-      const installed = Array.isArray(filters) && filters.some((filter) => filter.label === "aria-normalization");
+      const list = Array.isArray(filters) ? filters : [];
+      const eqIdx = list.findIndex((filter) => filter.label === "aria-eq");
+      const normIdx = list.findIndex((filter) => filter.label === "aria-normalization");
+      const installed = normIdx !== -1;
       if (enabled && !installed) {
+        await this.command("af", "add", "@aria-normalization:lavfi=[dynaudnorm=f=100:g=5:p=0.95:m=4:r=0.12]");
+      } else if (enabled && installed && eqIdx !== -1 && normIdx < eqIdx) {
+        // Ensure EQ sits ahead of dynamic normalization so boosted bands hit the limiter cleanly.
+        await this.command("af", "remove", "@aria-normalization");
         await this.command("af", "add", "@aria-normalization:lavfi=[dynaudnorm=f=100:g=5:p=0.95:m=4:r=0.12]");
       } else if (!enabled && installed) {
         await this.command("af", "remove", "@aria-normalization");
@@ -720,16 +728,23 @@ class MpvAudioEngine {
   setEqualizer(enabled, bands) {
     const nextBands = sanitizeEqualizerBands(bands);
     const task = this.normalizationQueue.then(async () => {
-      // Rebuild Aria's own labeled filter so rapid band changes never touch
-      // normalization or any other mpv filter in the chain.
+      // Rebuild Aria's own labeled filter and keep @aria-eq before @aria-normalization.
       const filters = await this.command("get_property", "af");
-      const installed = Array.isArray(filters) && filters.some((filter) => filter.label === "aria-eq");
+      const list = Array.isArray(filters) ? filters : [];
+      const installedEq = list.some((filter) => filter.label === "aria-eq");
+      const installedNorm = list.some((filter) => filter.label === "aria-normalization");
       const active = Boolean(enabled) && nextBands.some((gain) => Math.abs(gain) > 0.05);
-      if (installed) {
+      if (installedEq) {
         await this.command("af", "remove", "@aria-eq");
       }
       if (active) {
+        if (installedNorm) {
+          await this.command("af", "remove", "@aria-normalization");
+        }
         await this.command("af", "add", `@aria-eq:lavfi=[${buildEqualizerFilter(nextBands)}]`);
+        if (installedNorm) {
+          await this.command("af", "add", "@aria-normalization:lavfi=[dynaudnorm=f=100:g=5:p=0.95:m=4:r=0.12]");
+        }
       }
       this.state.equalizerEnabled = Boolean(enabled);
       this.state.equalizerBands = nextBands;
@@ -959,9 +974,14 @@ class MpvAudioEngine {
   }
 
   async setVolume(volume) {
-    await this.ensureProcess(this.launchExclusive ?? false);
-    this.state.volume = Math.max(0, Math.min(100, Number(volume) || 0));
-    await this.command("set_property", "volume", this.state.volume);
+    const token = ++this.volumeToken;
+    const parsed = Number(volume);
+    const clamped = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : this.state.volume;
+    this.state.volume = clamped;
+    if (this.process && this.socket && !this.socket.destroyed) {
+      await this.command("set_property", "volume", clamped).catch(() => undefined);
+      if (token !== this.volumeToken) return this.snapshot({ kind: "superseded" });
+    }
     this.emit({ kind: "volume" });
     return this.snapshot();
   }

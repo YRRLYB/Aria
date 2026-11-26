@@ -4,6 +4,10 @@ const mocks = vi.hoisted(() => ({
   batch: vi.fn(),
   send_text: vi.fn(),
   send_song: vi.fn(),
+  listentogether_status: vi.fn(),
+  listentogether_sync_playlist_get: vi.fn(),
+  listentogether_sync_list_command: vi.fn(),
+  getTracksByIds: vi.fn(),
   readStore: vi.fn(),
   getAccount: vi.fn(),
   fetch: vi.fn(),
@@ -14,6 +18,14 @@ vi.mock("NeteaseCloudMusicApi", () => ({
     batch: mocks.batch,
     send_text: mocks.send_text,
     send_song: mocks.send_song,
+    listentogether_status: mocks.listentogether_status,
+    listentogether_sync_playlist_get: mocks.listentogether_sync_playlist_get,
+    listentogether_sync_list_command: mocks.listentogether_sync_list_command,
+  },
+}));
+vi.mock("../../clients/neteaseClient", () => ({
+  neteaseClient: {
+    getTracksByIds: mocks.getTracksByIds,
   },
 }));
 vi.mock("../../store", () => ({
@@ -28,8 +40,10 @@ vi.mock("../../services/neteaseService", () => ({
 
 import {
   extractInboxListenTogetherInvites,
+  getListenTogetherRoomState,
   resolveShortListenTogetherUrl,
   sendListenTogetherInviteMessage,
+  syncListenTogetherPlaylist,
 } from "./listenTogether";
 
 describe("NetEase Listen Together invites", () => {
@@ -197,5 +211,71 @@ describe("NetEase Listen Together invites", () => {
       }),
     });
     await expect(resolveShortListenTogetherUrl("https://163cn.tv/evil02")).resolves.toBeNull();
+  });
+
+  it("does not collapse sharedTracks to [activeSongId] when displayList is empty, and preserves per-user version increment", async () => {
+    mocks.listentogether_status.mockResolvedValue({
+      body: {
+        code: 200,
+        data: {
+          inRoom: true,
+          roomInfo: {
+            roomId: "room_ver_1",
+            creatorId: "10001",
+            status: "PLAYING",
+            roomUsers: [{ userId: "10001", nickname: "Tester", avatarUrl: "" }],
+            playInfo: { songId: "1844160090", playStatus: "PLAY", progress: 5000, clientSeq: 2 },
+          },
+        },
+      },
+    });
+    mocks.listentogether_sync_playlist_get.mockResolvedValue({
+      body: {
+        code: 200,
+        data: {
+          playlist: {
+            version: [
+              { userId: "10001", version: 2 },
+              { userId: "20002", version: 5 },
+            ],
+            displayList: [],
+          },
+        },
+      },
+    });
+    mocks.getTracksByIds.mockResolvedValue([
+      {
+        id: "1844160090",
+        source: "netease",
+        title: "Track One",
+        artist: "Artist",
+        album: "Album",
+        duration: "03:00",
+        quality: "FLAC",
+        streamUrl: "/api/providers/netease/stream/1844160090",
+      },
+    ]);
+
+    const state = await getListenTogetherRoomState("room_ver_1", true);
+    expect(state.inRoom).toBe(true);
+    expect(state.sharedTracks).toEqual([]);
+    expect(state.activeTrack?.id).toBe("1844160090");
+    expect(state.playlistVersion).toBe(7);
+
+    mocks.listentogether_sync_list_command.mockResolvedValue({ body: { code: 200 } });
+    const syncRes = await syncListenTogetherPlaylist({
+      roomId: "room_ver_1",
+      version: 99,
+      displayList: ["111", "222"],
+    });
+    expect(mocks.listentogether_sync_list_command).toHaveBeenCalledWith(
+      expect.objectContaining({
+        roomId: "room_ver_1",
+        userId: "10001",
+        version: 3,
+        displayList: "111,222",
+      }),
+    );
+    expect(syncRes).toEqual({ ok: true, version: 8, displayList: ["111", "222"] });
   });
 });

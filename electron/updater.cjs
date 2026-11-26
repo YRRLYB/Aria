@@ -30,11 +30,14 @@ let state = {
 let writeLog = () => {};
 let autoUpdater = null;
 let checking = null;
+let checkNeedsManualSurface = false;
+let startupRetryScheduled = false;
 let autoCheckTimer = null;
 let activeRoute = null;
 let resolveLocalProxy = () => "";
 let onBeforeInstall = () => {};
 let suppressUpdaterErrorEvent = false;
+let teardownHooked = false;
 
 function toElectronProxyRules(rawProxyUrl) {
   const trimmed = typeof rawProxyUrl === "string" ? rawProxyUrl.trim() : "";
@@ -52,19 +55,35 @@ function toElectronProxyRules(rawProxyUrl) {
   }
 }
 
-function buildUpdaterProxyCandidates(localProxyUrl) {
+function readEnvProxyUrl() {
+  return String(
+    process.env.HTTPS_PROXY ||
+      process.env.https_proxy ||
+      process.env.HTTP_PROXY ||
+      process.env.http_proxy ||
+      "",
+  ).trim();
+}
+
+function buildUpdaterProxyCandidates(localProxyUrl, envProxyUrl = "") {
   const routes = [
     { id: "system", label: "system proxy", config: { mode: "system" }, proxyUrl: "" },
   ];
-  const rules = toElectronProxyRules(localProxyUrl);
-  if (rules) {
+  const seenUrls = new Set();
+  const addFixedProxy = (id, labelPrefix, rawUrl) => {
+    const trimmed = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    const rules = toElectronProxyRules(trimmed);
+    if (!rules || seenUrls.has(rules)) return;
+    seenUrls.add(rules);
     routes.push({
-      id: "local-proxy",
-      label: `local proxy (${localProxyUrl})`,
+      id,
+      label: `${labelPrefix} (${trimmed})`,
       config: { mode: "fixed_servers", proxyRules: rules },
-      proxyUrl: String(localProxyUrl).trim(),
+      proxyUrl: trimmed,
     });
-  }
+  };
+  addFixedProxy("local-proxy", "local proxy", localProxyUrl);
+  addFixedProxy("env-proxy", "env proxy", envProxyUrl);
   routes.push({ id: "direct", label: "direct", config: { mode: "direct" }, proxyUrl: "" });
   return routes;
 }
@@ -92,8 +111,63 @@ function compareSemver(a, b) {
   return 0;
 }
 
+function decodeHtmlEntities(input) {
+  return String(input || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_m, dec) => {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_m, hex) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : "";
+    });
+}
+
+function formatReleaseNotes(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed
+    .replace(/\r\n/g, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n")
+    .replace(/<h[1-6][^>]*>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<p[^>]*>/gi, "")
+    .replace(/<li[^>]*>/gi, "\n• ")
+    .replace(/<\/li>/gi, "")
+    .replace(/<\/?(?:ul|ol|div|section|blockquote|table|thead|tbody|tr|strong|em|b|i|code|pre)[^>]*>/gi, "")
+    .replace(/<t[dh][^>]*>/gi, " ")
+    .replace(/<\/t[dh]>/gi, " ")
+    .replace(/<a[^>]*>(.*?)<\/a>/gi, "$1")
+    .replace(/<[^>]+>/g, "");
+  const decoded = decodeHtmlEntities(normalized)
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return decoded ? decoded.slice(0, 12_000) : null;
+}
+
 function getUpdaterSession() {
   return electron.session.fromPartition(UPDATER_SESSION_PARTITION, { cache: false });
+}
+
+function getConfiguredCandidates() {
+  let configuredLocalProxy = "";
+  try {
+    configuredLocalProxy = resolveLocalProxy?.() || "";
+  } catch {
+    configuredLocalProxy = "";
+  }
+  return buildUpdaterProxyCandidates(configuredLocalProxy, readEnvProxyUrl());
 }
 
 async function probeUpdaterNetwork(updaterSession, probeUrl = UPDATER_PROBE_URL) {
@@ -120,20 +194,13 @@ async function probeUpdaterNetwork(updaterSession, probeUrl = UPDATER_PROBE_URL)
 
 /**
  * The renderer session runs direct (music APIs are domestic), but GitHub and
- * its release-asset CDN may only be reachable through the system proxy or
- * the user's configured local proxy. Probe the ordered candidate routes and
- * keep whichever route reaches the actual release endpoint.
+ * its release-asset CDN may only be reachable through the system proxy, a local
+ * proxy, or environment proxy settings. Probe candidates and fall back cleanly.
  */
 async function ensureUpdaterNetwork(options = {}) {
   const { force = false, excludeRouteIds = [], probeUrl = UPDATER_PROBE_URL } = options;
   const updaterSession = getUpdaterSession();
-  let configuredLocalProxy = "";
-  try {
-    configuredLocalProxy = resolveLocalProxy?.() || "";
-  } catch {
-    configuredLocalProxy = "";
-  }
-  const candidates = buildUpdaterProxyCandidates(configuredLocalProxy);
+  const candidates = getConfiguredCandidates();
   if (
     !force &&
     activeRoute &&
@@ -178,9 +245,13 @@ function update(patch) {
 
 function releaseNotesText(info) {
   const notes = info?.releaseNotes;
-  if (typeof notes === "string") return notes.slice(0, 12_000);
+  if (typeof notes === "string") return formatReleaseNotes(notes);
   if (Array.isArray(notes)) {
-    return notes.map((item) => typeof item?.note === "string" ? item.note : "").filter(Boolean).join("\n").slice(0, 12_000);
+    const joined = notes
+      .map((item) => (typeof item?.note === "string" ? formatReleaseNotes(item.note) : ""))
+      .filter(Boolean)
+      .join("\n\n");
+    return joined ? joined.slice(0, 12_000) : null;
   }
   return null;
 }
@@ -202,11 +273,22 @@ function friendlyUpdateError(error) {
   return raw.slice(0, 600);
 }
 
+function invokeBeforeInstallOnce() {
+  if (teardownHooked) return;
+  teardownHooked = true;
+  try {
+    onBeforeInstall();
+  } catch {
+    // Teardown helper is best-effort before NSIS replacement.
+  }
+}
+
 function setupUpdates(options = {}) {
   const { app, ipcMain, shell } = electron;
   writeLog = options.writeLog ?? (() => {});
   resolveLocalProxy = typeof options.resolveLocalProxy === "function" ? options.resolveLocalProxy : (() => "");
   onBeforeInstall = typeof options.onBeforeInstall === "function" ? options.onBeforeInstall : (() => {});
+  teardownHooked = false;
   const macAutoUpdate = process.env.ARIA_MAC_AUTO_UPDATE === "1";
   const checkOnlyMode = process.platform === "darwin" && !macAutoUpdate;
   const supported = process.platform === "win32" || process.platform === "darwin";
@@ -215,9 +297,7 @@ function setupUpdates(options = {}) {
     manualDownloadOnly: checkOnlyMode,
     currentVersion: app.getVersion(),
     status: supported ? "idle" : "unsupported",
-    reason: supported
-      ? null
-      : "当前平台不支持自动更新。",
+    reason: supported ? null : "当前平台不支持自动更新。",
   });
 
   ipcMain.handle("aria:update:state", () => state);
@@ -234,29 +314,43 @@ function setupUpdates(options = {}) {
     if (state.status !== "available" && !(state.status === "error" && state.availableVersion)) {
       return state;
     }
-    const runDownloadAttempt = async (excludedIds = []) => {
-      await ensureUpdaterNetwork({ force: excludedIds.length > 0, excludeRouteIds: excludedIds });
+    const triedIds = [];
+    const runDownloadOnRoute = async (route) => {
+      if (route) {
+        const updaterSession = getUpdaterSession();
+        await updaterSession.setProxy(route.config);
+        activeRoute = route;
+      }
       update({ status: "downloading", percent: 0, bytesPerSecond: null, error: null });
       return autoUpdater.downloadUpdate();
     };
+
     suppressUpdaterErrorEvent = true;
     try {
-      await runDownloadAttempt([]);
-    } catch (firstError) {
-      const failedRouteId = activeRoute?.id ?? null;
-      if (failedRouteId && isRetriableNetworkError(firstError)) {
-        writeLog("update.log", `download failed via ${failedRouteId}, retrying fallback route`);
-        activeRoute = null;
-        try {
-          suppressUpdaterErrorEvent = false;
-          await runDownloadAttempt([failedRouteId]);
-          return state;
-        } catch (retryError) {
-          update({ status: "error", error: friendlyUpdateError(retryError), checkedAt: Date.now() });
-          return state;
+      const initialRoute = await ensureUpdaterNetwork({ force: false });
+      triedIds.push(initialRoute?.id ?? "system");
+      try {
+        await runDownloadOnRoute(initialRoute);
+        return state;
+      } catch (firstError) {
+        if (!isRetriableNetworkError(firstError)) throw firstError;
+        const remaining = getConfiguredCandidates().filter((r) => !triedIds.includes(r.id));
+        let lastErr = firstError;
+        for (const candidate of remaining) {
+          triedIds.push(candidate.id);
+          writeLog("update.log", `download failed via ${activeRoute?.id ?? "system"}, trying ${candidate.label}`);
+          try {
+            await runDownloadOnRoute(candidate);
+            return state;
+          } catch (retryError) {
+            lastErr = retryError;
+            if (!isRetriableNetworkError(retryError)) break;
+          }
         }
+        throw lastErr;
       }
-      update({ status: "error", error: friendlyUpdateError(firstError), checkedAt: Date.now() });
+    } catch (error) {
+      update({ status: "error", error: friendlyUpdateError(error), checkedAt: Date.now() });
     } finally {
       suppressUpdaterErrorEvent = false;
     }
@@ -264,12 +358,10 @@ function setupUpdates(options = {}) {
   });
   ipcMain.handle("aria:update:install", () => {
     if (!supported || !autoUpdater || checkOnlyMode || state.status !== "downloaded") return false;
-    try {
-      onBeforeInstall();
-    } catch {
-      // Teardown helper is best-effort before NSIS replacement.
-    }
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    update({ status: "installing", error: null });
+    invokeBeforeInstallOnce();
+    // Allow Windows child process handles (backend / mpv) a brief window to close cleanly before NSIS starts.
+    setTimeout(() => autoUpdater.quitAndInstall(false, true), 180);
     return true;
   });
 
@@ -298,41 +390,53 @@ function setupUpdates(options = {}) {
     };
 
     try {
-      autoUpdater.on("before-quit-for-update", () => {
-        try { onBeforeInstall(); } catch {}
-      });
+      autoUpdater.on("before-quit-for-update", invokeBeforeInstallOnce);
     } catch {
       // Optional hook depending on platform updater implementation.
     }
+    try {
+      electron.autoUpdater?.on?.("before-quit-for-update", invokeBeforeInstallOnce);
+    } catch {
+      // electron.autoUpdater may be unavailable in some environments.
+    }
 
     autoUpdater.on("checking-for-update", () => update({ status: "checking", error: null }));
-    autoUpdater.on("update-available", (info) => update({
-      status: "available",
-      availableVersion: info?.version ?? null,
-      releaseName: info?.releaseName ?? null,
-      releaseNotes: releaseNotesText(info),
-      checkedAt: Date.now(),
-      error: null,
-      manualDownloadOnly: false,
-    }));
-    autoUpdater.on("update-not-available", (info) => update({
-      status: "up-to-date",
-      availableVersion: info?.version ?? state.currentVersion,
-      checkedAt: Date.now(),
-      error: null,
-      manualDownloadOnly: false,
-    }));
-    autoUpdater.on("download-progress", (progress) => update({
-      status: "downloading",
-      percent: Math.max(0, Math.min(100, Number(progress?.percent) || 0)),
-      bytesPerSecond: Number(progress?.bytesPerSecond) || null,
-    }));
-    autoUpdater.on("update-downloaded", (info) => update({
-      status: "downloaded",
-      availableVersion: info?.version ?? state.availableVersion,
-      percent: 100,
-      error: null,
-    }));
+    autoUpdater.on("update-available", (info) =>
+      update({
+        status: "available",
+        availableVersion: info?.version ?? null,
+        releaseName: info?.releaseName ?? null,
+        releaseNotes: releaseNotesText(info),
+        checkedAt: Date.now(),
+        error: null,
+        manualDownloadOnly: false,
+      }),
+    );
+    autoUpdater.on("update-not-available", (info) =>
+      update({
+        status: "up-to-date",
+        availableVersion: info?.version ?? state.currentVersion,
+        checkedAt: Date.now(),
+        error: null,
+        manualDownloadOnly: false,
+      }),
+    );
+    autoUpdater.on("download-progress", (progress) =>
+      update({
+        status: "downloading",
+        percent: Math.max(0, Math.min(100, Number(progress?.percent) || 0)),
+        bytesPerSecond: Number(progress?.bytesPerSecond) || null,
+      }),
+    );
+    autoUpdater.on("update-downloaded", (info) =>
+      update({
+        status: "downloaded",
+        availableVersion: info?.version ?? state.availableVersion,
+        percent: 100,
+        bytesPerSecond: null,
+        error: null,
+      }),
+    );
     autoUpdater.on("error", (error) => {
       if (suppressUpdaterErrorEvent) return;
       update({
@@ -365,7 +469,7 @@ function setupUpdates(options = {}) {
           status: "available",
           availableVersion: latestVersion,
           releaseName: typeof data?.name === "string" ? data.name : null,
-          releaseNotes: typeof data?.body === "string" ? data.body.slice(0, 12_000) : null,
+          releaseNotes: formatReleaseNotes(typeof data?.body === "string" ? data.body : null),
           manualDownloadOnly: true,
           checkedAt: Date.now(),
           error: null,
@@ -386,7 +490,11 @@ function setupUpdates(options = {}) {
 
   async function check(manual = false) {
     if (!supported || (!autoUpdater && !checkOnlyMode)) return state;
-    if (checking) return checking;
+    if (checking) {
+      if (manual) checkNeedsManualSurface = true;
+      return checking;
+    }
+    checkNeedsManualSurface = Boolean(manual);
     const forceProbe = manual && (state.status === "error" || !activeRoute);
     update({ status: "checking", error: null });
     if (manual) writeLog("update.log", "manual update check");
@@ -396,8 +504,7 @@ function setupUpdates(options = {}) {
           await checkGithubReleaseOnly(manual);
           return state;
         }
-        const runCheckOnce = async (force, excludeRouteIds) => {
-          await ensureUpdaterNetwork({ force, excludeRouteIds });
+        const runCheckWithTimeout = async () => {
           let timer = null;
           const timeout = new Promise((_, reject) => {
             timer = setTimeout(() => reject(new Error("检查更新超时，请稍后重试。")), 45_000);
@@ -411,34 +518,52 @@ function setupUpdates(options = {}) {
         };
 
         suppressUpdaterErrorEvent = true;
+        const triedIds = [];
         try {
-          await runCheckOnce(forceProbe, []);
+          const initialRoute = await ensureUpdaterNetwork({ force: forceProbe });
+          triedIds.push(initialRoute?.id ?? "system");
+          await runCheckWithTimeout();
           return state;
         } catch (firstError) {
-          const failedRouteId = activeRoute?.id ?? null;
-          if (failedRouteId && isRetriableNetworkError(firstError)) {
-            writeLog("update.log", `check failed via ${failedRouteId}, trying next route`);
-            activeRoute = null;
-            const fallback = await ensureUpdaterNetwork({ force: true, excludeRouteIds: [failedRouteId] });
-            if (fallback) {
-              suppressUpdaterErrorEvent = false;
-              await runCheckOnce(false, [failedRouteId]);
+          if (!isRetriableNetworkError(firstError)) throw firstError;
+          const updaterSession = getUpdaterSession();
+          const remaining = getConfiguredCandidates().filter((r) => !triedIds.includes(r.id));
+          let lastError = firstError;
+          for (const candidate of remaining) {
+            triedIds.push(candidate.id);
+            writeLog("update.log", `check failed via ${activeRoute?.id ?? "system"}, trying ${candidate.label}`);
+            activeRoute = candidate;
+            try {
+              await updaterSession.setProxy(candidate.config);
+              await runCheckWithTimeout();
               return state;
+            } catch (retryError) {
+              lastError = retryError;
+              if (!isRetriableNetworkError(retryError)) break;
             }
           }
-          throw firstError;
+          activeRoute = null;
+          throw lastError;
         }
       } catch (error) {
         const raw = error instanceof Error ? error.message : String(error ?? "");
-        if (!manual && /ERR_NETWORK_IO_SUSPENDED|ERR_INTERNET_DISCONNECTED/i.test(raw)) {
+        if (!checkNeedsManualSurface && /ERR_NETWORK_IO_SUSPENDED|ERR_INTERNET_DISCONNECTED/i.test(raw)) {
           writeLog("update.log", `background update check skipped (${raw})`);
           update({ status: state.availableVersion ? "available" : "idle", error: null });
-          return state;
+        } else {
+          update({ status: "error", error: friendlyUpdateError(error), checkedAt: Date.now() });
         }
-        update({ status: "error", error: friendlyUpdateError(error), checkedAt: Date.now() });
+        if (!checkNeedsManualSurface && !startupRetryScheduled && isRetriableNetworkError(error)) {
+          startupRetryScheduled = true;
+          const retryTimer = setTimeout(() => {
+            void check(false);
+          }, 60_000);
+          retryTimer.unref?.();
+        }
         return state;
       } finally {
         suppressUpdaterErrorEvent = false;
+        checkNeedsManualSurface = false;
         checking = null;
       }
     })();
@@ -446,9 +571,13 @@ function setupUpdates(options = {}) {
   }
 
   if (process.env.ARIA_DISABLE_AUTO_UPDATE !== "1") {
-    autoCheckTimer = setTimeout(() => { void check(false); }, 15_000);
+    autoCheckTimer = setTimeout(() => {
+      void check(false);
+    }, 5_000);
     autoCheckTimer.unref?.();
-    const interval = setInterval(() => { void check(false); }, 6 * 60 * 60_000);
+    const interval = setInterval(() => {
+      void check(false);
+    }, 6 * 60 * 60_000);
     interval.unref?.();
   }
   return state;
@@ -460,6 +589,7 @@ module.exports = {
   friendlyUpdateError,
   buildUpdaterProxyCandidates,
   compareSemver,
+  formatReleaseNotes,
   isRetriableNetworkError,
   toElectronProxyRules,
 };

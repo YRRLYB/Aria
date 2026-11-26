@@ -298,4 +298,39 @@ describe("listenTogetherSync", () => {
       clearDrift: false,
     });
   });
+
+  it("ignores stale pre-GOTO poll snapshots of the former track inside the local switch grace window", () => {
+    const stalePollPlayInfo = {
+      songId: "111000",
+      playStatus: "PLAY" as const,
+      progressMs: 18_000,
+      clientSeq: 4,
+      commandType: "PLAY",
+    };
+
+    const decision = evaluateRemotePlayInfoSync({
+      room: {
+        roomId: "room_1",
+        roomUsers: twoUsers,
+        playInfo: stalePollPlayInfo,
+      },
+      rttMs: 50,
+      forceAlign: false,
+      nowMs: 101_200,
+      lastLocalCommandAtMs: 100_000,
+      lastProcessedPlaySig: buildListenTogetherPlaySignature("room_1", stalePollPlayInfo),
+      lastLocalSent: {
+        songId: "222000",
+        formerSongId: "111000",
+        playStatus: "PLAY",
+        progressMs: 0,
+        clientSeq: 5,
+        sentAtMs: 100_000,
+      },
+      selfUserId: "10001",
+      currentSongId: "222000",
+    });
+
+    expect(decision.kind).toBe("skip");
+  });
 });

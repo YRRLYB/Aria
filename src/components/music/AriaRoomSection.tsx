@@ -18,10 +18,12 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Server,
   SlidersHorizontal,
   Sparkles,
   Upload,
+  UserMinus,
   UserPlus,
   Users,
   X,
@@ -40,7 +42,7 @@ import type {
   AriaSourceAccountSummary,
   ResolvedAriaRoomIdentity,
 } from "@/lib/ariaRoomProfile";
-import { ariaPayloadToGuestTrack } from "@/lib/ariaRoomSync";
+import { ariaPayloadToGuestTrack, normalizeAriaRoomCode } from "@/lib/ariaRoomSync";
 import type { LocalPlaylist } from "@/lib/localPlaylists";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -75,11 +77,13 @@ export type AriaRoomSectionProps = {
   onCreateRoom: (params: {
     networkMode: AriaRoomNetworkMode;
     controlMode: AriaRoomControlMode;
+    roomId?: string;
     directPort?: number;
     publicHost?: string;
   }) => Promise<unknown>;
   onJoinRoom: (input: string) => Promise<unknown>;
   onLeaveRoom: () => Promise<void>;
+  onKickMember?: (peerId: string) => Promise<void>;
   onProbeIps: (signalingUrl?: string, provider?: AriaSignalingProvider) => Promise<unknown>;
   onUpdateNetworkConfig: (patch: Partial<AriaRoomConfigSnapshot>) => Promise<unknown>;
   onSetControlMode: (mode: AriaRoomControlMode) => Promise<void>;
@@ -152,29 +156,77 @@ function AvatarMedia({
   );
 }
 
+function resolveEffectivePresence(
+  online?: boolean,
+  presence?: "active" | "away" | "offline",
+): "active" | "away" | "offline" {
+  if (online === false || presence === "offline") return "offline";
+  if (presence === "away") return "away";
+  return "active";
+}
+
+function presenceLabel(presence: "active" | "away" | "offline"): string {
+  if (presence === "offline") return "离线";
+  if (presence === "away") return "暂离";
+  return "在线";
+}
+
 function MemberAvatar({
   nickname,
   avatarUrl,
   sizeClass = "size-10",
   isHost,
+  online,
+  presence,
+  showStatusDot = false,
 }: {
   nickname: string;
   avatarUrl: string | null;
   sizeClass?: string;
   isHost?: boolean;
+  online?: boolean;
+  presence?: "active" | "away" | "offline";
+  showStatusDot?: boolean;
 }) {
+  const effective = resolveEffectivePresence(online, presence);
+  const dimmed = effective !== "active";
   return (
-    <div
-      className={cn(
-        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-full border bg-[var(--surface)] text-xs font-semibold text-[var(--text-primary)]",
-        sizeClass,
-        isHost ? "border-[var(--accent)] ring-2 ring-[var(--accent)]/25" : "border-[var(--line)]",
-      )}
-    >
-      {avatarUrl ? (
-        <AvatarMedia src={avatarUrl} alt={nickname} cacheSize={128} className="size-full object-cover" />
-      ) : (
-        <span>{nickname.slice(0, 1).toUpperCase()}</span>
+    <div className={cn("relative shrink-0", sizeClass)}>
+      <div
+        className={cn(
+          "flex size-full items-center justify-center overflow-hidden rounded-full border bg-[var(--surface)] text-xs font-semibold text-[var(--text-primary)] transition",
+          isHost && !dimmed
+            ? "border-[var(--accent)] ring-2 ring-[var(--accent)]/25"
+            : "border-[var(--line)]",
+          effective === "offline" && "opacity-60",
+          effective === "away" && "opacity-75",
+        )}
+      >
+        {avatarUrl ? (
+          <AvatarMedia
+            src={avatarUrl}
+            alt={nickname}
+            cacheSize={128}
+            className={cn("size-full object-cover transition", dimmed && "grayscale")}
+          />
+        ) : (
+          <span className={cn(dimmed && "text-[var(--text-secondary)]")}>
+            {nickname.slice(0, 1).toUpperCase()}
+          </span>
+        )}
+      </div>
+      {showStatusDot && (
+        <span
+          title={presenceLabel(effective)}
+          className={cn(
+            "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface)]",
+            effective === "active"
+              ? "bg-emerald-500"
+              : effective === "away"
+                ? "bg-amber-400"
+                : "bg-neutral-400",
+          )}
+        />
       )}
     </div>
   );
@@ -215,6 +267,8 @@ export function AriaRoomSection({
   probingIps,
   actionError,
   rttMs,
+  lastDriftMs,
+  bufferProgress,
   superMixItems,
   onBack,
   onUpdateProfile,
@@ -223,6 +277,7 @@ export function AriaRoomSection({
   onCreateRoom,
   onJoinRoom,
   onLeaveRoom,
+  onKickMember,
   onProbeIps,
   onUpdateNetworkConfig,
   onSetControlMode,
@@ -245,10 +300,14 @@ export function AriaRoomSection({
     onSubPageChange?.(next);
   };
   const [networkReturnPage, setNetworkReturnPage] = useState<"main" | "info">("main");
+  const userTouchedNetworkModeRef = useRef(false);
   const [networkMode, setNetworkMode] = useState<AriaRoomNetworkMode>(
     hasSignalingUrl ? "cloudflare" : "direct",
   );
   const [controlMode, setControlMode] = useState<AriaRoomControlMode>("collaborative");
+  const [customRoomCodeInput, setCustomRoomCodeInput] = useState("");
+  const [queueQuery, setQueueQuery] = useState("");
+  const [networkSaveError, setNetworkSaveError] = useState<string | null>(null);
   const [directPortInput, setDirectPortInput] = useState(String(config.directPort || 3639));
   const [publicHostInput, setPublicHostInput] = useState(config.publicHost || "");
   const [joinInput, setJoinInput] = useState("");
@@ -266,6 +325,12 @@ export function AriaRoomSection({
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!userTouchedNetworkModeRef.current && hasSignalingUrl) {
+      setNetworkMode("cloudflare");
+    }
+  }, [hasSignalingUrl]);
 
   useEffect(() => {
     if (!snapshot.active && subPage === "info") {
@@ -346,6 +411,27 @@ export function AriaRoomSection({
     () => snapshot.playback.queue.map((item) => ({ payload: item, track: ariaPayloadToGuestTrack(item) })),
     [snapshot.playback.queue],
   );
+
+  const filteredQueueItems = useMemo(() => {
+    const q = queueQuery.trim().toLowerCase();
+    if (!q) return queueItems;
+    return queueItems.filter(
+      ({ payload }) =>
+        payload.title.toLowerCase().includes(q) ||
+        payload.artist.toLowerCase().includes(q) ||
+        (payload.album ?? "").toLowerCase().includes(q) ||
+        (payload.addedByName ?? "").toLowerCase().includes(q),
+    );
+  }, [queueItems, queueQuery]);
+
+  const trimmedCustomRoomCode = customRoomCodeInput.trim();
+  const normalizedCustomRoomCode = trimmedCustomRoomCode
+    ? normalizeAriaRoomCode(trimmedCustomRoomCode)
+    : null;
+  const customRoomCodeError =
+    networkMode !== "direct" && trimmedCustomRoomCode.length > 0 && !normalizedCustomRoomCode
+      ? "房间号仅支持 3–24 位字母、数字、下划线或短横线"
+      : null;
 
   async function copyText(key: string, value: string | null | undefined) {
     if (!value) return;
@@ -654,6 +740,16 @@ export function AriaRoomSection({
           </Button>
         </header>
 
+        {combinedError && (
+          <div
+            role="alert"
+            className="flex items-center gap-2.5 rounded-2xl border border-rose-500/20 bg-rose-500/8 px-4 py-3 text-xs text-rose-600 dark:text-rose-300"
+          >
+            <AlertTriangle className="size-4 shrink-0" />
+            <span className="min-w-0 flex-1">{combinedError}</span>
+          </div>
+        )}
+
         {(snapshot.roomId || (isHost && snapshot.directServer.active)) && (
           <div className="glass space-y-3 rounded-[24px] p-5">
             <p className="text-xs font-medium text-[var(--text-secondary)]">房间邀请</p>
@@ -746,26 +842,70 @@ export function AriaRoomSection({
             </span>
           </div>
           <div className="divide-y divide-[var(--line)]">
-            {snapshot.members.map((member) => (
-              <div key={member.peerId} className="flex items-center justify-between gap-3 py-2.5 first:pt-1 last:pb-0">
-                <div className="flex min-w-0 items-center gap-3">
-                  <MemberAvatar
-                    nickname={member.nickname}
-                    avatarUrl={member.avatarUrl}
-                    sizeClass="size-9"
-                    isHost={member.role === "host"}
-                  />
-                  <span className="truncate text-sm font-medium text-[var(--text-primary)]">
-                    {member.nickname}
-                  </span>
+            {snapshot.members.map((member) => {
+              const effPresence = resolveEffectivePresence(member.online, member.presence);
+              return (
+                <div key={member.peerId} className="flex items-center justify-between gap-3 py-2.5 first:pt-1 last:pb-0">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <MemberAvatar
+                      nickname={member.nickname}
+                      avatarUrl={member.avatarUrl}
+                      sizeClass="size-9"
+                      isHost={member.role === "host"}
+                      online={member.online}
+                      presence={member.presence}
+                      showStatusDot
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            "truncate text-sm font-medium",
+                            effPresence === "offline"
+                              ? "text-[var(--text-secondary)]"
+                              : "text-[var(--text-primary)]",
+                          )}
+                        >
+                          {member.nickname}
+                        </span>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                            effPresence === "active"
+                              ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
+                              : effPresence === "away"
+                                ? "bg-amber-500/12 text-amber-600 dark:text-amber-400"
+                                : "bg-[var(--surface-muted)] text-[var(--text-secondary)]",
+                          )}
+                        >
+                          {presenceLabel(effPresence)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {member.role === "host" && (
+                      <span className="rounded-full bg-[var(--accent-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--accent)]">
+                        房主
+                      </span>
+                    )}
+                    {isHost && member.role !== "host" && onKickMember && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={loading}
+                        onClick={() => void onKickMember(member.peerId)}
+                        className="h-7 px-2 text-[11px] text-rose-500 hover:bg-rose-500/10 hover:text-rose-600"
+                        title="将该成员移出房间"
+                      >
+                        <UserMinus className="size-3.5" />
+                        移出
+                      </Button>
+                    )}
+                  </div>
                 </div>
-                {member.role === "host" && (
-                  <span className="rounded-full bg-[var(--accent-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--accent)]">
-                    房主
-                  </span>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -850,6 +990,16 @@ export function AriaRoomSection({
             网络设置
           </h1>
         </header>
+
+        {(combinedError || networkSaveError) && (
+          <div
+            role="alert"
+            className="flex items-center gap-2.5 rounded-2xl border border-rose-500/20 bg-rose-500/8 px-4 py-3 text-xs text-rose-600 dark:text-rose-300"
+          >
+            <AlertTriangle className="size-4 shrink-0" />
+            <span className="min-w-0 flex-1">{networkSaveError || combinedError}</span>
+          </div>
+        )}
 
         <div className="glass space-y-4 rounded-[24px] p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1087,6 +1237,7 @@ export function AriaRoomSection({
             <Button
               size="sm"
               onClick={() => {
+                setNetworkSaveError(null);
                 void onUpdateNetworkConfig({
                   signalingProvider: signalingProviderInput,
                   signalingUrl: signalingUrlInput.trim(),
@@ -1103,10 +1254,14 @@ export function AriaRoomSection({
                     .filter(Boolean),
                   turnUsername: turnUsernameInput.trim(),
                   turnCredential: turnCredentialInput.trim(),
-                }).then(() => {
-                  setNetworkSaved(true);
-                  window.setTimeout(() => setNetworkSaved(false), 1600);
-                });
+                })
+                  .then(() => {
+                    setNetworkSaved(true);
+                    window.setTimeout(() => setNetworkSaved(false), 1600);
+                  })
+                  .catch((err) => {
+                    setNetworkSaveError(err instanceof Error ? err.message : "保存网络配置失败");
+                  });
               }}
             >
               {networkSaved ? <Check className="size-3.5" /> : null}
@@ -1118,9 +1273,14 @@ export function AriaRoomSection({
     );
   }
 
+  const bufferPct =
+    bufferProgress && !bufferProgress.completed && bufferProgress.totalBytes && bufferProgress.totalBytes > 0
+      ? Math.min(99, Math.max(0, Math.round((bufferProgress.downloadedBytes / bufferProgress.totalBytes) * 100)))
+      : null;
+
   const ariaLobbyCard = (
     <div className="glass flex h-full flex-col overflow-hidden rounded-[26px]">
-      <div className="relative flex min-h-[196px] flex-col justify-between bg-[linear-gradient(135deg,#2a214a_0%,#574596_54%,#1d1930_100%)] p-5 text-white">
+      <div className="relative flex flex-col justify-between gap-5 bg-[linear-gradient(135deg,#261e47_0%,#534194_55%,#1b172d_100%)] p-5 text-white sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="inline-flex rounded-full border border-white/15 bg-black/25 p-0.5 backdrop-blur-md">
             {[
@@ -1134,7 +1294,10 @@ export function AriaRoomSection({
                 <button
                   key={mode.id}
                   type="button"
-                  onClick={() => setNetworkMode(mode.id)}
+                  onClick={() => {
+                    userTouchedNetworkModeRef.current = true;
+                    setNetworkMode(mode.id);
+                  }}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition",
                     active
@@ -1177,74 +1340,116 @@ export function AriaRoomSection({
           </div>
         </div>
 
-        <div className="mt-6 flex flex-wrap items-end justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-semibold tracking-tight text-white">
-                Aria 专属混合一起听
-              </h2>
-              <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-medium text-white/90">
-                最多 5 人
-              </span>
-            </div>
-            <p className="mt-1.5 text-xs text-white/80">
-              支持本地、网易云、QQ、B站与 YouTube 跨源实时同听
-            </p>
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-xl font-semibold tracking-tight text-white">
+              Aria 跨源一起听
+            </h2>
+            <span className="rounded-full bg-white/15 px-2.5 py-0.5 text-[10px] font-medium text-white/90">
+              最多 5 人
+            </span>
           </div>
-
-          <Button
-            size="default"
-            disabled={loading}
-            onClick={() => {
-              const parsedPort = Number(directPortInput);
-              void onCreateRoom({
-                networkMode,
-                controlMode,
-                directPort: Number.isFinite(parsedPort) ? parsedPort : 3639,
-                publicHost: (publicHostInput.trim() || config.publicHost.trim()) || undefined,
-              });
-            }}
-            className="shrink-0 bg-white/95 text-[#1f1a38] shadow-lg hover:bg-white"
-          >
-            {loading ? <LoaderCircle className="size-4 animate-spin" /> : <Headphones className="size-4" />}
-            创建房间
-          </Button>
+          <p className="mt-1.5 text-xs text-white/80">
+            支持本地、网易云、QQ、B站与 YouTube 跨源实时同听，支持断点留存与预缓存
+          </p>
         </div>
       </div>
 
-      <form
-        className="flex flex-1 flex-col justify-center border-t border-[var(--line)] bg-[var(--surface)]/55 p-4 sm:p-5"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!joinInput.trim() || loading) return;
-          void onJoinRoom(joinInput);
-        }}
-      >
-        <div className="flex items-center justify-between gap-2">
-          <label
-            htmlFor="aria-room-join-input"
-            className="text-sm font-semibold text-[var(--text-primary)]"
-          >
-            加入房间
-          </label>
-          <span className="text-[11px] text-[var(--text-secondary)]">
-            支持 6 位房间码或直连口令
-          </span>
-        </div>
-        <div className="mt-2.5 flex gap-2">
-          <input
-            id="aria-room-join-input"
-            value={joinInput}
-            onChange={(e) => setJoinInput(e.target.value)}
-            placeholder="输入房间码或房主直连口令"
-            className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--surface-muted)] px-3.5 py-2 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]/65 focus:border-[var(--accent)]"
-          />
-          <Button type="submit" disabled={!joinInput.trim() || loading}>
-            {loading ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
-            加入
-          </Button>
-        </div>
-      </form>
+      <div className="flex flex-1 flex-col justify-between bg-[var(--surface)]/65">
+        <form
+          className="space-y-2.5 p-4 sm:px-5 sm:py-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (loading || customRoomCodeError) return;
+            const parsedPort = Number(directPortInput);
+            void onCreateRoom({
+              networkMode,
+              controlMode,
+              ...(networkMode !== "direct" && normalizedCustomRoomCode
+                ? { roomId: normalizedCustomRoomCode }
+                : {}),
+              directPort: Number.isFinite(parsedPort) ? parsedPort : 3639,
+              publicHost: (publicHostInput.trim() || config.publicHost.trim()) || undefined,
+            });
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <label
+              htmlFor={networkMode !== "direct" ? "aria-room-custom-code-input" : undefined}
+              className="text-sm font-semibold text-[var(--text-primary)]"
+            >
+              新建房间
+            </label>
+            <span className="text-[11px] text-[var(--text-secondary)]">
+              {networkMode === "direct"
+                ? `直连监听端口 ${directPortInput || config.directPort || 3639}`
+                : "可指定 3–24 位固定房间号，或留空自动生成"}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            {networkMode !== "direct" ? (
+              <input
+                id="aria-room-custom-code-input"
+                type="text"
+                maxLength={24}
+                value={customRoomCodeInput}
+                onChange={(e) => setCustomRoomCodeInput(e.target.value)}
+                placeholder="自定义房间号（选填，留空随机）"
+                className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--surface-muted)] px-3.5 py-2 font-mono text-sm text-[var(--text-primary)] outline-none placeholder:font-sans placeholder:text-xs placeholder:text-[var(--text-secondary)]/65 focus:border-[var(--accent)]"
+              />
+            ) : (
+              <div className="flex min-w-0 flex-1 items-center rounded-xl border border-[var(--line)] bg-[var(--surface-muted)]/65 px-3.5 py-2 text-xs text-[var(--text-secondary)]">
+                局域网 / 公网端口直连（自动生成口令）
+              </div>
+            )}
+            <Button
+              type="submit"
+              disabled={loading || Boolean(customRoomCodeError)}
+              className="shrink-0 shadow-sm"
+            >
+              {loading ? <LoaderCircle className="size-4 animate-spin" /> : <Headphones className="size-4" />}
+              创建房间
+            </Button>
+          </div>
+          {customRoomCodeError && (
+            <p className="text-[11px] text-rose-500">{customRoomCodeError}</p>
+          )}
+        </form>
+
+        <form
+          className="border-t border-[var(--line)] p-4 sm:px-5 sm:py-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!joinInput.trim() || loading) return;
+            void onJoinRoom(joinInput);
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <label
+              htmlFor="aria-room-join-input"
+              className="text-sm font-semibold text-[var(--text-primary)]"
+            >
+              加入房间
+            </label>
+            <span className="text-[11px] text-[var(--text-secondary)]">
+              支持 3–24 位房间码或直连口令
+            </span>
+          </div>
+          <div className="mt-2.5 flex gap-2">
+            <input
+              id="aria-room-join-input"
+              value={joinInput}
+              onChange={(e) => setJoinInput(e.target.value)}
+              placeholder="输入房间码或房主直连口令"
+              className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--surface-muted)] px-3.5 py-2 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]/65 focus:border-[var(--accent)]"
+            />
+            <Button type="submit" variant="subtle" disabled={!joinInput.trim() || loading}>
+              {loading ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
+              加入
+            </Button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 
@@ -1296,10 +1501,51 @@ export function AriaRoomSection({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {snapshot.active && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)]">
+              <span
+                className={cn(
+                  "lt-live-dot",
+                  snapshot.signalingState === "reconnecting" && "!bg-amber-400",
+                  snapshot.signalingState === "error" && "!bg-rose-500",
+                )}
+                aria-hidden="true"
+              />
+              <span>
+                {isSynced ? "已同步" : snapshot.signalingState === "reconnecting" ? "重连中" : "连接异常"}
+              </span>
+              {rttMs !== null && (
+                <span className="tabular-nums text-[var(--text-secondary)]">· {rttMs}ms</span>
+              )}
+              {lastDriftMs !== null && (
+                <span className="tabular-nums text-[var(--text-secondary)]">
+                  · 偏差 ±{Math.abs(lastDriftMs)}ms
+                </span>
+              )}
+              {bufferPct !== null && (
+                <span className="tabular-nums text-[var(--accent)]">· 缓冲 {bufferPct}%</span>
+              )}
+            </span>
+          )}
+
           {AvatarPillButton}
 
           {snapshot.active ? (
             <>
+              {isHost && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void onSetControlMode(
+                      snapshot.controlMode === "collaborative" ? "host-only" : "collaborative",
+                    )
+                  }
+                  className="rounded-full border border-[var(--line)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition hover:border-[var(--accent)]/50 hover:text-[var(--text-primary)]"
+                  title="切换房间切歌权限"
+                >
+                  {snapshot.controlMode === "collaborative" ? "全员可切歌" : "仅房主控场"}
+                </button>
+              )}
               <Button
                 variant="glass"
                 size="sm"
@@ -1315,7 +1561,7 @@ export function AriaRoomSection({
                 className="text-rose-500 hover:bg-rose-500/10 hover:text-rose-600"
                 onClick={() => void onLeaveRoom()}
               >
-                退出
+                退出房间
               </Button>
             </>
           ) : (
@@ -1361,36 +1607,69 @@ export function AriaRoomSection({
             )}
 
             <div className="relative z-10 flex flex-col gap-5">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/70 px-4 py-3 backdrop-blur-md">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex items-center -space-x-2">
-                    {snapshot.members.map((member) => (
-                      <div key={member.peerId} title={`${member.nickname}${member.role === "host" ? "（房主）" : ""}`}>
+              <div className="space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/70 p-4 backdrop-blur-md">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="inline-flex items-center gap-1.5 font-medium text-[var(--text-secondary)]">
+                    <Users className="size-3.5" />
+                    在席听友
+                  </span>
+                  <span className="tabular-nums text-[11px] font-medium text-[var(--text-secondary)]">
+                    {snapshot.members.length} / {snapshot.maxMembers} 人在席
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {snapshot.members.map((member) => {
+                    const effPresence = resolveEffectivePresence(member.online, member.presence);
+                    return (
+                      <div
+                        key={member.peerId}
+                        title={`${member.nickname}${member.role === "host" ? "（房主）" : ""} · ${presenceLabel(effPresence)}`}
+                        className={cn(
+                          "flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--surface)]/85 py-1 pl-1 pr-3 transition",
+                          effPresence === "offline" && "opacity-65",
+                        )}
+                      >
                         <MemberAvatar
                           nickname={member.nickname}
                           avatarUrl={member.avatarUrl}
+                          sizeClass="size-7"
                           isHost={member.role === "host"}
+                          online={member.online}
+                          presence={member.presence}
+                          showStatusDot
                         />
+                        <span
+                          className={cn(
+                            "max-w-[96px] truncate text-xs font-medium",
+                            effPresence === "offline"
+                              ? "text-[var(--text-secondary)]"
+                              : "text-[var(--text-primary)]",
+                          )}
+                        >
+                          {member.nickname}
+                        </span>
+                        {member.role === "host" && (
+                          <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">
+                            房主
+                          </span>
+                        )}
+                        {effPresence !== "active" && (
+                          <span className="text-[10px] text-[var(--text-secondary)]">
+                            {presenceLabel(effPresence)}
+                          </span>
+                        )}
                       </div>
-                    ))}
-                    {Array.from({ length: emptySeatCount }).map((_, idx) => (
-                      <span
-                        key={`empty-${idx}`}
-                        title={`席位 ${snapshot.members.length + idx + 1}/${snapshot.maxMembers}`}
-                        className="flex size-10 items-center justify-center rounded-full border border-dashed border-[var(--line)] bg-[var(--surface)]/75 text-[var(--text-secondary)]"
-                      >
-                        <UserPlus className="size-3.5 opacity-60" />
-                      </span>
-                    ))}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-semibold text-[var(--text-primary)]">
-                      {snapshot.members.map((m) => m.nickname).join("、")}
-                    </p>
-                    <p className="text-[11px] text-[var(--text-secondary)]">
-                      {snapshot.members.length} / {snapshot.maxMembers} 人在席
-                    </p>
-                  </div>
+                    );
+                  })}
+                  {Array.from({ length: emptySeatCount }).map((_, idx) => (
+                    <span
+                      key={`empty-${idx}`}
+                      title={`空余席位 ${snapshot.members.length + idx + 1}/${snapshot.maxMembers}`}
+                      className="flex size-9 items-center justify-center rounded-full border border-dashed border-[var(--line)] bg-[var(--surface)]/55 text-[var(--text-secondary)]"
+                    >
+                      <UserPlus className="size-3.5 opacity-55" />
+                    </span>
+                  ))}
                 </div>
               </div>
 
@@ -1443,12 +1722,14 @@ export function AriaRoomSection({
                 播放队列
               </h2>
               <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-medium tabular-nums text-[var(--text-secondary)]">
-                {queueItems.length} 首
+                {queueQuery.trim()
+                  ? `${filteredQueueItems.length} / ${queueItems.length} 首`
+                  : `${queueItems.length} 首`}
               </span>
             </div>
 
             {superMixItems.length > 0 && canControl && (
-              <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5">
+              <div className="no-scrollbar mb-3 flex shrink-0 items-center gap-1.5 overflow-x-auto pb-0.5">
                 {superMixItems.map(({ playlist, tracks: mixTracks }) => (
                   <Button
                     key={playlist.id}
@@ -1456,6 +1737,7 @@ export function AriaRoomSection({
                     variant="glass"
                     size="sm"
                     disabled={mixTracks.length === 0}
+                    className="shrink-0"
                     onClick={() => void onImportPlaylistTracks(mixTracks)}
                   >
                     <Sparkles className="size-3 text-[var(--accent)]" />
@@ -1465,9 +1747,21 @@ export function AriaRoomSection({
               </div>
             )}
 
-            {queueItems.length > 0 ? (
+            {queueItems.length > 10 && (
+              <div className="relative mb-3 shrink-0">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-[var(--text-secondary)]" />
+                <input
+                  value={queueQuery}
+                  onChange={(e) => setQueueQuery(e.target.value)}
+                  placeholder="搜索播放队列歌曲、歌手或点歌人…"
+                  className="w-full rounded-full border border-[var(--line)] bg-[var(--surface-muted)] py-1.5 pl-8 pr-3 text-xs text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]/65 focus:border-[var(--accent)]"
+                />
+              </div>
+            )}
+
+            {filteredQueueItems.length > 0 ? (
               <div className="no-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-                {queueItems.map(({ payload, track }, idx) => {
+                {filteredQueueItems.map(({ payload, track }, idx) => {
                   const isCurrent = payload.nonce === snapshot.playback.nonce;
                   return (
                     <button
@@ -1499,8 +1793,13 @@ export function AriaRoomSection({
                         >
                           {payload.title}
                         </span>
-                        <span className="block truncate text-[11px] text-[var(--text-secondary)]">
-                          {payload.artist}
+                        <span className="flex items-center gap-1.5 truncate text-[11px] text-[var(--text-secondary)]">
+                          <span className="truncate">{payload.artist}</span>
+                          {payload.addedByName && (
+                            <span className="shrink-0 rounded-full bg-[var(--surface-muted)] px-1.5 py-0.2 text-[10px] text-[var(--text-secondary)]">
+                              {payload.addedByName}
+                            </span>
+                          )}
                         </span>
                       </span>
                       <SourceBadge source={payload.source} compact />
@@ -1508,6 +1807,10 @@ export function AriaRoomSection({
                     </button>
                   );
                 })}
+              </div>
+            ) : queueItems.length > 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--line)] px-4 py-10 text-center">
+                <p className="text-xs font-medium text-[var(--text-secondary)]">没有找到匹配的歌曲</p>
               </div>
             ) : (
               <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--line)] px-4 py-12 text-center">

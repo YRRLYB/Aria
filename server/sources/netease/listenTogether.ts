@@ -73,6 +73,8 @@ const contactsCache = new Map<string, { contacts: ListenTogetherContact[]; cache
 const CONTACTS_CACHE_TTL_MS = 5 * 60_000;
 const shortUrlCache = new Map<string, string>();
 const resolvedShortUrlCache = new Map<string, { roomId: string; inviterId: string | null; songId: string | null }>();
+const roomPlaylistVersionMap = new Map<string, Array<{ userId: string; version: number }>>();
+const MAX_SYNC_PLAYLIST_TRACKS = 500;
 
 const LISTEN_TOGETHER_INVITE_COPY = "我的耳机分你一半，和我一起听歌吧~";
 
@@ -492,6 +494,7 @@ function extractSongIdArray(raw: unknown): string[] {
 
 export function normalizeSyncPlaylistResponse(rawBody: Record<string, unknown>): {
   version: number;
+  versionEntries: Array<{ userId: string; version: number }>;
   displayList: string[];
   randomList: string[];
   playInfo?: ListenTogetherPlayInfo;
@@ -503,12 +506,17 @@ export function normalizeSyncPlaylistResponse(rawBody: Record<string, unknown>):
     : null) as Record<string, unknown> | null;
 
   let version = 0;
+  const versionEntries: Array<{ userId: string; version: number }> = [];
   const rawVer = playlistObj?.version ?? data.version;
   if (Array.isArray(rawVer)) {
     version = rawVer.reduce((sum, entry) => {
       if (entry && typeof entry === "object") {
-        const v = Number((entry as Record<string, unknown>).version ?? 0);
-        return sum + (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+        const obj = entry as Record<string, unknown>;
+        const uid = String(obj.userId ?? "").trim();
+        const v = Number(obj.version ?? 0);
+        const safeV = Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+        if (uid) versionEntries.push({ userId: uid, version: safeV });
+        return sum + safeV;
       }
       const v = Number(entry ?? 0);
       return sum + (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
@@ -537,6 +545,7 @@ export function normalizeSyncPlaylistResponse(rawBody: Record<string, unknown>):
 
   return {
     version,
+    versionEntries,
     displayList,
     randomList: randomList.length ? randomList : displayList,
     ...(playInfo ? { playInfo } : {}),
@@ -920,13 +929,18 @@ export async function createListenTogetherRoom(options: {
   }
 
   const roomId = created.room.roomId;
-  const cleanTrackIds = [...new Set((options.trackIds ?? []).filter((id) => /^\d+$/.test(id)))];
+  const cleanTrackIds = [...new Set((options.trackIds ?? []).filter((id) => /^\d+$/.test(id)))].slice(
+    0,
+    MAX_SYNC_PLAYLIST_TRACKS,
+  );
   if (options.songId && /^\d+$/.test(options.songId) && !cleanTrackIds.includes(options.songId)) {
     cleanTrackIds.unshift(options.songId);
+    if (cleanTrackIds.length > MAX_SYNC_PLAYLIST_TRACKS) cleanTrackIds.length = MAX_SYNC_PLAYLIST_TRACKS;
   }
   const initialProgressMs = Math.max(0, Math.round(options.progressMs ?? 0));
   const initialPlayStatus: "PLAY" | "PAUSE" = options.playStatus === "PAUSE" ? "PAUSE" : "PLAY";
 
+  roomPlaylistVersionMap.set(roomId, [{ userId, version: cleanTrackIds.length ? 1 : 0 }]);
   if (cleanTrackIds.length) {
     const joined = cleanTrackIds.join(",");
     await callNcmModule("listentogether_sync_list_command", {
@@ -983,6 +997,13 @@ function pickFresherPlayInfo(
   const playlistSeq = Math.max(playlistPlayInfo.serverSeq ?? 0, playlistPlayInfo.clientSeq);
   const statusSeq = Math.max(statusPlayInfo.serverSeq ?? 0, statusPlayInfo.clientSeq);
   if (statusSeq > playlistSeq && statusPlayInfo.songId) return statusPlayInfo;
+  if (
+    statusSeq === playlistSeq &&
+    statusPlayInfo.songId &&
+    (statusPlayInfo.commandTime ?? 0) > (playlistPlayInfo.commandTime ?? 0)
+  ) {
+    return statusPlayInfo;
+  }
   return playlistPlayInfo;
 }
 
@@ -1038,6 +1059,9 @@ export async function getListenTogetherRoomState(
       ? normalizeSyncPlaylistResponse(playlistRes.value)
       : null;
   const playlistVersion = playlistParsed?.version ?? 0;
+  if (playlistParsed?.versionEntries.length) {
+    roomPlaylistVersionMap.set(activeRoom.roomId, playlistParsed.versionEntries);
+  }
   const displayList = playlistParsed?.displayList ?? [];
   const livePlayInfo = pickFresherPlayInfo(playlistParsed?.playInfo, activeRoom.playInfo);
 
@@ -1056,9 +1080,15 @@ export async function getListenTogetherRoomState(
   let activeTrack: ProviderTrack | null = null;
 
   if (includePlaylist) {
-    const idsToHydrate = [...new Set([...(activeSongId ? [activeSongId] : []), ...displayList])];
-    sharedTracks = idsToHydrate.length ? await hydrateTrackIdsCached(idsToHydrate) : [];
-    activeTrack = activeSongId ? sharedTracks.find((t) => t.id === activeSongId) ?? null : null;
+    // Never synthesize a single-track [activeSongId] shared queue when NetEase
+    // returns an empty displayList; that would collapse the user's queue to 1 song.
+    sharedTracks = displayList.length ? await hydrateTrackIdsCached(displayList) : [];
+    if (activeSongId) {
+      activeTrack =
+        sharedTracks.find((t) => t.id === activeSongId) ??
+        (await hydrateTrackIdsCached([activeSongId]))[0] ??
+        null;
+    }
   } else if (activeSongId) {
     const hydratedActive = await hydrateTrackIdsCached([activeSongId]);
     activeTrack = hydratedActive[0] ?? null;
@@ -1181,22 +1211,36 @@ export async function syncListenTogetherPlaylist(options: {
   version: number;
   displayList: string[];
   randomList?: string[];
-}): Promise<{ ok: boolean }> {
+}): Promise<{ ok: boolean; version: number; displayList: string[] }> {
   const { cookie, userId } = await requireNeteaseSession();
-  const cleanDisplay = [...new Set(options.displayList.filter((id) => /^\d+$/.test(id)))];
-  const cleanRandom = (options.randomList?.length ? options.randomList : cleanDisplay).filter((id) =>
-    /^\d+$/.test(id),
+  const cleanDisplay = [...new Set(options.displayList.filter((id) => /^\d+$/.test(id)))].slice(
+    0,
+    MAX_SYNC_PLAYLIST_TRACKS,
   );
+  const cleanRandom = (options.randomList?.length ? options.randomList : cleanDisplay)
+    .filter((id) => /^\d+$/.test(id))
+    .slice(0, MAX_SYNC_PLAYLIST_TRACKS);
+
+  const prevEntries = roomPlaylistVersionMap.get(options.roomId) ?? [];
+  const prevMine = prevEntries.find((entry) => entry.userId === userId)?.version ?? 0;
+  const nextUserVersion = prevMine > 0 ? prevMine + 1 : Math.max(1, Math.floor(options.version));
+
   await callNcmModule("listentogether_sync_list_command", {
     roomId: options.roomId,
     commandType: options.commandType ?? "REPLACE",
     userId,
-    version: Math.max(1, Math.floor(options.version)),
+    version: nextUserVersion,
     displayList: cleanDisplay.join(","),
     randomList: cleanRandom.join(","),
     cookie,
   });
-  return { ok: true };
+
+  const nextEntries = prevEntries.filter((entry) => entry.userId !== userId);
+  nextEntries.push({ userId, version: nextUserVersion });
+  roomPlaylistVersionMap.set(options.roomId, nextEntries);
+  const totalVersion = nextEntries.reduce((sum, entry) => sum + entry.version, 0);
+
+  return { ok: true, version: totalVersion || nextUserVersion, displayList: cleanDisplay };
 }
 
 export type ListenTogetherInviteMode = "song_card" | "short_link";

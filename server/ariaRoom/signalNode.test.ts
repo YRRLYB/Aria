@@ -166,4 +166,141 @@ describe("aria-signal-node standalone relay", () => {
       await nodeServer.close();
     }
   });
+
+  it("enforces custom code hijack protection, same-host rejoin restore, offline presence, presence_update, kick_member & private notice", async () => {
+    const nodeServer = createAriaSignalServer({ host: "127.0.0.1", port: 0, hostGraceMs: 2_000 });
+    const bound = await nodeServer.listen();
+    const port = bound.port;
+
+    try {
+      const { ws: hostWs } = await connectWebSocket(
+        `ws://127.0.0.1:${port}/ws?room=MY_ROOM-99&peer=host-owner&role=host`,
+      );
+      const { ws: guest1Ws } = await connectWebSocket(
+        `ws://127.0.0.1:${port}/ws?room=MY_ROOM-99&peer=guest-1&role=guest`,
+      );
+      const { ws: guest2Ws } = await connectWebSocket(
+        `ws://127.0.0.1:${port}/ws?room=MY_ROOM-99&peer=guest-2&role=guest`,
+      );
+
+      try {
+        const hostPeersPromise = waitForJsonMessage(hostWs, (m) => m.type === "room_peers");
+        hostWs.sendJson({
+          type: "hello",
+          role: "host",
+          member: { peerId: "host-owner", nickname: "Owner", avatarUrl: null, role: "host", joinedAt: 1000 },
+          state: {
+            controlMode: "collaborative",
+            playback: { nonce: "warm_trk", track: { id: "netease:1", title: "Saved" }, queue: [], playing: true, positionSec: 25, serverSeq: 3 },
+          },
+        });
+        await hostPeersPromise;
+
+        const g1StateP = waitForJsonMessage(guest1Ws, (m) => m.type === "state_update");
+        guest1Ws.sendJson({
+          type: "hello",
+          role: "guest",
+          member: { peerId: "guest-1", nickname: "G1", avatarUrl: null, role: "guest", joinedAt: 2000 },
+        });
+        await g1StateP;
+
+        const g2StateP = waitForJsonMessage(guest2Ws, (m) => m.type === "state_update");
+        guest2Ws.sendJson({
+          type: "hello",
+          role: "guest",
+          member: { peerId: "guest-2", nickname: "G2", avatarUrl: null, role: "guest", joinedAt: 3000 },
+        });
+        await g2StateP;
+
+        // 1. Custom room code hijack rejection for a different host peer
+        const { ws: hijackWs } = await connectWebSocket(
+          `ws://127.0.0.1:${port}/ws?room=MY_ROOM-99&peer=thief-host&role=host`,
+        );
+        const hijackErrPromise = waitForJsonMessage(hijackWs, (m) => m.type === "error");
+        hijackWs.sendJson({
+          type: "hello",
+          role: "host",
+          member: { peerId: "thief-host", nickname: "Thief", avatarUrl: null, role: "host", joinedAt: 4000 },
+        });
+        const hijackErr = await hijackErrPromise;
+        expect(hijackErr.code).toBe("ROOM_CODE_TAKEN");
+        hijackWs.close();
+
+        // 2. Private notice targets only guest-1, not guest-2
+        const g1NoticeP = waitForJsonMessage(guest1Ws, (m) => m.type === "notice");
+        let g2GotPrivateNotice = false;
+        const g2Listener = (raw: string) => {
+          const m = JSON.parse(raw) as Record<string, unknown>;
+          if (m.type === "notice") g2GotPrivateNotice = true;
+        };
+        guest2Ws.on("message", g2Listener);
+        hostWs.sendJson({ type: "notice", toPeerId: "guest-1", message: "private-only" });
+        const g1Notice = await g1NoticeP;
+        expect(g1Notice.message).toBe("private-only");
+        await new Promise((r) => setTimeout(r, 40));
+        guest2Ws.off("message", g2Listener);
+        expect(g2GotPrivateNotice).toBe(false);
+
+        // 3. presence_update broadcasts away status
+        const awayPeersP = waitForJsonMessage(
+          hostWs,
+          (m) =>
+            m.type === "room_peers" &&
+            Array.isArray(m.members) &&
+            (m.members as Array<{ peerId: string; presence?: string }>).some(
+              (x) => x.peerId === "guest-1" && x.presence === "away",
+            ),
+        );
+        guest1Ws.sendJson({ type: "presence_update", presence: "away" });
+        await awayPeersP;
+
+        // 4. Unexpected socket disconnect preserves member as offline instead of deleting
+        const offlinePeersP = waitForJsonMessage(
+          hostWs,
+          (m) =>
+            m.type === "room_peers" &&
+            Array.isArray(m.members) &&
+            (m.members as Array<{ peerId: string; online?: boolean; presence?: string }>).some(
+              (x) => x.peerId === "guest-1" && x.online === false && x.presence === "offline",
+            ),
+        );
+        guest1Ws.close();
+        await offlinePeersP;
+
+        // 5. Same-host rejoin restores cachedState back to host
+        hostWs.close();
+        const { ws: hostRejoinWs } = await connectWebSocket(
+          `ws://127.0.0.1:${port}/ws?room=MY_ROOM-99&peer=host-owner&role=host`,
+        );
+        try {
+          const restoredStateP = waitForJsonMessage(hostRejoinWs, (m) => m.type === "state_update");
+          hostRejoinWs.sendJson({
+            type: "hello",
+            role: "host",
+            rejoin: true,
+            member: { peerId: "host-owner", nickname: "Owner", avatarUrl: null, role: "host", joinedAt: 1000 },
+            state: { controlMode: "collaborative", playback: { nonce: null, track: null, queue: [] } },
+          });
+          const restoredState = await restoredStateP;
+          expect((restoredState.state as { playback: { nonce: string } }).playback.nonce).toBe("warm_trk");
+
+          // 6. Host kicks guest-2
+          const kickedErrP = waitForJsonMessage(guest2Ws, (m) => m.type === "error");
+          const peerLeftP = waitForJsonMessage(hostRejoinWs, (m) => m.type === "peer_left" && m.peerId === "guest-2");
+          hostRejoinWs.sendJson({ type: "kick_member", peerId: "guest-2" });
+          const kickedErr = await kickedErrP;
+          expect(kickedErr.code).toBe("KICKED_BY_HOST");
+          await peerLeftP;
+        } finally {
+          hostRejoinWs.close();
+        }
+      } finally {
+        hostWs.close();
+        guest1Ws.close();
+        guest2Ws.close();
+      }
+    } finally {
+      await nodeServer.close();
+    }
+  });
 });

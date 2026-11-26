@@ -220,3 +220,72 @@ export async function compressAvatarFile(file: File): Promise<string> {
     URL.revokeObjectURL(objectUrl);
   }
 }
+
+export type AriaRoomSavedSession = {
+  role: "host" | "guest";
+  networkMode: "direct" | "cloudflare" | "hybrid";
+  controlMode: "host-only" | "collaborative";
+  roomId: string | null;
+  directHost?: string | null;
+  directPort?: number | null;
+  directToken?: string | null;
+  publicHost?: string | null;
+  savedAt: number;
+};
+
+const SESSION_STORAGE_KEY = "aria-room-session-v1";
+
+export function readSavedAriaRoomSession(): AriaRoomSavedSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AriaRoomSavedSession>;
+    if (parsed.role !== "host" && parsed.role !== "guest") return null;
+    const networkMode =
+      parsed.networkMode === "direct" || parsed.networkMode === "hybrid" ? parsed.networkMode : "cloudflare";
+    const controlMode = parsed.controlMode === "host-only" ? "host-only" : "collaborative";
+    const roomId = typeof parsed.roomId === "string" && parsed.roomId.trim() ? parsed.roomId.trim() : null;
+    const directHost = typeof parsed.directHost === "string" && parsed.directHost.trim() ? parsed.directHost.trim() : null;
+    const directToken = typeof parsed.directToken === "string" && parsed.directToken.trim() ? parsed.directToken.trim() : null;
+    const directPort =
+      typeof parsed.directPort === "number" && Number.isFinite(parsed.directPort) ? parsed.directPort : null;
+    if (parsed.role === "guest") {
+      if (networkMode === "direct" && (!directHost || !directToken)) return null;
+      if (networkMode !== "direct" && !roomId) return null;
+    } else if (networkMode !== "direct" && !roomId) {
+      return null;
+    }
+    return {
+      role: parsed.role,
+      networkMode,
+      controlMode,
+      roomId,
+      directHost,
+      directPort,
+      directToken,
+      publicHost: typeof parsed.publicHost === "string" && parsed.publicHost.trim() ? parsed.publicHost.trim() : null,
+      savedAt: typeof parsed.savedAt === "number" && Number.isFinite(parsed.savedAt) ? parsed.savedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeSavedAriaRoomSession(session: AriaRoomSavedSession): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    // Ignore storage quota / private mode failures.
+  }
+}
+
+export function clearSavedAriaRoomSession(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}

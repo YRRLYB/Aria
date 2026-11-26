@@ -34,6 +34,9 @@ type StoredMember = {
   connectedVia: "direct" | "webrtc" | "ws";
   shareEnabled?: boolean;
   capabilities?: StoredCapabilities;
+  online?: boolean;
+  presence?: "active" | "away" | "offline";
+  lastSeenAt?: number;
 };
 
 type StoredRoomMeta = {
@@ -44,7 +47,8 @@ type StoredRoomMeta = {
 };
 
 const MAX_MEMBERS = 5;
-const HOST_GRACE_PERIOD_MS = 60_000;
+const ROOM_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+const ROOM_CODE_PATTERN = /^[A-Z0-9_-]{3,24}$/;
 
 export class AriaSignalRoom {
   private readonly ctx: WorkerDurableObjectState;
@@ -149,27 +153,63 @@ export class AriaSignalRoom {
     if (type === "hello") {
       const role = parsed.role === "host" ? "host" : "guest";
       const member = parsed.member as StoredMember | undefined;
-      if (!member?.peerId) return;
+      const actualPeerId = (senderPeerId || String(member?.peerId || "")).trim();
+      if (!member || !actualPeerId) return;
+      const now = Date.now();
+      const presence = parsed.presence === "away" ? "away" : "active";
 
       if (role === "host") {
+        if (meta.initialized && meta.hostPeerId && meta.hostPeerId !== actualPeerId) {
+          this.sendJson(ws, {
+            type: "error",
+            code: "ROOM_CODE_TAKEN",
+            message: "该房间号已被其他房主占用，请更换房间号或改为加入房间",
+          });
+          ws.close(4009, "Room code taken");
+          return;
+        }
         await this.ctx.storage.deleteAlarm();
+        const isSameHostRejoin = meta.initialized && meta.hostPeerId === actualPeerId;
+        const existingHost = meta.members[actualPeerId];
         meta.initialized = true;
-        meta.hostPeerId = member.peerId;
-        meta.members[member.peerId] = {
-          peerId: member.peerId,
+        meta.hostPeerId = actualPeerId;
+        meta.members[actualPeerId] = {
+          peerId: actualPeerId,
           nickname: String(member.nickname || "Aria 房主").slice(0, 60),
           avatarUrl: typeof member.avatarUrl === "string" ? member.avatarUrl : null,
           role: "host",
-          joinedAt: member.joinedAt || Date.now(),
+          joinedAt: existingHost?.joinedAt || member.joinedAt || now,
           connectedVia: "ws",
           shareEnabled: member.shareEnabled !== false,
-          ...(member.capabilities ? { capabilities: member.capabilities } : {}),
+          online: true,
+          presence,
+          lastSeenAt: now,
+          ...(member.capabilities ? { capabilities: member.capabilities } : existingHost?.capabilities ? { capabilities: existingHost.capabilities } : {}),
         };
-        if (parsed.state && typeof parsed.state === "object") {
-          meta.cachedState = parsed.state as Record<string, unknown>;
+        const incomingState =
+          parsed.state && typeof parsed.state === "object"
+            ? (parsed.state as Record<string, unknown>)
+            : null;
+        const incomingPlayback =
+          incomingState && typeof incomingState.playback === "object" && incomingState.playback
+            ? (incomingState.playback as Record<string, unknown>)
+            : null;
+        const hasIncomingTrack = Boolean(incomingPlayback?.track || incomingPlayback?.currentTrack);
+        const shouldRestoreCachedState = Boolean(
+          isSameHostRejoin && meta.cachedState && (parsed.rejoin || !hasIncomingTrack),
+        );
+        if (!shouldRestoreCachedState && incomingState) {
+          meta.cachedState = incomingState;
         }
         await this.writeMeta(meta);
         this.broadcast({ type: "room_peers", members: this.sortedMembers(meta) });
+        if (shouldRestoreCachedState && meta.cachedState) {
+          this.sendJson(ws, {
+            type: "state_update",
+            state: meta.cachedState,
+            members: this.sortedMembers(meta),
+          });
+        }
         return;
       }
 
@@ -183,26 +223,38 @@ export class AriaSignalRoom {
         return;
       }
 
+      await this.ctx.storage.deleteAlarm();
       const existingCount = Object.keys(meta.members).length;
-      if (existingCount >= MAX_MEMBERS && !meta.members[member.peerId]) {
-        this.sendJson(ws, {
-          type: "error",
-          code: "ROOM_FULL",
-          message: `房间已满（最多 ${MAX_MEMBERS} 人）`,
-        });
-        ws.close(4003, "Room full");
-        return;
+      if (existingCount >= MAX_MEMBERS && !meta.members[actualPeerId]) {
+        const offlineGuests = Object.values(meta.members)
+          .filter((m) => m.peerId !== meta.hostPeerId && (m.online === false || m.presence === "offline"))
+          .sort((a, b) => (a.lastSeenAt ?? a.joinedAt) - (b.lastSeenAt ?? b.joinedAt));
+        if (offlineGuests.length > 0) {
+          delete meta.members[offlineGuests[0].peerId];
+        } else {
+          this.sendJson(ws, {
+            type: "error",
+            code: "ROOM_FULL",
+            message: `房间已满（最多 ${MAX_MEMBERS} 人）`,
+          });
+          ws.close(4003, "Room full");
+          return;
+        }
       }
 
+      const existingGuest = meta.members[actualPeerId];
       const cleanGuest: StoredMember = {
-        peerId: member.peerId,
+        peerId: actualPeerId,
         nickname: String(member.nickname || "Aria 听众").slice(0, 60),
         avatarUrl: typeof member.avatarUrl === "string" ? member.avatarUrl : null,
         role: "guest",
-        joinedAt: member.joinedAt || Date.now(),
+        joinedAt: existingGuest?.joinedAt || member.joinedAt || now,
         connectedVia: "webrtc",
         shareEnabled: member.shareEnabled !== false,
-        ...(member.capabilities ? { capabilities: member.capabilities } : {}),
+        online: true,
+        presence,
+        lastSeenAt: now,
+        ...(member.capabilities ? { capabilities: member.capabilities } : existingGuest?.capabilities ? { capabilities: existingGuest.capabilities } : {}),
       };
       meta.members[cleanGuest.peerId] = cleanGuest;
       await this.writeMeta(meta);
@@ -239,11 +291,15 @@ export class AriaSignalRoom {
     }
 
     if (type === "state_update" && senderPeerId === meta.hostPeerId) {
+      this.broadcast(parsed, ws);
       if (parsed.state && typeof parsed.state === "object") {
         meta.cachedState = parsed.state as Record<string, unknown>;
-        await this.writeMeta(meta);
+        try {
+          await this.writeMeta(meta);
+        } catch {
+          // Ignore transient DO storage flush failures after relaying live state.
+        }
       }
-      this.broadcast(parsed, ws);
       return;
     }
 
@@ -289,8 +345,58 @@ export class AriaSignalRoom {
       return;
     }
 
-    if ((type === "prefetch_next" || type === "notice") && senderPeerId === meta.hostPeerId) {
+    if (type === "prefetch_next" && senderPeerId === meta.hostPeerId) {
       this.broadcast(parsed, ws);
+      return;
+    }
+
+    if (type === "notice" && senderPeerId === meta.hostPeerId) {
+      const targetPeer = typeof parsed.toPeerId === "string" ? parsed.toPeerId : "";
+      if (targetPeer) {
+        for (const targetWs of this.getSocketsByPeerId(targetPeer)) {
+          this.sendJson(targetWs, parsed);
+        }
+      } else {
+        this.broadcast(parsed, ws);
+      }
+      return;
+    }
+
+    if (type === "presence_update") {
+      const targetPeer = senderPeerId;
+      const nextPresence = parsed.presence === "away" ? "away" : parsed.presence === "active" ? "active" : null;
+      if (targetPeer && nextPresence && meta.members[targetPeer] && meta.members[targetPeer].online !== false) {
+        meta.members[targetPeer] = {
+          ...meta.members[targetPeer],
+          online: true,
+          presence: nextPresence,
+          lastSeenAt: Date.now(),
+        };
+        await this.writeMeta(meta);
+        this.broadcast({ type: "room_peers", members: this.sortedMembers(meta) });
+      }
+      return;
+    }
+
+    if (type === "kick_member" && senderPeerId === meta.hostPeerId && typeof parsed.peerId === "string") {
+      const targetPeer = parsed.peerId.trim();
+      if (targetPeer && targetPeer !== meta.hostPeerId) {
+        const existed = Boolean(meta.members[targetPeer]);
+        delete meta.members[targetPeer];
+        for (const targetWs of this.getSocketsByPeerId(targetPeer)) {
+          this.sendJson(targetWs, {
+            type: "error",
+            code: "KICKED_BY_HOST",
+            message: "你已被房主移出房间",
+          });
+          targetWs.close(4010, "Removed by host");
+        }
+        if (existed) {
+          await this.writeMeta(meta);
+          this.broadcast({ type: "peer_left", peerId: targetPeer });
+          this.broadcast({ type: "room_peers", members: this.sortedMembers(meta) });
+        }
+      }
       return;
     }
 
@@ -362,13 +468,10 @@ export class AriaSignalRoom {
     const tags = this.ctx.getTags(ws);
     const peerId = tags[0] ?? "";
     const meta = await this.readMeta();
-    if (!peerId || !meta.members[peerId]) return;
-
-    if (peerId === meta.hostPeerId) {
-      // Keep the room alive for a 60s grace period while host reconnects.
-      const remainingSameHost = this.getSocketsByPeerId(peerId).filter((s) => s !== ws);
-      if (remainingSameHost.length === 0) {
-        await this.ctx.storage.setAlarm(Date.now() + HOST_GRACE_PERIOD_MS);
+    const remainingAllSockets = this.ctx.getWebSockets().filter((s) => s !== ws);
+    if (!peerId || !meta.members[peerId]) {
+      if (meta.initialized && remainingAllSockets.length === 0) {
+        await this.ctx.storage.setAlarm(Date.now() + ROOM_IDLE_TTL_MS);
       }
       return;
     }
@@ -376,21 +479,32 @@ export class AriaSignalRoom {
     const remainingSamePeer = this.getSocketsByPeerId(peerId).filter((s) => s !== ws);
     if (remainingSamePeer.length > 0) return;
 
-    delete meta.members[peerId];
+    meta.members[peerId] = {
+      ...meta.members[peerId],
+      online: false,
+      presence: "offline",
+      lastSeenAt: Date.now(),
+    };
     await this.writeMeta(meta);
-    this.broadcast({ type: "peer_left", peerId });
-    this.broadcast({ type: "room_peers", members: this.sortedMembers(meta) });
+    this.broadcast({ type: "room_peers", members: this.sortedMembers(meta) }, ws);
+
+    if (remainingAllSockets.length === 0) {
+      await this.ctx.storage.setAlarm(Date.now() + ROOM_IDLE_TTL_MS);
+    }
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    await this.webSocketClose(ws);
   }
 
   async alarm(): Promise<void> {
     const meta = await this.readMeta();
     if (!meta.initialized || !meta.hostPeerId) return;
-    const hostSockets = this.getSocketsByPeerId(meta.hostPeerId);
-    if (hostSockets.length > 0) return;
+    if (this.ctx.getWebSockets().length > 0) return;
 
     this.broadcast({ type: "room_closed" });
     for (const sock of this.ctx.getWebSockets()) {
-      sock.close(1000, "Host timeout");
+      sock.close(1000, "Room idle timeout");
     }
     await this.ctx.storage.deleteAll();
   }
@@ -414,7 +528,7 @@ export default {
 
     if (url.pathname === "/ws") {
       const roomCode = (url.searchParams.get("room") || "").trim().toUpperCase();
-      if (!roomCode || roomCode.length > 32) {
+      if (!ROOM_CODE_PATTERN.test(roomCode)) {
         return new Response("Invalid room code", { status: 400 });
       }
       const id = env.ROOMS.idFromName(roomCode);

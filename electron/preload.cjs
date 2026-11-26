@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     ipcRenderer.on("aria:window-visibility", handler);
     return () => ipcRenderer.removeListener("aria:window-visibility", handler);
   },
+  onWindowFocusChange: (callback) => {
+    const handler = (_event, focused) => callback(Boolean(focused));
+    ipcRenderer.on("aria:window-focus", handler);
+    return () => ipcRenderer.removeListener("aria:window-focus", handler);
+  },
   onPlaybackCommand: (callback) => {
     const handler = (_event, command) => callback(command);
     ipcRenderer.on("aria:playback-command", handler);

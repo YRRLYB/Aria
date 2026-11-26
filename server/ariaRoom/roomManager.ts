@@ -109,7 +109,16 @@ export type AriaRoomMember = {
   readyNonce?: string | null;
   shareEnabled?: boolean;
   capabilities?: AriaRoomCapabilities;
+  online?: boolean;
+  presence?: "active" | "away" | "offline";
+  lastSeenAt?: number;
 };
+
+export function normalizeAriaRoomCode(raw: string): string | null {
+  const cleaned = raw.trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{3,24}$/.test(cleaned)) return null;
+  return cleaned;
+}
 
 export type RelayResolveOutcome = {
   ok: boolean;
@@ -137,22 +146,23 @@ export function rankRelayCandidates(
     const caps = m.capabilities;
     let tier = 0;
     if (source === "netease" || source === "cloud") {
-      tier = caps?.netease === "vip" ? 30 : caps?.netease === "free" ? 20 : 10;
+      tier = caps?.netease === "vip" ? 30 : caps?.netease === "free" ? 20 : caps?.netease === "none" ? 0 : 10;
     } else if (source === "qq") {
-      tier = caps?.qq === "vip" ? 30 : caps?.qq === "free" ? 20 : 10;
+      tier = caps?.qq === "vip" ? 30 : caps?.qq === "free" ? 20 : caps?.qq === "none" ? 0 : 10;
     } else if (source === "bilibili") {
-      tier = caps?.bilibili === "vip" ? 30 : caps?.bilibili === "free" ? 20 : 10;
+      tier = caps?.bilibili === "vip" ? 30 : caps?.bilibili === "free" ? 20 : caps?.bilibili === "none" ? 0 : 10;
     } else if (source === "youtube") {
       tier = caps?.youtube === "reachable" ? 30 : 0;
     } else {
       tier = m.peerId === hostPeerId ? 30 : 10;
     }
+    if (tier <= 0) return 0;
     if (m.peerId === hostPeerId) tier += 5;
     return tier;
   };
 
   return members
-    .filter((m) => m.shareEnabled !== false)
+    .filter((m) => m.shareEnabled !== false && m.online !== false && m.presence !== "offline" && scoreMember(m) > 0)
     .sort((a, b) => {
       const diff = scoreMember(b) - scoreMember(a);
       if (diff !== 0) return diff;
@@ -239,6 +249,8 @@ type CreateRoomInput = {
   capabilities?: AriaRoomCapabilities;
   networkMode: AriaRoomNetworkMode;
   controlMode?: AriaRoomControlMode;
+  roomId?: string | null;
+  rejoin?: boolean;
   directPort?: number;
   publicHost?: string | null;
   signalingUrl?: string | null;
@@ -483,6 +495,25 @@ export class AriaRoomManager {
   >();
   private proxyFallbackRequestedNonces = new Set<string>();
   private fallbackServingNonces = new Set<string>();
+  private failedDirectEndpoints = new Set<string>();
+  private guestResolvedUpstreamMap = new Map<
+    string,
+    {
+      url: string;
+      headers?: Record<string, string>;
+      mimeType?: string | null;
+      bitrate?: number | null;
+      sampleRate?: number | null;
+      currentLevel?: string | null;
+      fetcher?: (url: string, init?: RequestInit) => Promise<globalThis.Response>;
+      expiresAt: number;
+    }
+  >();
+  private precachingNonces = new Set<string>();
+  private myPresence: "active" | "away" = "active";
+  private roomRejoinRequested = false;
+  private restoredPlaybackOnRejoin = false;
+  private fatalSignalingError: { code: string; message: string } | null = null;
 
   // Signaling WebSocket (Host or Guest -> Cloudflare Worker, OR Guest -> Host Direct WS)
   private signalingWs: AriaWebSocket | null = null;
@@ -858,8 +889,8 @@ export class AriaRoomManager {
     const iceServers: AriaRoomSnapshot["iceConfig"]["iceServers"] = [
       {
         urls: [
-          "stun:stun.miwifi.com:3478",
           "stun:stun.qq.com:3478",
+          "stun:stun.miwifi.com:3478",
           "stun:stun.cloudflare.com:3478",
           "stun:stun.l.google.com:19302",
         ],
@@ -947,19 +978,36 @@ export class AriaRoomManager {
   }
 
   async createRoom(input: CreateRoomInput): Promise<AriaRoomSnapshot> {
+    let chosenRoomCode = "";
+    if (input.roomId !== undefined && input.roomId !== null && input.roomId.trim()) {
+      const normalized = normalizeAriaRoomCode(input.roomId);
+      if (!normalized) {
+        throw new HttpError(
+          400,
+          "自定义房间号仅支持 3–24 位字母、数字、下划线或短横线",
+          "INVALID_ROOM_CODE",
+        );
+      }
+      chosenRoomCode = normalized;
+    }
+
     await this.leaveRoom();
     await this.ensureConfigLoaded();
 
     this.manualLeave = false;
     this.active = true;
     this.role = "host";
-    this.roomId = generateRoomCode();
+    this.roomId = chosenRoomCode || generateRoomCode();
+    this.roomRejoinRequested = Boolean(input.rejoin);
+    this.restoredPlaybackOnRejoin = false;
+    this.fatalSignalingError = null;
     this.myPeerId = input.peerId;
     this.myProfile = {
       nickname: input.nickname.trim() || "Aria 房主",
       avatarUrl: input.avatarUrl ?? null,
     };
     this.myShareEnabled = input.shareEnabled !== false;
+    this.myPresence = "active";
     this.myCapabilities = input.capabilities ?? (await this.detectLocalCapabilities());
     this.networkMode = input.networkMode;
     this.controlMode = input.controlMode ?? "collaborative";
@@ -998,15 +1046,19 @@ export class AriaRoomManager {
       );
     }
 
+    const hostNow = Date.now();
     const hostMember: AriaRoomMember = {
       peerId: this.myPeerId,
       nickname: this.myProfile.nickname,
       avatarUrl: this.myProfile.avatarUrl,
       role: "host",
-      joinedAt: Date.now(),
+      joinedAt: hostNow,
       connectedVia: this.networkMode === "direct" ? "direct" : "ws",
       shareEnabled: this.myShareEnabled,
       capabilities: this.myCapabilities,
+      online: true,
+      presence: this.myPresence,
+      lastSeenAt: hostNow,
     };
     this.members.set(this.myPeerId, hostMember);
 
@@ -1024,7 +1076,6 @@ export class AriaRoomManager {
     if (currentTrack) {
       currentTrack = await this.maybeAttachCoverDataUrl(currentTrack);
     }
-    const roomNow = this.getRoomClockNowMs();
     this.playbackAnchorUsesServerClock = this.serverClockSynced;
     this.playback = {
       nonce: currentTrack?.nonce ?? null,
@@ -1033,7 +1084,7 @@ export class AriaRoomManager {
       queue,
       playing: Boolean(input.playing),
       positionSec: Math.max(0, Number(input.positionSec ?? 0)),
-      updatedAtMs: roomNow,
+      updatedAtMs: this.getRoomClockNowMs(),
       serverSeq: 1,
     };
     this.refreshAllowedNonces();
@@ -1046,9 +1097,6 @@ export class AriaRoomManager {
           (!currentTrack.dispatch.providerPeerId || currentTrack.dispatch.providerPeerId === this.myPeerId)));
     if (currentTrack && shouldCacheCurrentOnHost) {
       void this.prepareHostTrackInternal(currentTrack).catch(() => undefined);
-    }
-    if (nextTrack && (this.networkMode === "direct" || nextTrack.dispatch?.mode === "stream_proxy")) {
-      void this.prepareHostTrackInternal(nextTrack).catch(() => undefined);
     }
 
     if (this.networkMode === "direct" || this.networkMode === "hybrid") {
@@ -1071,6 +1119,15 @@ export class AriaRoomManager {
       this.signalingState = "connected";
     }
 
+    if (!this.restoredPlaybackOnRejoin && this.playback.nonce) {
+      this.playback.updatedAtMs = this.getRoomClockNowMs();
+      this.playbackAnchorUsesServerClock = this.serverClockSynced;
+    }
+
+    if (nextTrack) {
+      void this.prefetchNextTrack(nextTrack).catch(() => undefined);
+    }
+
     const snapshot = this.getSnapshot();
     this.emitSse("state", snapshot);
     return snapshot;
@@ -1083,7 +1140,11 @@ export class AriaRoomManager {
     this.manualLeave = false;
     this.active = true;
     this.role = "guest";
+    this.roomRejoinRequested = false;
+    this.restoredPlaybackOnRejoin = false;
+    this.fatalSignalingError = null;
     this.myPeerId = input.peerId;
+    this.myPresence = "active";
     this.myProfile = {
       nickname: input.nickname.trim() || "Aria 听众",
       avatarUrl: input.avatarUrl ?? null,
@@ -1130,10 +1191,10 @@ export class AriaRoomManager {
       const wsUrl = `ws://${formattedHost}:${port}/aria-room/ws?token=${encodeURIComponent(token)}`;
       await this.connectSignalingSocket(wsUrl, { usePreferredIp: false, throwOnInitialError: true });
     } else {
-      const code = input.roomId?.trim().toUpperCase();
+      const code = input.roomId ? normalizeAriaRoomCode(input.roomId) : null;
       if (!code) {
         await this.leaveRoom();
-        throw new HttpError(400, "请输入 6 位 Aria 房间码", "ROOM_CODE_REQUIRED");
+        throw new HttpError(400, "请输入有效的 Aria 房间码（3–24 位字符）", "ROOM_CODE_REQUIRED");
       }
       if (!this.getActiveSignalingUrl()) {
         await this.leaveRoom();
@@ -1155,7 +1216,7 @@ export class AriaRoomManager {
     return snapshot;
   }
 
-  async leaveRoom(): Promise<AriaRoomSnapshot> {
+  async leaveRoom(options: { preserveSignalingError?: string | null } = {}): Promise<AriaRoomSnapshot> {
     this.manualLeave = true;
     this.clearSignalingBurstTimers();
     if (this.signalingReconnectTimer) {
@@ -1169,10 +1230,12 @@ export class AriaRoomManager {
 
     if (this.signalingWs) {
       try {
-        if (this.role === "host") {
-          this.signalingWs.sendJson({ type: "close_room", roomId: this.roomId });
-        } else {
-          this.signalingWs.sendJson({ type: "leave", roomId: this.roomId, peerId: this.myPeerId });
+        if (!options.preserveSignalingError) {
+          if (this.role === "host") {
+            this.signalingWs.sendJson({ type: "close_room", roomId: this.roomId });
+          } else {
+            this.signalingWs.sendJson({ type: "leave", roomId: this.roomId, peerId: this.myPeerId });
+          }
         }
         this.signalingWs.close(1000, "Room left");
       } catch {
@@ -1187,10 +1250,13 @@ export class AriaRoomManager {
     this.role = null;
     this.roomId = null;
     this.myPeerId = null;
+    this.roomRejoinRequested = false;
+    this.restoredPlaybackOnRejoin = false;
+    this.myPresence = "active";
     this.signalingState = "idle";
     this.signalingConnectedIp = null;
     this.signalingLatencyMs = null;
-    this.signalingError = null;
+    this.signalingError = options.preserveSignalingError ?? null;
     this.signalingTargetUrl = null;
     this.signalingConsecutiveFailures = 0;
     this.serverClockTracker.reset();
@@ -1204,6 +1270,9 @@ export class AriaRoomManager {
     }
     this.guestDirectBaseUrl = null;
     this.guestDirectToken = null;
+    this.failedDirectEndpoints.clear();
+    this.guestResolvedUpstreamMap.clear();
+    this.precachingNonces.clear();
     for (const pending of this.pendingResolves.values()) {
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, reason: "ROOM_LEFT" });
@@ -1240,7 +1309,22 @@ export class AriaRoomManager {
     const prevSeq = this.playback.serverSeq;
     const nextQueue = (params.queue ?? this.playback.queue).map(({ coverDataUrl: _omitCover, ...rest }) => rest);
     let currentTrack = params.track;
-    let nextTrack = params.nextTrack ?? null;
+    const nextTrack = params.nextTrack ?? null;
+
+    if (
+      currentTrack &&
+      !currentTrack.dispatch &&
+      this.playback.nextTrack?.dispatch &&
+      this.playback.nextTrack.id === currentTrack.id &&
+      this.playback.nextTrack.nonce === currentTrack.nonce
+    ) {
+      currentTrack = {
+        ...this.playback.nextTrack,
+        ...currentTrack,
+        dispatch: this.playback.nextTrack.dispatch,
+        coverDataUrl: currentTrack.coverDataUrl ?? this.playback.nextTrack.coverDataUrl ?? null,
+      };
+    }
 
     if (currentTrack && !currentTrack.dispatch) {
       const resolved = await this.resolveTrackForRoom(currentTrack);
@@ -1265,11 +1349,6 @@ export class AriaRoomManager {
     }
     if (currentTrack) {
       currentTrack = await this.maybeAttachCoverDataUrl(currentTrack);
-    }
-
-    if (nextTrack && !nextTrack.dispatch) {
-      const resolvedNext = await this.resolveTrackForRoom(nextTrack).catch(() => null);
-      if (resolvedNext?.ok) nextTrack = resolvedNext.track;
     }
 
     const now = this.getRoomClockNowMs();
@@ -1303,22 +1382,24 @@ export class AriaRoomManager {
         currentTrack?.dispatch?.mode === "stream_proxy");
 
     if (currentTrack && shouldCacheCurrent) {
-      await this.prepareHostTrackInternal(currentTrack);
-    }
-    const nextOwnedBySelf =
-      !nextTrack?.dispatch?.providerPeerId ||
-      nextTrack.dispatch.providerPeerId === this.myPeerId;
-    if (
-      nextTrack &&
-      nextOwnedBySelf &&
-      (this.networkMode === "direct" || nextTrack.dispatch?.mode === "stream_proxy")
-    ) {
-      void this.prepareHostTrackInternal(nextTrack).catch(() => undefined);
+      const prepPromise = this.prepareHostTrackInternal(currentTrack).catch(() => undefined);
+      await Promise.race([prepPromise, new Promise((resolve) => setTimeout(resolve, 350))]);
     }
 
     this.broadcastRoomState();
     const snapshot = this.getSnapshot();
     this.emitSse("state", snapshot);
+
+    if (nextTrack && !nextTrack.dispatch) {
+      void this.prefetchNextTrack(nextTrack).catch(() => undefined);
+    } else if (
+      nextTrack &&
+      (!nextTrack.dispatch?.providerPeerId || nextTrack.dispatch.providerPeerId === this.myPeerId) &&
+      (this.networkMode === "direct" || nextTrack.dispatch?.mode === "stream_proxy")
+    ) {
+      void this.prepareHostTrackInternal(nextTrack).catch(() => undefined);
+    }
+
     return snapshot;
   }
 
@@ -1326,8 +1407,15 @@ export class AriaRoomManager {
     if (!this.active || this.role !== "host") {
       throw new HttpError(409, "当前不在房主房间中", "NOT_ROOM_HOST");
     }
+    const requestedNonce = nextTrack.nonce;
     const resolved = await this.resolveTrackForRoom(nextTrack);
     if (!resolved.ok) {
+      return null;
+    }
+    if (!this.active || this.role !== "host") {
+      return null;
+    }
+    if (this.playback.nextTrack && this.playback.nextTrack.nonce !== requestedNonce) {
       return null;
     }
     const finalNext = resolved.track;
@@ -1366,17 +1454,25 @@ export class AriaRoomManager {
     }
     const coverDataUrl = await Promise.race([
       this.byteCache.encodeCoverThumbnailDataUrl(track.nonce, this.localApiPort, track).catch(() => null),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_500)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
     ]);
     return coverDataUrl ? { ...track, coverDataUrl } : track;
   }
 
-  async resolveLocalTrackForRelay(track: AriaRoomTrackPayload): Promise<RelayResolveOutcome> {
+  async resolveLocalTrackForRelay(
+    track: AriaRoomTrackPayload,
+    options: { skipCover?: boolean } = {},
+  ): Promise<RelayResolveOutcome> {
     if (this.customLocalResolver) {
       return this.customLocalResolver(track);
     }
     try {
-      const upstream = await resolveExternalUpstream(track, this.localApiPort, false);
+      const upstream = await Promise.race([
+        resolveExternalUpstream(track, this.localApiPort, false),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("RESOLVE_UPSTREAM_TIMEOUT")), 4_500),
+        ),
+      ]);
       if (upstream.isTrial) {
         return { ok: false, isTrial: true, reason: "TRIAL_ONLY" };
       }
@@ -1384,10 +1480,12 @@ export class AriaRoomManager {
         return { ok: false, reason: "EMPTY_URL" };
       }
       const coverDataUrl =
-        (track.source === "youtube" || track.source === "local") && !track.coverDataUrl
+        !options.skipCover &&
+        (track.source === "youtube" || track.source === "local") &&
+        !track.coverDataUrl
           ? await Promise.race([
               this.byteCache.encodeCoverThumbnailDataUrl(track.nonce, this.localApiPort, track).catch(() => null),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_500)),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
             ])
           : track.coverDataUrl ?? null;
       return {
@@ -1441,6 +1539,60 @@ export class AriaRoomManager {
     });
   }
 
+  private isVipCandidateForSource(m: AriaRoomMember, source: AriaRoomTrackPayload["source"]): boolean {
+    const caps = m.capabilities;
+    if (source === "netease" || source === "cloud") return caps?.netease === "vip";
+    if (source === "qq") return caps?.qq === "vip";
+    if (source === "bilibili") return caps?.bilibili === "vip";
+    if (source === "youtube") return caps?.youtube === "reachable";
+    return m.peerId === this.myPeerId;
+  }
+
+  private probeCandidatesInParallel(
+    pool: AriaRoomMember[],
+    track: AriaRoomTrackPayload,
+  ): Promise<{ outcome: RelayResolveOutcome; peerId: string } | { outcome: null; lastReason: string }> {
+    if (pool.length === 0) {
+      return Promise.resolve({ outcome: null, lastReason: "RESOLVE_FAILED" });
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      let remaining = pool.length;
+      let lastReason = "RESOLVE_FAILED";
+      for (const candidate of pool) {
+        const probe =
+          candidate.peerId === this.myPeerId
+            ? this.resolveLocalTrackForRelay(track, { skipCover: true })
+            : this.requestRemoteResolve(candidate.peerId, track);
+        void probe.then(
+          (res) => {
+            if (settled) return;
+            if (res.ok && !res.isTrial && res.directUrl) {
+              settled = true;
+              resolve({ outcome: res, peerId: candidate.peerId });
+              return;
+            }
+            lastReason = res.isTrial ? "TRIAL_ONLY" : res.reason ?? lastReason;
+            remaining -= 1;
+            if (remaining === 0) {
+              settled = true;
+              resolve({ outcome: null, lastReason });
+            }
+          },
+          (err) => {
+            if (settled) return;
+            if (err instanceof Error && err.message) lastReason = err.message;
+            remaining -= 1;
+            if (remaining === 0) {
+              settled = true;
+              resolve({ outcome: null, lastReason });
+            }
+          },
+        );
+      }
+    });
+  }
+
   async resolveTrackForRoom(
     track: AriaRoomTrackPayload,
   ): Promise<{ ok: true; track: AriaRoomTrackPayload } | { ok: false; reason: string }> {
@@ -1460,13 +1612,14 @@ export class AriaRoomManager {
     }
 
     const roster = Array.from(this.members.values());
+    const activeRoster = roster.filter((m) => m.online !== false && m.presence !== "offline");
 
     if (track.source === "youtube" && this.networkMode !== "direct") {
       const everyoneReachable =
-        roster.length > 0 && roster.every((m) => m.capabilities?.youtube !== "unreachable");
+        activeRoster.length > 0 && activeRoster.every((m) => m.capabilities?.youtube !== "unreachable");
       if (everyoneReachable) {
         const addedByReachable = track.addedByPeerId
-          ? roster.find(
+          ? activeRoster.find(
               (m) =>
                 m.peerId === track.addedByPeerId &&
                 m.shareEnabled !== false &&
@@ -1534,22 +1687,29 @@ export class AriaRoomManager {
       return { ok: false, reason: "NO_ELIGIBLE_CANDIDATE" };
     }
 
+    const vipTier = candidates.filter((m) => this.isVipCandidateForSource(m, track.source));
+    const fallbackTier = candidates.filter((m) => !this.isVipCandidateForSource(m, track.source));
     let lastReason = "RESOLVE_FAILED";
-    for (const candidate of candidates) {
-      const res =
-        candidate.peerId === this.myPeerId
-          ? await this.resolveLocalTrackForRelay(track)
-          : await this.requestRemoteResolve(candidate.peerId, track);
+    let matched: { outcome: RelayResolveOutcome; peerId: string } | null = null;
 
-      if (!res.ok || res.isTrial || !res.directUrl) {
-        lastReason = res.isTrial ? "TRIAL_ONLY" : res.reason ?? "RESOLVE_FAILED";
-        continue;
-      }
+    if (vipTier.length > 0) {
+      const vipRes = await this.probeCandidatesInParallel(vipTier, track);
+      if (vipRes.outcome) matched = vipRes;
+      else lastReason = vipRes.lastReason;
+    }
 
+    if (!matched && fallbackTier.length > 0) {
+      const freeRes = await this.probeCandidatesInParallel(fallbackTier, track);
+      if (freeRes.outcome) matched = freeRes;
+      else lastReason = freeRes.lastReason;
+    }
+
+    if (matched) {
+      const res = matched.outcome;
       const isLocalProxyOnly =
         track.source === "cloud" ||
-        (this.networkMode === "direct" && candidate.peerId === this.myPeerId) ||
-        !/^https?:\/\//i.test(res.directUrl);
+        (this.networkMode === "direct" && matched.peerId === this.myPeerId) ||
+        !/^https?:\/\//i.test(res.directUrl ?? "");
 
       const enriched: AriaRoomTrackPayload = {
         ...track,
@@ -1563,12 +1723,12 @@ export class AriaRoomManager {
         dispatch: isLocalProxyOnly
           ? {
               mode: "stream_proxy",
-              providerPeerId: candidate.peerId,
+              providerPeerId: matched.peerId,
               mimeType: res.mimeType ?? track.mimeType ?? null,
             }
           : {
               mode: "direct_url",
-              providerPeerId: candidate.peerId,
+              providerPeerId: matched.peerId,
               directUrl: res.directUrl,
               safeHeaders: res.safeHeaders,
               mimeType: res.mimeType ?? track.mimeType ?? null,
@@ -1675,6 +1835,72 @@ export class AriaRoomManager {
     });
   }
 
+  updateLocalPresence(presence: "active" | "away"): void {
+    if (this.myPresence === presence) return;
+    this.myPresence = presence;
+    if (!this.active || !this.myPeerId) return;
+    const existing = this.members.get(this.myPeerId);
+    if (existing) {
+      this.members.set(this.myPeerId, {
+        ...existing,
+        online: true,
+        presence,
+        lastSeenAt: Date.now(),
+      });
+    }
+    if (this.signalingWs?.isOpen) {
+      this.signalingWs.sendJson({
+        type: "presence_update",
+        roomId: this.roomId,
+        peerId: this.myPeerId,
+        presence,
+      });
+    }
+    if (this.directWsClients.size > 0) {
+      const peersMsg = { type: "room_peers", members: Array.from(this.members.values()) };
+      for (const ws of this.directWsClients.keys()) {
+        if (ws.isOpen) ws.sendJson(peersMsg);
+      }
+    }
+    this.emitSse("state", this.getSnapshot());
+  }
+
+  kickMember(peerId: string): void {
+    if (!this.active || this.role !== "host") {
+      throw new HttpError(409, "仅房主可以移出房间成员", "NOT_ROOM_HOST");
+    }
+    const targetPeer = peerId.trim();
+    if (!targetPeer || targetPeer === this.myPeerId) return;
+    if (this.signalingWs?.isOpen) {
+      this.signalingWs.sendJson({
+        type: "kick_member",
+        roomId: this.roomId,
+        peerId: targetPeer,
+      });
+    }
+    for (const [ws, meta] of Array.from(this.directWsClients.entries())) {
+      if (meta.peerId === targetPeer) {
+        ws.sendJson({
+          type: "error",
+          code: "KICKED_BY_HOST",
+          message: "你已被房主移出房间",
+        });
+        ws.close(4010, "Removed by host");
+        this.directWsClients.delete(ws);
+      }
+    }
+    if (this.members.delete(targetPeer)) {
+      if (this.directWsClients.size > 0) {
+        const peersMsg = { type: "room_peers", members: Array.from(this.members.values()) };
+        for (const ws of this.directWsClients.keys()) {
+          if (ws.isOpen) ws.sendJson(peersMsg);
+        }
+      }
+      this.emitSse("peer_left", { peerId: targetPeer });
+      this.emitSse("state", this.getSnapshot());
+    }
+  }
+
   private getRoomClockNowMs(): number {
     return this.serverClockSynced ? Math.round(Date.now() + this.serverClockOffsetMs) : Date.now();
   }
@@ -1746,6 +1972,10 @@ export class AriaRoomManager {
     if (!isProvider) {
       throw new HttpError(403, "Not designated as track stream provider", "NOT_TRACK_PROVIDER");
     }
+    const existing = this.byteCache.getEntry(nonce);
+    if (existing?.failedError) {
+      await this.byteCache.deleteEntry(nonce);
+    }
     if (!this.byteCache.hasNonce(nonce) && targetTrack) {
       await this.prepareHostTrackInternal(targetTrack);
     }
@@ -1793,6 +2023,26 @@ export class AriaRoomManager {
     return this.byteCache.getProgressSnapshot(nonce);
   }
 
+  private waitResDrain(res: Response, signal: AbortSignal): Promise<void> {
+    if (signal.aborted || res.writableEnded || res.destroyed) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const cleanup = () => {
+        res.off("drain", onDone);
+        res.off("close", onDone);
+        res.off("error", onDone);
+        signal.removeEventListener("abort", onDone);
+      };
+      const onDone = () => {
+        cleanup();
+        resolve();
+      };
+      res.once("drain", onDone);
+      res.once("close", onDone);
+      res.once("error", onDone);
+      signal.addEventListener("abort", onDone, { once: true });
+    });
+  }
+
   private async pipeExternalCdnRange(
     req: Request,
     res: Response,
@@ -1807,11 +2057,16 @@ export class AriaRoomManager {
     },
   ): Promise<"piped" | "fallback"> {
     const controller = new AbortController();
+    let connectTimedOut = false;
     const abort = () => {
       if (!res.writableEnded) controller.abort();
     };
     req.once("aborted", abort);
     res.once("close", abort);
+    const connectTimer = setTimeout(() => {
+      connectTimedOut = true;
+      controller.abort();
+    }, 6_000);
 
     try {
       const upstreamFetch = target.fetcher ?? fetch;
@@ -1823,6 +2078,7 @@ export class AriaRoomManager {
         },
         signal: controller.signal,
       });
+      clearTimeout(connectTimer);
 
       if (upstream.status === 401 || upstream.status === 403 || upstream.status === 410 || !upstream.ok) {
         await upstream.body?.cancel();
@@ -1855,19 +2111,21 @@ export class AriaRoomManager {
         if (done) break;
         if (!value || value.byteLength === 0) continue;
         if (!res.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) {
-          await new Promise<void>((resolve) => res.once("drain", resolve));
+          await this.waitResDrain(res, controller.signal);
         }
       }
       if (!res.writableEnded) res.end();
       return "piped";
     } catch {
-      if (controller.signal.aborted) return "piped";
+      clearTimeout(connectTimer);
+      if (controller.signal.aborted && !connectTimedOut) return "piped";
       if (res.headersSent) {
         if (!res.writableEnded) res.end();
         return "piped";
       }
       return "fallback";
     } finally {
+      clearTimeout(connectTimer);
       req.off("aborted", abort);
       res.off("close", abort);
     }
@@ -1903,6 +2161,63 @@ export class AriaRoomManager {
     return true;
   }
 
+  private async precacheGuestTrack(track: AriaRoomTrackPayload | null | undefined): Promise<void> {
+    if (!this.active || !track || !track.nonce) return;
+    if (this.precachingNonces.has(track.nonce)) return;
+    const existing = this.byteCache.getEntry(track.nonce);
+    if (existing && !existing.failedError) return;
+    const mode = track.dispatch?.mode;
+    if (mode !== "direct_url" && mode !== "resolve_local") return;
+
+    this.precachingNonces.add(track.nonce);
+    try {
+      if (mode === "direct_url" && track.dispatch?.directUrl) {
+        await this.byteCache.prepareDirectUrlTrack(track, track.dispatch.directUrl, track.dispatch.safeHeaders, {
+          mimeType: track.dispatch.mimeType ?? track.mimeType ?? null,
+          bitrate: track.bitrate ?? null,
+          sampleRate: track.sampleRate ?? null,
+          currentLevel: track.currentLevel ?? null,
+        });
+        return;
+      }
+      if (mode === "resolve_local") {
+        let resolved = this.guestResolvedUpstreamMap.get(track.nonce);
+        if (!resolved || resolved.expiresAt <= Date.now()) {
+          const fresh = await Promise.race([
+            resolveExternalUpstream(track, this.localApiPort, false),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("RESOLVE_LOCAL_TIMEOUT")), 5_000),
+            ),
+          ]);
+          if (fresh.isTrial || !fresh.url) return;
+          resolved = {
+            url: fresh.url,
+            headers: fresh.headers,
+            mimeType: fresh.mimeType ?? track.mimeType ?? null,
+            bitrate: fresh.bitrate ?? track.bitrate ?? null,
+            sampleRate: fresh.sampleRate ?? track.sampleRate ?? null,
+            currentLevel: fresh.currentLevel ?? track.currentLevel ?? null,
+            fetcher: fresh.fetcher,
+            expiresAt: Date.now() + 15 * 60_000,
+          };
+          this.guestResolvedUpstreamMap.set(track.nonce, resolved);
+        }
+        await this.byteCache.prepareDirectUrlTrack(track, resolved.url, resolved.headers, {
+          mimeType: resolved.mimeType,
+          bitrate: resolved.bitrate,
+          sampleRate: resolved.sampleRate,
+          currentLevel: resolved.currentLevel,
+          fetcher: resolved.fetcher,
+          sanitizeHeaders: false,
+        });
+      }
+    } catch {
+      // Pre-cache is best-effort; fallback on active play remains intact.
+    } finally {
+      this.precachingNonces.delete(track.nonce);
+    }
+  }
+
   async serveGuestTrackStream(req: Request, res: Response, nonce: string): Promise<void> {
     if (!this.active) {
       throw new HttpError(404, "No active Aria Room", "ROOM_NOT_ACTIVE");
@@ -1910,10 +2225,10 @@ export class AriaRoomManager {
 
     const track = this.findTrackByNonce(nonce);
 
-    // 1. If P2P chunks are already present in local progressive cache, serve immediately.
-    if (this.byteCache.hasNonce(nonce)) {
-      const entry = this.byteCache.getEntry(nonce)!;
-      await this.byteCache.serveEntryHttpRange(req, res, entry);
+    // 1. If P2P chunks or pre-cached direct/local audio already exist cleanly, serve immediately.
+    const cachedEntry = this.byteCache.getEntry(nonce);
+    if (cachedEntry && !cachedEntry.failedError) {
+      await this.byteCache.serveEntryHttpRange(req, res, cachedEntry);
       return;
     }
 
@@ -1942,48 +2257,81 @@ export class AriaRoomManager {
       this.triggerProxyFallback(track);
     }
 
-    // 3. resolve_local mode: each member resolves locally and pulls official CDN; on 403/trial auto-fallback to P2P proxy.
+    // 3. resolve_local mode: check cached upstream URL first, resolve once with timeout, pull CDN or fallback to P2P proxy.
     if (track?.dispatch?.mode === "resolve_local" && this.networkMode !== "direct") {
       try {
-        const localUpstream = await resolveExternalUpstream(track, this.localApiPort, false);
-        if (!localUpstream.isTrial && localUpstream.url) {
+        let cachedUpstream = this.guestResolvedUpstreamMap.get(nonce);
+        if (!cachedUpstream || cachedUpstream.expiresAt <= Date.now()) {
+          const fresh = await Promise.race([
+            resolveExternalUpstream(track, this.localApiPort, false),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("RESOLVE_LOCAL_TIMEOUT")), 5_000),
+            ),
+          ]);
+          if (!fresh.isTrial && fresh.url) {
+            cachedUpstream = {
+              url: fresh.url,
+              headers: fresh.headers,
+              mimeType: fresh.mimeType ?? track.mimeType ?? null,
+              bitrate: fresh.bitrate ?? track.bitrate ?? null,
+              sampleRate: fresh.sampleRate ?? track.sampleRate ?? null,
+              currentLevel: fresh.currentLevel ?? track.currentLevel ?? null,
+              fetcher: fresh.fetcher,
+              expiresAt: Date.now() + 15 * 60_000,
+            };
+            this.guestResolvedUpstreamMap.set(nonce, cachedUpstream);
+          }
+        }
+        if (cachedUpstream) {
           const outcome = await this.pipeExternalCdnRange(req, res, {
-            url: localUpstream.url,
-            headers: localUpstream.headers,
-            mimeType: localUpstream.mimeType ?? track.mimeType ?? null,
-            bitrate: localUpstream.bitrate ?? track.bitrate ?? null,
-            sampleRate: localUpstream.sampleRate ?? track.sampleRate ?? null,
-            currentLevel: localUpstream.currentLevel ?? track.currentLevel ?? null,
-            fetcher: localUpstream.fetcher,
+            url: cachedUpstream.url,
+            headers: cachedUpstream.headers,
+            mimeType: cachedUpstream.mimeType,
+            bitrate: cachedUpstream.bitrate,
+            sampleRate: cachedUpstream.sampleRate,
+            currentLevel: cachedUpstream.currentLevel,
+            fetcher: cachedUpstream.fetcher,
           });
           if (outcome === "piped") return;
+          this.guestResolvedUpstreamMap.delete(nonce);
         }
       } catch {
-        // Fall through to P2P proxy fallback.
+        this.guestResolvedUpstreamMap.delete(nonce);
       }
       this.triggerProxyFallback(track);
     }
 
-    // 4. Direct TCP HTTP 206 passthrough when guest has verified Direct Host endpoint.
-    if (this.guestDirectBaseUrl && this.guestDirectToken && !this.byteCache.hasNonce(nonce)) {
-      const upstreamUrl = `${this.guestDirectBaseUrl}/aria-room/tracks/${encodeURIComponent(nonce)}/stream`;
+    // 4. Direct TCP HTTP 206 passthrough when guest has non-blacklisted Direct Host endpoint.
+    const existingReadyEntry = this.byteCache.getEntry(nonce);
+    if (
+      this.guestDirectBaseUrl &&
+      this.guestDirectToken &&
+      !this.failedDirectEndpoints.has(this.guestDirectBaseUrl) &&
+      (!existingReadyEntry || existingReadyEntry.failedError)
+    ) {
+      const targetDirectBaseUrl = this.guestDirectBaseUrl;
+      const upstreamUrl = `${targetDirectBaseUrl}/aria-room/tracks/${encodeURIComponent(nonce)}/stream`;
       const headers: Record<string, string> = {
         Authorization: `Bearer ${this.guestDirectToken}`,
       };
       if (req.headers.range) headers.Range = req.headers.range;
 
       const controller = new AbortController();
+      let connectTimedOut = false;
       const abort = () => {
         if (!res.writableEnded) controller.abort();
       };
       req.once("aborted", abort);
       res.once("close", abort);
 
-      // In cloudflare/hybrid rooms, enforce a short connect timeout so an
-      // unreachable NAT/LAN direct endpoint falls back immediately to P2P cache.
+      // In cloudflare/hybrid rooms, enforce a tight 800ms LAN connect timeout so an
+      // unreachable NAT/LAN direct endpoint blacklists & falls back immediately.
       const connectTimer =
         this.networkMode !== "direct"
-          ? setTimeout(() => controller.abort(), 2_500)
+          ? setTimeout(() => {
+              connectTimedOut = true;
+              controller.abort();
+            }, 800)
           : null;
 
       try {
@@ -2021,7 +2369,7 @@ export class AriaRoomManager {
           if (done) break;
           if (!value || value.byteLength === 0) continue;
           if (!res.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) {
-            await new Promise<void>((resolve) => res.once("drain", resolve));
+            await this.waitResDrain(res, controller.signal);
           }
         }
         if (!res.writableEnded) res.end();
@@ -2032,15 +2380,18 @@ export class AriaRoomManager {
           if (controller.signal.aborted) return;
           throw err;
         }
-        // Clear unreachable hybrid direct hint and fall back to WebRTC P2P cache.
-        if (!res.headersSent) {
-          this.guestDirectBaseUrl = null;
-          this.guestDirectToken = null;
+        if (connectTimedOut || !res.headersSent) {
+          this.failedDirectEndpoints.add(targetDirectBaseUrl);
+          if (this.guestDirectBaseUrl === targetDirectBaseUrl) {
+            this.guestDirectBaseUrl = null;
+            this.guestDirectToken = null;
+          }
         } else {
           if (controller.signal.aborted) return;
           throw err;
         }
       } finally {
+        if (connectTimer) clearTimeout(connectTimer);
         req.off("aborted", abort);
         res.off("close", abort);
       }
@@ -2056,6 +2407,9 @@ export class AriaRoomManager {
     try {
       const entry = await this.byteCache.waitForEntry(nonce, controller.signal, 15_000);
       if (!entry) {
+        if (track) {
+          this.proxyFallbackRequestedNonces.delete(track.nonce);
+        }
         throw new HttpError(404, "Guest track buffer not ready yet", "GUEST_TRACK_NOT_READY");
       }
       await this.byteCache.serveEntryHttpRange(req, res, entry);
@@ -2072,11 +2426,26 @@ export class AriaRoomManager {
   }
 
   async serveGuestTrackCover(req: Request, res: Response, nonce: string): Promise<void> {
-    if (this.guestDirectBaseUrl && this.guestDirectToken) {
-      const coverUrl = `${this.guestDirectBaseUrl}/aria-room/tracks/${encodeURIComponent(nonce)}/cover`;
+    if (
+      this.guestDirectBaseUrl &&
+      this.guestDirectToken &&
+      !this.failedDirectEndpoints.has(this.guestDirectBaseUrl)
+    ) {
+      const targetDirectBase = this.guestDirectBaseUrl;
+      const coverUrl = `${targetDirectBase}/aria-room/tracks/${encodeURIComponent(nonce)}/cover`;
       const upstream = await fetch(coverUrl, {
         headers: { Authorization: `Bearer ${this.guestDirectToken}` },
-      }).catch(() => null);
+        signal: AbortSignal.timeout(2_000),
+      }).catch(() => {
+        if (this.networkMode !== "direct") {
+          this.failedDirectEndpoints.add(targetDirectBase);
+          if (this.guestDirectBaseUrl === targetDirectBase) {
+            this.guestDirectBaseUrl = null;
+            this.guestDirectToken = null;
+          }
+        }
+        return null;
+      });
       if (upstream?.ok) {
         const upstreamBuf = Buffer.from(await upstream.arrayBuffer());
         res.setHeader("Access-Control-Allow-Origin", "*");
@@ -2168,7 +2537,14 @@ export class AriaRoomManager {
 
       this.attachActiveSignalingWs(ws, connectedIp, latencyMs, options.usePreferredIp);
       await this.waitForInitialPong(250);
+      if (this.fatalSignalingError && options.throwOnInitialError) {
+        const fatal = this.fatalSignalingError;
+        this.fatalSignalingError = null;
+        await this.leaveRoom({ preserveSignalingError: fatal.message });
+        throw new HttpError(fatal.code === "ROOM_CODE_TAKEN" ? 409 : 400, fatal.message, fatal.code);
+      }
     } catch (error) {
+      if (error instanceof HttpError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       this.signalingConsecutiveFailures += 1;
       this.rotatePreferredIpOnFailure();
@@ -2231,7 +2607,7 @@ export class AriaRoomManager {
       this.handleSignalingMessage(raw, ws);
     });
 
-    ws.on("close", (_code: number, reason: string) => {
+    ws.on("close", (code: number, reason: string) => {
       this.clearSignalingBurstTimers();
       if (this.signalingWs === ws) {
         this.signalingWs = null;
@@ -2244,6 +2620,29 @@ export class AriaRoomManager {
         resolvePong();
       }
       if (this.manualLeave || !this.active) return;
+      if (code === 4009 || code === 4004 || code === 4003 || code === 4010) {
+        const errCode =
+          code === 4009
+            ? "ROOM_CODE_TAKEN"
+            : code === 4004
+              ? "ROOM_NOT_FOUND"
+              : code === 4003
+                ? "ROOM_FULL"
+                : "KICKED_BY_HOST";
+        const errMessage =
+          reason ||
+          (code === 4009
+            ? "该房间号已被其他房主占用，请更换房间号或改为加入房间"
+            : code === 4010
+              ? "你已被房主移出房间"
+              : code === 4003
+                ? "房间已满"
+                : "Aria 房间不存在或已结束");
+        this.fatalSignalingError = { code: errCode, message: errMessage };
+        this.emitSse("notice", { level: "error", code: errCode, message: errMessage });
+        void this.leaveRoom({ preserveSignalingError: errMessage });
+        return;
+      }
 
       this.signalingState = "reconnecting";
       this.signalingError = reason || "信令连接断开，正在无感重连...";
@@ -2259,6 +2658,7 @@ export class AriaRoomManager {
       type: "hello",
       roomId: this.roomId,
       role: this.role,
+      presence: this.myPresence,
       member: {
         peerId: this.myPeerId,
         nickname: this.myProfile.nickname,
@@ -2268,8 +2668,15 @@ export class AriaRoomManager {
         connectedVia: this.networkMode === "direct" ? "direct" : "ws",
         shareEnabled: this.myShareEnabled,
         capabilities: this.myCapabilities,
+        online: true,
+        presence: this.myPresence,
       },
-      ...(this.role === "host" ? { state: this.buildSharedStatePayload() } : {}),
+      ...(this.role === "host"
+        ? {
+            rejoin: this.roomRejoinRequested,
+            state: this.buildSharedStatePayload(),
+          }
+        : {}),
     });
 
     this.sendHeartbeatPing(ws);
@@ -2436,8 +2843,17 @@ export class AriaRoomManager {
       const code = String(msg.code ?? "");
       this.signalingError = String(msg.message ?? "房间信令异常");
       this.emitSse("notice", { level: "error", code, message: this.signalingError });
-      if (code === "ROOM_FULL" || code === "ROOM_NOT_FOUND") {
-        void this.leaveRoom();
+      if (
+        code === "ROOM_CODE_TAKEN" ||
+        code === "ROOM_FULL" ||
+        code === "ROOM_NOT_FOUND" ||
+        code === "KICKED_BY_HOST"
+      ) {
+        this.fatalSignalingError = { code, message: this.signalingError };
+        for (const resolvePong of this.firstPongResolvers.splice(0)) {
+          resolvePong();
+        }
+        void this.leaveRoom({ preserveSignalingError: this.signalingError });
       }
       return;
     }
@@ -2453,11 +2869,41 @@ export class AriaRoomManager {
       return;
     }
 
+    if (type === "presence_update" && typeof msg.peerId === "string") {
+      const target = this.members.get(msg.peerId);
+      const nextPresence = msg.presence === "away" ? "away" : msg.presence === "active" ? "active" : null;
+      if (target && nextPresence) {
+        this.members.set(msg.peerId, {
+          ...target,
+          online: true,
+          presence: nextPresence,
+          lastSeenAt: Date.now(),
+        });
+        if (this.role === "host" && this.directWsClients.size > 0) {
+          const peersMsg = { type: "room_peers", members: Array.from(this.members.values()) };
+          for (const ws of this.directWsClients.keys()) {
+            if (ws.isOpen) ws.sendJson(peersMsg);
+          }
+        }
+        this.emitSse("state", this.getSnapshot());
+      }
+      return;
+    }
+
     if (type === "room_peers" && Array.isArray(msg.members)) {
       const incoming = msg.members as AriaRoomMember[];
       const next = new Map<string, AriaRoomMember>();
       for (const m of incoming) {
         if (m?.peerId) next.set(m.peerId, m);
+      }
+      if (this.role === "host" && this.networkMode === "hybrid") {
+        for (const meta of this.directWsClients.values()) {
+          if (!meta.peerId || next.has(meta.peerId)) continue;
+          const existingDirect = this.members.get(meta.peerId);
+          if (existingDirect) {
+            next.set(meta.peerId, existingDirect);
+          }
+        }
       }
       if (this.myPeerId && !next.has(this.myPeerId) && this.role) {
         next.set(this.myPeerId, {
@@ -2467,12 +2913,16 @@ export class AriaRoomManager {
           role: this.role,
           joinedAt: Date.now(),
           connectedVia: "ws",
+          online: true,
+          presence: this.myPresence,
         });
       }
       this.members = next;
       if (this.role === "host") {
-        // Send authoritative state whenever roster changes on signaling worker.
-        this.broadcastRoomState();
+        if (!this.roomRejoinRequested) {
+          // Send authoritative state whenever roster changes on signaling worker (unless awaiting rejoin restore).
+          this.broadcastRoomState();
+        }
       }
       this.emitSse("state", this.getSnapshot());
       return;
@@ -2534,6 +2984,34 @@ export class AriaRoomManager {
       return;
     }
 
+    if (type === "state_update" && this.role === "host" && this.roomRejoinRequested) {
+      const state = msg.state as
+        | {
+            controlMode?: AriaRoomControlMode;
+            playback?: AriaRoomPlaybackState;
+          }
+        | undefined;
+      if (state?.controlMode) this.controlMode = state.controlMode;
+      if (state?.playback) {
+        this.playback = state.playback;
+        this.restoredPlaybackOnRejoin = true;
+        this.refreshAllowedNonces();
+        if (this.playback.track && (this.networkMode === "direct" || this.networkMode === "hybrid" || this.playback.track.dispatch?.mode === "stream_proxy")) {
+          void this.prepareHostTrackInternal(this.playback.track).catch(() => undefined);
+        }
+      }
+      if (Array.isArray(msg.members)) {
+        const next = new Map<string, AriaRoomMember>();
+        for (const m of msg.members as AriaRoomMember[]) {
+          if (m?.peerId) next.set(m.peerId, m);
+        }
+        this.members = next;
+      }
+      this.roomRejoinRequested = false;
+      this.emitSse("state", this.getSnapshot());
+      return;
+    }
+
     if (type === "state_update" && this.role === "guest") {
       const state = msg.state as
         | {
@@ -2558,6 +3036,12 @@ export class AriaRoomManager {
           this.playback = incoming;
         }
         this.refreshAllowedNonces();
+        if (this.playback.nextTrack) {
+          void this.precacheGuestTrack(this.playback.nextTrack);
+        }
+        if (this.playback.track) {
+          void this.precacheGuestTrack(this.playback.track);
+        }
       }
       if (Array.isArray(msg.members)) {
         const next = new Map<string, AriaRoomMember>();
@@ -2567,9 +3051,12 @@ export class AriaRoomManager {
         this.members = next;
       }
       if (state?.directEndpoint && !this.guestDirectBaseUrl) {
-        // Hybrid endpoint hint is preserved for optional direct fast-path check by client
-        this.guestDirectBaseUrl = `http://${formatHostForUrl(state.directEndpoint.host)}:${state.directEndpoint.port}`;
-        this.guestDirectToken = state.directEndpoint.token;
+        const candidateBaseUrl = `http://${formatHostForUrl(state.directEndpoint.host)}:${state.directEndpoint.port}`;
+        if (!this.failedDirectEndpoints.has(candidateBaseUrl)) {
+          // Hybrid endpoint hint is preserved for optional direct fast-path check by client
+          this.guestDirectBaseUrl = candidateBaseUrl;
+          this.guestDirectToken = state.directEndpoint.token;
+        }
       }
       this.emitSse("state", this.getSnapshot());
       return;
@@ -2677,6 +3164,7 @@ export class AriaRoomManager {
     if (type === "prefetch_next" && this.role === "guest" && msg.nextTrack && typeof msg.nextTrack === "object") {
       this.playback.nextTrack = msg.nextTrack as AriaRoomTrackPayload;
       this.refreshAllowedNonces();
+      void this.precacheGuestTrack(this.playback.nextTrack);
       this.emitSse("prefetch_next", this.playback.nextTrack);
       this.emitSse("state", this.getSnapshot());
       return;
@@ -2937,24 +3425,37 @@ export class AriaRoomManager {
         const msgType = String(parsed.type ?? "");
         if (msgType === "hello" && parsed.member && typeof parsed.member === "object") {
           const guest = parsed.member as AriaRoomMember;
+          const presence = parsed.presence === "away" ? "away" : "active";
           if (this.members.size >= MAX_ARIA_ROOM_MEMBERS && !this.members.has(guest.peerId)) {
-            ws.sendJson({
-              type: "error",
-              code: "ROOM_FULL",
-              message: `房间已满（最多 ${MAX_ARIA_ROOM_MEMBERS} 人）`,
-            });
-            ws.close(4003, "Room full");
-            return;
+            const offlineGuests = Array.from(this.members.values())
+              .filter((m) => m.peerId !== this.myPeerId && (m.online === false || m.presence === "offline"))
+              .sort((a, b) => (a.lastSeenAt ?? a.joinedAt) - (b.lastSeenAt ?? b.joinedAt));
+            if (offlineGuests.length > 0) {
+              this.members.delete(offlineGuests[0].peerId);
+            } else {
+              ws.sendJson({
+                type: "error",
+                code: "ROOM_FULL",
+                message: `房间已满（最多 ${MAX_ARIA_ROOM_MEMBERS} 人）`,
+              });
+              ws.close(4003, "Room full");
+              return;
+            }
           }
+          const existingDirect = this.members.get(guest.peerId);
+          const now = Date.now();
           const cleanGuest: AriaRoomMember = {
             peerId: guest.peerId,
             nickname: guest.nickname || "Aria 听众",
             avatarUrl: guest.avatarUrl ?? null,
             role: "guest",
-            joinedAt: guest.joinedAt || Date.now(),
+            joinedAt: existingDirect?.joinedAt || guest.joinedAt || now,
             connectedVia: "direct",
             shareEnabled: guest.shareEnabled !== false,
-            capabilities: guest.capabilities,
+            online: true,
+            presence,
+            lastSeenAt: now,
+            capabilities: guest.capabilities ?? existingDirect?.capabilities,
           };
           this.directWsClients.set(ws, { peerId: cleanGuest.peerId });
           this.members.set(cleanGuest.peerId, cleanGuest);
@@ -2972,6 +3473,19 @@ export class AriaRoomManager {
           this.emitSse("state", this.getSnapshot());
           return;
         }
+        if (msgType === "leave") {
+          const meta = this.directWsClients.get(ws);
+          const leavePeerId = meta?.peerId || (typeof parsed.peerId === "string" ? parsed.peerId : "");
+          if (leavePeerId && this.members.delete(leavePeerId)) {
+            this.sendToAllPeers({
+              type: "room_peers",
+              members: Array.from(this.members.values()),
+            });
+            this.emitSse("peer_left", { peerId: leavePeerId });
+            this.emitSse("state", this.getSnapshot());
+          }
+          return;
+        }
         this.handleSignalingMessage(raw, ws);
       } catch {
         // ignore invalid json
@@ -2982,12 +3496,19 @@ export class AriaRoomManager {
       const meta = this.directWsClients.get(ws);
       this.directWsClients.delete(ws);
       if (meta?.peerId && this.members.has(meta.peerId)) {
-        this.members.delete(meta.peerId);
+        const stillConnected = Array.from(this.directWsClients.values()).some((m) => m.peerId === meta.peerId);
+        if (stillConnected) return;
+        const current = this.members.get(meta.peerId)!;
+        this.members.set(meta.peerId, {
+          ...current,
+          online: false,
+          presence: "offline",
+          lastSeenAt: Date.now(),
+        });
         this.sendToAllPeers({
           type: "room_peers",
           members: Array.from(this.members.values()),
         });
-        this.emitSse("peer_left", { peerId: meta.peerId });
         this.emitSse("state", this.getSnapshot());
       }
     });

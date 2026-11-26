@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useRef, type RefObject } from "react";
 import { api } from "@/lib/api";
+import { uiVolumeToLinearGain } from "@/lib/audioVolume";
 import { commitPlaybackTime, getPlaybackTime, subscribePlaybackTime } from "@/lib/playbackClock";
 
 export type VideoControl = {
@@ -8,10 +9,6 @@ export type VideoControl = {
   pause: () => void;
   play?: () => void;
 };
-
-function perceptualVideoVolume(volume: number): number {
-  return Math.max(0, Math.min(1, volume / 100)) ** 2;
-}
 
 /**
  * Video playback coordinator:
@@ -58,7 +55,7 @@ export function useVideoPlayback(options: {
     if (standaloneAudio) {
       video.muted = false;
       video.defaultMuted = false;
-      video.volume = perceptualVideoVolume(volumeRef.current);
+      video.volume = uiVolumeToLinearGain(volumeRef.current);
     } else {
       video.muted = true;
       video.defaultMuted = true;
@@ -109,7 +106,7 @@ export function useVideoPlayback(options: {
             // Seek will apply once ready.
           }
         }
-        video.volume = perceptualVideoVolume(volumeRef.current);
+        video.volume = uiVolumeToLinearGain(volumeRef.current);
         if (playingRef.current) {
           video.play().catch(() => undefined);
         }
@@ -197,7 +194,7 @@ export function useVideoPlayback(options: {
     if (!video || !options.active || !options.videoUrl) return;
     if (standaloneAudio) {
       video.muted = false;
-      video.volume = perceptualVideoVolume(options.volume);
+      video.volume = uiVolumeToLinearGain(options.volume);
     } else {
       video.muted = true;
     }
@@ -223,6 +220,6 @@ export function useVideoPlayback(options: {
     const video = options.videoRef.current;
     if (!video || !standaloneAudio || !options.active) return;
     video.muted = false;
-    video.volume = perceptualVideoVolume(options.volume);
+    video.volume = uiVolumeToLinearGain(options.volume);
   }, [options.active, options.volume, options.videoRef, standaloneAudio]);
 }

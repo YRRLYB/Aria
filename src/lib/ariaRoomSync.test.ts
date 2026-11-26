@@ -14,6 +14,7 @@ import {
   evaluateAriaRoomDrift,
   formatAriaBitrateKbps,
   mergeIncomingPlaybackState,
+  normalizeAriaRoomCode,
   normalizePortableApiUrl,
   rankRelayCandidates,
   trackToAriaPayload,
@@ -62,7 +63,7 @@ describe("ariaRoomSync utilities", () => {
       evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 40.8, playing: true }),
     ).toMatchObject({ action: "speed", speed: 0.985, shouldSeek: false });
 
-    // 1200..3500ms behind/ahead: gentle 1.03x / 0.97x catch-up without hard seek
+    // 1200..2500ms behind/ahead: gentle 1.03x / 0.97x catch-up without hard seek
     expect(
       evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 38.0, playing: true }),
     ).toMatchObject({ action: "speed", speed: 1.03, shouldSeek: false });
@@ -70,17 +71,12 @@ describe("ariaRoomSync utilities", () => {
       evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 42.2, playing: true }),
     ).toMatchObject({ action: "speed", speed: 0.97, shouldSeek: false });
 
-    // 3500..10000ms behind/ahead: smooth 1.05x / 0.95x catch-up without mid-song jump
+    // > 2500ms: hard seek to prevent lingering out-of-sync playback
     expect(
-      evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 34.5, playing: true }),
-    ).toMatchObject({ action: "speed", speed: 1.05, shouldSeek: false });
+      evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 37.0, playing: true }),
+    ).toMatchObject({ action: "seek", speed: 1, shouldSeek: true });
     expect(
-      evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 45.5, playing: true }),
-    ).toMatchObject({ action: "speed", speed: 0.95, shouldSeek: false });
-
-    // > 10000ms: hard seek for catastrophic desync only
-    expect(
-      evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 51.0, playing: true }),
+      evaluateAriaRoomDrift({ expectedSec: 40, actualSec: 43.0, playing: true }),
     ).toMatchObject({ action: "seek", speed: 1, shouldSeek: true });
 
     // Paused: threshold at 500ms
@@ -250,6 +246,28 @@ describe("ariaRoomSync utilities", () => {
           shareEnabled: true,
           capabilities: { netease: "vip", qq: "none", bilibili: "free", youtube: "unreachable" },
         },
+        {
+          peerId: "guest-none",
+          nickname: "NoAccount",
+          avatarUrl: null,
+          role: "guest",
+          joinedAt: 4,
+          connectedVia: "ws",
+          shareEnabled: true,
+          capabilities: { netease: "none", qq: "none", bilibili: "none", youtube: "unreachable" },
+        },
+        {
+          peerId: "guest-offline",
+          nickname: "Offline",
+          avatarUrl: null,
+          role: "guest",
+          joinedAt: 5,
+          connectedVia: "ws",
+          shareEnabled: true,
+          online: false,
+          presence: "offline",
+          capabilities: { netease: "vip", qq: "vip", bilibili: "vip", youtube: "reachable" },
+        },
       ],
       "netease",
       "host-1",
@@ -257,8 +275,14 @@ describe("ariaRoomSync utilities", () => {
     expect(ranked.map((m) => m.peerId)).toEqual(["guest-vip", "guest-free"]);
   });
 
-  it("parses Cloudflare room codes and direct host share links (IPv4 & IPv6)", () => {
+  it("parses Cloudflare & custom room codes and direct host share links (IPv4 & IPv6)", () => {
     expect(decodeAriaJoinInput("a7k9m2")).toEqual({ kind: "cloudflare", roomId: "A7K9M2" });
+    expect(decodeAriaJoinInput("aria_party-01")).toEqual({ kind: "cloudflare", roomId: "ARIA_PARTY-01" });
+    expect(normalizeAriaRoomCode(" ab1 ")).toBe("AB1");
+    expect(normalizeAriaRoomCode("my_room-99")).toBe("MY_ROOM-99");
+    expect(normalizeAriaRoomCode("x")).toBeNull();
+    expect(normalizeAriaRoomCode("bad room!")).toBeNull();
+    expect(decodeAriaJoinInput("bad!code")).toBeNull();
     expect(
       decodeAriaJoinInput("aria-direct://v1?host=play.example.com&port=3639&token=secretTok"),
     ).toEqual({
@@ -485,5 +509,26 @@ describe("ariaRoomSync utilities", () => {
     });
     expect(ytGuestTrack.coverUrl).toContain("/api/aria-room/guest/cover/trk_yt_1");
     expect(ytGuestTrack.coverFallbackUrl).toBe("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
+
+    const sanitizedPayload = trackToAriaPayload({
+      id: "x".repeat(250),
+      source: "local",
+      title: "T".repeat(400),
+      artist: "A".repeat(400),
+      album: "B".repeat(400),
+      duration: "03:00",
+      quality: "FLAC",
+      coverUrl: "data:image/png;base64,AAAA",
+      streamUrl: "https://example.com/" + "a".repeat(2000),
+      cover: "linear-gradient(135deg, #4338ca 0%, #1e1b4b 100%)",
+      accent: "#38bdf8",
+      waveform: [],
+      lyrics: [],
+      lyricStatus: "searchable",
+    });
+    expect(sanitizedPayload.id.length).toBe(200);
+    expect(sanitizedPayload.title.length).toBe(300);
+    expect(sanitizedPayload.coverUrl).toBeNull();
+    expect(sanitizedPayload.streamUrl?.length).toBe(1500);
   });
 });

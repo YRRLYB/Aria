@@ -2,6 +2,7 @@ import type { ListenTogetherPlayInfo, ListenTogetherRoom } from "./api";
 
 export type LocalSentPlaySnapshot = {
   songId: string | null;
+  formerSongId?: string | null;
   playStatus: "PLAY" | "PAUSE";
   progressMs: number;
   clientSeq: number;
@@ -73,8 +74,16 @@ export function evaluateRemotePlayInfoSync(options: {
   const isExplicitPartnerCommand = Boolean(
     playInfo.operatorUserId && selfUserId && playInfo.operatorUserId !== selfUserId,
   );
+  const isStalePreSwitchEcho = Boolean(
+    !isExplicitPartnerCommand &&
+      nowMs - lastLocalCommandAtMs < 3500 &&
+      lastLocalSent?.formerSongId &&
+      playInfo.songId === lastLocalSent.formerSongId &&
+      playInfo.clientSeq < lastLocalSent.clientSeq,
+  );
   const isRemoteSongSwitch = Boolean(
     !isExplicitOwnCommand &&
+      !isStalePreSwitchEcho &&
       playInfo.songId &&
       playInfo.songId !== lastLocalSent?.songId &&
       playInfo.songId !== currentSongId,

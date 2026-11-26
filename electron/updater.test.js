@@ -5,25 +5,35 @@ const {
   friendlyUpdateError,
   buildUpdaterProxyCandidates,
   compareSemver,
+  formatReleaseNotes,
   isRetriableNetworkError,
   toElectronProxyRules,
 } = updaterModule;
 
 describe("desktop updater helpers", () => {
-  it("builds ordered proxy fallback routes (system -> local proxy -> direct)", () => {
+  it("builds ordered proxy fallback routes (system -> local proxy -> env proxy -> direct)", () => {
     expect(toElectronProxyRules("http://127.0.0.1:7890")).toBe("http=127.0.0.1:7890;https=127.0.0.1:7890");
     expect(toElectronProxyRules("socks5://127.0.0.1:10808")).toBe("socks5://127.0.0.1:10808");
     expect(toElectronProxyRules("not a url")).toBe("");
 
-    const withLocal = buildUpdaterProxyCandidates("http://127.0.0.1:7890");
-    expect(withLocal.map((r) => r.id)).toEqual(["system", "local-proxy", "direct"]);
+    const withLocal = buildUpdaterProxyCandidates("http://127.0.0.1:7890", "http://127.0.0.1:8888");
+    expect(withLocal.map((r) => r.id)).toEqual(["system", "local-proxy", "env-proxy", "direct"]);
     expect(withLocal[1]?.config).toEqual({
       mode: "fixed_servers",
       proxyRules: "http=127.0.0.1:7890;https=127.0.0.1:7890",
     });
 
+    const deduped = buildUpdaterProxyCandidates("http://127.0.0.1:7890", "http://127.0.0.1:7890");
+    expect(deduped.map((r) => r.id)).toEqual(["system", "local-proxy", "direct"]);
+
     const withoutLocal = buildUpdaterProxyCandidates("");
     expect(withoutLocal.map((r) => r.id)).toEqual(["system", "direct"]);
+  });
+
+  it("formats GitHub Atom HTML release notes cleanly for UI rendering", () => {
+    const html = "<h2>更新亮点</h2><ul><li>修复 <strong>自动更新</strong> &amp; 对时</li><li>新增 <code>自定义房间号</code></li></ul>";
+    expect(formatReleaseNotes(html)).toBe("更新亮点\n\n• 修复 自动更新 & 对时\n• 新增 自定义房间号");
+    expect(formatReleaseNotes("")).toBeNull();
   });
 
   it("classifies retriable network failures and formats friendly Chinese messages", () => {

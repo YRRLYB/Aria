@@ -7,20 +7,13 @@ import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
 import { createGuardedAdvance, requestMediaPlayback } from "@/lib/mediaPlayback";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
 import { equalizerFrequencies } from "@/lib/equalizer";
+import { uiVolumeToLinearGain, uiVolumeToMpvVolume } from "@/lib/audioVolume";
 import { readCachedAudioSettings, writeCachedAudioSettings, type AudioOutputMode, type QualityLevel } from "@/lib/playerPresentation";
 import loudnessProcessorUrl from "@/lib/loudnessProcessor.js?url&no-inline";
 
 // Owns the media pipeline: the HTML audio element, the mpv native bridge
 // (loading/progress/pause/volume/device + exclusive mode), output device
 // enumeration and the Web Audio graph that feeds the spectrum visualizer.
-/**
- * 感知音量曲线:人耳对响度的感受接近平方律,线性映射会让滑块中高段
- * 显得比预期响得多(HTML 引擎尤其明显)。平方衰减后 100% 不变,
- * 72% ≈ 0.52 实际增益。mpv 路径(WASAPI/coreaudio)保持线性不受影响。
- */
-function perceptualVolume(volume: number): number {
-  return Math.max(0, Math.min(1, volume / 100)) ** 2;
-}
 
 export function useAudioEngine(options: {
   activeTrack: Track;
@@ -90,14 +83,18 @@ export function useAudioEngine(options: {
   const nativePlaybackEnabled = nativePlaybackRequested;
 
   // Online sources accept a ?level= override on their stream routes.
+  const isAriaRoomStream = Boolean(
+    activeTrack.id.startsWith("aria-room:") || activeTrack.streamUrl?.includes("/api/aria-room/"),
+  );
   const activeStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
     if (
-      activeTrack.source !== "netease" &&
-      activeTrack.source !== "qq" &&
-      activeTrack.source !== "bilibili" &&
-      activeTrack.source !== "youtube"
+      isAriaRoomStream ||
+      (activeTrack.source !== "netease" &&
+        activeTrack.source !== "qq" &&
+        activeTrack.source !== "bilibili" &&
+        activeTrack.source !== "youtube")
     ) {
       return resolvedUrl;
     }
@@ -105,7 +102,7 @@ export function useAudioEngine(options: {
     const url = new URL(resolvedUrl, window.location.href);
     url.searchParams.set("level", options.effectiveQualityLevel);
     return url.href;
-  }, [activeTrack.streamUrl, activeTrack.source, options.effectiveQualityLevel]);
+  }, [activeTrack.streamUrl, activeTrack.source, isAriaRoomStream, options.effectiveQualityLevel]);
 
   const analyserLevel = useMemo(() => {
     if (!nativePlaybackEnabled || analyserFallbackEnabled) return options.effectiveQualityLevel;
@@ -120,12 +117,16 @@ export function useAudioEngine(options: {
 
   const audioElementStreamUrl = useMemo(() => {
     if (!activeTrack.streamUrl || activeTrack.requiresNativePlayback) return null;
+    // Avoid opening a duplicate loopback HTTP range stream for the silent analyser
+    // when native mpv already owns an AriaRoom guest/host stream.
+    if (nativePlaybackEnabled && isAriaRoomStream) return null;
     const resolvedUrl = api.resolveUrl(activeTrack.streamUrl);
     if (
-      activeTrack.source !== "netease" &&
-      activeTrack.source !== "qq" &&
-      activeTrack.source !== "bilibili" &&
-      activeTrack.source !== "youtube"
+      isAriaRoomStream ||
+      (activeTrack.source !== "netease" &&
+        activeTrack.source !== "qq" &&
+        activeTrack.source !== "bilibili" &&
+        activeTrack.source !== "youtube")
     ) {
       return resolvedUrl;
     }
@@ -140,6 +141,7 @@ export function useAudioEngine(options: {
     activeTrack.requiresNativePlayback,
     activeTrack.source,
     analyserLevel,
+    isAriaRoomStream,
     nativePlaybackEnabled,
     options.effectiveQualityLevel,
   ]);
@@ -184,6 +186,10 @@ export function useAudioEngine(options: {
   const externalAudioActiveRef = useRef(externalAudioActive);
   externalAudioActiveRef.current = externalAudioActive;
   const prevExternalAudioRef = useRef({ active: externalAudioActive, trackId: options.activeTrack.id });
+  const volumeRef = useRef(options.volume);
+  volumeRef.current = options.volume;
+  const equalizerRef = useRef({ enabled: options.equalizerEnabled, bands: options.equalizerBands });
+  equalizerRef.current = { enabled: options.equalizerEnabled, bands: options.equalizerBands };
 
   // The static `supported` flag only knows the platform. The engine's
   // isSupported() checks the platform mpv binary, which macOS ships without
@@ -472,8 +478,11 @@ export function useAudioEngine(options: {
           performance.now() >= nativeAnalyserDelayUntilRef.current,
       );
     audio.muted = nativePlaybackEnabled && !nativeAnalyserBridgeReady;
-    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : outputGainRef.current ? 1 : perceptualVolume(options.volume);
-    if (outputGainRef.current) outputGainRef.current.gain.setTargetAtTime(perceptualVolume(options.volume), audioContextRef.current!.currentTime, 0.03);
+    const initialGain = uiVolumeToLinearGain(volumeRef.current);
+    audio.volume = nativePlaybackEnabled ? (nativeAnalyserBridgeReady ? 1 : 0) : outputGainRef.current ? 1 : initialGain;
+    if (outputGainRef.current && audioContextRef.current) {
+      outputGainRef.current.gain.setTargetAtTime(initialGain, audioContextRef.current.currentTime, 0.02);
+    }
     // The mpv path owns audible lossless playback. Chromium only needs a
     // lightweight analyser source, so avoid pre-buffering the whole stream.
     audio.preload = nativePlaybackEnabled
@@ -553,7 +562,6 @@ export function useAudioEngine(options: {
     nativeAnalyserWakeToken,
     nativePlaybackEnabled,
     effectiveAnalyserEnabled,
-    options.volume,
     enginePlaying,
   ]);
 
@@ -707,7 +715,7 @@ export function useAudioEngine(options: {
         url: nextUrl,
         position: startPosition,
         paused: !enginePlaying,
-        volume: options.volume,
+        volume: uiVolumeToMpvVolume(volumeRef.current),
         exclusive: options.exclusiveMode,
         deviceId: selectedSinkId,
         nativeDevice: options.activeTrack.nativeDevice ?? null,
@@ -715,6 +723,8 @@ export function useAudioEngine(options: {
         endChapter: options.activeTrack.nativeEnd ?? null,
         cdReadQuality: options.activeTrack.cdReadQuality ?? "high",
         normalizationEnabled: options.normalizationEnabled,
+        equalizerEnabled: equalizerRef.current.enabled,
+        equalizerBands: equalizerRef.current.bands,
       })
       .then((state) => {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
@@ -742,7 +752,6 @@ export function useAudioEngine(options: {
     nativeAudioState?.active,
     nativeAudioState?.trackId,
     options.exclusiveMode,
-    options.volume,
     enginePlaying,
     selectedSinkId,
     syncNativeAudioState,
@@ -755,9 +764,24 @@ export function useAudioEngine(options: {
   }, [nativeAudioState?.active, nativePlaybackEnabled, enginePlaying]);
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
-    if (!nativePlaybackEnabled || !nativeAudio?.supported || !nativeAudioState?.active) return;
-    nativeAudio.setVolume?.(options.volume).catch(() => undefined);
-  }, [nativeAudioState?.active, nativePlaybackEnabled, options.volume]);
+    if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
+    nativeAudio.setVolume?.(uiVolumeToMpvVolume(options.volume)).catch(() => undefined);
+  }, [nativePlaybackEnabled, options.volume]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    const targetGain = uiVolumeToLinearGain(options.volume);
+    if (outputGainRef.current && audioContextRef.current) {
+      outputGainRef.current.gain.setTargetAtTime(targetGain, audioContextRef.current.currentTime, 0.02);
+      if (audio && !nativePlaybackEnabled) {
+        audio.volume = 1;
+      }
+      return;
+    }
+    if (audio && !nativePlaybackEnabled) {
+      audio.volume = targetGain;
+    }
+  }, [nativePlaybackEnabled, options.volume]);
 
   useEffect(() => {
     setNormalizationError(null);
@@ -897,7 +921,7 @@ export function useAudioEngine(options: {
         url: activeStreamUrl,
         position: 0,
         paused: false,
-        volume: options.volume,
+        volume: uiVolumeToMpvVolume(volumeRef.current),
         exclusive: options.audioOutputMode === "exclusive",
         deviceId: selectedSinkId,
         nativeDevice: options.activeTrack.nativeDevice ?? null,
@@ -1002,9 +1026,16 @@ export function useAudioEngine(options: {
     const analyser = analyserRef.current;
     if (!analyser) return;
     configureSpectrumAnalyser(analyser);
+    const hadOutputGain = Boolean(outputGainRef.current);
     const outputGain = outputGainRef.current ?? context.createGain();
     outputGainRef.current = outputGain;
-    outputGain.gain.setTargetAtTime(perceptualVolume(options.volume), context.currentTime, 0.03);
+    const targetGain = uiVolumeToLinearGain(volumeRef.current);
+    if (!hadOutputGain) {
+      // Initialize GainNode before connecting to destination so first playback at low volume never bursts at 100%.
+      outputGain.gain.setValueAtTime(targetGain, context.currentTime);
+    } else {
+      outputGain.gain.setTargetAtTime(targetGain, context.currentTime, 0.02);
+    }
 
     const desiredOutputMode = nativePlaybackEnabled ? "silent" : options.normalizationEnabled && normalizerRef.current ? "normalized" : "audible";
     if (analyserOutputModeRef.current !== desiredOutputMode) {
@@ -1076,7 +1107,6 @@ export function useAudioEngine(options: {
     options.normalizationEnabled,
     options.equalizerEnabled,
     normalizerReady,
-    options.volume,
     selectedSinkId,
   ]);
 

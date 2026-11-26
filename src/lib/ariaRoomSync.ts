@@ -125,21 +125,11 @@ export function evaluateAriaRoomDrift(params: {
     };
   }
 
-  if (absDrift <= 3_500) {
+  if (absDrift <= 2_500) {
     return {
       driftMs,
       action: "speed",
       speed: driftMs < 0 ? 1.03 : 0.97,
-      shouldSeek: false,
-      targetSec,
-    };
-  }
-
-  if (absDrift <= 10_000) {
-    return {
-      driftMs,
-      action: "speed",
-      speed: driftMs < 0 ? 1.05 : 0.95,
       shouldSeek: false,
       targetSec,
     };
@@ -239,27 +229,34 @@ export function rankRelayCandidates(
     const caps = m.capabilities;
     let tier = 0;
     if (source === "netease" || source === "cloud") {
-      tier = caps?.netease === "vip" ? 30 : caps?.netease === "free" ? 20 : 10;
+      tier = caps?.netease === "vip" ? 30 : caps?.netease === "free" ? 20 : caps?.netease === "none" ? 0 : 10;
     } else if (source === "qq") {
-      tier = caps?.qq === "vip" ? 30 : caps?.qq === "free" ? 20 : 10;
+      tier = caps?.qq === "vip" ? 30 : caps?.qq === "free" ? 20 : caps?.qq === "none" ? 0 : 10;
     } else if (source === "bilibili") {
-      tier = caps?.bilibili === "vip" ? 30 : caps?.bilibili === "free" ? 20 : 10;
+      tier = caps?.bilibili === "vip" ? 30 : caps?.bilibili === "free" ? 20 : caps?.bilibili === "none" ? 0 : 10;
     } else if (source === "youtube") {
       tier = caps?.youtube === "reachable" ? 30 : 0;
     } else {
       tier = m.peerId === hostPeerId ? 30 : 10;
     }
+    if (tier <= 0) return 0;
     if (m.peerId === hostPeerId) tier += 5;
     return tier;
   };
 
   return members
-    .filter((m) => m.shareEnabled !== false)
+    .filter((m) => m.shareEnabled !== false && m.online !== false && m.presence !== "offline" && scoreMember(m) > 0)
     .sort((a, b) => {
       const diff = scoreMember(b) - scoreMember(a);
       if (diff !== 0) return diff;
       return a.joinedAt - b.joinedAt;
     });
+}
+
+export function normalizeAriaRoomCode(raw: string): string | null {
+  const cleaned = raw.trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{3,24}$/.test(cleaned)) return null;
+  return cleaned;
 }
 
 export type ParsedAriaJoinInput =
@@ -322,11 +319,21 @@ export function decodeAriaJoinInput(raw: string): ParsedAriaJoinInput | null {
     return null;
   }
 
-  const cleanCode = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (cleanCode.length >= 4 && cleanCode.length <= 12) {
+  const cleanCode = trimmed.replace(/\s+/g, "").toUpperCase();
+  if (/^[A-Z0-9_-]{3,24}$/.test(cleanCode)) {
     return { kind: "cloudflare", roomId: cleanCode };
   }
   return null;
+}
+
+function sanitizePayloadText(value: string | undefined | null, maxLen: number): string {
+  return (value ?? "").trim().slice(0, maxLen);
+}
+
+function sanitizePayloadUrl(raw?: string | null): string | null {
+  const normalized = normalizePortableApiUrl(raw);
+  if (!normalized || /^data:/i.test(normalized)) return null;
+  return normalized.length <= 1500 ? normalized : normalized.slice(0, 1500);
 }
 
 export function createTrackNonce(trackId: string): string {
@@ -372,23 +379,24 @@ export function trackToAriaPayload(
   nonce = createTrackNonce(track.id),
   addedBy?: { peerId: string; nickname: string },
 ): AriaRoomTrackPayload {
-  const stableId = canonicalTrackId(track);
+  const stableId = sanitizePayloadText(canonicalTrackId(track), 200) || sanitizePayloadText(track.id, 200);
+  const providerId = sanitizePayloadText(track.providerId, 160);
   return {
     nonce,
     id: stableId,
-    providerId: track.providerId,
+    ...(providerId ? { providerId } : {}),
     source: track.source,
-    title: track.title,
-    artist: track.artist,
-    album: track.album,
-    duration: track.duration,
+    title: sanitizePayloadText(track.title, 300),
+    artist: sanitizePayloadText(track.artist, 300),
+    album: sanitizePayloadText(track.album, 300),
+    duration: sanitizePayloadText(track.duration, 32),
     quality: track.quality,
     bitrate: track.bitrate ?? null,
     sampleRate: track.sampleRate ?? null,
     currentLevel: track.currentLevel ?? null,
     ...(track.availableLevels?.length ? { availableLevels: track.availableLevels } : {}),
-    coverUrl: normalizePortableApiUrl(track.coverUrl),
-    streamUrl: normalizePortableApiUrl(track.streamUrl),
+    coverUrl: sanitizePayloadUrl(track.coverUrl),
+    streamUrl: sanitizePayloadUrl(track.streamUrl),
     addedByPeerId: addedBy?.peerId,
     addedByName: addedBy?.nickname,
   };

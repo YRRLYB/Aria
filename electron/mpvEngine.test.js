@@ -265,4 +265,38 @@ describe("native mpv output", () => {
     expect(darwinArgsExclusive).toContain("--audio-exclusive=yes");
     expect(darwinArgsExclusive).toContain("--media-controls=no");
   });
+
+  it("places EQ (Q=1.1) before normalization in the af chain and clamps/skips idle setVolume respawn", async () => {
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: vi.fn() });
+    const calls = [];
+    engine.command = vi.fn().mockImplementation(async (...args) => {
+      calls.push(args);
+      if (args[0] === "get_property" && args[1] === "af") {
+        return [{ label: "aria-normalization" }];
+      }
+      return [];
+    });
+
+    await engine.setEqualizer(true, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const afCalls = calls.filter((c) => c[0] === "af");
+    expect(afCalls.map((c) => `${c[1]}:${c[2]}`)).toEqual([
+      "remove:@aria-normalization",
+      expect.stringContaining("add:@aria-eq:lavfi=[equalizer=f=31:width_type=q:width=1.1:g=3"),
+      expect.stringContaining("add:@aria-normalization:lavfi=[dynaudnorm="),
+    ]);
+
+    engine.ensureProcess = vi.fn().mockResolvedValue(undefined);
+    engine.command.mockClear();
+    // Without active process/socket, setVolume updates state without spawning mpv.
+    await engine.setVolume(42);
+    expect(engine.state.volume).toBe(42);
+    expect(engine.ensureProcess).not.toHaveBeenCalled();
+    expect(engine.command).not.toHaveBeenCalled();
+
+    // NaN/out-of-range inputs are guarded and clamped cleanly.
+    await engine.setVolume(Number.NaN);
+    expect(engine.state.volume).toBe(42);
+    await engine.setVolume(180);
+    expect(engine.state.volume).toBe(100);
+  });
 });

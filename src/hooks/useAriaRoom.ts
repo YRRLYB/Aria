@@ -14,10 +14,13 @@ import {
 } from "@/lib/api";
 import {
   appendAvatarHistory,
+  clearSavedAriaRoomSession,
   compressAvatarFile,
   readAriaRoomProfile,
+  readSavedAriaRoomSession,
   resolveAriaRoomIdentity,
   writeAriaRoomProfile,
+  writeSavedAriaRoomSession,
   type AriaRoomProfile,
   type AriaSourceAccountSummary,
 } from "@/lib/ariaRoomProfile";
@@ -26,6 +29,7 @@ import {
   applyPlaybackSyncToState,
   ariaPayloadToGuestTrack,
   ariaPayloadToHostTrack,
+  canonicalTrackId,
   computeExpectedPlaybackSec,
   computeScheduledStartDelayMs,
   createTrackNonce,
@@ -49,6 +53,7 @@ type PeerBundle = {
   queuedNonces: Set<string>;
   pumpedNonces: Set<string>;
   pumping: boolean;
+  currentPumpingNonce: string | null;
   pumpQueuedAgain: boolean;
   pumpAbort: AbortController | null;
   disconnectTimer: number | null;
@@ -228,6 +233,13 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
   const guestChunkChainRef = useRef<Promise<void>>(Promise.resolve());
   const readyReportedNoncesRef = useRef<Set<string>>(new Set());
   const prefetchedNextNonceRef = useRef<string | null>(null);
+  const autoRejoinAttemptedRef = useRef<boolean>(false);
+  const lastSentPresenceRef = useRef<"active" | "away" | null>(null);
+  const presenceDebounceTimerRef = useRef<number | null>(null);
+  const windowFocusedRef = useRef<boolean>(typeof document !== "undefined" ? document.hasFocus() : true);
+  const windowVisibleRef = useRef<boolean>(
+    typeof document !== "undefined" ? document.visibilityState === "visible" : true,
+  );
 
   const markControlCommandHandled = useCallback((commandId?: unknown): boolean => {
     if (typeof commandId !== "string" || !commandId) return true;
@@ -299,6 +311,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     bundle.pumpAbort = controller;
 
     const streamOneTrack = async (nonce: string) => {
+      bundle.currentPumpingNonce = nonce;
       let offset = 0;
       while (!controller.signal.aborted && channel.readyState === "open") {
         await waitChannelBackpressure(channel, controller.signal);
@@ -361,6 +374,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       // Aborted or disconnected; ICE restart or reconnect resumes cleanly.
     } finally {
       bundle.pumping = false;
+      bundle.currentPumpingNonce = null;
       if (bundle.pumpAbort === controller) {
         bundle.pumpAbort = null;
       }
@@ -474,6 +488,17 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       const { header, payload } = decoded;
       guestChunkChainRef.current = guestChunkChainRef.current
         .then(async () => {
+          const snap = snapshotRef.current;
+          if (!snap.active) return;
+          const activeNonce = snap.playback.nonce;
+          const nextNonce = snap.playback.nextTrack?.nonce;
+          if (
+            activeNonce &&
+            header.nonce !== activeNonce &&
+            header.nonce !== nextNonce
+          ) {
+            return;
+          }
           const resp = await fetch(apiUrl("/api/aria-room/guest/chunk"), {
             method: "POST",
             headers: {
@@ -549,11 +574,24 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     [handleIncomingPlaybackSync, markControlCommandHandled],
   );
 
+  const isPeerHealthyForReuse = (bundle: PeerBundle | undefined): bundle is PeerBundle => {
+    if (!bundle) return false;
+    const state = bundle.pc.connectionState;
+    const iceState = bundle.pc.iceConnectionState;
+    if (state === "closed" || state === "failed" || state === "disconnected") return false;
+    if (iceState === "closed" || iceState === "failed") return false;
+    if (bundle.pc.localDescription && bundle.mediaChannel?.readyState === "closed") return false;
+    return true;
+  };
+
   const ensurePeerConnection = useCallback(
     (remotePeerId: string, isInitiator: boolean): PeerBundle => {
       const existing = peersRef.current.get(remotePeerId);
-      if (existing && existing.pc.connectionState !== "closed") {
+      if (isPeerHealthyForReuse(existing)) {
         return existing;
+      }
+      if (existing) {
+        cleanupPeer(remotePeerId);
       }
 
       const iceServers = snapshotRef.current.iceConfig.iceServers;
@@ -567,6 +605,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         queuedNonces: new Set(),
         pumpedNonces: new Set(),
         pumping: false,
+        currentPumpingNonce: null,
         pumpQueuedAgain: false,
         pumpAbort: null,
         disconnectTimer: null,
@@ -599,6 +638,25 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         }
       };
 
+      // Always accept incoming DataChannels regardless of initiator flag to prevent ICE-before-offer deadlocks.
+      pc.ondatachannel = (evt) => {
+        if (evt.channel.label === "control") {
+          bundle.controlChannel = evt.channel;
+          setupControlChannel(evt.channel, remotePeerId);
+        } else if (evt.channel.label === "media") {
+          evt.channel.binaryType = "arraybuffer";
+          evt.channel.bufferedAmountLowThreshold = LOW_WATERMARK_BYTES;
+          bundle.mediaChannel = evt.channel;
+          setupGuestChunkReceiver(evt.channel);
+          evt.channel.onopen = () => {
+            void pumpQueuedNoncesToPeer(bundle);
+          };
+          if (evt.channel.readyState === "open") {
+            void pumpQueuedNoncesToPeer(bundle);
+          }
+        }
+      };
+
       if (isInitiator) {
         const control = pc.createDataChannel("control", { ordered: true });
         const media = pc.createDataChannel("media", { ordered: true });
@@ -611,24 +669,6 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         setupGuestChunkReceiver(media);
         media.onopen = () => {
           void pumpQueuedNoncesToPeer(bundle);
-        };
-      } else {
-        pc.ondatachannel = (evt) => {
-          if (evt.channel.label === "control") {
-            bundle.controlChannel = evt.channel;
-            setupControlChannel(evt.channel, remotePeerId);
-          } else if (evt.channel.label === "media") {
-            evt.channel.binaryType = "arraybuffer";
-            evt.channel.bufferedAmountLowThreshold = LOW_WATERMARK_BYTES;
-            bundle.mediaChannel = evt.channel;
-            setupGuestChunkReceiver(evt.channel);
-            evt.channel.onopen = () => {
-              void pumpQueuedNoncesToPeer(bundle);
-            };
-            if (evt.channel.readyState === "open") {
-              void pumpQueuedNoncesToPeer(bundle);
-            }
-          }
         };
       }
 
@@ -647,7 +687,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         }
       }
     },
-    [pumpQueuedNoncesToPeer, setupControlChannel, setupGuestChunkReceiver],
+    [cleanupPeer, pumpQueuedNoncesToPeer, setupControlChannel, setupGuestChunkReceiver],
   );
 
   const requestPumpToPeer = useCallback(
@@ -658,7 +698,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       if (typeof RTCPeerConnection === "undefined") return;
 
       const existing = peersRef.current.get(targetPeerId);
-      const bundle = existing && existing.pc.connectionState !== "closed"
+      const bundle = isPeerHealthyForReuse(existing)
         ? existing
         : ensurePeerConnection(targetPeerId, true);
 
@@ -699,7 +739,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       const existing = peersRef.current.get(fromPeerId);
       const bundle = existing && existing.pc.connectionState !== "closed"
         ? existing
-        : ensurePeerConnection(fromPeerId, !isOffer);
+        : ensurePeerConnection(fromPeerId, false);
       const pc = bundle.pc;
 
       try {
@@ -732,6 +772,8 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     [ensurePeerConnection],
   );
 
+  const [initialStatusReady, setInitialStatusReady] = useState(false);
+
   // Initial status & SSE live updates
   useEffect(() => {
     let cancelled = false;
@@ -742,8 +784,11 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         setSnapshot(res.snapshot);
         setConfig(res.config);
         setProbeResults(res.probeResults);
+        setInitialStatusReady(true);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setInitialStatusReady(true);
+      });
 
     if (typeof EventSource === "undefined") {
       return () => {
@@ -789,6 +834,8 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           };
           setBufferProgress(null);
           setLastDriftMs(null);
+          readyReportedNoncesRef.current.clear();
+          lastSentPresenceRef.current = null;
           callbacksRef.current.onApplyPlaybackSpeed?.(1);
           callbacksRef.current.onHostRelayStreamOverride?.(null);
         } else if (nextSnap.role === "host") {
@@ -924,7 +971,12 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           nextTrack.dispatch.providerPeerId === snap.myPeerId
         ) {
           for (const member of snap.members) {
-            if (member.peerId !== snap.myPeerId && member.connectedVia !== "direct") {
+            if (
+              member.peerId !== snap.myPeerId &&
+              member.connectedVia !== "direct" &&
+              member.online !== false &&
+              member.presence !== "offline"
+            ) {
               void requestPumpToPeer(member.peerId, [nextTrack.nonce]);
             }
           }
@@ -957,7 +1009,16 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
 
     es.addEventListener("notice", (evt) => {
       try {
-        const data = JSON.parse((evt as MessageEvent).data) as { message?: string };
+        const data = JSON.parse((evt as MessageEvent).data) as { code?: string; message?: string };
+        if (
+          data.code === "ROOM_CLOSED" ||
+          data.code === "ROOM_NOT_FOUND" ||
+          data.code === "ROOM_FULL" ||
+          data.code === "ROOM_CODE_TAKEN" ||
+          data.code === "KICKED_BY_HOST"
+        ) {
+          clearSavedAriaRoomSession();
+        }
         if (data.message) callbacksRef.current.onNotice?.(data.message);
       } catch {
         // ignore
@@ -986,7 +1047,12 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     if (noncesToPush.length === 0) return;
 
     for (const member of snapshot.members) {
-      if (member.peerId !== snapshot.myPeerId && member.connectedVia !== "direct") {
+      if (
+        member.peerId !== snapshot.myPeerId &&
+        member.connectedVia !== "direct" &&
+        member.online !== false &&
+        member.presence !== "offline"
+      ) {
         void requestPumpToPeer(member.peerId, noncesToPush);
       }
     }
@@ -1003,6 +1069,23 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     snapshot.playback.nextTrack?.dispatch?.providerPeerId,
     requestPumpToPeer,
   ]);
+
+  // Abort stale WebRTC pumps immediately when user skips past a track.
+  useEffect(() => {
+    if (!snapshot.active) return;
+    const activeNonce = snapshot.playback.nonce;
+    const nextNonce = snapshot.playback.nextTrack?.nonce ?? null;
+    for (const bundle of peersRef.current.values()) {
+      if (
+        bundle.pumping &&
+        bundle.currentPumpingNonce &&
+        bundle.currentPumpingNonce !== activeNonce &&
+        bundle.currentPumpingNonce !== nextNonce
+      ) {
+        bundle.pumpAbort?.abort();
+      }
+    }
+  }, [snapshot.active, snapshot.playback.nonce, snapshot.playback.nextTrack?.nonce]);
 
   // Periodic Guest clock sync (30s, fast retry until calibrated) + smooth micro-speed drift calibration (5s)
   useEffect(() => {
@@ -1166,9 +1249,9 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         sample.seekStreak = sample.seekSign === sign ? sample.seekStreak + 1 : 1;
         sample.seekSign = sign;
         if (
-          (sample.seekStreak >= 2 || Math.abs(evalRes.driftMs) >= 15_000) &&
+          sample.seekStreak >= 1 &&
           Date.now() > suppressDriftUntilRef.current &&
-          Date.now() - lastDriftSeekAtRef.current >= 15_000
+          Date.now() - lastDriftSeekAtRef.current >= 5_000
         ) {
           resetDriftStreaks();
           sample.speedActive = false;
@@ -1202,50 +1285,61 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     };
   }, [snapshot.active, snapshot.role, snapshot.signalingState]);
 
-  // Host 20-second lookahead pre-resolution for next track
+  const triggerHostPrefetchNext = useCallback(() => {
+    const cb = callbacksRef.current;
+    const snap = snapshotRef.current;
+    if (!snap.active || snap.role !== "host" || !cb.activeTrack) return;
+    const queue = cb.playQueueTracks;
+    if (!queue.length) return;
+    const idx = queue.findIndex((t) => t.id === cb.activeTrack!.id);
+    const safeIndex = idx >= 0 ? idx : 0;
+    const nextTrack = queue[(safeIndex + 1) % queue.length];
+    if (!nextTrack || nextTrack.id === cb.activeTrack.id) return;
+
+    let nextNonce = trackIdNonceMapRef.current.get(nextTrack.id);
+    if (!nextNonce) {
+      nextNonce = createTrackNonce(nextTrack.id);
+      trackIdNonceMapRef.current.set(nextTrack.id, nextNonce);
+    }
+    if (
+      prefetchedNextNonceRef.current === nextNonce ||
+      snap.playback.nextTrack?.nonce === nextNonce
+    ) {
+      return;
+    }
+
+    prefetchedNextNonceRef.current = nextNonce;
+    const nextPayload = trackToAriaPayload(nextTrack, nextNonce, {
+      peerId: identity.peerId,
+      nickname: identity.nickname,
+    });
+    void api.prefetchAriaRoomNext(nextPayload).catch(() => {
+      if (prefetchedNextNonceRef.current === nextNonce) {
+        prefetchedNextNonceRef.current = null;
+      }
+    });
+  }, [identity.nickname, identity.peerId]);
+
+  // Early warm prefetch (2s after starting a track) + 20s before EOF lookahead
   useEffect(() => {
     if (!snapshot.active || snapshot.role !== "host" || !options.playing) return;
-    const timer = window.setInterval(() => {
+    const earlyTimer = window.setTimeout(() => {
+      triggerHostPrefetchNext();
+    }, 2_000);
+    const eofTimer = window.setInterval(() => {
       const cb = callbacksRef.current;
-      const snap = snapshotRef.current;
-      if (!snap.active || snap.role !== "host" || !cb.playing || !cb.activeTrack) return;
+      if (!cb.playing || !cb.activeTrack) return;
       if (!Number.isFinite(cb.durationSeconds) || cb.durationSeconds <= 20) return;
       const remaining = cb.durationSeconds - cb.getPlaybackTime();
       if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 20) return;
-
-      const queue = cb.playQueueTracks;
-      if (!queue.length) return;
-      const idx = queue.findIndex((t) => t.id === cb.activeTrack!.id);
-      const safeIndex = idx >= 0 ? idx : 0;
-      const nextTrack = queue[(safeIndex + 1) % queue.length];
-      if (!nextTrack || nextTrack.id === cb.activeTrack.id) return;
-
-      let nextNonce = trackIdNonceMapRef.current.get(nextTrack.id);
-      if (!nextNonce) {
-        nextNonce = createTrackNonce(nextTrack.id);
-        trackIdNonceMapRef.current.set(nextTrack.id, nextNonce);
-      }
-      if (
-        prefetchedNextNonceRef.current === nextNonce ||
-        snap.playback.nextTrack?.nonce === nextNonce
-      ) {
-        return;
-      }
-
-      prefetchedNextNonceRef.current = nextNonce;
-      const nextPayload = trackToAriaPayload(nextTrack, nextNonce, {
-        peerId: identity.peerId,
-        nickname: identity.nickname,
-      });
-      void api.prefetchAriaRoomNext(nextPayload).catch(() => {
-        if (prefetchedNextNonceRef.current === nextNonce) {
-          prefetchedNextNonceRef.current = null;
-        }
-      });
+      triggerHostPrefetchNext();
     }, 2_000);
 
-    return () => window.clearInterval(timer);
-  }, [snapshot.active, snapshot.role, options.playing, identity.peerId, identity.nickname]);
+    return () => {
+      window.clearTimeout(earlyTimer);
+      window.clearInterval(eofTimer);
+    };
+  }, [snapshot.active, snapshot.role, options.playing, options.activeTrack?.id, snapshot.playback.nonce, triggerHostPrefetchNext]);
 
   const updateProfile = useCallback((patch: Partial<AriaRoomProfile>) => {
     setProfile((prev) => {
@@ -1282,10 +1376,12 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
 
   const buildHostPayloads = useCallback(
     (track: Track | null, queue: Track[]) => {
+      const snap = snapshotRef.current;
       const toHostPayload = (item: Track, nonce: string): AriaRoomTrackPayload => {
         const preserved = remotePayloadMetaRef.current.get(item.id);
+        let base: AriaRoomTrackPayload;
         if (preserved) {
-          const base = trackToAriaPayload(item, nonce, {
+          base = trackToAriaPayload(item, nonce, {
             peerId: preserved.addedByPeerId || identity.peerId,
             nickname: preserved.addedByName || identity.nickname,
           });
@@ -1297,15 +1393,41 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           ) {
             base.streamUrl = preserved.streamUrl;
           }
-          return base;
+        } else {
+          base = trackToAriaPayload(item, nonce, {
+            peerId: identity.peerId,
+            nickname: identity.nickname,
+          });
         }
-        return trackToAriaPayload(item, nonce, {
-          peerId: identity.peerId,
-          nickname: identity.nickname,
-        });
+        const prefetchedNext = snap.playback.nextTrack;
+        if (
+          prefetchedNext &&
+          prefetchedNext.nonce === nonce &&
+          prefetchedNext.dispatch
+        ) {
+          return {
+            ...base,
+            bitrate: prefetchedNext.bitrate ?? base.bitrate ?? null,
+            sampleRate: prefetchedNext.sampleRate ?? base.sampleRate ?? null,
+            quality: prefetchedNext.quality ?? base.quality,
+            currentLevel: prefetchedNext.currentLevel ?? base.currentLevel ?? null,
+            availableLevels: prefetchedNext.availableLevels ?? base.availableLevels,
+            coverDataUrl: prefetchedNext.coverDataUrl ?? base.coverDataUrl ?? null,
+            mimeType: prefetchedNext.mimeType ?? base.mimeType ?? null,
+            dispatch: prefetchedNext.dispatch,
+          };
+        }
+        return base;
       };
 
-      const cleanQueue = queue.slice(0, 200).map((item) => {
+      const activeIdx = track ? queue.findIndex((item) => item.id === track.id) : -1;
+      const winStart =
+        queue.length > 200 && activeIdx >= 0
+          ? Math.max(0, Math.min(activeIdx - 20, queue.length - 200))
+          : 0;
+      const slicedQueue = queue.slice(winStart, winStart + 200);
+
+      const cleanQueue = slicedQueue.map((item) => {
         let nonce = trackIdNonceMapRef.current.get(item.id);
         if (!nonce) {
           nonce = createTrackNonce(item.id);
@@ -1323,10 +1445,10 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           trackIdNonceMapRef.current.set(track.id, nonce);
         }
         currentPayload =
-          cleanQueue.find((q) => q.id === track.id) ??
+          cleanQueue.find((q) => q.id === canonicalTrackId(track) || q.id === track.id) ??
           toHostPayload(track, nonce);
 
-        const currentIndex = queue.findIndex((q) => q.id === track.id);
+        const currentIndex = slicedQueue.findIndex((q) => q.id === track.id);
         if (currentIndex >= 0 && currentIndex + 1 < cleanQueue.length) {
           nextPayload = cleanQueue[currentIndex + 1];
         } else if (cleanQueue.length > 0 && currentIndex === -1) {
@@ -1343,6 +1465,8 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     async (params: {
       networkMode: AriaRoomNetworkMode;
       controlMode: AriaRoomControlMode;
+      roomId?: string;
+      rejoin?: boolean;
       directPort?: number;
       publicHost?: string;
     }) => {
@@ -1351,6 +1475,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       try {
         await callbacksRef.current.onBeforeEnterAriaRoom?.();
         trackIdNonceMapRef.current.clear();
+        readyReportedNoncesRef.current.clear();
         lastAppliedQueueSigRef.current = "";
         remotePayloadMetaRef.current.clear();
         prefetchedNextNonceRef.current = null;
@@ -1365,6 +1490,8 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           shareEnabled: profile.shareEnabled,
           networkMode: params.networkMode,
           controlMode: params.controlMode,
+          ...(params.roomId?.trim() ? { roomId: params.roomId.trim() } : {}),
+          ...(params.rejoin ? { rejoin: true } : {}),
           directPort: params.directPort,
           publicHost: params.publicHost,
           track: currentPayload,
@@ -1374,6 +1501,15 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           positionSec: callbacksRef.current.getPlaybackTime(),
         });
         setSnapshot(created);
+        writeSavedAriaRoomSession({
+          role: "host",
+          networkMode: created.networkMode,
+          controlMode: created.controlMode,
+          roomId: created.roomId,
+          directPort: params.directPort ?? created.directServer.port ?? null,
+          publicHost: params.publicHost ?? null,
+          savedAt: Date.now(),
+        });
         return created;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "创建 Aria 房间失败";
@@ -1390,7 +1526,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     async (rawInput: string) => {
       const parsed = decodeAriaJoinInput(rawInput);
       if (!parsed) {
-        setActionError("请输入有效的 6 位 Aria 房间码或房主直连地址（含令牌）");
+        setActionError("请输入有效的 Aria 房间码（3–24 位）或房主直连地址（含令牌）");
         return null;
       }
       setLoading(true);
@@ -1398,6 +1534,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       try {
         await callbacksRef.current.onBeforeEnterAriaRoom?.();
         cleanupAllPeers();
+        readyReportedNoncesRef.current.clear();
         lastAppliedNonceRef.current = null;
         lastAppliedSeqRef.current = 0;
         lastAppliedQueueSigRef.current = "";
@@ -1438,6 +1575,16 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
               },
         );
         setSnapshot(joined);
+        writeSavedAriaRoomSession({
+          role: "guest",
+          networkMode: parsed.kind === "direct" ? "direct" : joined.networkMode,
+          controlMode: joined.controlMode,
+          roomId: joined.roomId,
+          directHost: parsed.kind === "direct" ? parsed.host : null,
+          directPort: parsed.kind === "direct" ? parsed.port : null,
+          directToken: parsed.kind === "direct" ? parsed.token : null,
+          savedAt: Date.now(),
+        });
         return joined;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "加入 Aria 房间失败";
@@ -1453,13 +1600,16 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
   const leaveRoom = useCallback(async () => {
     setLoading(true);
     setActionError(null);
+    clearSavedAriaRoomSession();
     clearScheduledSyncTimer();
     cleanupAllPeers();
+    readyReportedNoncesRef.current.clear();
+    lastSentPresenceRef.current = null;
     lastAppliedNonceRef.current = null;
     lastAppliedSeqRef.current = 0;
     lastAppliedQueueSigRef.current = "";
-    remotePayloadMetaRef.current.clear();
     prefetchedNextNonceRef.current = null;
+    remotePayloadMetaRef.current.clear();
     pendingGuestPlayIntentRef.current = null;
     pendingInitialAlignRef.current = null;
     clockSyncedRef.current = false;
@@ -1483,6 +1633,134 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       setLoading(false);
     }
   }, [cleanupAllPeers]);
+
+  // Persistent room membership: auto-rejoin saved session once on startup unless explicitly left.
+  useEffect(() => {
+    if (!initialStatusReady || autoRejoinAttemptedRef.current) return;
+    autoRejoinAttemptedRef.current = true;
+    if (snapshotRef.current.active) return;
+    const saved = readSavedAriaRoomSession();
+    if (!saved) return;
+    const hasCloudSignaling = Boolean(
+      (config.signalingProvider === "self-hosted"
+        ? config.selfHostedSignalingUrl || config.signalingUrl
+        : config.signalingUrl
+      ).trim(),
+    );
+    if (saved.networkMode !== "direct" && !hasCloudSignaling && saved.networkMode === "cloudflare") {
+      return;
+    }
+
+    const handlePermanentRejoinFailure = (err: unknown) => {
+      const status = (err as { status?: number } | null)?.status;
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        status === 400 ||
+        status === 403 ||
+        status === 404 ||
+        status === 409 ||
+        /不存在|已结束|已满|占用/.test(msg)
+      ) {
+        clearSavedAriaRoomSession();
+      }
+    };
+
+    if (saved.role === "host") {
+      void createRoom({
+        networkMode: saved.networkMode,
+        controlMode: saved.controlMode,
+        roomId: saved.roomId ?? undefined,
+        rejoin: true,
+        directPort: saved.directPort ?? undefined,
+        publicHost: saved.publicHost ?? undefined,
+      }).catch(handlePermanentRejoinFailure);
+    } else if (saved.role === "guest") {
+      const joinStr =
+        saved.networkMode === "direct" && saved.directHost && saved.directToken
+          ? `aria-direct://v1?host=${encodeURIComponent(saved.directHost)}&port=${encodeURIComponent(String(saved.directPort || 3639))}&token=${encodeURIComponent(saved.directToken)}`
+          : saved.roomId;
+      if (!joinStr) {
+        clearSavedAriaRoomSession();
+        return;
+      }
+      void joinRoomByInput(joinStr).catch(handlePermanentRejoinFailure);
+    }
+  }, [
+    config.selfHostedSignalingUrl,
+    config.signalingProvider,
+    config.signalingUrl,
+    createRoom,
+    initialStatusReady,
+    joinRoomByInput,
+  ]);
+
+  // Track window focus & visibility to report in-app active vs away presence cleanly.
+  useEffect(() => {
+    const syncPresence = (immediate = false) => {
+      if (presenceDebounceTimerRef.current !== null) {
+        window.clearTimeout(presenceDebounceTimerRef.current);
+        presenceDebounceTimerRef.current = null;
+      }
+      const nextPresence: "active" | "away" =
+        windowVisibleRef.current && windowFocusedRef.current ? "active" : "away";
+      const snap = snapshotRef.current;
+      if (!snap.active || snap.signalingState !== "connected") return;
+
+      const sendNow = () => {
+        if (lastSentPresenceRef.current === nextPresence) return;
+        lastSentPresenceRef.current = nextPresence;
+        void api.updateAriaRoomPresence(nextPresence).catch(() => undefined);
+      };
+
+      if (immediate || nextPresence === "active") {
+        sendNow();
+      } else {
+        presenceDebounceTimerRef.current = window.setTimeout(sendNow, 800);
+      }
+    };
+
+    const onVisibilityChange = () => {
+      windowVisibleRef.current = document.visibilityState === "visible";
+      syncPresence(windowVisibleRef.current && windowFocusedRef.current);
+    };
+    const onFocus = () => {
+      windowFocusedRef.current = true;
+      syncPresence(true);
+    };
+    const onBlur = () => {
+      windowFocusedRef.current = false;
+      syncPresence(false);
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    const offDesktopVis = window.ariaDesktop?.onWindowVisibilityChange?.((visible) => {
+      windowVisibleRef.current = visible;
+      syncPresence(visible && windowFocusedRef.current);
+    });
+    const offDesktopFocus = window.ariaDesktop?.onWindowFocusChange?.((focused) => {
+      windowFocusedRef.current = focused;
+      syncPresence(focused && windowVisibleRef.current);
+    });
+
+    if (snapshot.active && snapshot.signalingState === "connected") {
+      lastSentPresenceRef.current = null;
+      syncPresence(true);
+    }
+
+    return () => {
+      if (presenceDebounceTimerRef.current !== null) {
+        window.clearTimeout(presenceDebounceTimerRef.current);
+        presenceDebounceTimerRef.current = null;
+      }
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+      offDesktopVis?.();
+      offDesktopFocus?.();
+    };
+  }, [snapshot.active, snapshot.signalingState]);
 
   const probePreferredIps = useCallback(async (overrideUrl?: string, provider?: AriaSignalingProvider) => {
     setProbingIps(true);
@@ -1508,14 +1786,29 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
 
   const setControlMode = useCallback(async (nextMode: AriaRoomControlMode) => {
     if (!snapshotRef.current.active || snapshotRef.current.role !== "host") return;
-    await api.prepareAriaRoomHostState({
-      track: snapshotRef.current.playback.track,
-      nextTrack: snapshotRef.current.playback.nextTrack,
-      queue: snapshotRef.current.playback.queue,
-      playing: snapshotRef.current.playback.playing,
-      positionSec: callbacksRef.current.getPlaybackTime(),
-      controlMode: nextMode,
-    });
+    try {
+      await api.prepareAriaRoomHostState({
+        track: snapshotRef.current.playback.track,
+        nextTrack: snapshotRef.current.playback.nextTrack,
+        queue: snapshotRef.current.playback.queue,
+        playing: callbacksRef.current.playing,
+        positionSec: callbacksRef.current.getPlaybackTime(),
+        controlMode: nextMode,
+      });
+    } catch (err) {
+      if ((err as { name?: string })?.name !== "AbortError") {
+        setActionError(err instanceof Error ? err.message : "切换控场模式失败");
+      }
+    }
+  }, []);
+
+  const kickMember = useCallback(async (peerId: string) => {
+    if (!snapshotRef.current.active || snapshotRef.current.role !== "host") return;
+    try {
+      await api.kickAriaRoomMember(peerId);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "移出成员失败");
+    }
   }, []);
 
   const importPlaylistTracks = useCallback(
@@ -1525,30 +1818,36 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
 
       if (snapshotRef.current.role === "host") {
         prefetchedNextNonceRef.current = null;
-        const { currentPayload, nextPayload, cleanQueue } = buildHostPayloads(tracks[0], tracks);
-        await api.prepareAriaRoomHostState({
-          track: currentPayload,
-          nextTrack: nextPayload,
-          queue: cleanQueue,
-          playing: true,
-          positionSec: 0,
-        });
-        const syncEvt = await api.syncAriaRoomHostPlayback({
-          kind: "play_at",
-          nonce: currentPayload?.nonce ?? null,
-          positionSec: 0,
-          startAtHostMs: Date.now() + 260,
-        });
-        sendControlChannelBroadcast({ type: "playback_sync", event: syncEvt });
-        callbacksRef.current.onHostExecuteCommand?.({
-          fromPeerId: identity.peerId,
-          action: "pick_track_local",
-          payload: { track: tracks[0], queue: tracks },
-        });
+        try {
+          const { currentPayload, nextPayload, cleanQueue } = buildHostPayloads(tracks[0], tracks);
+          await api.prepareAriaRoomHostState({
+            track: currentPayload,
+            nextTrack: nextPayload,
+            queue: cleanQueue,
+            playing: true,
+            positionSec: 0,
+          });
+          callbacksRef.current.onHostExecuteCommand?.({
+            fromPeerId: identity.peerId,
+            action: "pick_track_local",
+            payload: { track: tracks[0], queue: tracks },
+          });
+          const syncEvt = await api.syncAriaRoomHostPlayback({
+            kind: "play_at",
+            nonce: currentPayload?.nonce ?? null,
+            positionSec: 0,
+            startAtHostMs: Date.now() + 260,
+          });
+          sendControlChannelBroadcast({ type: "playback_sync", event: syncEvt });
+        } catch (err) {
+          if ((err as { name?: string })?.name !== "AbortError") {
+            setActionError(err instanceof Error ? err.message : "导入歌单到房间失败");
+          }
+        }
       } else if (snapshotRef.current.controlMode === "collaborative") {
         const now = Date.now();
         const commandId = `cmd-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        const payloads = tracks.slice(0, 80).map((t) =>
+        const payloads = tracks.slice(0, 120).map((t) =>
           trackToAriaPayload(t, createTrackNonce(t.id), {
             peerId: identity.peerId,
             nickname: identity.nickname,
@@ -1577,20 +1876,51 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       rememberRemoteMeta(targetPayload);
       overrideQueuePayloads?.forEach(rememberRemoteMeta);
 
+      const prefetchedNext = snap.playback.nextTrack;
+      const matchesPrefetched = Boolean(
+        prefetchedNext &&
+          (prefetchedNext.nonce === targetPayload.nonce || prefetchedNext.id === targetPayload.id),
+      );
       const isSameActive = Boolean(targetPayload.nonce && targetPayload.nonce === snap.playback.nonce);
-      const reuseNonce = Boolean(overrideQueuePayloads?.length && targetPayload.nonce && !isSameActive);
-      const targetNonce = reuseNonce ? targetPayload.nonce : createTrackNonce(targetPayload.id);
+      const reuseWarmNonce = Boolean(
+        !isSameActive &&
+          (matchesPrefetched || (overrideQueuePayloads?.length && targetPayload.nonce)),
+      );
+      const targetNonce =
+        matchesPrefetched && prefetchedNext?.nonce
+          ? prefetchedNext.nonce
+          : reuseWarmNonce && targetPayload.nonce
+            ? targetPayload.nonce
+            : createTrackNonce(targetPayload.id);
       trackIdNonceMapRef.current.set(targetPayload.id, targetNonce);
+
+      const warmDispatch =
+        matchesPrefetched && prefetchedNext?.dispatch
+          ? prefetchedNext.dispatch
+          : !isSameActive
+            ? targetPayload.dispatch ?? null
+            : null;
 
       const { dispatch: _ignoredDispatch, ...restTarget } = targetPayload;
       const cleanTarget: AriaRoomTrackPayload = {
         ...restTarget,
         nonce: targetNonce,
+        ...(warmDispatch ? { dispatch: warmDispatch } : {}),
+        ...(matchesPrefetched && prefetchedNext?.coverDataUrl && !restTarget.coverDataUrl
+          ? { coverDataUrl: prefetchedNext.coverDataUrl }
+          : {}),
       };
 
       let cleanQueue: AriaRoomTrackPayload[];
       if (overrideQueuePayloads?.length) {
-        const mapped = overrideQueuePayloads.slice(0, 200).map((item) => {
+        const idxInOverride = overrideQueuePayloads.findIndex(
+          (item) => item.nonce === targetPayload.nonce || item.id === cleanTarget.id,
+        );
+        const startOffset =
+          overrideQueuePayloads.length > 200 && idxInOverride >= 0
+            ? Math.max(0, Math.min(idxInOverride - 20, overrideQueuePayloads.length - 200))
+            : 0;
+        const mapped = overrideQueuePayloads.slice(startOffset, startOffset + 200).map((item) => {
           const itemNonce = item.nonce || trackIdNonceMapRef.current.get(item.id) || createTrackNonce(item.id);
           trackIdNonceMapRef.current.set(item.id, itemNonce);
           return item.id === cleanTarget.id || item.nonce === cleanTarget.nonce
@@ -1636,14 +1966,6 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           callbacksRef.current.onHostRelayStreamOverride?.(null);
         }
 
-        const syncEvt = await api.syncAriaRoomHostPlayback({
-          kind: "play_at",
-          nonce: resolvedTrack.nonce,
-          positionSec: 0,
-          startAtHostMs: Date.now() + 220,
-        });
-        sendControlChannelBroadcast({ type: "playback_sync", event: syncEvt });
-
         const hostUiTrack = ariaPayloadToHostTrack(resolvedTrack, updatedSnap.myPeerId);
         const hostUiQueue = resolvedQueue.map((item) =>
           ariaPayloadToHostTrack(item, updatedSnap.myPeerId),
@@ -1653,6 +1975,14 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           action: "pick_track_local",
           payload: { track: hostUiTrack, queue: hostUiQueue },
         });
+
+        const syncEvt = await api.syncAriaRoomHostPlayback({
+          kind: "play_at",
+          nonce: resolvedTrack.nonce,
+          positionSec: 0,
+          startAtHostMs: Date.now() + 220,
+        });
+        sendControlChannelBroadcast({ type: "playback_sync", event: syncEvt });
       } catch (err) {
         callbacksRef.current.onNotice?.(
           err instanceof Error ? err.message : "房间切换曲目失败，请稍后重试",
@@ -1663,12 +1993,22 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
   );
 
   const hostImportRoomPayloads = useCallback(
-    async (payloads: AriaRoomTrackPayload[]) => {
+    async (payloads: AriaRoomTrackPayload[], options?: { startTrackId?: string }) => {
       if (!payloads.length) return;
       const snap = snapshotRef.current;
       if (!snap.active || snap.role !== "host") return;
 
-      const prepared = payloads.slice(0, 120).map((item) => {
+      const requestedIdx = options?.startTrackId
+        ? payloads.findIndex(
+            (item) => item.id === options.startTrackId || item.nonce === options.startTrackId,
+          )
+        : 0;
+      const safeIdx = requestedIdx >= 0 ? requestedIdx : 0;
+      const winStart =
+        payloads.length > 120
+          ? Math.max(0, Math.min(safeIdx - 20, payloads.length - 120))
+          : 0;
+      const prepared = payloads.slice(winStart, winStart + 120).map((item) => {
         const nonce = item.nonce || createTrackNonce(item.id);
         trackIdNonceMapRef.current.set(item.id, nonce);
         if (item.addedByPeerId && item.addedByPeerId !== identity.peerId) {
@@ -1676,7 +2016,14 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         }
         return { ...item, nonce };
       });
-      await hostPlayRoomPayload(prepared[0], prepared);
+      const startTarget =
+        (options?.startTrackId
+          ? prepared.find(
+              (item) => item.id === options.startTrackId || item.nonce === options.startTrackId,
+            )
+          : undefined) ?? prepared[0];
+      if (!startTarget) return;
+      await hostPlayRoomPayload(startTarget, prepared);
     },
     [hostPlayRoomPayload, identity.peerId],
   );
@@ -1708,29 +2055,44 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       if (snap.role === "host") {
         prefetchedNextNonceRef.current = null;
         const activeQueue = queue ?? callbacksRef.current.playQueueTracks;
-        // Generate a fresh nonce whenever a new track starts playing.
-        const freshNonce = createTrackNonce(track.id);
-        trackIdNonceMapRef.current.set(track.id, freshNonce);
+        const prefetchedNext = snap.playback.nextTrack;
+        const canonId = canonicalTrackId(track);
+        const matchesPrefetched = Boolean(
+          !options?.restartFromZero &&
+            prefetchedNext &&
+            (prefetchedNext.id === canonId || prefetchedNext.id === track.id),
+        );
+        const chosenNonce =
+          matchesPrefetched && prefetchedNext?.nonce
+            ? prefetchedNext.nonce
+            : createTrackNonce(track.id);
+        trackIdNonceMapRef.current.set(track.id, chosenNonce);
         const { currentPayload, nextPayload, cleanQueue } = buildHostPayloads(track, activeQueue);
         void (async () => {
-          await api.prepareAriaRoomHostState({
-            track: currentPayload,
-            nextTrack: nextPayload,
-            queue: cleanQueue,
-            playing: true,
-            positionSec: 0,
-          });
-          if (callbacksRef.current.activeTrack?.id !== track.id) return;
-          const livePos = Math.max(0, callbacksRef.current.getPlaybackTime());
-          const syncPos = options?.restartFromZero || livePos > 2.5 ? 0 : livePos;
-          const syncEvt = await api.syncAriaRoomHostPlayback({
-            kind: "play_at",
-            nonce: currentPayload?.nonce ?? null,
-            positionSec: syncPos,
-            startAtHostMs: Date.now() + (syncPos > 0.3 ? 120 : 220),
-          });
-          sendControlChannelBroadcast({ type: "playback_sync", event: syncEvt });
-        })().catch(() => undefined);
+          try {
+            await api.prepareAriaRoomHostState({
+              track: currentPayload,
+              nextTrack: nextPayload,
+              queue: cleanQueue,
+              playing: true,
+              positionSec: 0,
+            });
+            if (callbacksRef.current.activeTrack?.id !== track.id) return;
+            const livePos = Math.max(0, callbacksRef.current.getPlaybackTime());
+            const syncPos = options?.restartFromZero || livePos > 2.5 ? 0 : livePos;
+            const syncEvt = await api.syncAriaRoomHostPlayback({
+              kind: "play_at",
+              nonce: currentPayload?.nonce ?? null,
+              positionSec: syncPos,
+              startAtHostMs: Date.now() + (syncPos > 0.3 ? 120 : 220),
+            });
+            sendControlChannelBroadcast({ type: "playback_sync", event: syncEvt });
+          } catch (err) {
+            if ((err as { name?: string })?.name !== "AbortError") {
+              setActionError(err instanceof Error ? err.message : "房间同步曲目失败");
+            }
+          }
+        })();
       } else if (snap.controlMode === "collaborative") {
         pendingGuestPlayIntentRef.current = null;
         suppressDriftUntilRef.current = Date.now() + 4_000;
@@ -1842,12 +2204,14 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
   );
 
   const guardTrackSelection = useCallback(
-    (targetTrack: Track): boolean => {
+    (targetTrack: Track, preferredQueue?: Track[]): boolean => {
       const snap = snapshotRef.current;
       if (!snap.active) return false;
       if (snap.role === "host") return false;
       if (snap.controlMode === "host-only") {
-        setActionError("当前房间开启了「仅房主控场」，只有房主可以切换曲目。");
+        const msg = "当前房间开启了「仅房主控场」，只有房主可以切换曲目。";
+        setActionError(msg);
+        callbacksRef.current.onNotice?.(msg);
         return true;
       }
       const now = Date.now();
@@ -1861,6 +2225,43 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         void api.sendAriaRoomControlRequest("pick_nonce", payload).catch(() => undefined);
         return true;
       }
+      const isSwitchingExternalPlaylist = Boolean(
+        preferredQueue &&
+          preferredQueue.length > 1 &&
+          !preferredQueue.every((item) => item.id.startsWith("aria-room:")),
+      );
+      const canonId = canonicalTrackId(targetTrack);
+      const existingInRoom = snap.playback.queue.find(
+        (q) => q.id === canonId || q.id === targetTrack.id,
+      );
+      if (existingInRoom && !isSwitchingExternalPlaylist) {
+        const payload = { nonce: existingInRoom.nonce, commandId };
+        sendControlChannelBroadcast({ type: "control_request", action: "pick_nonce", payload });
+        void api.sendAriaRoomControlRequest("pick_nonce", payload).catch(() => undefined);
+        return true;
+      }
+      if (isSwitchingExternalPlaylist && preferredQueue) {
+        const idx = preferredQueue.findIndex((t) => t.id === targetTrack.id);
+        const start =
+          preferredQueue.length > 120 && idx >= 0
+            ? Math.max(0, Math.min(idx - 20, preferredQueue.length - 120))
+            : 0;
+        const payloads = preferredQueue.slice(start, start + 120).map((t) =>
+          trackToAriaPayload(t, createTrackNonce(t.id), {
+            peerId: identity.peerId,
+            nickname: identity.nickname,
+          }),
+        );
+        const cmdPayload = {
+          tracks: payloads,
+          startTrackId: canonId,
+          replace: true,
+          commandId,
+        };
+        sendControlChannelBroadcast({ type: "control_request", action: "import_queue", payload: cmdPayload });
+        void api.sendAriaRoomControlRequest("import_queue", cmdPayload).catch(() => undefined);
+        return true;
+      }
       const trackPayload = trackToAriaPayload(targetTrack, createTrackNonce(targetTrack.id), {
         peerId: identity.peerId,
         nickname: identity.nickname,
@@ -1871,6 +2272,25 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       return true;
     },
     [identity.nickname, identity.peerId, sendControlChannelBroadcast],
+  );
+
+  const requestPickTrack = useCallback(
+    (track: Track) => {
+      const snap = snapshotRef.current;
+      if (!snap.active) return;
+      if (snap.role === "host") {
+        const targetNonce = track.id.startsWith("aria-room:") ? track.id.slice("aria-room:".length) : null;
+        const matched =
+          (targetNonce ? snap.playback.queue.find((q) => q.nonce === targetNonce) : undefined) ??
+          snap.playback.queue.find((q) => q.id === track.id || q.id === canonicalTrackId(track));
+        if (matched) {
+          void hostPlayRoomPayload(matched, snap.playback.queue);
+          return;
+        }
+      }
+      guardTrackSelection(track);
+    },
+    [guardTrackSelection, hostPlayRoomPayload],
   );
 
   return {
@@ -1899,6 +2319,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     probePreferredIps,
     updateNetworkConfig,
     setControlMode,
+    kickMember,
     importPlaylistTracks,
     hostPlayRoomPayload,
     hostImportRoomPayloads,
@@ -1908,5 +2329,6 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     reportSeek,
     consumeGuestInitialAlignSec,
     guardTrackSelection,
+    requestPickTrack,
   };
 }

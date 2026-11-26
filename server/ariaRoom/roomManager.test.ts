@@ -9,6 +9,7 @@ vi.mock("../utils/paths", () => ({
   dataDir: tempDataDir,
   cacheDir: `${tempDataDir}/cache`,
 }));
+import { TrackByteCache } from "./byteCache";
 import {
   AriaRoomManager,
   extractNetworkAddresses,
@@ -1274,6 +1275,125 @@ describe("AriaRoomManager Direct Port, Bit-Exact Range, Security & 5-Member Cap"
       await hostMgr.leaveRoom();
       await guestMgr.leaveRoom();
       await new Promise<void>((resolve) => mockCf.close(() => resolve()));
+    }
+  });
+
+  it("validates custom room codes, excludes offline & none-tier relay peers, and pre-caches directUrl tracks onto disk", async () => {
+    const signalNode = createAriaSignalServer({ host: "127.0.0.1", port: 0, hostGraceMs: 2_000 });
+    const nodeAddr = await signalNode.listen();
+    const mgr = new AriaRoomManager({ localApiPort: 0 });
+    const byteCache = new TrackByteCache(`test-${Date.now()}`);
+
+    const sampleBytes = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
+    const cdnServer = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "audio/flac",
+        "Content-Length": String(sampleBytes.byteLength),
+      });
+      res.end(sampleBytes);
+    });
+    await new Promise<void>((resolve) => cdnServer.listen(0, "127.0.0.1", () => resolve()));
+    const cdnAddr = cdnServer.address() as net.AddressInfo;
+
+    try {
+      await expect(
+        mgr.createRoom({
+          peerId: "host-custom",
+          nickname: "CustomHost",
+          networkMode: "cloudflare",
+          signalingUrl: `http://127.0.0.1:${nodeAddr.port}`,
+          roomId: "invalid!code",
+        }),
+      ).rejects.toThrow(/自定义房间号/);
+
+      const snap = await mgr.createRoom({
+        peerId: "host-custom",
+        nickname: "CustomHost",
+        networkMode: "cloudflare",
+        signalingUrl: `http://127.0.0.1:${nodeAddr.port}`,
+        roomId: "aria_party-01",
+      });
+      expect(snap.roomId).toBe("ARIA_PARTY-01");
+
+      const ranked = rankRelayCandidates(
+        [
+          {
+            peerId: "vip-offline",
+            nickname: "Off",
+            avatarUrl: null,
+            role: "guest",
+            joinedAt: 1,
+            connectedVia: "ws",
+            online: false,
+            presence: "offline",
+            shareEnabled: true,
+            capabilities: { netease: "vip", qq: "vip", bilibili: "vip", youtube: "reachable" },
+          },
+          {
+            peerId: "no-qq",
+            nickname: "None",
+            avatarUrl: null,
+            role: "guest",
+            joinedAt: 2,
+            connectedVia: "ws",
+            online: true,
+            presence: "active",
+            shareEnabled: true,
+            capabilities: { netease: "vip", qq: "none", bilibili: "vip", youtube: "reachable" },
+          },
+          {
+            peerId: "qq-vip-live",
+            nickname: "Live",
+            avatarUrl: null,
+            role: "guest",
+            joinedAt: 3,
+            connectedVia: "ws",
+            online: true,
+            presence: "active",
+            shareEnabled: true,
+            capabilities: { netease: "free", qq: "vip", bilibili: "free", youtube: "unreachable" },
+          },
+        ],
+        "qq",
+        "host-custom",
+      );
+      expect(ranked.map((m) => m.peerId)).toEqual(["qq-vip-live"]);
+
+      const cacheTrack = {
+        nonce: "direct_precache_1",
+        id: "qq:direct1",
+        source: "qq" as const,
+        title: "Direct Track",
+        artist: "Artist",
+        album: "Album",
+        duration: "03:00",
+        quality: "FLAC" as const,
+      };
+      const directEntry = await byteCache.prepareDirectUrlTrack(
+        cacheTrack,
+        `http://127.0.0.1:${cdnAddr.port}/song.flac`,
+      );
+      const deadline = Date.now() + 2_000;
+      while (!directEntry.completed && !directEntry.failedError && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(directEntry.completed).toBe(true);
+      expect(directEntry.downloadedBytes).toBe(sampleBytes.byteLength);
+
+      // Concurrent chunk ingestion stays serialized cleanly
+      const chunkTrack = { ...cacheTrack, nonce: "chunk_serial_1" };
+      await Promise.all([
+        byteCache.appendGuestChunk({ track: chunkTrack, offset: 0, chunk: Buffer.from("ABCD"), eof: false, totalBytes: 8 }),
+        byteCache.appendGuestChunk({ track: chunkTrack, offset: 4, chunk: Buffer.from("EFGH"), eof: true, totalBytes: 8 }),
+      ]);
+      const chunkEntry = byteCache.getEntry("chunk_serial_1");
+      expect(chunkEntry?.completed).toBe(true);
+      expect(chunkEntry?.downloadedBytes).toBe(8);
+    } finally {
+      await byteCache.clearAll();
+      await mgr.leaveRoom();
+      await new Promise<void>((resolve) => cdnServer.close(() => resolve()));
+      await signalNode.close();
     }
   });
 });

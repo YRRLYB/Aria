@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/v0.8.6-8b5cf6?style=flat-square" alt="version 0.8.6" />
+  <img src="https://img.shields.io/badge/v0.8.7-8b5cf6?style=flat-square" alt="version 0.8.7" />
   <img src="https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-3b82f6?style=flat-square" alt="License CC BY-NC-SA 4.0" />
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS-6366f1?style=flat-square" alt="Windows and macOS" />
   <img src="https://img.shields.io/badge/WASAPI%20%7C%20Hi--Res-ec4899?style=flat-square" alt="WASAPI and Hi-Res Audio" />

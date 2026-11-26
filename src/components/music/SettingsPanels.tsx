@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { AriaSelect } from "@/components/ui/aria-select";
 import { Button } from "@/components/ui/button";
 import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary, type UpdateState } from "@/lib/api";
+import { formatTransferSpeed } from "@/components/music/UpdateBanner";
 import { SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import type { NativeAudioState } from "@/lib/audioTypes";
 import {
@@ -64,23 +65,33 @@ function UpdateCard() {
     if (!state) return "正在读取更新状态…";
     if (state.status === "checking") return "正在检查更新…";
     if (state.status === "available") return `发现新版本 ${state.availableVersion ?? ""}`;
-    if (state.status === "downloading") return `正在下载${state.percent != null ? ` ${Math.round(state.percent)}%` : "…"}`;
+    if (state.status === "downloading") {
+      const speed = formatTransferSpeed(state.bytesPerSecond);
+      return `正在下载${state.percent != null ? ` ${Math.round(state.percent)}%` : "…"}${speed ? ` · ${speed}` : ""}`;
+    }
     if (state.status === "downloaded") return "更新已下载，重启 Aria 后安装。";
+    if (state.status === "installing") return "正在关闭后台并启动安装程序…";
     if (state.status === "up-to-date") return "已经是最新版本。";
     if (state.status === "error") return state.error ?? "检查更新失败";
     if (state.status === "unsupported") return state.reason ?? "当前平台不支持自动更新";
     return "尚未检查更新";
   })();
+  const checkedTimeText = state?.checkedAt
+    ? new Date(state.checkedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+    : null;
 
   return (
     <div className="py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-neutral-900">版本与更新</p>
-          <p className="mt-0.5 text-xs text-neutral-500">当前版本 {state?.currentVersion ?? "—"} · {statusText}</p>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            当前版本 {state?.currentVersion ?? "—"} · {statusText}
+            {checkedTimeText ? `（上次检查 ${checkedTimeText}）` : ""}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="subtle" disabled={busy || !state?.supported || state.status === "downloading"} onClick={() => void run(() => window.ariaDesktop!.updates!.check())}>
+          <Button size="sm" variant="subtle" disabled={busy || !state?.supported || state.status === "downloading" || state.status === "installing"} onClick={() => void run(() => window.ariaDesktop!.updates!.check())}>
             <RefreshCw className={cn((busy || state?.status === "checking") && "animate-spin")} />
             检查更新
           </Button>
@@ -112,13 +123,13 @@ function UpdateCard() {
         </div>
       </div>
       {state?.releaseNotes && (
-        <p className="settings-inline-well mt-2.5 max-h-24 overflow-y-auto whitespace-pre-line rounded-lg px-3 py-2 text-xs text-neutral-500">
+        <p className="settings-inline-well mt-2.5 max-h-28 overflow-y-auto whitespace-pre-line rounded-lg px-3 py-2 text-xs leading-relaxed text-neutral-500">
           {state.releaseNotes}
         </p>
       )}
       {state?.status === "downloading" && (
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-neutral-200">
-          <div className="h-full rounded-full bg-neutral-950 transition-all" style={{ width: `${Math.max(0, Math.min(100, state.percent ?? 0))}%` }} />
+          <div className="h-full rounded-full bg-neutral-950 transition-all" style={{ width: `${Math.max(2, Math.min(100, state.percent ?? 0))}%` }} />
         </div>
       )}
     </div>

@@ -126,6 +126,8 @@ export function createAriaRoomRouter(options: { localApiPort: number; manager?: 
           capabilities: capabilitiesSchema.optional(),
           networkMode: z.enum(["cloudflare", "direct", "hybrid"]).default("cloudflare"),
           controlMode: z.enum(["host-only", "collaborative"]).optional(),
+          roomId: z.string().max(32).nullable().optional(),
+          rejoin: z.boolean().optional(),
           directPort: z.number().int().min(1024).max(65535).optional(),
           publicHost: z.string().max(255).nullable().optional(),
           signalingUrl: z.string().max(500).nullable().optional(),
@@ -170,6 +172,34 @@ export function createAriaRoomRouter(options: { localApiPort: number; manager?: 
   router.post("/rooms/leave", async (_req, res, next) => {
     try {
       res.json(await manager.leaveRoom());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/presence", (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          presence: z.enum(["active", "away"]),
+        })
+        .parse(req.body ?? {});
+      manager.updateLocalPresence(body.presence);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/kick-member", (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          peerId: z.string().min(1).max(80),
+        })
+        .parse(req.body ?? {});
+      manager.kickMember(body.peerId);
+      res.json({ ok: true });
     } catch (error) {
       next(error);
     }

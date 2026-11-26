@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Headphones, Maximize2, Minus, Moon, Radio, Search, Settings2, SlidersHorizontal, Sparkles, Sun, UserRound, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronLeft, ChevronRight, Headphones, Maximize2, Minus, Moon, Radio, Search, Settings2, SlidersHorizontal, Sparkles, Sun, UserRound, X } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +18,7 @@ import { SearchSurface, ArtistsSurface } from "@/components/music/DiscoverySurfa
 import { AlbumDetailSurface, UserDetailSurface } from "@/components/music/DiscoveryDetails";
 import { PlayerSidePanel, QueueList } from "@/components/music/PlayerSidePanels";
 import { ImmersivePlayerView, PlayerSurface } from "@/components/music/PlayerViews";
+import { UpdateHeaderPill, UpdateToastCard } from "@/components/music/UpdateBanner";
 import { FloatingNav } from "@/components/music/FloatingNav";
 
 const EqualizerDialog = lazy(() =>
@@ -34,6 +35,9 @@ const AccountPanel = lazy(() =>
 );
 const AriaRoomSection = lazy(() =>
   import("@/components/music/AriaRoomSection").then((mod) => ({ default: mod.AriaRoomSection })),
+);
+const AriaAvatarPill = lazy(() =>
+  import("@/components/music/AriaRoomSection").then((mod) => ({ default: mod.AriaAvatarPill })),
 );
 const ListenTogetherView = lazy(() =>
   import("@/components/music/ListenTogetherDialog").then((mod) => ({ default: mod.ListenTogetherView })),
@@ -63,7 +67,7 @@ import { useAriaRoom } from "@/hooks/useAriaRoom";
 import { useListenTogether } from "@/hooks/useListenTogether";
 import { useLocalPlaylists } from "@/hooks/useLocalPlaylists";
 import { resolveLocalPlaylistTracks, shouldUseLocalPlaylistDialog } from "@/lib/localPlaylists";
-import type { AriaRoomTrackPayload } from "@/lib/api";
+import type { AriaRoomTrackPayload, UpdateState } from "@/lib/api";
 import { canonicalTrackId, canonicalizeTrackForLibrary } from "@/lib/ariaRoomSync";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
@@ -308,6 +312,32 @@ export default function App() {
     }
   });
   const [onboardingLocalInfo, setOnboardingLocalInfo] = useState<{ path: string; count: number } | null>(null);
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null);
+  const [updateToastOpen, setUpdateToastOpen] = useState(false);
+  const dismissedUpdateVersionsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const updates = window.ariaDesktop?.updates;
+    if (!updates) return;
+    let alive = true;
+    const handleNext = (next: UpdateState) => {
+      if (!alive) return;
+      setUpdateState(next);
+      const ver = next.availableVersion;
+      if (ver && (next.status === "available" || next.status === "downloaded")) {
+        if (!dismissedUpdateVersionsRef.current.has(`${next.status}:${ver}`)) {
+          dismissedUpdateVersionsRef.current.add(`${next.status}:${ver}`);
+          setUpdateToastOpen(true);
+        }
+      }
+    };
+    updates.getState().then(handleNext).catch(() => undefined);
+    const dispose = updates.onState(handleNext);
+    return () => {
+      alive = false;
+      dispose?.();
+    };
+  }, []);
   const [libraryScanProgress, setLibraryScanProgress] = useState<{
     phase: string;
     processed: number;
@@ -1515,6 +1545,7 @@ export default function App() {
     const queue = playQueueTracks.length ? playQueueTracks : playbackTracks.length ? playbackTracks : visibleTracks;
     if (!queue.length) return null;
     const currentIndex = queue.findIndex((track) => track.id === activeTrackId);
+    if (currentIndex < 0) return null;
     const next = queue[(currentIndex + 1) % queue.length];
     if (!next || next.id === activeTrackId) return null;
     if (listenTogetherActiveRef.current && next.source !== "netease") return null;
@@ -1644,7 +1675,7 @@ export default function App() {
     if (resumePlayback && !playing) setPlaying(true);
   };
 
-  const applyTrackSelection = (targetTrack: Track, queue: Track[]) => {
+  const applyTrackSelection = (targetTrack: Track, queue: Track[]): Track[] => {
     if (targetTrack.source === "netease") {
       setNeteaseTracks((current) => trimTrackCache([...current, targetTrack], 360, targetTrack.id));
     } else if (targetTrack.source === "qq") {
@@ -1660,10 +1691,15 @@ export default function App() {
     setCachedQueueSnapshots(effectiveQueue);
     const playableIds = materializeQueueIds(effectiveQueue, targetTrack.id, shuffleEnabled);
     if (playableIds.length) setPlayQueueIds(playableIds);
+    const trackById = new Map(effectiveQueue.map((item) => [item.id, item]));
+    const orderedQueue = playableIds
+      .map((id) => trackById.get(id))
+      .filter((item): item is Track => Boolean(item));
+    const finalQueue = orderedQueue.length ? orderedQueue : effectiveQueue;
     setPlaybackError(null);
     if (isSameTrack) {
       restartActiveTrack();
-      return;
+      return finalQueue;
     }
     pendingSeekRef.current = 0;
     pendingSeekTrackIdRef.current = null;
@@ -1671,6 +1707,7 @@ export default function App() {
     resetPlaybackTime();
     setDurationSeconds(0);
     setPlaying(true);
+    return finalQueue;
   };
 
   const listenTogether = useListenTogether({
@@ -1761,6 +1798,7 @@ export default function App() {
     [playQueueTracks, playbackTracks, visibleTracks],
   );
   const ariaRoomRef = useRef<ReturnType<typeof useAriaRoom> | null>(null);
+  const failedRelayTrackIdsRef = useRef<Set<string>>(new Set());
   const ariaRoom = useAriaRoom({
     activeTrack: activeTrack.id === idleTrack.id ? null : activeTrack,
     playQueueTracks: hostSourceQueueTracks,
@@ -1818,7 +1856,22 @@ export default function App() {
       seekAudioInternal(positionSec, false);
     },
     onApplyPlaybackSpeed: setPlaybackSpeed,
-    onAutoAdvanceTrack: () => pickRelativeTrack(1),
+    onAutoAdvanceTrack: () => {
+      const currentQueue = hostSourceQueueTracks;
+      if (activeTrack.id !== idleTrack.id) {
+        failedRelayTrackIdsRef.current.add(activeTrack.id);
+      }
+      if (
+        currentQueue.length > 0 &&
+        currentQueue.every((item) => failedRelayTrackIdsRef.current.has(item.id))
+      ) {
+        failedRelayTrackIdsRef.current.clear();
+        setPlaying(false);
+        setPlaybackNotice("当前歌单内所有成员均无可用版权或试听受限，已停止自动连跳。");
+        return;
+      }
+      pickRelativeTrack(1);
+    },
     onHostRelayStreamOverride: setAriaHostRelayOverride,
     onHostExecuteCommand: ({ action, payload }) => {
       const p = (payload ?? {}) as Record<string, unknown>;
@@ -1846,16 +1899,15 @@ export default function App() {
       if (action === "pick_track_local" && p.track && Array.isArray(p.queue)) {
         const target = p.track as Track;
         const queue = p.queue as Track[];
-        const mergedPool = mergeTracks([target, ...queue]);
-        setAriaRoomGuestTracks((prev) => mergeTracks([...mergedPool, ...prev]).slice(0, 300));
         applyTrackSelection(target, queue);
         setPlayQueueIds(queue.map((item) => item.id));
         return;
       }
       if (action === "import_queue" && Array.isArray(p.tracks)) {
         const payloads = p.tracks as AriaRoomTrackPayload[];
+        const startTrackId = typeof p.startTrackId === "string" ? p.startTrackId : undefined;
         if (payloads.length > 0) {
-          void ariaRoomRef.current?.hostImportRoomPayloads(payloads);
+          void ariaRoomRef.current?.hostImportRoomPayloads(payloads, { startTrackId });
         }
         return;
       }
@@ -1976,12 +2028,18 @@ export default function App() {
     return ids;
   }
 
-  function syncHostQueueIds(ids: string[]) {
-    if (!ariaRoom.isHost) return;
+  function syncRoomQueueIds(ids: string[]) {
+    if (!ariaRoom.isHost && !listenTogether.isActive) return;
     const nextTracks = ids
       .map((id) => allTracksById.get(id))
       .filter((item): item is Track => Boolean(item));
-    ariaRoom.reportQueueChange(nextTracks);
+    if (ariaRoom.isHost) {
+      failedRelayTrackIdsRef.current.clear();
+      ariaRoom.reportQueueChange(nextTracks);
+    }
+    if (listenTogether.isActive) {
+      listenTogether.reportQueueChange(nextTracks);
+    }
   }
 
   function playNextTrack(trackId: string) {
@@ -1990,20 +2048,20 @@ export default function App() {
     const activeIndex = ids.indexOf(activeTrack.id);
     ids.splice(activeIndex >= 0 ? activeIndex + 1 : 0, 0, trackId);
     setPlayQueueIds(ids);
-    syncHostQueueIds(ids);
+    syncRoomQueueIds(ids);
   }
 
   function removeFromQueue(trackId: string) {
     if (!trackId || trackId === activeTrack.id) return;
     const ids = queueIdsForManagement().filter((id) => id !== trackId);
     setPlayQueueIds(ids);
-    syncHostQueueIds(ids);
+    syncRoomQueueIds(ids);
   }
 
   function clearQueue() {
     const ids = activeTrack.id !== idleTrack.id && activeTrack.streamUrl ? [activeTrack.id] : [];
     setPlayQueueIds(ids);
-    syncHostQueueIds(ids);
+    syncRoomQueueIds(ids);
   }
 
   function moveQueueTrack(trackId: string, direction: "up" | "down") {
@@ -2015,7 +2073,7 @@ export default function App() {
     if (targetIndex < 0 || targetIndex >= ids.length) return;
     [ids[index], ids[targetIndex]] = [ids[targetIndex], ids[index]];
     setPlayQueueIds(ids);
-    syncHostQueueIds(ids);
+    syncRoomQueueIds(ids);
   }
 
   function restartActiveTrack() {
@@ -2184,13 +2242,14 @@ export default function App() {
       setPlaybackNotice("这首歌暂时没有可播放地址，可能受版权、会员或音源限制。");
       return;
     }
-    if (listenTogether.guardTrackSelection(targetTrack, preferredQueue) || ariaRoom.guardTrackSelection(targetTrack)) return;
+    if (listenTogether.guardTrackSelection(targetTrack, preferredQueue) || ariaRoom.guardTrackSelection(targetTrack, preferredQueue)) return;
+    failedRelayTrackIdsRef.current.clear();
     const isSameTrack = targetTrack.id === activeTrackRef.current.id;
     const formerNeteaseId = activeTrack.source === "netease" ? activeTrack.providerId ?? null : null;
     const effectiveQueue = queue.length ? queue : [targetTrack];
-    applyTrackSelection(targetTrack, effectiveQueue);
-    listenTogether.reportTrackChange(targetTrack, formerNeteaseId, effectiveQueue);
-    ariaRoom.reportTrackChange(targetTrack, effectiveQueue, { restartFromZero: isSameTrack });
+    const finalQueue = applyTrackSelection(targetTrack, effectiveQueue);
+    listenTogether.reportTrackChange(targetTrack, formerNeteaseId, finalQueue);
+    ariaRoom.reportTrackChange(targetTrack, finalQueue, { restartFromZero: isSameTrack });
   }
 
   function toggleShuffleQueue() {
@@ -2200,7 +2259,7 @@ export default function App() {
     const playableIds = materializeQueueIds(queue.length ? queue : playQueueTracks, activeTrack.id, nextShuffleEnabled);
     if (playableIds.length) {
       setPlayQueueIds(playableIds);
-      syncHostQueueIds(playableIds);
+      syncRoomQueueIds(playableIds);
     }
   }
 
@@ -3069,15 +3128,26 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [playing]);
 
+  useEffect(() => {
+    if (!ariaRoom.isActive) {
+      setAriaRoomGuestTracks((prev) => (prev.length ? [] : prev));
+    }
+  }, [ariaRoom.isActive]);
+
   const writeLatestPlayerCacheRef = useRef<() => void>(() => undefined);
   writeLatestPlayerCacheRef.current = () => {
     if (activeTrack.id === idleTrack.id || activeTrack.id !== activeTrackId) return;
+    const persistentQueueIds = playQueueIds.filter((id) => !id.startsWith("aria-room:"));
+    const persistentQueueTracks = playQueueTracks.filter((track) => !track.id.startsWith("aria-room:"));
+    const isTransientGuestTrack = activeTrack.id.startsWith("aria-room:");
+    if (isTransientGuestTrack && persistentQueueTracks.length === 0) return;
+    const fallbackCachedTrack = isTransientGuestTrack ? persistentQueueTracks[0] : activeTrack;
     writeCachedPlayerState({
-      activeTrackId: activeTrack.id,
-      activeTrackSnapshot: createPlayerCacheSnapshot(activeTrack),
+      activeTrackId: fallbackCachedTrack.id,
+      activeTrackSnapshot: createPlayerCacheSnapshot(fallbackCachedTrack),
       playerSideView,
-      playQueueIds,
-      playQueueSnapshots: createCachedQueueSnapshots(playQueueTracks),
+      playQueueIds: persistentQueueIds,
+      playQueueSnapshots: createCachedQueueSnapshots(persistentQueueTracks),
       volume,
       qualityLevel,
       shuffleEnabled,
@@ -3550,6 +3620,10 @@ export default function App() {
                 <span className="pointer-events-none absolute right-0 top-0 size-2.5 rounded-full bg-amber-400 ring-2 ring-white" />
               ) : null}
             </div>
+            <UpdateHeaderPill
+              state={updateState}
+              onClick={() => setUpdateToastOpen((prev) => !prev)}
+            />
             <Button
               variant="glass"
               size="icon"
@@ -4431,27 +4505,12 @@ export default function App() {
                         onCreateRoom={ariaRoom.createRoom}
                         onJoinRoom={ariaRoom.joinRoomByInput}
                         onLeaveRoom={ariaRoom.leaveRoom}
+                        onKickMember={ariaRoom.kickMember}
                         onProbeIps={ariaRoom.probePreferredIps}
                         onUpdateNetworkConfig={ariaRoom.updateNetworkConfig}
                         onSetControlMode={ariaRoom.setControlMode}
                         onImportPlaylistTracks={ariaRoom.importPlaylistTracks}
-                        onPickRoomTrack={(track) => {
-                          if (ariaRoom.isHost) {
-                            const entry = ariaRoom.snapshot.playback.queue.find(
-                              (q) => `aria-room:${q.nonce}` === track.id,
-                            );
-                            if (entry) {
-                              void ariaRoom.hostPlayRoomPayload(entry, ariaRoom.snapshot.playback.queue);
-                              return;
-                            }
-                            const matchedQueue = playQueueTracks.some((t) => t.id === track.id)
-                              ? playQueueTracks
-                              : undefined;
-                            chooseTrack(track.id, matchedQueue);
-                            return;
-                          }
-                          chooseTrack(track.id, ariaRoomGuestTracks);
-                        }}
+                        onPickRoomTrack={ariaRoom.requestPickTrack}
                         onOpenPlayer={() => setActiveView("player")}
                       />
                     );
@@ -4521,43 +4580,22 @@ export default function App() {
                               >
                                 <ArrowLeft className="size-4" />
                               </Button>
-                              <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
-                                一起听
-                              </h1>
+                              <div>
+                                <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+                                  一起听
+                                </h1>
+                                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                                  跨音源同步 · 好友实时同频
+                                </p>
+                              </div>
                             </div>
 
                             <div className="flex flex-wrap items-center gap-2">
-                              <button
-                                type="button"
+                              <AriaAvatarPill
+                                nickname={ariaRoom.identity.nickname}
+                                avatarUrl={ariaRoom.identity.avatarUrl}
                                 onClick={() => setAriaRoomSubPage("profile")}
-                                title="查看头像与昵称"
-                                className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--surface)] py-1 pl-1 pr-2.5 text-xs font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-muted)]"
-                              >
-                                <span className="relative flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--line)] bg-[var(--surface)] text-[11px] font-semibold">
-                                  {ariaRoom.identity.avatarUrl ? (
-                                    ariaRoom.identity.avatarUrl.startsWith("data:") ? (
-                                      <img
-                                        src={ariaRoom.identity.avatarUrl}
-                                        alt={ariaRoom.identity.nickname}
-                                        referrerPolicy="no-referrer"
-                                        className="size-full object-cover"
-                                      />
-                                    ) : (
-                                      <ArtworkImage
-                                        src={ariaRoom.identity.avatarUrl}
-                                        cacheSize={64}
-                                        alt={ariaRoom.identity.nickname}
-                                        referrerPolicy="no-referrer"
-                                        className="size-full object-cover"
-                                      />
-                                    )
-                                  ) : (
-                                    <span>{ariaRoom.identity.nickname.slice(0, 1).toUpperCase()}</span>
-                                  )}
-                                </span>
-                                <span className="max-w-[96px] truncate">{ariaRoom.identity.nickname}</span>
-                                <ChevronDown className="size-3.5 text-[var(--text-secondary)]" />
-                              </button>
+                              />
 
                               <Button
                                 variant="glass"
@@ -4580,7 +4618,7 @@ export default function App() {
                             </div>
                           )}
 
-                          <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
+                          <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,1.22fr)_minmax(0,0.98fr)]">
                             {renderAriaRoomSection(true)}
                             {renderListenTogetherView(true)}
                           </div>
@@ -4864,6 +4902,15 @@ export default function App() {
           />
         )}
       </Suspense>
+      <UpdateToastCard
+        state={updateState}
+        open={updateToastOpen}
+        onClose={() => setUpdateToastOpen(false)}
+        onRunAction={async (action) => {
+          const next = await action();
+          if (next && typeof next === "object") setUpdateState(next);
+        }}
+      />
     </main>
     </PlaylistActionsProvider>
     </ArtistNavigationContext.Provider>

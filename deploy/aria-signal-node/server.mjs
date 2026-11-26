@@ -21,9 +21,11 @@ const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_PORT = 8787;
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_MAX_MEMBERS = 5;
-const DEFAULT_HOST_GRACE_MS = 60_000;
+const DEFAULT_HOST_GRACE_MS = 24 * 60 * 60 * 1000;
+const ROOM_CODE_PATTERN = /^[A-Z0-9_-]{3,24}$/;
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const SOCKET_STALE_TIMEOUT_MS = 90_000;
 
 function encodeFrame(opcode, payloadBuf = Buffer.alloc(0)) {
   const len = payloadBuf.byteLength;
@@ -246,7 +248,11 @@ export function createAriaSignalServer(options = {}) {
   const host = options.host ?? DEFAULT_HOST;
   const port = Number.isFinite(Number(options.port)) ? Number(options.port) : DEFAULT_PORT;
   const maxMembers = Math.max(2, Number(options.maxMembers ?? DEFAULT_MAX_MEMBERS) || DEFAULT_MAX_MEMBERS);
-  const hostGraceMs = Math.max(5_000, Number(options.hostGraceMs ?? DEFAULT_HOST_GRACE_MS) || DEFAULT_HOST_GRACE_MS);
+  const envGraceMs = Number(process.env.ARIA_ROOM_IDLE_TTL_MS ?? process.env.HOST_GRACE_MS);
+  const rawGraceMs =
+    options.hostGraceMs ??
+    (Number.isFinite(envGraceMs) && envGraceMs > 0 ? envGraceMs : DEFAULT_HOST_GRACE_MS);
+  const hostGraceMs = Math.max(200, Number(rawGraceMs) || DEFAULT_HOST_GRACE_MS);
 
   const startedAt = Date.now();
   /** @type {Map<string, any>} */
@@ -323,29 +329,62 @@ export function createAriaSignalServer(options = {}) {
     if (type === "hello") {
       const role = parsed.role === "host" ? "host" : "guest";
       const member = parsed.member;
-      if (!member?.peerId) return;
+      const actualPeerId = (senderPeerId || String(member?.peerId || "")).trim();
+      if (!member || !actualPeerId) return;
+      const now = Date.now();
+      const presence = parsed.presence === "away" ? "away" : "active";
 
       if (role === "host") {
+        if (room.initialized && room.hostPeerId && room.hostPeerId !== actualPeerId) {
+          ws.sendJson({
+            type: "error",
+            code: "ROOM_CODE_TAKEN",
+            message: "该房间号已被其他房主占用，请更换房间号或改为加入房间",
+          });
+          ws.close(4009, "Room code taken");
+          return;
+        }
         if (room.graceTimer) {
           clearTimeout(room.graceTimer);
           room.graceTimer = null;
         }
+        const isSameHostRejoin = room.initialized && room.hostPeerId === actualPeerId;
+        const existingHost = room.members[actualPeerId];
         room.initialized = true;
-        room.hostPeerId = member.peerId;
-        room.members[member.peerId] = {
-          peerId: member.peerId,
+        room.hostPeerId = actualPeerId;
+        room.members[actualPeerId] = {
+          peerId: actualPeerId,
           nickname: String(member.nickname || "Aria 房主").slice(0, 60),
           avatarUrl: typeof member.avatarUrl === "string" ? member.avatarUrl : null,
           role: "host",
-          joinedAt: member.joinedAt || Date.now(),
+          joinedAt: existingHost?.joinedAt || member.joinedAt || now,
           connectedVia: "ws",
           shareEnabled: member.shareEnabled !== false,
-          ...(member.capabilities ? { capabilities: member.capabilities } : {}),
+          online: true,
+          presence,
+          lastSeenAt: now,
+          ...(member.capabilities ? { capabilities: member.capabilities } : existingHost?.capabilities ? { capabilities: existingHost.capabilities } : {}),
         };
-        if (parsed.state && typeof parsed.state === "object") {
-          room.cachedState = parsed.state;
+        const incomingState = parsed.state && typeof parsed.state === "object" ? parsed.state : null;
+        const incomingPlayback =
+          incomingState && typeof incomingState.playback === "object" && incomingState.playback
+            ? incomingState.playback
+            : null;
+        const hasIncomingTrack = Boolean(incomingPlayback?.track || incomingPlayback?.currentTrack);
+        const shouldRestoreCachedState = Boolean(
+          isSameHostRejoin && room.cachedState && (parsed.rejoin || !hasIncomingTrack),
+        );
+        if (!shouldRestoreCachedState && incomingState) {
+          room.cachedState = incomingState;
         }
         broadcast(room, { type: "room_peers", members: sortedMembers(room) });
+        if (shouldRestoreCachedState && room.cachedState) {
+          ws.sendJson({
+            type: "state_update",
+            state: room.cachedState,
+            members: sortedMembers(room),
+          });
+        }
         return;
       }
 
@@ -359,29 +398,47 @@ export function createAriaSignalServer(options = {}) {
         return;
       }
 
-      const existingCount = Object.keys(room.members).length;
-      if (existingCount >= maxMembers && !room.members[member.peerId]) {
-        ws.sendJson({
-          type: "error",
-          code: "ROOM_FULL",
-          message: `房间已满（最多 ${maxMembers} 人）`,
-        });
-        ws.close(4003, "Room full");
-        return;
+      if (room.graceTimer) {
+        clearTimeout(room.graceTimer);
+        room.graceTimer = null;
       }
 
-      room.members[member.peerId] = {
-        peerId: member.peerId,
+      const existingCount = Object.keys(room.members).length;
+      if (existingCount >= maxMembers && !room.members[actualPeerId]) {
+        const offlineGuests = Object.values(room.members)
+          .filter((m) => m.peerId !== room.hostPeerId && (m.online === false || m.presence === "offline"))
+          .sort((a, b) => (a.lastSeenAt ?? a.joinedAt) - (b.lastSeenAt ?? b.joinedAt));
+        if (offlineGuests.length > 0) {
+          delete room.members[offlineGuests[0].peerId];
+        } else {
+          ws.sendJson({
+            type: "error",
+            code: "ROOM_FULL",
+            message: `房间已满（最多 ${maxMembers} 人）`,
+          });
+          ws.close(4003, "Room full");
+          return;
+        }
+      }
+
+      const existingGuest = room.members[actualPeerId];
+      const cleanGuest = {
+        peerId: actualPeerId,
         nickname: String(member.nickname || "Aria 听众").slice(0, 60),
         avatarUrl: typeof member.avatarUrl === "string" ? member.avatarUrl : null,
         role: "guest",
-        joinedAt: member.joinedAt || Date.now(),
+        joinedAt: existingGuest?.joinedAt || member.joinedAt || now,
         connectedVia: "webrtc",
         shareEnabled: member.shareEnabled !== false,
-        ...(member.capabilities ? { capabilities: member.capabilities } : {}),
+        online: true,
+        presence,
+        lastSeenAt: now,
+        ...(member.capabilities ? { capabilities: member.capabilities } : existingGuest?.capabilities ? { capabilities: existingGuest.capabilities } : {}),
       };
+      room.members[actualPeerId] = cleanGuest;
 
       broadcast(room, { type: "room_peers", members: sortedMembers(room) });
+      broadcast(room, { type: "peer_joined", member: cleanGuest }, ws);
       if (room.cachedState) {
         ws.sendJson({
           type: "state_update",
@@ -450,8 +507,56 @@ export function createAriaSignalServer(options = {}) {
       return;
     }
 
-    if ((type === "prefetch_next" || type === "notice") && senderPeerId === room.hostPeerId) {
+    if (type === "prefetch_next" && senderPeerId === room.hostPeerId) {
       broadcast(room, parsed, ws);
+      return;
+    }
+
+    if (type === "notice" && senderPeerId === room.hostPeerId) {
+      const targetPeer = typeof parsed.toPeerId === "string" ? parsed.toPeerId : "";
+      if (targetPeer) {
+        for (const targetWs of getSocketsByPeerId(room, targetPeer)) {
+          targetWs.sendJson(parsed);
+        }
+      } else {
+        broadcast(room, parsed, ws);
+      }
+      return;
+    }
+
+    if (type === "presence_update") {
+      const targetPeer = senderPeerId;
+      const nextPresence = parsed.presence === "away" ? "away" : parsed.presence === "active" ? "active" : null;
+      if (targetPeer && nextPresence && room.members[targetPeer] && room.members[targetPeer].online !== false) {
+        room.members[targetPeer] = {
+          ...room.members[targetPeer],
+          online: true,
+          presence: nextPresence,
+          lastSeenAt: Date.now(),
+        };
+        broadcast(room, { type: "room_peers", members: sortedMembers(room) });
+      }
+      return;
+    }
+
+    if (type === "kick_member" && senderPeerId === room.hostPeerId && typeof parsed.peerId === "string") {
+      const targetPeer = parsed.peerId.trim();
+      if (targetPeer && targetPeer !== room.hostPeerId) {
+        const existed = Boolean(room.members[targetPeer]);
+        delete room.members[targetPeer];
+        for (const targetWs of getSocketsByPeerId(room, targetPeer)) {
+          targetWs.sendJson({
+            type: "error",
+            code: "KICKED_BY_HOST",
+            message: "你已被房主移出房间",
+          });
+          targetWs.close(4010, "Removed by host");
+        }
+        if (existed) {
+          broadcast(room, { type: "peer_left", peerId: targetPeer });
+          broadcast(room, { type: "room_peers", members: sortedMembers(room) });
+        }
+      }
       return;
     }
 
@@ -522,12 +627,32 @@ export function createAriaSignalServer(options = {}) {
     }
   }
 
+  function scheduleIdleCleanup(room) {
+    if (room.sockets.size > 0) return;
+    if (room.graceTimer) clearTimeout(room.graceTimer);
+    room.graceTimer = setTimeout(() => {
+      room.graceTimer = null;
+      if (!rooms.has(room.roomCode)) return;
+      if (room.sockets.size > 0) return;
+      broadcast(room, { type: "room_closed" });
+      for (const sock of Array.from(room.sockets)) {
+        sock.close(1000, "Room idle timeout");
+      }
+      destroyRoom(room.roomCode);
+    }, hostGraceMs);
+    room.graceTimer.unref?.();
+  }
+
   function handleSocketClosed(room, ws) {
     room.sockets.delete(ws);
     const peerId = ws.peerId;
     if (!peerId || !room.members[peerId]) {
-      if (room.sockets.size === 0 && !room.graceTimer) {
-        destroyRoom(room.roomCode);
+      if (room.sockets.size === 0) {
+        if (Object.keys(room.members).length === 0) {
+          destroyRoom(room.roomCode);
+        } else {
+          scheduleIdleCleanup(room);
+        }
       }
       return;
     }
@@ -535,25 +660,17 @@ export function createAriaSignalServer(options = {}) {
     const remainingSamePeer = getSocketsByPeerId(room, peerId);
     if (remainingSamePeer.length > 0) return;
 
-    if (peerId === room.hostPeerId) {
-      if (room.graceTimer) clearTimeout(room.graceTimer);
-      room.graceTimer = setTimeout(() => {
-        room.graceTimer = null;
-        if (!rooms.has(room.roomCode)) return;
-        if (getSocketsByPeerId(room, room.hostPeerId).length > 0) return;
-        broadcast(room, { type: "room_closed" });
-        for (const sock of Array.from(room.sockets)) {
-          sock.close(1000, "Host timeout");
-        }
-        destroyRoom(room.roomCode);
-      }, hostGraceMs);
-      room.graceTimer.unref?.();
-      return;
-    }
+    room.members[peerId] = {
+      ...room.members[peerId],
+      online: false,
+      presence: "offline",
+      lastSeenAt: Date.now(),
+    };
+    broadcast(room, { type: "room_peers", members: sortedMembers(room) }, ws);
 
-    delete room.members[peerId];
-    broadcast(room, { type: "peer_left", peerId });
-    broadcast(room, { type: "room_peers", members: sortedMembers(room) });
+    if (room.sockets.size === 0) {
+      scheduleIdleCleanup(room);
+    }
   }
 
   const server = http.createServer((req, res) => {
@@ -598,7 +715,7 @@ export function createAriaSignalServer(options = {}) {
     const roomCode = (reqUrl.searchParams.get("room") || "").trim().toUpperCase();
     const peerId = (reqUrl.searchParams.get("peer") || "").trim();
     const role = reqUrl.searchParams.get("role") === "host" ? "host" : "guest";
-    if (!roomCode || roomCode.length > 32 || !peerId || upgradeHeader !== "websocket" || !wsKey) {
+    if (!ROOM_CODE_PATTERN.test(roomCode) || !peerId || upgradeHeader !== "websocket" || !wsKey) {
       socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -628,8 +745,13 @@ export function createAriaSignalServer(options = {}) {
   });
 
   const heartbeat = setInterval(() => {
+    const now = Date.now();
     for (const room of rooms.values()) {
-      for (const ws of room.sockets) {
+      for (const ws of Array.from(room.sockets)) {
+        if (now - ws.lastSeenMs > SOCKET_STALE_TIMEOUT_MS) {
+          ws.close(1001, "Heartbeat timeout");
+          continue;
+        }
         ws.ping();
       }
     }

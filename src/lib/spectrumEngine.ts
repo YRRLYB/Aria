@@ -1,3 +1,5 @@
+import { uiVolumeToSpectrumScale } from "./audioVolume";
+
 export const spectrumBandCount = 64;
 
 export type SpectrumSnapshot = {
@@ -104,8 +106,7 @@ export class RealtimeSpectrumEngine {
     const targetGain = clamp(0.44 / loudness, 0.78, 4.2);
     this.autoGain += (targetGain - this.autoGain) * 0.06;
 
-    const visualVolume = Math.pow(clamp(options.outputVolume / 100, 0, 1), 0.72);
-    const outputScale = 0.18 + visualVolume * 0.82;
+    const outputScale = uiVolumeToSpectrumScale(options.outputVolume);
     const modeCompensation = options.outputMode === "system" ? 0.98 : 1.04;
     const attack = 1 - Math.pow(0.06, deltaMs / 16.7);
     const release = 1 - Math.pow(0.58, deltaMs / 16.7);

@@ -80,7 +80,7 @@ function PlayerTransportCluster({
   onToggleLike: () => void;
   onVolumeChange: (volume: number) => void;
 }) {
-  const lastNonZeroVolumeRef = useRef(volume > 0 ? volume : 50);
+  const lastNonZeroVolumeRef = useRef(volume > 0 ? volume : 65);
   if (volume > 0) lastNonZeroVolumeRef.current = volume;
 
   return (
@@ -135,7 +135,14 @@ function PlayerTransportCluster({
           <AriaIcon name={liked ? "heart-fill" : "heart"} className="size-5" />
         </Button>
       </div>
-      <div className="player-volume">
+      <div
+        className="player-volume"
+        onWheel={(event) => {
+          event.preventDefault();
+          const delta = event.deltaY < 0 ? 2 : -2;
+          onVolumeChange(Math.max(0, Math.min(100, Math.round(volume + delta))));
+        }}
+      >
         <button
           type="button"
           className="player-volume-button"
@@ -146,7 +153,7 @@ function PlayerTransportCluster({
               lastNonZeroVolumeRef.current = volume;
               onVolumeChange(0);
             } else {
-              onVolumeChange(lastNonZeroVolumeRef.current > 0 ? lastNonZeroVolumeRef.current : 50);
+              onVolumeChange(lastNonZeroVolumeRef.current > 0 ? lastNonZeroVolumeRef.current : 65);
             }
           }}
         >
