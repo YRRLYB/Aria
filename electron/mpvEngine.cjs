@@ -28,10 +28,72 @@ function sanitizeEqualizerBands(value) {
   });
 }
 
+function sanitizeEqualizerChain(chain, fallbackBands) {
+  if (chain && typeof chain === "object" && Array.isArray(chain.filters)) {
+    const rawPreamp = Number(chain.preampDb);
+    const preampDb = Number.isFinite(rawPreamp) ? Math.max(-18, Math.min(6, Math.round(rawPreamp * 10) / 10)) : 0;
+    const filters = [];
+    for (const item of chain.filters) {
+      if (!item || typeof item !== "object") continue;
+      const type = item.type === "lowshelf" || item.type === "highshelf" || item.type === "peaking" ? item.type : "peaking";
+      const rawFreq = Number(item.freq);
+      const rawGain = Number(item.gain);
+      const rawQ = Number(item.q);
+      const freq = Number.isFinite(rawFreq) ? Math.max(20, Math.min(20000, Math.round(rawFreq))) : 1000;
+      const gain = Number.isFinite(rawGain) ? Math.max(-12, Math.min(12, Math.round(rawGain * 10) / 10)) : 0;
+      const q = Number.isFinite(rawQ) ? Math.max(0.2, Math.min(16, Math.round(rawQ * 100) / 100)) : 1.1;
+      if (Math.abs(gain) > 0.04) {
+        filters.push({ type, freq, gain, q });
+      }
+      if (filters.length >= 32) break;
+    }
+    return { preampDb, filters };
+  }
+  const bands = sanitizeEqualizerBands(fallbackBands);
+  return {
+    preampDb: 0,
+    filters: bands
+      .map((gain, index) => ({ type: "peaking", freq: EQUALIZER_FREQUENCIES[index], gain, q: 1.1 }))
+      .filter((item) => Math.abs(item.gain) > 0.04),
+  };
+}
+
 function buildEqualizerFilter(bands) {
   return bands
     .map((gain, index) => `equalizer=f=${EQUALIZER_FREQUENCIES[index]}:width_type=q:width=1.1:g=${gain}`)
     .join(",");
+}
+
+function buildEqualizerFilterFromChain(chain) {
+  const parts = [];
+  if (Math.abs(chain.preampDb) > 0.05) {
+    parts.push(`volume=${chain.preampDb.toFixed(2)}dB`);
+  }
+  for (const filter of chain.filters) {
+    if (filter.type === "lowshelf") {
+      parts.push(`lowshelf=f=${filter.freq}:width_type=q:width=${filter.q}:g=${filter.gain}`);
+    } else if (filter.type === "highshelf") {
+      parts.push(`highshelf=f=${filter.freq}:width_type=q:width=${filter.q}:g=${filter.gain}`);
+    } else {
+      parts.push(`equalizer=f=${filter.freq}:width_type=q:width=${filter.q}:g=${filter.gain}`);
+    }
+  }
+  return parts.join(",");
+}
+
+function buildChannelMixFilter(balance, mono) {
+  const clampedBalance = Number.isFinite(Number(balance)) ? Math.max(-1, Math.min(1, Number(balance))) : 0;
+  const leftGain = clampedBalance > 0 ? Math.max(0, 1 - clampedBalance) : 1;
+  const rightGain = clampedBalance < 0 ? Math.max(0, 1 + clampedBalance) : 1;
+  if (mono) {
+    const l = (0.5 * leftGain).toFixed(3);
+    const r = (0.5 * rightGain).toFixed(3);
+    return `pan=stereo|c0=${l}*c0+${l}*c1|c1=${r}*c0+${r}*c1`;
+  }
+  if (Math.abs(clampedBalance) > 0.01) {
+    return `pan=stereo|c0=${leftGain.toFixed(3)}*c0|c1=${rightGain.toFixed(3)}*c1`;
+  }
+  return null;
 }
 
 function buildIpcPipePath(platform = DEFAULT_PLATFORM, pid = process.pid, now = Date.now()) {
@@ -229,6 +291,9 @@ class MpvAudioEngine {
       normalizationEnabled: false,
       equalizerEnabled: false,
       equalizerBands: EQUALIZER_FREQUENCIES.map(() => 0),
+      equalizerChain: { preampDb: 0, filters: [] },
+      channelBalance: 0,
+      monoAudio: false,
     };
   }
 
@@ -471,8 +536,8 @@ class MpvAudioEngine {
         const nextPosition = Math.max(0, message.data);
         this.state.position = nextPosition;
         const now = Date.now();
-        const minIntervalMs = this.windowVisible === false ? 1500 : 80;
-        const minDeltaSec = this.windowVisible === false ? 0.24 : 0.08;
+        const minIntervalMs = this.windowVisible === false ? 1500 : 150;
+        const minDeltaSec = this.windowVisible === false ? 0.24 : 0.14;
         if (
           Math.abs(nextPosition - this.lastEmittedPosition) < minDeltaSec &&
           now - this.lastProgressEmitAt < minIntervalMs
@@ -626,16 +691,26 @@ class MpvAudioEngine {
     normalizationEnabled = this.state.normalizationEnabled,
     equalizerEnabled,
     equalizerBands,
+    equalizerChain,
+    channelBalance,
+    monoAudio,
   }) {
     const requestedExclusive = typeof exclusive === "boolean" ? exclusive : this.launchExclusive ?? false;
     await this.ensureProcess(requestedExclusive);
     if (typeof normalizationEnabled === "boolean") {
       await this.setNormalization(normalizationEnabled);
     }
-    if (typeof equalizerEnabled === "boolean" || Array.isArray(equalizerBands)) {
+    if (typeof equalizerEnabled === "boolean" || Array.isArray(equalizerBands) || equalizerChain) {
       await this.setEqualizer(
         typeof equalizerEnabled === "boolean" ? equalizerEnabled : this.state.equalizerEnabled,
         Array.isArray(equalizerBands) ? equalizerBands : this.state.equalizerBands,
+        equalizerChain ?? this.state.equalizerChain,
+      );
+    }
+    if (typeof channelBalance === "number" || typeof monoAudio === "boolean") {
+      await this.setChannelMix(
+        typeof channelBalance === "number" ? channelBalance : this.state.channelBalance,
+        typeof monoAudio === "boolean" ? monoAudio : this.state.monoAudio,
       );
     }
     if (typeof volume === "number" && Number.isFinite(volume)) {
@@ -725,15 +800,17 @@ class MpvAudioEngine {
     return task;
   }
 
-  setEqualizer(enabled, bands) {
+  setEqualizer(enabled, bands, chain) {
     const nextBands = sanitizeEqualizerBands(bands);
+    const nextChain = sanitizeEqualizerChain(chain, nextBands);
     const task = this.normalizationQueue.then(async () => {
       // Rebuild Aria's own labeled filter and keep @aria-eq before @aria-normalization.
       const filters = await this.command("get_property", "af");
       const list = Array.isArray(filters) ? filters : [];
       const installedEq = list.some((filter) => filter.label === "aria-eq");
       const installedNorm = list.some((filter) => filter.label === "aria-normalization");
-      const active = Boolean(enabled) && nextBands.some((gain) => Math.abs(gain) > 0.05);
+      const filterGraph = buildEqualizerFilterFromChain(nextChain);
+      const active = Boolean(enabled) && Boolean(filterGraph);
       if (installedEq) {
         await this.command("af", "remove", "@aria-eq");
       }
@@ -741,13 +818,42 @@ class MpvAudioEngine {
         if (installedNorm) {
           await this.command("af", "remove", "@aria-normalization");
         }
-        await this.command("af", "add", `@aria-eq:lavfi=[${buildEqualizerFilter(nextBands)}]`);
+        await this.command("af", "add", `@aria-eq:lavfi=[${filterGraph}]`);
         if (installedNorm) {
           await this.command("af", "add", "@aria-normalization:lavfi=[dynaudnorm=f=100:g=5:p=0.95:m=4:r=0.12]");
         }
       }
       this.state.equalizerEnabled = Boolean(enabled);
       this.state.equalizerBands = nextBands;
+      this.state.equalizerChain = nextChain;
+    });
+    this.normalizationQueue = task.catch(() => undefined);
+    return task;
+  }
+
+  setChannelMix(balance, mono) {
+    const nextBalance = Number.isFinite(Number(balance)) ? Math.max(-1, Math.min(1, Number(balance))) : 0;
+    const nextMono = Boolean(mono);
+    const filterExpr = buildChannelMixFilter(nextBalance, nextMono);
+    const task = this.normalizationQueue.then(async () => {
+      const filters = await this.command("get_property", "af");
+      const list = Array.isArray(filters) ? filters : [];
+      const installedChannel = list.some((filter) => filter.label === "aria-channel");
+      const installedNorm = list.some((filter) => filter.label === "aria-normalization");
+      if (installedChannel) {
+        await this.command("af", "remove", "@aria-channel");
+      }
+      if (filterExpr) {
+        if (installedNorm) {
+          await this.command("af", "remove", "@aria-normalization");
+        }
+        await this.command("af", "add", `@aria-channel:lavfi=[${filterExpr}]`);
+        if (installedNorm) {
+          await this.command("af", "add", "@aria-normalization:lavfi=[dynaudnorm=f=100:g=5:p=0.95:m=4:r=0.12]");
+        }
+      }
+      this.state.channelBalance = nextBalance;
+      this.state.monoAudio = nextMono;
     });
     this.normalizationQueue = task.catch(() => undefined);
     return task;
@@ -829,6 +935,9 @@ class MpvAudioEngine {
       normalizationEnabled = false,
       equalizerEnabled = this.state.equalizerEnabled,
       equalizerBands = this.state.equalizerBands,
+      equalizerChain = this.state.equalizerChain,
+      channelBalance = this.state.channelBalance,
+      monoAudio = this.state.monoAudio,
     },
     token,
   ) {
@@ -871,6 +980,9 @@ class MpvAudioEngine {
         normalizationEnabled,
         equalizerEnabled,
         equalizerBands,
+        equalizerChain,
+        channelBalance,
+        monoAudio,
         nativeDevice: null,
         startChapter: null,
         endChapter: null,
@@ -894,6 +1006,9 @@ class MpvAudioEngine {
       normalizationEnabled = this.state.normalizationEnabled,
       equalizerEnabled = this.state.equalizerEnabled,
       equalizerBands = this.state.equalizerBands,
+      equalizerChain = this.state.equalizerChain,
+      channelBalance = this.state.channelBalance,
+      monoAudio = this.state.monoAudio,
     },
     token,
   ) {
@@ -918,7 +1033,17 @@ class MpvAudioEngine {
     await this.command("set_property", "speed", 1).catch(() => undefined);
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
-    await this.applyOutputSettings({ exclusive, deviceId, volume, normalizationEnabled, equalizerEnabled, equalizerBands });
+    await this.applyOutputSettings({
+      exclusive,
+      deviceId,
+      volume,
+      normalizationEnabled,
+      equalizerEnabled,
+      equalizerBands,
+      equalizerChain,
+      channelBalance,
+      monoAudio,
+    });
     if (!this.isCurrentLoad(token)) return this.snapshot({ kind: "superseded" });
 
     if (String(url).startsWith("cdda://")) {
@@ -936,14 +1061,47 @@ class MpvAudioEngine {
     return this.snapshot();
   }
 
-  async setPaused(paused) {
+  async setPaused(paused, options = {}) {
     const token = ++this.pauseToken;
     const desiredPaused = Boolean(paused);
+    const fadeMs = Number(options?.fadeMs) || 0;
     this.pendingPause = desiredPaused;
     await this.ensureProcess(this.launchExclusive ?? false);
     if (token !== this.pauseToken) return this.snapshot({ kind: "superseded" });
     const child = this.process;
-    await this.command("set_property", "pause", desiredPaused);
+    const canFade =
+      fadeMs > 0 &&
+      !this.state.exclusive &&
+      this.state.active &&
+      this.process &&
+      this.socket &&
+      !this.socket.destroyed;
+    if (canFade && desiredPaused && !this.state.paused) {
+      const targetVol = this.state.volume;
+      const steps = 4;
+      const stepDelay = Math.max(15, Math.round(fadeMs / steps));
+      for (let i = steps - 1; i >= 0; i -= 1) {
+        if (token !== this.pauseToken || this.process !== child) return this.snapshot({ kind: "superseded" });
+        await this.command("set_property", "volume", Math.round((targetVol * i) / steps)).catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, stepDelay));
+      }
+      if (token !== this.pauseToken || this.process !== child) return this.snapshot({ kind: "superseded" });
+      await this.command("set_property", "pause", true);
+      await this.command("set_property", "volume", targetVol).catch(() => undefined);
+    } else if (canFade && !desiredPaused && this.state.paused) {
+      const targetVol = this.state.volume;
+      await this.command("set_property", "volume", 0).catch(() => undefined);
+      await this.command("set_property", "pause", false);
+      const steps = 4;
+      const stepDelay = Math.max(15, Math.round(fadeMs / steps));
+      for (let i = 1; i <= steps; i += 1) {
+        if (token !== this.pauseToken || this.process !== child) return this.snapshot({ kind: "superseded" });
+        await this.command("set_property", "volume", Math.round((targetVol * i) / steps)).catch(() => undefined);
+        if (i < steps) await new Promise((resolve) => setTimeout(resolve, stepDelay));
+      }
+    } else {
+      await this.command("set_property", "pause", desiredPaused);
+    }
     if (token !== this.pauseToken || this.process !== child) return this.snapshot({ kind: "superseded" });
     this.state.paused = desiredPaused;
     this.emit({ kind: "pause" });
@@ -1083,6 +1241,10 @@ class MpvAudioEngine {
 
 module.exports = {
   MpvAudioEngine,
+  buildEqualizerFilter,
+  buildEqualizerFilterFromChain,
+  buildChannelMixFilter,
+  sanitizeEqualizerChain,
   buildIpcPipePath,
   buildMpvArguments,
   NATIVE_AUDIO_CLIENT_NAME,

@@ -62,6 +62,7 @@ export function localTrackToUiTrack(track: ApiScannedTrack, index: number): Trac
     sampleRate: track.sampleRate ?? null,
     bpm: null,
     libraryRoot: track.libraryRoot,
+    localPath: track.mediaKind !== "audio-cd" && typeof track.path === "string" ? track.path : undefined,
     mediaKind: track.mediaKind ?? "file",
     nativeDevice: track.nativeDevice ?? null,
     nativeStart: track.nativeStart ?? null,

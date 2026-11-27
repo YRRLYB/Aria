@@ -3,6 +3,7 @@ import {
   adaptPaletteForTheme,
   contrastRatio,
   createCachedQueueSnapshots,
+  fallbackReachableQuality,
   formatAudioDetail,
   formatBitrate,
   formatDuration,
@@ -15,6 +16,7 @@ import {
   readCachedAudioSettings,
   readCachedPlayerState,
   readableForegroundForAccent,
+  resolveDisplayedQualityLevel,
   restoreTrackLyrics,
   selectPlaybackQuality,
   trimTrackCache,
@@ -349,5 +351,22 @@ describe("playerPresentation", () => {
     const merged = mergeTrackRecord(resolvedInstrumental, incomingSearchable);
     expect(merged.lyricStatus).toBe("missing");
     expect(merged.lyrics).toEqual([]);
+  });
+
+  it("falls back to the highest reachable tier when preferred Hi-Res is missing", () => {
+    const noHires = ["standard", "higher", "exhigh", "lossless"] as const;
+    expect(
+      selectPlaybackQuality(
+        { source: "netease", availableLevels: [...noHires] },
+        { qualityLevel: "hires", hifiEnabled: true, masterQualityEnabled: false },
+      ),
+    ).toBe("lossless");
+    expect(fallbackReachableQuality("hires", [...noHires])).toBe("lossless");
+    expect(fallbackReachableQuality("hires", ["standard", "exhigh"])).toBe("exhigh");
+    expect(resolveDisplayedQualityLevel("hires", [...noHires], "lossless", true)).toBe("lossless");
+    expect(resolveDisplayedQualityLevel("hires", [...noHires], null, false)).toBe("lossless");
+    expect(resolveDisplayedQualityLevel("hires", [], "lossless", true)).toBe("lossless");
+    // Explicit available lower tier stays selected even when currentLevel is higher.
+    expect(resolveDisplayedQualityLevel("standard", ["standard", "lossless"], "lossless", false)).toBe("standard");
   });
 });

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, powerMonitor, clipboard, globalShortcut, dialog, session } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, nativeTheme, powerMonitor, clipboard, globalShortcut, dialog, session, shell, screen } = require("electron");
 const { spawn, execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -60,6 +60,14 @@ const apiPort = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_POR
 const apiBase = `http://127.0.0.1:${apiPort}`;
 
 let mainWindow = null;
+let desktopLyricsWindow = null;
+let desktopLyricsLocked = false;
+let desktopLyricsStyle = "glass";
+let desktopLyricsAlwaysOnTop = true;
+let desktopLyricsDragAnchor = null;
+let lastDesktopLyricsPayload = null;
+let desktopLyricsSaveTimer = null;
+let lastTaskbarButtonsLogKey = "";
 let tray = null;
 let backendProcess = null;
 let isQuitting = false;
@@ -72,7 +80,28 @@ let taskbarPlayback = {
   title: "",
   artist: "",
   playing: false,
+  liked: false,
+  repeatMode: "all",
+  shuffleEnabled: false,
 };
+const AUDIO_FILE_EXT_RE = /\.(flac|alac|wav|ape|m4a|aac|mp3|ogg|opus|wma|aiff?)$/i;
+function extractAudioFileArgs(argv) {
+  if (!Array.isArray(argv)) return [];
+  const files = [];
+  for (const raw of argv) {
+    if (typeof raw !== "string" || !raw.trim() || raw.startsWith("-")) continue;
+    const candidate = path.resolve(raw.trim());
+    if (!AUDIO_FILE_EXT_RE.test(candidate)) continue;
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) files.push(candidate);
+    } catch {
+      // Skip invalid or inaccessible path arguments.
+    }
+  }
+  return files;
+}
+let pendingOpenAudioFiles = extractAudioFileArgs(process.argv.slice(1));
+let windowMaterial = "default";
 const taskbarRetryTimers = new Set();
 let lastTaskbarClipLogKey = "";
 let taskbarButtonCreatedEver = false;
@@ -718,13 +747,17 @@ function syncTaskbarPlayback(reason = "state") {
         click: () => sendPlaybackCommand("next"),
       },
     ]);
-    const iconState = Object.entries(taskbarIcons)
-      .map(([name, icon]) => `${name}:${icon.isEmpty() ? "empty" : icon.getSize().width + "x" + icon.getSize().height}`)
-      .join(",");
-    writeLog(
-      "desktop.log",
-      `taskbar buttons applied: ${Boolean(applied)} track=${hasTrack} visible=${mainWindow.isVisible()} reason=${reason} icons=${iconState}`,
-    );
+    const nextLogKey = `${Boolean(applied)}|${hasTrack}|${mainWindow.isVisible()}`;
+    if (reason !== "state" || nextLogKey !== lastTaskbarButtonsLogKey || !applied) {
+      lastTaskbarButtonsLogKey = nextLogKey;
+      const iconState = Object.entries(taskbarIcons)
+        .map(([name, icon]) => `${name}:${icon.isEmpty() ? "empty" : icon.getSize().width + "x" + icon.getSize().height}`)
+        .join(",");
+      writeLog(
+        "desktop.log",
+        `taskbar buttons applied: ${Boolean(applied)} track=${hasTrack} visible=${mainWindow.isVisible()} reason=${reason} icons=${iconState}`,
+      );
+    }
   } catch (error) {
     writeLog("desktop.log", `taskbar buttons failed: ${error?.stack || error}`);
   }
@@ -750,29 +783,340 @@ function scheduleTaskbarSync(reason) {
   }
 }
 
+function desktopLyricsState() {
+  return {
+    open: Boolean(desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()),
+    locked: Boolean(desktopLyricsLocked),
+    style: desktopLyricsStyle,
+    alwaysOnTop: Boolean(desktopLyricsAlwaysOnTop),
+  };
+}
+
+function getDesktopLyricsPrefsPath() {
+  return path.join(app.getPath("userData"), "data", "desktop-lyrics.json");
+}
+
+function readDesktopLyricsPrefs() {
+  try {
+    const raw = fs.readFileSync(getDesktopLyricsPrefsPath(), "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      x: typeof parsed?.x === "number" && Number.isFinite(parsed.x) ? Math.round(parsed.x) : null,
+      y: typeof parsed?.y === "number" && Number.isFinite(parsed.y) ? Math.round(parsed.y) : null,
+      style: parsed?.style === "floating" ? "floating" : "glass",
+      alwaysOnTop: typeof parsed?.alwaysOnTop === "boolean" ? parsed.alwaysOnTop : true,
+    };
+  } catch {
+    return { x: null, y: null, style: "glass", alwaysOnTop: true };
+  }
+}
+
+function writeDesktopLyricsPrefs(patch) {
+  try {
+    const existing = readDesktopLyricsPrefs();
+    const next = {
+      x: patch.x !== undefined ? Math.round(patch.x) : existing.x,
+      y: patch.y !== undefined ? Math.round(patch.y) : existing.y,
+      style: patch.style === "floating" ? "floating" : patch.style === "glass" ? "glass" : existing.style,
+      alwaysOnTop: typeof patch.alwaysOnTop === "boolean" ? patch.alwaysOnTop : existing.alwaysOnTop,
+    };
+    const target = getDesktopLyricsPrefsPath();
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify(next), "utf8");
+  } catch {
+    // Non-fatal persistence error.
+  }
+}
+
+function resolveDesktopLyricsBounds(width = 620, height = 176) {
+  const saved = readDesktopLyricsPrefs();
+  if (typeof saved.x === "number" && typeof saved.y === "number") {
+    const display = screen.getDisplayNearestPoint({ x: saved.x, y: saved.y });
+    const workArea = display?.workArea ?? screen.getPrimaryDisplay().workArea;
+    const x = Math.min(Math.max(saved.x, workArea.x), Math.max(workArea.x, workArea.x + workArea.width - width));
+    const y = Math.min(Math.max(saved.y, workArea.y), Math.max(workArea.y, workArea.y + workArea.height - height));
+    return { x, y, width, height };
+  }
+  const workArea = screen.getPrimaryDisplay().workArea;
+  return {
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + workArea.height - height - 24),
+    width,
+    height,
+  };
+}
+
+function pushDesktopLyricsStateToRenderer() {
+  const state = desktopLyricsState();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("aria:desktop-lyrics:state", state);
+  }
+  if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+    desktopLyricsWindow.webContents.send("aria:desktop-lyrics:state-push", {
+      ...(lastDesktopLyricsPayload || {}),
+      locked: state.locked,
+      style: state.style,
+      alwaysOnTop: state.alwaysOnTop,
+    });
+  }
+}
+
+function createOrShowDesktopLyricsWindow() {
+  if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+    if (!desktopLyricsWindow.isVisible()) desktopLyricsWindow.showInactive();
+    pushDesktopLyricsStateToRenderer();
+    refreshTrayMenu();
+    return desktopLyricsWindow;
+  }
+
+  const prefs = readDesktopLyricsPrefs();
+  desktopLyricsStyle = prefs.style;
+  desktopLyricsAlwaysOnTop = prefs.alwaysOnTop;
+  const bounds = resolveDesktopLyricsBounds();
+  desktopLyricsWindow = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    show: false,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: path.join(__dirname, "desktopLyricsPreload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  desktopLyricsWindow.setAlwaysOnTop(desktopLyricsAlwaysOnTop, "floating");
+  if (process.platform === "darwin" && typeof desktopLyricsWindow.setVisibleOnAllWorkspaces === "function") {
+    desktopLyricsWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  if (desktopLyricsLocked) {
+    desktopLyricsWindow.setIgnoreMouseEvents(true, { forward: true });
+  }
+  desktopLyricsWindow.on("system-context-menu", (event) => {
+    event.preventDefault();
+  });
+
+  desktopLyricsWindow.once("ready-to-show", () => {
+    if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) return;
+    desktopLyricsWindow.showInactive();
+    pushDesktopLyricsStateToRenderer();
+  });
+
+  desktopLyricsWindow.on("moved", () => {
+    if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed() || desktopLyricsDragAnchor) return;
+    const currentBounds = desktopLyricsWindow.getBounds();
+    if (desktopLyricsSaveTimer) clearTimeout(desktopLyricsSaveTimer);
+    desktopLyricsSaveTimer = setTimeout(() => {
+      desktopLyricsSaveTimer = null;
+      writeDesktopLyricsPrefs({ x: currentBounds.x, y: currentBounds.y });
+    }, 220);
+    desktopLyricsSaveTimer.unref?.();
+  });
+
+  desktopLyricsWindow.on("closed", () => {
+    desktopLyricsWindow = null;
+    desktopLyricsLocked = false;
+    desktopLyricsDragAnchor = null;
+    pushDesktopLyricsStateToRenderer();
+    refreshTrayMenu();
+  });
+
+  void desktopLyricsWindow.loadFile(path.join(__dirname, "desktopLyrics.html"));
+  pushDesktopLyricsStateToRenderer();
+  refreshTrayMenu();
+  return desktopLyricsWindow;
+}
+
+function closeDesktopLyricsWindow() {
+  if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) {
+    desktopLyricsWindow = null;
+    desktopLyricsLocked = false;
+    pushDesktopLyricsStateToRenderer();
+    refreshTrayMenu();
+    return desktopLyricsState();
+  }
+  desktopLyricsWindow.close();
+  return desktopLyricsState();
+}
+
+function setDesktopLyricsLocked(nextLocked) {
+  desktopLyricsLocked = typeof nextLocked === "boolean" ? nextLocked : !desktopLyricsLocked;
+  if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+    desktopLyricsWindow.setIgnoreMouseEvents(desktopLyricsLocked, { forward: true });
+  }
+  pushDesktopLyricsStateToRenderer();
+  refreshTrayMenu();
+  return desktopLyricsState();
+}
+
+function setDesktopLyricsStyle(nextStyle) {
+  desktopLyricsStyle = nextStyle === "floating" ? "floating" : "glass";
+  writeDesktopLyricsPrefs({ style: desktopLyricsStyle });
+  pushDesktopLyricsStateToRenderer();
+  refreshTrayMenu();
+  return desktopLyricsState();
+}
+
+function setDesktopLyricsAlwaysOnTop(nextValue) {
+  desktopLyricsAlwaysOnTop = typeof nextValue === "boolean" ? nextValue : !desktopLyricsAlwaysOnTop;
+  if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+    desktopLyricsWindow.setAlwaysOnTop(desktopLyricsAlwaysOnTop, "floating");
+  }
+  writeDesktopLyricsPrefs({ alwaysOnTop: desktopLyricsAlwaysOnTop });
+  pushDesktopLyricsStateToRenderer();
+  return desktopLyricsState();
+}
+
+function getWindowMaterialPrefsPath() {
+  return path.join(app.getPath("userData"), "data", "window-material.json");
+}
+
+function readWindowMaterialPref() {
+  try {
+    const raw = fs.readFileSync(getWindowMaterialPrefsPath(), "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed?.material === "translucent" ? "translucent" : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function writeWindowMaterialPref(mode) {
+  try {
+    const target = getWindowMaterialPrefsPath();
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({ material: mode }), "utf8");
+  } catch {
+    // Non-fatal persistence error.
+  }
+}
+
+function applyWindowMaterial(mode) {
+  windowMaterial = mode === "translucent" ? "translucent" : "default";
+  if (!mainWindow || mainWindow.isDestroyed()) return windowMaterial;
+  try {
+    if (process.platform === "win32" && typeof mainWindow.setBackgroundMaterial === "function") {
+      mainWindow.setBackgroundMaterial(windowMaterial === "translucent" ? "mica" : "none");
+    } else if (process.platform === "darwin" && typeof mainWindow.setVibrancy === "function") {
+      mainWindow.setVibrancy(windowMaterial === "translucent" ? "under-window" : null);
+    }
+  } catch {
+    // Older Windows/macOS versions may not support translucent material APIs.
+  }
+  try {
+    mainWindow.setBackgroundColor(
+      windowMaterial === "translucent"
+        ? "#00000000"
+        : nativeTheme.shouldUseDarkColors
+          ? "#0f0f16"
+          : "#fbfbfd",
+    );
+  } catch {
+    // Ignore background color adjustment failures.
+  }
+  return windowMaterial;
+}
+
+function dispatchOpenAudioFiles(files) {
+  if (!Array.isArray(files) || !files.length) return;
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.send("aria:open-audio-files", files);
+    return;
+  }
+  pendingOpenAudioFiles = [...new Set([...pendingOpenAudioFiles, ...files])].slice(0, 200);
+}
+
+function buildTrayMenu() {
+  const lyricsState = desktopLyricsState();
+  const hasTrack = Boolean(taskbarPlayback.title);
+  const trackHeader = hasTrack
+    ? `♪ ${taskbarPlayback.title}${taskbarPlayback.artist ? ` - ${taskbarPlayback.artist}` : ""}`
+    : "";
+  const shortHeader = trackHeader.length > 38 ? `${trackHeader.slice(0, 37)}…` : trackHeader;
+  const modeLabel =
+    taskbarPlayback.repeatMode === "one"
+      ? "模式：单曲循环"
+      : taskbarPlayback.shuffleEnabled
+        ? "模式：随机播放"
+        : "模式：列表循环";
+
+  return Menu.buildFromTemplate([
+    ...(shortHeader
+      ? [
+          { label: shortHeader, enabled: false },
+          { type: "separator" },
+        ]
+      : []),
+    { label: "打开 Aria", click: showWindow },
+    { type: "separator" },
+    { label: taskbarPlayback.playing ? "暂停" : "播放", click: () => sendPlaybackCommand("toggle") },
+    { label: "上一首", click: () => sendPlaybackCommand("previous") },
+    { label: "下一首", click: () => sendPlaybackCommand("next") },
+    ...(hasTrack
+      ? [
+          { type: "separator" },
+          { label: taskbarPlayback.liked ? "取消喜欢" : "加入我喜欢", click: () => sendPlaybackCommand("like") },
+          { label: modeLabel, click: () => sendPlaybackCommand("mode") },
+        ]
+      : []),
+    { type: "separator" },
+    {
+      label: lyricsState.open ? "关闭桌面歌词" : "开启桌面歌词",
+      click: () => {
+        if (desktopLyricsState().open) closeDesktopLyricsWindow();
+        else createOrShowDesktopLyricsWindow();
+      },
+    },
+    ...(lyricsState.open
+      ? [
+          {
+            label: `切换歌词样式（${lyricsState.style === "floating" ? "无界悬浮 → 晶透画框" : "晶透画框 → 无界悬浮"}）`,
+            click: () => setDesktopLyricsStyle(lyricsState.style === "floating" ? "glass" : "floating"),
+          },
+        ]
+      : []),
+    ...(lyricsState.open && lyricsState.locked
+      ? [
+          {
+            label: "解锁桌面歌词",
+            click: () => setDesktopLyricsLocked(false),
+          },
+        ]
+      : []),
+    { type: "separator" },
+    { label: "后台托管", click: () => mainWindow?.hide() },
+    { type: "separator" },
+    {
+      label: "退出",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(buildTrayMenu());
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(trayIcon());
   tray.setToolTip("Aria");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "打开 Aria", click: showWindow },
-      { type: "separator" },
-      { label: "播放 / 暂停", click: () => sendPlaybackCommand("toggle") },
-      { label: "上一首", click: () => sendPlaybackCommand("previous") },
-      { label: "下一首", click: () => sendPlaybackCommand("next") },
-      { type: "separator" },
-      { label: "后台托管", click: () => mainWindow?.hide() },
-      { type: "separator" },
-      {
-        label: "退出",
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
-    ]),
-  );
+  tray.setContextMenu(buildTrayMenu());
   tray.on("double-click", showWindow);
 }
 
@@ -784,6 +1128,7 @@ async function createWindow() {
   void backendReady.catch((error) => writeLog("desktop.log", `backend startup failed: ${error?.stack || error}`));
   createTray();
 
+  windowMaterial = readWindowMaterialPref();
   const isMac = process.platform === "darwin";
   mainWindow = new BrowserWindow({
     width: 1480,
@@ -799,7 +1144,11 @@ async function createWindow() {
     title: "Aria",
     icon: resolveIcon(),
     autoHideMenuBar: true,
-    backgroundColor: "#f5f6f8",
+    backgroundColor: windowMaterial === "translucent"
+      ? "#00000000"
+      : nativeTheme.shouldUseDarkColors
+        ? "#0f0f16"
+        : "#fbfbfd",
     webPreferences: {
       preload: resolvePreload(),
       contextIsolation: true,
@@ -807,6 +1156,7 @@ async function createWindow() {
       webviewTag: true,
     },
   });
+  applyWindowMaterial(windowMaterial);
   if (process.platform !== "darwin") {
     // macOS keeps the application menu (traffic-light window + native roles);
     // the other platforms draw their own chrome without a menu bar.
@@ -948,6 +1298,16 @@ async function createWindow() {
     sendWindowFocus(true);
     scheduleTaskbarSync("restore");
   });
+  mainWindow.on("swipe", (_event, direction) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (direction === "left") mainWindow.webContents.send("aria:navigate-history", -1);
+    else if (direction === "right") mainWindow.webContents.send("aria:navigate-history", 1);
+  });
+  mainWindow.on("app-command", (_event, command) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (command === "browser-backward") mainWindow.webContents.send("aria:navigate-history", -1);
+    else if (command === "browser-forward") mainWindow.webContents.send("aria:navigate-history", 1);
+  });
   mainWindow.on("closed", () => {
     iconicThumbAddon?.detachMediaSession?.();
     nowPlayingAddon?.detach?.();
@@ -1014,6 +1374,84 @@ ipcMain.handle("aria:choose-music-folder", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle("aria:show-item-in-folder", (_event, filePath) => {
+  if (typeof filePath !== "string" || !filePath.trim()) return false;
+  try {
+    if (!path.isAbsolute(filePath) || !fs.existsSync(filePath)) return false;
+    shell.showItemInFolder(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle("aria:desktop-lyrics:get-state", () => desktopLyricsState());
+
+ipcMain.handle("aria:desktop-lyrics:toggle", () => {
+  if (desktopLyricsState().open) return closeDesktopLyricsWindow();
+  createOrShowDesktopLyricsWindow();
+  return desktopLyricsState();
+});
+
+ipcMain.handle("aria:desktop-lyrics:close", () => closeDesktopLyricsWindow());
+
+ipcMain.handle("aria:desktop-lyrics:set-locked", (_event, locked) => {
+  return setDesktopLyricsLocked(typeof locked === "boolean" ? locked : undefined);
+});
+
+ipcMain.handle("aria:desktop-lyrics:set-style", (_event, style) => {
+  return setDesktopLyricsStyle(style);
+});
+
+ipcMain.handle("aria:desktop-lyrics:set-always-on-top", (_event, enabled) => {
+  return setDesktopLyricsAlwaysOnTop(typeof enabled === "boolean" ? enabled : undefined);
+});
+
+ipcMain.on("aria:desktop-lyrics:drag-start", () => {
+  if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed() || desktopLyricsLocked) return;
+  const cursor = screen.getCursorScreenPoint();
+  const [winX, winY] = desktopLyricsWindow.getPosition();
+  desktopLyricsDragAnchor = { cursorX: cursor.x, cursorY: cursor.y, winX, winY };
+});
+
+ipcMain.on("aria:desktop-lyrics:drag-move", () => {
+  if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed() || !desktopLyricsDragAnchor) return;
+  const cursor = screen.getCursorScreenPoint();
+  const nextX = Math.round(desktopLyricsDragAnchor.winX + (cursor.x - desktopLyricsDragAnchor.cursorX));
+  const nextY = Math.round(desktopLyricsDragAnchor.winY + (cursor.y - desktopLyricsDragAnchor.cursorY));
+  desktopLyricsWindow.setPosition(nextX, nextY, false);
+});
+
+ipcMain.on("aria:desktop-lyrics:drag-end", () => {
+  desktopLyricsDragAnchor = null;
+  if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) return;
+  const currentBounds = desktopLyricsWindow.getBounds();
+  writeDesktopLyricsPrefs({ x: currentBounds.x, y: currentBounds.y });
+});
+
+ipcMain.handle("aria:desktop-lyrics:update", (_event, payload) => {
+  if (payload && typeof payload === "object") {
+    lastDesktopLyricsPayload = payload;
+  }
+  if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+    desktopLyricsWindow.webContents.send("aria:desktop-lyrics:state-push", {
+      ...(lastDesktopLyricsPayload || {}),
+      locked: desktopLyricsLocked,
+      style: desktopLyricsStyle,
+      alwaysOnTop: desktopLyricsAlwaysOnTop,
+    });
+  }
+  return true;
+});
+
+ipcMain.handle("aria:desktop-lyrics:command", (_event, command) => {
+  if (command === "previous" || command === "toggle" || command === "next") {
+    sendPlaybackCommand(command);
+    return true;
+  }
+  return false;
 });
 
 // QQ 音乐登录：网页端 OAuth 握手依赖浏览器行为（登录跳转页/风控脚本），
@@ -2124,13 +2562,42 @@ ipcMain.handle("aria:update-media-session", (_event, payload) => {
 });
 
 ipcMain.handle("aria:update-taskbar-playback", (_event, payload) => {
-  taskbarPlayback = {
+  const next = {
     title: typeof payload?.title === "string" ? payload.title.slice(0, 180) : "",
     artist: typeof payload?.artist === "string" ? payload.artist.slice(0, 120) : "",
     playing: Boolean(payload?.playing),
+    liked: Boolean(payload?.liked),
+    repeatMode: payload?.repeatMode === "one" ? "one" : "all",
+    shuffleEnabled: Boolean(payload?.shuffleEnabled),
   };
+  if (
+    taskbarPlayback.title === next.title &&
+    taskbarPlayback.artist === next.artist &&
+    taskbarPlayback.playing === next.playing &&
+    taskbarPlayback.liked === next.liked &&
+    taskbarPlayback.repeatMode === next.repeatMode &&
+    taskbarPlayback.shuffleEnabled === next.shuffleEnabled
+  ) {
+    return true;
+  }
+  taskbarPlayback = next;
   syncTaskbarPlayback();
+  refreshTrayMenu();
   return true;
+});
+
+ipcMain.handle("aria:consume-open-files", () => {
+  const files = [...pendingOpenAudioFiles];
+  pendingOpenAudioFiles = [];
+  return files;
+});
+
+ipcMain.handle("aria:get-window-material", () => windowMaterial);
+
+ipcMain.handle("aria:set-window-material", (_event, mode) => {
+  const next = mode === "translucent" ? "translucent" : "default";
+  writeWindowMaterialPref(next);
+  return applyWindowMaterial(next);
 });
 
 ipcMain.handle("aria:configure-global-shortcuts", (_event, payload) => {
@@ -2266,8 +2733,8 @@ ipcMain.handle("aria:clear-iconic-thumbnail", () => {
   }
 });
 
-ipcMain.handle("aria:native-audio:pause", async (_event, paused) => {
-  return getNativeAudioEngine().setPaused(Boolean(paused));
+ipcMain.handle("aria:native-audio:pause", async (_event, paused, options) => {
+  return getNativeAudioEngine().setPaused(Boolean(paused), options || {});
 });
 
 ipcMain.handle("aria:native-audio:seek", async (_event, position) => {
@@ -2294,7 +2761,17 @@ ipcMain.handle("aria:native-audio:recover", async (_event, reason) => {
   return getNativeAudioEngine().recoverOutput(typeof reason === "string" && reason ? reason : "manual");
 });
 
-app.on("second-instance", showWindow);
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  const files = extractAudioFileArgs([filePath]);
+  if (files.length) dispatchOpenAudioFiles(files);
+});
+
+app.on("second-instance", (_event, argv) => {
+  showWindow();
+  const files = extractAudioFileArgs(argv);
+  if (files.length) dispatchOpenAudioFiles(files);
+});
 
 app.whenReady().then(async () => {
   attachPowerRecoveryHandlers();
@@ -2344,6 +2821,10 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+    desktopLyricsWindow.destroy();
+    desktopLyricsWindow = null;
+  }
 });
 
 app.on("will-quit", () => {

@@ -115,6 +115,48 @@ export type PlaybackQualitySettings = {
 // Original recordings stop at Hi-Res. Master quality is a separate opt-in
 // processing mode and must not become the default just because it is listed
 // after Hi-Res by the provider.
+const QUALITY_TIER_ORDER: QualityLevel[] = ["standard", "higher", "exhigh", "lossless", "hires", "jymaster"];
+
+export function fallbackReachableQuality(
+  preferred: QualityLevel,
+  availableLevels: readonly QualityLevel[],
+): QualityLevel {
+  if (!availableLevels.length || availableLevels.includes(preferred)) return preferred;
+  const preferredIndex = QUALITY_TIER_ORDER.indexOf(preferred);
+  if (preferredIndex >= 0) {
+    for (let index = preferredIndex - 1; index >= 0; index -= 1) {
+      const candidate = QUALITY_TIER_ORDER[index];
+      if (availableLevels.includes(candidate)) return candidate;
+    }
+    for (let index = preferredIndex + 1; index < QUALITY_TIER_ORDER.length; index += 1) {
+      const candidate = QUALITY_TIER_ORDER[index];
+      if (availableLevels.includes(candidate)) return candidate;
+    }
+  }
+  return preferred;
+}
+
+export function resolveDisplayedQualityLevel(
+  preferred: QualityLevel,
+  availableLevels: readonly QualityLevel[],
+  currentLevel?: QualityLevel | null,
+  hifiEnabled?: boolean,
+): QualityLevel {
+  if (availableLevels.length > 0) {
+    if (availableLevels.includes(preferred)) return preferred;
+    if (currentLevel && availableLevels.includes(currentLevel)) return currentLevel;
+    return fallbackReachableQuality(preferred, availableLevels);
+  }
+  if (hifiEnabled && currentLevel && QUALITY_TIER_ORDER.includes(currentLevel)) {
+    const preferredIndex = QUALITY_TIER_ORDER.indexOf(preferred);
+    const currentIndex = QUALITY_TIER_ORDER.indexOf(currentLevel);
+    if (currentIndex >= 0 && preferredIndex >= 0 && currentIndex < preferredIndex) {
+      return currentLevel;
+    }
+  }
+  return preferred;
+}
+
 export function selectPlaybackQuality(
   track: Pick<Track, "source" | "availableLevels"> | undefined,
   settings: PlaybackQualitySettings,

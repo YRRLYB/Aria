@@ -206,3 +206,19 @@ export async function findTrack(trackId: string) {
   const { byId } = await resolveLibraryWithIndex();
   return byId.get(trackId) ?? null;
 }
+
+export async function upsertLibraryTracks(tracks: ScannedTrack[]): Promise<LibraryIndex> {
+  if (!tracks.length) return readLibrary();
+  const current = await readRawLibrary();
+  const byId = new Map(current.tracks.map((track) => [track.id, track]));
+  for (const track of tracks) {
+    byId.set(track.id, track);
+  }
+  const next: LibraryIndex = {
+    updatedAt: new Date().toISOString(),
+    roots: current.roots,
+    tracks: [...byId.values()],
+  };
+  await writeLibrary(next);
+  return readLibrary();
+}

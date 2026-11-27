@@ -1,23 +1,35 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  analyzeCompiledEqualizerResponse,
   analyzeEqualizerResponse,
+  compileEqualizerChain,
+  computeCompiledEqualizerResponse,
   computeEqualizerFrequencyResponse,
+  computeHighShelfMagnitudeDb,
+  computeLowShelfMagnitudeDb,
   computePeakingMagnitudeDb,
   createEqualizerCustomPreset,
+  defaultEqualizerProfile,
   defaultEqualizerSettings,
+  equalizer31Frequencies,
   equalizerBandsMatch,
   equalizerBodePaths,
   equalizerCurvePath,
   equalizerFrequencies,
   equalizerPresetBands,
   equalizerPresetExportPayload,
+  equalizerPresetExportPayloadV2,
   equalizerPresetFileName,
   equalizerPresets,
+  exportEqualizerToApoText,
   maxEqualizerCustomPresets,
   maxEqualizerGain,
   maxEqualizerPresetNameLength,
+  parseEqualizerApoText,
   parseEqualizerPresetImport,
   readCachedEqualizerSettings,
+  resampleBands10To31,
+  sanitizeEqualizer31Bands,
   sanitizeEqualizerBands,
   sanitizeEqualizerCustomPresets,
   writeCachedEqualizerSettings,
@@ -165,5 +177,64 @@ describe("custom equalizer presets", () => {
     expect(bode.linePath.startsWith("M ")).toBe(true);
     expect(bode.positiveAreaPath.endsWith(" Z")).toBe(true);
     expect(bode.negativeAreaPath.endsWith(" Z")).toBe(true);
+  });
+
+  it("supports 31-band ISO mapping, Parametric PEQ shelving, and Equalizer APO import/export", () => {
+    const bands31 = sanitizeEqualizer31Bands([4, -2, 30]);
+    expect(bands31).toHaveLength(equalizer31Frequencies.length);
+    expect(bands31[2]).toBe(maxEqualizerGain);
+
+    const resampled = resampleBands10To31([6, 4, 2, 0, 0, 0, 0, 2, 4, 6]);
+    expect(resampled).toHaveLength(31);
+    expect(resampled[0]).toBe(6);
+    expect(resampled[30]).toBe(6);
+
+    // Shelf RBJ response sanity: lowshelf boosts low frequencies and leaves 18kHz near 0 dB
+    expect(computeLowShelfMagnitudeDb(30, 100, 6, 0.71)).toBeGreaterThan(5.5);
+    expect(Math.abs(computeLowShelfMagnitudeDb(18000, 100, 6, 0.71))).toBeLessThan(0.1);
+    expect(computeHighShelfMagnitudeDb(16000, 8000, -4, 0.71)).toBeLessThan(-3.4);
+
+    const apoSource = [
+      "Preamp: -4.2 dB",
+      "Filter 1: ON LSC Fc 105 Hz Gain 4.2 dB Q 0.71",
+      "Filter 2: ON PK Fc 3100 Hz Gain 2.8 dB Q 1.80",
+      "Filter 3: OFF PK Fc 500 Hz Gain -6.0 dB Q 1.00",
+    ].join("\n");
+    const parsedApo = parseEqualizerApoText(apoSource, "Harman Test");
+    expect("error" in parsedApo).toBe(false);
+    if (!("error" in parsedApo)) {
+      expect(parsedApo.detectedFormat).toBe("apo-peq");
+      expect(parsedApo.preset.mode).toBe("peq");
+      expect(parsedApo.preset.preampDb).toBe(-4.2);
+      expect(parsedApo.preset.peqFilters).toHaveLength(3);
+      expect(parsedApo.preset.peqFilters?.[2].enabled).toBe(false);
+
+      const profile = {
+        ...defaultEqualizerProfile(),
+        mode: "peq" as const,
+        preampDb: parsedApo.preset.preampDb ?? 0,
+        peqFilters: parsedApo.preset.peqFilters ?? [],
+      };
+      const chain = compileEqualizerChain({ enabled: true, preset: "custom", bands: equalizerPresetBands("flat") }, profile);
+      expect(chain.filters).toHaveLength(2); // OFF filter excluded
+      const telemetry = analyzeCompiledEqualizerResponse(chain, true);
+      expect(telemetry.headroomStatus).toBe("safe");
+      const resp = computeCompiledEqualizerResponse(chain, 64);
+      expect(resp).toHaveLength(64);
+
+      const exportedApo = exportEqualizerToApoText("Harman Test", chain);
+      expect(exportedApo).toContain("Preamp: -4.2 dB");
+      expect(exportedApo).toContain("Filter 1: ON LSC Fc 105 Hz Gain 4.2 dB Q 0.71");
+      expect(exportedApo).toContain("Filter 2: ON PK Fc 3100 Hz Gain 2.8 dB Q 1.80");
+
+      const v2Json = equalizerPresetExportPayloadV2([parsedApo.preset]);
+      const v2Imported = parseEqualizerPresetImport(v2Json);
+      expect(v2Imported.error).toBeNull();
+      expect(v2Imported.presets[0].mode).toBe("peq");
+    }
+
+    const graphicApo = parseEqualizerPresetImport("Preamp: -2.0 dB\nGraphicEQ: 25 3.0; 1000 0.0; 16000 4.0");
+    expect(graphicApo.error).toBeNull();
+    expect(graphicApo.presets[0].mode).toBe("iso31");
   });
 });

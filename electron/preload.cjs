@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 const apiPort = Number(process.env.ARIA_API_PORT || process.env.MUSICBOX_API_PORT || 3636);
 const nativeIconicThumbnailEnabled = process.platform === "win32" && process.env.ARIA_NATIVE_ICONIC_THUMBNAIL !== "0";
@@ -30,10 +30,48 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     ipcRenderer.on("aria:open-settings", handler);
     return () => ipcRenderer.removeListener("aria:open-settings", handler);
   },
+  onNavigateHistory: (callback) => {
+    const handler = (_event, direction) => {
+      if (direction === -1 || direction === 1) callback(direction);
+    };
+    ipcRenderer.on("aria:navigate-history", handler);
+    return () => ipcRenderer.removeListener("aria:navigate-history", handler);
+  },
   showApp: () => ipcRenderer.invoke("aria:show"),
   quitApp: () => ipcRenderer.invoke("aria:quit"),
   setBackgroundEnabled: (enabled) => ipcRenderer.invoke("aria:set-background-enabled", Boolean(enabled)),
   chooseMusicFolder: () => ipcRenderer.invoke("aria:choose-music-folder"),
+  showItemInFolder: (filePath) => ipcRenderer.invoke("aria:show-item-in-folder", typeof filePath === "string" ? filePath : ""),
+  getPathForFile: (file) => {
+    try {
+      if (webUtils && typeof webUtils.getPathForFile === "function") {
+        return webUtils.getPathForFile(file) || "";
+      }
+      return typeof file?.path === "string" ? file.path : "";
+    } catch {
+      return typeof file?.path === "string" ? file.path : "";
+    }
+  },
+  consumePendingOpenFiles: () => ipcRenderer.invoke("aria:consume-open-files"),
+  onOpenAudioFiles: (callback) => {
+    const handler = (_event, files) => callback(Array.isArray(files) ? files : []);
+    ipcRenderer.on("aria:open-audio-files", handler);
+    return () => ipcRenderer.removeListener("aria:open-audio-files", handler);
+  },
+  getWindowMaterial: () => ipcRenderer.invoke("aria:get-window-material"),
+  setWindowMaterial: (mode) => ipcRenderer.invoke("aria:set-window-material", mode === "translucent" ? "translucent" : "default"),
+  desktopLyrics: {
+    getState: () => ipcRenderer.invoke("aria:desktop-lyrics:get-state"),
+    toggle: () => ipcRenderer.invoke("aria:desktop-lyrics:toggle"),
+    close: () => ipcRenderer.invoke("aria:desktop-lyrics:close"),
+    setLocked: (locked) => ipcRenderer.invoke("aria:desktop-lyrics:set-locked", locked),
+    update: (payload) => ipcRenderer.invoke("aria:desktop-lyrics:update", payload || {}),
+    onStateChange: (callback) => {
+      const handler = (_event, state) => callback(state);
+      ipcRenderer.on("aria:desktop-lyrics:state", handler);
+      return () => ipcRenderer.removeListener("aria:desktop-lyrics:state", handler);
+    },
+  },
   qqLoginWindow: () => ipcRenderer.invoke("aria:qq-login-window"),
   youtubeLoginWindow: (proxy) => ipcRenderer.invoke("aria:youtube-login-window", { proxy: typeof proxy === "string" ? proxy : "" }),
   youtubeStage: {
@@ -77,7 +115,7 @@ contextBridge.exposeInMainWorld("ariaDesktop", {
     getState: () => ipcRenderer.invoke("aria:native-audio:state"),
     load: (payload) => ipcRenderer.invoke("aria:native-audio:load", payload),
     loadNext: (payload) => ipcRenderer.invoke("aria:native-audio:load-next", payload || {}),
-    setPaused: (paused) => ipcRenderer.invoke("aria:native-audio:pause", Boolean(paused)),
+    setPaused: (paused, options) => ipcRenderer.invoke("aria:native-audio:pause", Boolean(paused), options || {}),
     seek: (position) => ipcRenderer.invoke("aria:native-audio:seek", Number(position) || 0),
     setVolume: (volume) => ipcRenderer.invoke("aria:native-audio:volume", Number(volume) || 0),
     setSpeed: (speed) => ipcRenderer.invoke("aria:native-audio:speed", Number(speed) || 1),

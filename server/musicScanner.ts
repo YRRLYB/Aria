@@ -17,13 +17,44 @@ const execFileAsync = promisify(execFile);
 const audioExtensions = new Set([
   ".mp3",
   ".flac",
+  ".alac",
   ".wav",
   ".m4a",
   ".aac",
   ".ogg",
   ".opus",
   ".ape",
+  ".wma",
+  ".aif",
+  ".aiff",
 ]);
+
+export async function scanAudioFiles(filePaths: string[]): Promise<ScannedTrack[]> {
+  const seen = new Set<string>();
+  const uniquePaths: string[] = [];
+  for (const raw of filePaths) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const resolved = path.resolve(raw.trim());
+    if (seen.has(resolved)) continue;
+    if (!audioExtensions.has(path.extname(resolved).toLowerCase())) continue;
+    seen.add(resolved);
+    uniquePaths.push(resolved);
+    if (uniquePaths.length >= 200) break;
+  }
+  if (!uniquePaths.length) return [];
+  const results = await Promise.all(
+    uniquePaths.map(async (resolved) => {
+      try {
+        const info = await stat(resolved);
+        if (!info.isFile()) return null;
+      } catch {
+        return null;
+      }
+      return readTrackMetadata(resolved, path.dirname(resolved));
+    }),
+  );
+  return results.filter((track): track is ScannedTrack => Boolean(track));
+}
 
 const cdExtensions = new Set([".cda"]);
 

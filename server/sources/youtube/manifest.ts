@@ -17,7 +17,7 @@ export const youtubeManifest: SourceManifest = {
     // music lyrics; leave off until a curated lyric path lands.
     lyrics: false,
     wordLyrics: false,
-    // Cookie / browser-window / device-code binding, unlocking liked songs & playlists.
+    // Cookie / browser-window binding, unlocking liked songs & playlists.
     account: true,
     liked: true,
     playlistsRead: true,

@@ -27,7 +27,7 @@ const minRenderableLevel = 0.018;
 const noiseGate = 0.008;
 
 export function configureSpectrumAnalyser(analyser: AnalyserNode) {
-  analyser.fftSize = 2048;
+  analyser.fftSize = 1024;
   analyser.smoothingTimeConstant = 0.06;
   analyser.minDecibels = -100;
   analyser.maxDecibels = -8;

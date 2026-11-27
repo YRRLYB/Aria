@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 import { navItems, type ViewId } from "@/data/music";
 import { cn } from "@/lib/utils";
 
@@ -25,8 +26,16 @@ export function AppNavigation({ activeView, onPick }: { activeView: ViewId; onPi
                 aria-current={active ? "page" : undefined}
                 onClick={() => onPick(item.id)}
               >
-                <Icon aria-hidden="true" />
-                <span>{item.label}</span>
+                {active && (
+                  <motion.span
+                    layoutId="aria-primary-nav-pill"
+                    aria-hidden="true"
+                    className="app-nav-pill"
+                    transition={{ type: "spring", stiffness: 460, damping: 36 }}
+                  />
+                )}
+                <Icon className="relative z-10" aria-hidden="true" />
+                <span className="relative z-10">{item.label}</span>
               </button>
             );
           })}

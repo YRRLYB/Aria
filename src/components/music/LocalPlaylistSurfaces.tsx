@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, GripVertical, Link2, ListMusic, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, GripVertical, Link2, ListMusic, LoaderCircle, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
 import { AriaSelect } from "@/components/ui/aria-select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
 import type { LocalPlaylist, LocalPlaylistRemoteRef, PlaylistInsertPosition } from "@/lib/localPlaylists";
 import { resolveLocalPlaylistTracks } from "@/lib/localPlaylists";
+import { findPlaylistDuplicates } from "@/lib/playlistDedup";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { useVirtualRows } from "@/lib/virtualRows";
 import { PlaylistTrackBrowser, type PickerPlaylistCatalog } from "./PlaylistTrackBrowser";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 import { SourceBadge } from "./SourceLogos";
+import { useTrackContextMenu } from "./TrackContextMenu";
 
 export type LocalPlaylistSurfaceProps = {
   playlists: LocalPlaylist[];
@@ -52,6 +55,7 @@ function LocalPlaylistGallery({
 }: LocalPlaylistSurfaceProps) {
   const [name, setName] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const confirm = useConfirm();
   const fileTracks = useMemo(() => allTracks, [allTracks]);
 
   function submit(event: React.FormEvent) {
@@ -104,7 +108,11 @@ function LocalPlaylistGallery({
                 className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full bg-white/90 text-neutral-400 opacity-0 shadow-sm ring-1 ring-black/5 transition hover:bg-red-50 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (window.confirm(`删除 Aria 歌单“${playlist.name}”？音频文件不会被删除。`)) onDelete(playlist.id);
+                  void (async () => {
+                    if (await confirm({ title: `删除 Aria 歌单“${playlist.name}”？`, description: "音频文件不会被删除。", confirmLabel: "删除歌单", tone: "danger" })) {
+                      onDelete(playlist.id);
+                    }
+                  })();
                 }}
               >
                 <Trash2 className="size-4" />
@@ -139,9 +147,12 @@ export function LocalPlaylistDetail({
   const [syncError, setSyncError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(playlist.name);
+  const confirm = useConfirm();
+  const trackMenu = useTrackContextMenu();
   const draggedId = useRef<string | null>(null);
   const virtual = useVirtualRows({ count: selectedTracks.length, rowHeight: 80, overscan: 8 });
   const selectedIds = useMemo(() => new Set(playlist.trackIds), [playlist.trackIds]);
+  const dedup = useMemo(() => findPlaylistDuplicates(selectedTracks), [selectedTracks]);
 
   function moveTrack(trackId: string, destination: number) {
     if (!onReorder) return;
@@ -202,13 +213,38 @@ export function LocalPlaylistDetail({
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <Button size="sm" onClick={() => setPickerOpen(true)}><Plus />添加歌曲</Button>
+            {dedup.removableTracks.length > 0 && (
+              <Button
+                variant="glass"
+                size="sm"
+                title="保留高音质版本，移除重复曲目（支持 10 秒撤销）"
+                onClick={() => onRemove(playlist.id, dedup.removableTracks)}
+              >
+                <Sparkles />
+                去重 ({dedup.removableTracks.length})
+              </Button>
+            )}
             {playlist.remoteRef && (
               <Button variant="glass" size="sm" onClick={() => void syncReference()} disabled={syncing}>
                 {syncing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
                 {syncing ? "同步中" : "刷新B站歌单"}
               </Button>
             )}
-            <Button variant="ghost" size="sm" aria-label="删除 Aria 歌单" title="删除歌单（不会删除音频文件）" onClick={() => { if (window.confirm(`删除 Aria 歌单“${playlist.name}”？音频文件不会被删除。`)) onDelete(playlist.id); }}><Trash2 />删除歌单</Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="删除 Aria 歌单"
+              title="删除歌单（不会删除音频文件）"
+              onClick={() => {
+                void (async () => {
+                  if (await confirm({ title: `删除 Aria 歌单“${playlist.name}”？`, description: "音频文件不会被删除。", confirmLabel: "删除歌单", tone: "danger" })) {
+                    onDelete(playlist.id);
+                  }
+                })();
+              }}
+            >
+              <Trash2 />删除歌单
+            </Button>
           </div>
         </div>
         {syncError && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-600">{syncError}</p>}
@@ -244,7 +280,9 @@ export function LocalPlaylistDetail({
                 onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id, selectedTracks); } }}
                 className="aria-flat-row absolute inset-x-0 grid h-[4.5rem] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 text-left"
                 style={{ top: offsetTop }}
+                data-track-context-row="true"
                 onClick={() => onPickTrack(track.id, selectedTracks)}
+                onContextMenu={(event) => trackMenu?.open(event, track, selectedTracks)}
               >
                 {onReorder ? (
                   <span className="flex items-center justify-center text-neutral-400" title="拖动调整顺序">

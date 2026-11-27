@@ -154,7 +154,7 @@ export function UpdateToastCard({
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-muted)]">
             <div
-              className="h-full rounded-full bg-[var(--accent)] transition-all duration-200"
+              className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]"
               style={{ width: `${Math.max(2, Math.min(100, state.percent ?? 0))}%` }}
             />
           </div>

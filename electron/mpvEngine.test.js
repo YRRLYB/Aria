@@ -299,4 +299,35 @@ describe("native mpv output", () => {
     await engine.setVolume(180);
     expect(engine.state.volume).toBe(100);
   });
+
+  it("compiles multi-filter PEQ chains with preamp and configures stereo balance / mono pan filters", async () => {
+    const engine = new MpvAudioEngine({ app: { isPackaged: false }, writeLog: vi.fn(), sendEvent: vi.fn() });
+    const calls = [];
+    engine.command = vi.fn().mockImplementation(async (...args) => {
+      calls.push(args);
+      if (args[0] === "get_property" && args[1] === "af") {
+        return [{ label: "aria-normalization" }];
+      }
+      return [];
+    });
+
+    await engine.setEqualizer(true, [], {
+      preampDb: -3.5,
+      filters: [
+        { type: "lowshelf", freq: 105, gain: 4.2, q: 0.71 },
+        { type: "peaking", freq: 3100, gain: 2.5, q: 1.8 },
+        { type: "highshelf", freq: 10000, gain: -1.2, q: 0.71 },
+      ],
+    });
+    const eqAdd = calls.find((c) => c[0] === "af" && c[1] === "add" && String(c[2]).startsWith("@aria-eq:"));
+    expect(eqAdd?.[2]).toContain("volume=-3.50dB");
+    expect(eqAdd?.[2]).toContain("lowshelf=f=105:width_type=q:width=0.71:g=4.2");
+    expect(eqAdd?.[2]).toContain("equalizer=f=3100:width_type=q:width=1.8:g=2.5");
+    expect(eqAdd?.[2]).toContain("highshelf=f=10000:width_type=q:width=0.71:g=-1.2");
+
+    calls.length = 0;
+    await engine.setChannelMix(-0.5, true);
+    const chAdd = calls.find((c) => c[0] === "af" && c[1] === "add" && String(c[2]).startsWith("@aria-channel:"));
+    expect(chAdd?.[2]).toContain("pan=stereo|c0=0.500*c0+0.500*c1|c1=0.250*c0+0.250*c1");
+  });
 });

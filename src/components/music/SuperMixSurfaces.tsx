@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Track } from "@/data/music";
 import { api } from "@/lib/api";
 import {
@@ -32,6 +33,7 @@ import {
   type SuperMixStrategy,
 } from "@/lib/localPlaylists";
 import { formatAudioDetail } from "@/lib/playerPresentation";
+import { findPlaylistDuplicates } from "@/lib/playlistDedup";
 import { countTrackSources, mixSuperMixTracks, type SuperMixBucket } from "@/lib/superMix";
 import { providerTrackToUiTrack } from "@/lib/trackMappers";
 import { cn } from "@/lib/utils";
@@ -41,6 +43,7 @@ import { LocalTrackPickerDialog } from "./LocalPlaylistSurfaces";
 import { PlaylistTrackBrowser, type PickerPlaylistCatalog } from "./PlaylistTrackBrowser";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 import { SourceBadge, SourceLogo } from "./SourceLogos";
+import { useTrackContextMenu } from "./TrackContextMenu";
 
 export const SUPER_MIX_ALL_LOCAL_ID = "__all_local__";
 
@@ -163,7 +166,7 @@ function SourceCompositionBar({
               width: `${Math.max(4, (count / total) * 100)}%`,
               backgroundColor: SOURCE_COLOR[source].color,
             }}
-            className="h-full transition-all"
+            className="h-full transition-[width,background-color,opacity] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]"
           />
         ))}
       </div>
@@ -768,6 +771,7 @@ function SuperMixEditorDialog({
 
 export function SuperMixSurface(props: SuperMixSurfaceProps) {
   const [editorOpen, setEditorOpen] = useState(false);
+  const confirm = useConfirm();
 
   if (props.selectedPlaylist) {
     return (
@@ -832,9 +836,11 @@ export function SuperMixSurface(props: SuperMixSurfaceProps) {
                 className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full bg-white/90 text-neutral-400 opacity-0 shadow-sm ring-1 ring-black/5 transition hover:bg-red-50 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (window.confirm(`删除 Super混合“${playlist.name}”？原平台歌单与本地音频不会被删除。`)) {
-                    props.onDelete(playlist.id);
-                  }
+                  void (async () => {
+                    if (await confirm({ title: `删除 Super混合“${playlist.name}”？`, description: "原平台歌单与本地音频不会被删除。", confirmLabel: "删除歌单", tone: "danger" })) {
+                      props.onDelete(playlist.id);
+                    }
+                  })();
                 }}
               >
                 <Trash2 className="size-4" />
@@ -905,6 +911,8 @@ function SuperMixDetail({
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
+  const trackMenu = useTrackContextMenu();
   const draggedId = useRef<string | null>(null);
 
   const sourceCounts = useMemo(() => countTrackSources(selectedTracks), [selectedTracks]);
@@ -913,6 +921,7 @@ function SuperMixDetail({
     [selectedTracks, sourceFilter],
   );
   const selectedIds = useMemo(() => new Set(playlist.trackIds), [playlist.trackIds]);
+  const dedup = useMemo(() => findPlaylistDuplicates(selectedTracks), [selectedTracks]);
   const virtual = useVirtualRows({ count: filteredTracks.length, rowHeight: 80, overscan: 8 });
   const strategy = playlist.superMix?.strategy ?? "interleave";
 
@@ -1096,14 +1105,27 @@ function SuperMixDetail({
               <Plus />
               翻歌单加单曲
             </Button>
+            {dedup.removableTracks.length > 0 && (
+              <Button
+                variant="glass"
+                size="sm"
+                title="保留高音质版本，移除重复曲目（支持 10 秒撤销）"
+                onClick={() => onRemove(playlist.id, dedup.removableTracks)}
+              >
+                <Sparkles />
+                去重 ({dedup.removableTracks.length})
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
               aria-label="删除 Super混合"
               onClick={() => {
-                if (window.confirm(`删除 Super混合“${playlist.name}”？原平台歌单与本地音频不会被删除。`)) {
-                  onDelete(playlist.id);
-                }
+                void (async () => {
+                  if (await confirm({ title: `删除 Super混合“${playlist.name}”？`, description: "原平台歌单与本地音频不会被删除。", confirmLabel: "删除歌单", tone: "danger" })) {
+                    onDelete(playlist.id);
+                  }
+                })();
               }}
             >
               <Trash2 />
@@ -1205,7 +1227,9 @@ function SuperMixDetail({
                 }}
                 className="aria-flat-row absolute inset-x-0 grid h-[4.5rem] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 text-left"
                 style={{ top: offsetTop }}
+                data-track-context-row="true"
                 onClick={() => onPickTrack(track.id, filteredTracks)}
+                onContextMenu={(event) => trackMenu?.open(event, track, filteredTracks)}
               >
                 {onReorder && sourceFilter === "all" ? (
                   <span className="flex items-center justify-center text-neutral-400" title="拖动调整顺序">

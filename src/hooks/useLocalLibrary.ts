@@ -150,6 +150,25 @@ export function useLocalLibrary(options: {
     options.applyTrackUpdate(trackId, updateTrack, { includeHistory: true });
   }
 
+  async function importLocalFiles(filePaths: string[]) {
+    const result = await api.importLocalFiles(filePaths);
+    const importedPaths = new Set(result.tracks.map((track) => track.path));
+    const libraryUiTracks = result.library.tracks.map(localTrackToUiTrack);
+    const importedUiTracks = result.tracks.map((track, index) => {
+      const matched = libraryUiTracks.find((item) => item.id === track.id || (importedPaths.has(track.path) && item.localPath === track.path));
+      return matched ?? localTrackToUiTrack(track, index);
+    });
+    if (libraryUiTracks.length) {
+      setLocalTracks(libraryUiTracks);
+      warmLocalCoverCache(importedUiTracks.length ? importedUiTracks : libraryUiTracks);
+      setLibraryMeta({
+        roots: result.library.roots,
+        updatedAt: result.library.updatedAt,
+      });
+    }
+    return importedUiTracks;
+  }
+
   return {
     localTracks,
     setLocalTracks,
@@ -165,6 +184,7 @@ export function useLocalLibrary(options: {
     scanBackendPath,
     scanCdLibrary,
     removeLibraryRoot,
+    importLocalFiles,
     replaceLocalArtwork,
   };
 }

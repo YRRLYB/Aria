@@ -58,7 +58,7 @@ export function SpectrumCanvas({
     const renderCacheRef: { current: SpectrumRenderCache | null } = { current: null };
 
     const schedule = () => {
-      if (scheduled) return;
+      if (scheduled || document.hidden) return;
       scheduled = true;
       frame = window.requestAnimationFrame(() => {
         scheduled = false;
@@ -67,9 +67,10 @@ export function SpectrumCanvas({
     };
 
     const draw = () => {
+      if (document.hidden) return;
       const inputs = inputsRef.current;
       const now = performance.now();
-      if (now - lastPaintAtRef.current < 15) {
+      if (now - lastPaintAtRef.current < 33) {
         schedule();
         return;
       }
@@ -103,9 +104,22 @@ export function SpectrumCanvas({
       schedule();
     });
     observer.observe(canvas);
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (scheduled || frame) {
+          window.cancelAnimationFrame(frame);
+          frame = 0;
+          scheduled = false;
+        }
+      } else {
+        draw();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     draw();
     return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       observer.disconnect();
       if (scheduled || frame) window.cancelAnimationFrame(frame);
       scheduled = false;

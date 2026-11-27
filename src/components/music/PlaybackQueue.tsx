@@ -5,7 +5,7 @@ import { QueueList } from "@/components/music/PlayerSidePanels";
 import type { Track } from "@/data/music";
 import { usePlaylistActions } from "./PlaylistActions";
 
-export function PlaybackQueue({ tracks, activeTrackId, onPickTrack, onClose, onPlayNext, onRemove, onMove, onClear }: {
+export function PlaybackQueue({ tracks, activeTrackId, onPickTrack, onClose, onPlayNext, onRemove, onMove, onReorder, onClear }: {
   tracks: Track[];
   activeTrackId: string;
   onPickTrack: (id: string) => void;
@@ -13,6 +13,7 @@ export function PlaybackQueue({ tracks, activeTrackId, onPickTrack, onClose, onP
   onPlayNext?: (id: string) => void;
   onRemove?: (id: string) => void;
   onMove?: (id: string, direction: "up" | "down") => void;
+  onReorder?: (sourceId: string, targetId: string, position: "before" | "after") => void;
   onClear?: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -56,6 +57,7 @@ export function PlaybackQueue({ tracks, activeTrackId, onPickTrack, onClose, onP
           onPlayNext={onPlayNext}
           onRemove={onRemove}
           onMove={onMove}
+          onReorder={onReorder}
         />
       </div>
     </dialog>

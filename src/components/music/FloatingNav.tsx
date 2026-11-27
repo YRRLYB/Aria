@@ -41,6 +41,7 @@ export function FloatingNav({
     { x: 120, y: 364 },
   ];
   const center = { x: 42, y: 428 };
+  const waveDelays = [0, 32, 58, 78, 94, 106, 114];
 
   return (
     <div
@@ -62,7 +63,7 @@ export function FloatingNav({
     >
       <button
         type="button"
-        className="floating-nav-orb pointer-events-auto absolute z-30 flex size-[4.5rem] items-center justify-center rounded-full border shadow-[0_18px_50px_rgba(47,55,76,0.16)] [&_*]:pointer-events-none"
+        className="floating-nav-orb pointer-events-auto absolute z-30 flex size-[4.5rem] items-center justify-center rounded-full border shadow-[0_18px_50px_rgba(47,55,76,0.16)] transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.92] [&_*]:pointer-events-none"
         style={{ left: center.x - 36, top: center.y - 36 }}
         aria-label="副导航"
         aria-expanded={open}
@@ -73,7 +74,7 @@ export function FloatingNav({
         <AriaIcon
           name="nav-orb"
           className={cn(
-            "size-9 transition duration-200",
+            "size-9 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
             open && "rotate-45 scale-[0.9]",
           )}
         />
@@ -81,7 +82,7 @@ export function FloatingNav({
 
       <svg
         className={cn(
-          "pointer-events-none absolute inset-0 h-full w-full overflow-visible transition duration-200",
+          "pointer-events-none absolute inset-0 h-full w-full overflow-visible transition-opacity duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
           open ? "opacity-100" : "opacity-0",
         )}
         aria-hidden="true"
@@ -91,19 +92,20 @@ export function FloatingNav({
           const midY = center.y + (pos.y - center.y) * 0.58;
           const wave = index % 2 === 0 ? 10 : -10;
           const path = `M ${center.x} ${center.y} C ${midX - 8} ${midY + 10}, ${midX + wave} ${midY - 10}, ${pos.x} ${pos.y}`;
+          const delayMs = waveDelays[index] ?? 114;
 
           return (
             <g key={`${pos.x}-${pos.y}`}>
               <path
                 d={path}
                 className="nav-wave-base"
-                style={{ transitionDelay: open ? `${index * 25}ms` : "0ms" }}
+                style={{ transitionDelay: open ? `${delayMs}ms` : "0ms" }}
               />
               {open && (
                 <path
                   d={path}
                   className="nav-wave-flow"
-                  style={{ animationDelay: `${index * 120}ms` }}
+                  style={{ animationDelay: `${index * 90}ms` }}
                 />
               )}
             </g>
@@ -116,20 +118,21 @@ export function FloatingNav({
           const pos = nodePositions[index];
           const iconName = navIconNames[item.id] ?? "nav-player";
           const active = activeView === item.id;
+          const delayMs = waveDelays[index] ?? 114;
 
           return (
             <button
               key={item.id}
               type="button"
               className={cn(
-                "floating-nav-node group absolute z-20 flex size-12 items-center justify-center rounded-full border shadow-[0_14px_34px_rgba(47,55,76,0.13)] transition duration-200 [&_*]:pointer-events-none",
-                open ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-50 opacity-0",
+                "floating-nav-node group absolute z-20 flex size-12 items-center justify-center rounded-full border shadow-[0_14px_34px_rgba(47,55,76,0.13)] transition-[transform,opacity,background-color,border-color,color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.92] [&_*]:pointer-events-none",
+                open ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-[0.86] opacity-0",
                 active && "is-active",
               )}
               style={{
                 left: pos.x - 24,
                 top: pos.y - 24,
-                transitionDelay: open ? `${index * 25}ms` : "0ms",
+                transitionDelay: open ? `${delayMs}ms` : "0ms",
               }}
               aria-label={item.label}
               tabIndex={open ? 0 : -1}

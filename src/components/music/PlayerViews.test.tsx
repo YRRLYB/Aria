@@ -168,6 +168,28 @@ describe("player and playlist surfaces", () => {
     expect(markup).toContain('aria-label="当前曲目无视频"');
   });
 
+  it("highlights the resolved fallback quality button when Hi-Res is unavailable", () => {
+    const track = {
+      ...tracks[0],
+      source: "netease" as const,
+      quality: "Lossless" as const,
+      currentLevel: "lossless" as const,
+      availableLevels: ["standard", "higher", "exhigh", "lossless"] as const,
+    };
+    const markup = renderToStaticMarkup(<PlayerSurface
+      activeTrack={{ ...track, availableLevels: [...track.availableLevels] }} palette={{ primary: "#777777", secondary: "#999999" }}
+      playing={false} visualizerPlaying={false} visualizerActive={false} shuffleEnabled={false} repeatMode="all"
+      onTogglePlay={vi.fn()} onToggleShuffle={vi.fn()} onCycleRepeatMode={vi.fn()} onNext={vi.fn()} onPrevious={vi.fn()} onOpenImmersive={vi.fn()}
+      videoMode={false} onToggleVideoMode={vi.fn()} videoActive={false} videoControlRef={{ current: null }} onVideoDuration={vi.fn()} onVideoEnded={vi.fn()} onVideoError={vi.fn()}
+      equalizerEnabled={false} onOpenEqualizer={vi.fn()} onReplaceLocalArtwork={vi.fn(async () => undefined)} liked={false} onToggleLike={vi.fn()}
+      volume={50} onVolumeChange={vi.fn()} qualityLevel="hires" onQualityLevelChange={vi.fn()} hifiEnabled masterQualityEnabled={false}
+      onMasterQualityEnabledChange={vi.fn()} exclusiveMode={false} durationSeconds={200} analyserRef={{ current: null }} visualizerMode="system"
+      lyricDisplayMode="original" onLyricDisplayModeChange={vi.fn()} onSeek={vi.fn()} />);
+    const buttons = markup.match(/<button\b[^>]*>[^<]*<\/button>/g) ?? [];
+    expect(buttons.find((button) => button.includes(">Hi-Res</button>"))).toContain('aria-pressed="false"');
+    expect(buttons.find((button) => button.includes(">无损</button>"))).toContain('aria-pressed="true"');
+  });
+
   it("mounts the Bilibili live video curtain without tearing down the underlying player surface", () => {
     const biliTrack = {
       ...tracks[0],
@@ -581,8 +603,8 @@ describe("player and playlist surfaces", () => {
           guestDirectBaseUrl: null,
           guestDirectToken: null,
           members: [
-            { peerId: "aria-0001", nickname: "阿音", avatarUrl: null, role: "host", joinedAt: 1, connectedVia: "ws" },
-            { peerId: "aria-0002", nickname: "小晴", avatarUrl: null, role: "guest", joinedAt: 2, connectedVia: "webrtc" },
+            { peerId: "aria-0001", nickname: "阿音", avatarUrl: null, role: "host", joinedAt: 1, connectedVia: "ws", presence: "active", online: true },
+            { peerId: "aria-0002", nickname: "小晴", avatarUrl: null, role: "guest", joinedAt: 2, connectedVia: "webrtc", presence: "away", online: true },
           ],
           playback: {
             nonce: "trk_1",
@@ -705,9 +727,13 @@ describe("player and playlist surfaces", () => {
     expect(activeMarkup).toContain("Aria 一起听");
     expect(activeMarkup).toContain("A7K9M2");
     expect(activeMarkup).toContain("2 / 5 人在席");
+    expect(activeMarkup).toContain("邀请入座");
+    expect(activeMarkup).toContain("打开播放器");
     expect(activeMarkup).toContain("房间信息");
     expect(activeMarkup).toContain("播放队列");
     expect(activeMarkup).toContain("夜间无损Super混");
+    expect(activeMarkup).not.toContain('aria-label="房间播放进度"');
+    expect(activeMarkup).not.toContain("暂离");
     expect(activeMarkup).not.toContain("VIP 接力");
     expect(activeMarkup).not.toContain("IN SYNC");
 

@@ -4,6 +4,7 @@ import { AriaIcon } from "@/components/icons/aria";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyableTrackText, CoverArt, EmptyState, StatTile } from "@/components/music/shared";
+import { useTrackContextMenu } from "@/components/music/TrackContextMenu";
 import { SourceBadge, SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import type { PlayHistoryEntry } from "@/lib/playHistory";
@@ -27,6 +28,7 @@ export function HomeSidePanel({
   onOpenStats: () => void;
   onPickTrack: (id: string) => void;
 }) {
+  const trackMenu = useTrackContextMenu();
   const todayStart = useMemo(() => {
     const date = new Date();
     date.setHours(0, 0, 0, 0);
@@ -81,8 +83,10 @@ export function HomeSidePanel({
         {rankedTracks.map((track, index) => (
           <button
             key={track.id}
+            data-track-context-row="true"
             className="grid w-full grid-cols-[1.5rem_2.5rem_minmax(0,1fr)] items-center gap-2 rounded-[1rem] px-2 py-2 text-left transition hover:bg-white/72"
             onClick={() => onPickTrack(track.id)}
+            onContextMenu={(event) => trackMenu?.open(event, track, rankedTracks)}
           >
             <span className="text-center text-xs font-semibold text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
             <CoverArt track={track} className="size-10 rounded-xl" />
@@ -125,6 +129,7 @@ export function HomeSurface({
   onPickTrack: (id: string) => void;
   onOpenPlayer: () => void;
 }) {
+  const trackMenu = useTrackContextMenu();
   const rankedTracks = useMemo(
     () =>
       [...homeTracks]
@@ -207,8 +212,10 @@ export function HomeSurface({
             {rankedTracks.map((track, index) => (
               <button
                 key={track.id}
+                data-track-context-row="true"
                 className="grid grid-cols-[2rem_3rem_1fr_auto] items-center gap-3 rounded-[1.1rem] p-2 text-left transition hover:bg-white/65"
                 onClick={() => onPickTrack(track.id)}
+                onContextMenu={(event) => trackMenu?.open(event, track, rankedTracks)}
               >
                 <span className="text-center text-sm font-semibold text-neutral-400">{index + 1}</span>
                 <CoverArt track={track} className="size-12 rounded-xl" />
@@ -236,8 +243,10 @@ export function HomeSurface({
             {recentHistory.map((entry) => (
               <button
                 key={`${entry.track.id}-${entry.playedAt}`}
+                data-track-context-row="true"
                 className="aria-flat-row grid grid-cols-[3rem_1fr_auto] items-center gap-3 rounded-xl px-2 py-2.5 text-left"
                 onClick={() => onPickTrack(entry.track.id)}
+                onContextMenu={(event) => trackMenu?.open(event, entry.track, recentHistory.map((item) => item.track))}
               >
                 <CoverArt track={entry.track} className="size-12 rounded-xl" />
                 <div className="min-w-0">
@@ -439,6 +448,7 @@ function VirtualHistoryList({
   filtered: boolean;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
+  const trackMenu = useTrackContextMenu();
   const virtual = useVirtualRows({ count: history.length, rowHeight: 74, overscan: 8 });
 
   if (!history.length) {
@@ -462,8 +472,10 @@ function VirtualHistoryList({
             <button
               key={`${entry.track.id}-${entry.playedAt}`}
               type="button"
+              data-track-context-row="true"
               style={{ top: offsetTop }}
               onClick={() => onPickTrack(entry.track.id, queue)}
+              onContextMenu={(event) => trackMenu?.open(event, entry.track, queue)}
               className={cn(
                 "history-row group absolute left-0 right-0 grid h-[68px] grid-cols-[2rem_3rem_minmax(0,1fr)_auto] items-center gap-3.5 rounded-xl border-b px-3 text-left transition",
                 isCurrent && "is-current",

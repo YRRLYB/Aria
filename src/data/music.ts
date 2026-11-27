@@ -42,6 +42,7 @@ export type Track = {
   sampleRate?: number | null;
   bpm?: number | null;
   libraryRoot?: string;
+  localPath?: string;
   mediaKind?: "file" | "audio-cd";
   nativeDevice?: string | null;
   nativeStart?: string | null;

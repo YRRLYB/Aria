@@ -438,6 +438,7 @@ export function CopyableTrackText({
           : undefined
       }
       onContextMenu={(event) => {
+        if (event.currentTarget.closest("[data-track-context-row]")) return;
         event.preventDefault();
         event.stopPropagation();
         void copyTrackTextToClipboard(track, field);

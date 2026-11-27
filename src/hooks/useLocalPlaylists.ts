@@ -161,6 +161,31 @@ export function useLocalPlaylists(tracks: Track[]) {
     setSelectedId((current) => current === id ? null : current);
   }
 
+  function restorePlaylistTracks(
+    id: string,
+    snapshot: { trackIds: string[]; trackSnapshots?: Record<string, Track>; manualTrackIds?: string[] },
+  ) {
+    setPlaylists((current) =>
+      current.map((playlist) => {
+        if (playlist.id !== id) return playlist;
+        return {
+          ...playlist,
+          trackIds: [...snapshot.trackIds],
+          trackSnapshots: snapshot.trackSnapshots ? { ...snapshot.trackSnapshots } : undefined,
+          ...(playlist.superMix
+            ? {
+                superMix: {
+                  ...playlist.superMix,
+                  manualTrackIds: snapshot.manualTrackIds?.length ? [...snapshot.manualTrackIds] : undefined,
+                },
+              }
+            : {}),
+          updatedAt: Date.now(),
+        };
+      }),
+    );
+  }
+
   return {
     playlists,
     selectedId,
@@ -174,6 +199,7 @@ export function useLocalPlaylists(tracks: Track[]) {
     rename,
     addTracks,
     removeTracks,
+    restorePlaylistTracks,
     reorder,
     syncReference,
     remove,

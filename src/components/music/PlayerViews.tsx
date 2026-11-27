@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { lazy, Suspense } from "react";
 import {
   AudioLines,
+  Captions,
   Copy,
   BookOpen,
   ImagePlus,
@@ -34,6 +35,7 @@ import {
   parseDuration,
   qualityOptions,
   readableForegroundForAccent,
+  resolveDisplayedQualityLevel,
   type AudioOutputMode,
   type CoverPalette,
   type QualityLevel,
@@ -42,6 +44,7 @@ import { sourceLabel } from "@/lib/trackLabels";
 import { formatYoutubeVideoOffset } from "@/lib/youtubeVideoOffset";
 import { BILIBILI_LYRICS_ENABLED, BILIBILI_VIDEO_ENABLED, canPlayTrackVideo, isStandaloneMvSource } from "@/lib/features";
 import { getPlaybackTime, subscribePlaybackTime, usePlaybackTime } from "@/lib/playbackClock";
+import { LyricContextMenu, type LyricContextMenuTarget } from "./LyricContextMenu";
 import { cn } from "@/lib/utils";
 const SongEncyclopediaDialog = lazy(() => import("./SongEncyclopediaDialog"));
 
@@ -174,7 +177,7 @@ function PlayerTransportCluster({
             } as CSSProperties
           }
         />
-        <span className="player-volume-value text-xs font-medium leading-none text-neutral-500">{volume}</span>
+        <span className="player-volume-value text-xs font-medium leading-none tabular-nums text-neutral-500">{volume}</span>
       </div>
     </div>
   );
@@ -479,7 +482,7 @@ function PlayerVideoCurtain({
         onPointerLeave={immersive ? () => { chromeHoveredRef.current = false; scheduleHideChrome(); } : undefined}
         className={cn(
           "relative z-20 flex flex-wrap items-start justify-between gap-3",
-          immersive && "aria-immersive-header absolute inset-x-0 top-0 bg-gradient-to-b from-black/78 via-black/38 to-transparent p-5 transition-all duration-300 ease-out sm:p-7",
+          immersive && "aria-immersive-header absolute inset-x-0 top-0 bg-gradient-to-b from-black/78 via-black/38 to-transparent p-5 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] sm:p-7",
           controlsDimmed && "pointer-events-none -translate-y-2 opacity-0",
         )}
       >
@@ -659,7 +662,7 @@ function PlayerVideoCurtain({
           >
             {!immersive && (
               <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-                <CoverArt track={activeTrack} className="size-full scale-110 opacity-35 blur-2xl" fit="cover" large />
+                <CoverArt track={activeTrack} className="size-full scale-110 opacity-35 blur-xl" fit="cover" large />
               </div>
             )}
             <VideoStage
@@ -696,7 +699,7 @@ function PlayerVideoCurtain({
         className={cn(
           "aria-mv-dock relative z-20",
           immersive
-            ? "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/82 via-black/38 to-transparent p-4 pb-6 transition-all duration-300 ease-out sm:p-6 sm:pb-8"
+            ? "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/82 via-black/38 to-transparent p-4 pb-6 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] sm:p-6 sm:pb-8"
             : "z-10 space-y-2.5 pb-1 sm:pb-1.5",
           controlsDimmed && "pointer-events-none translate-y-3 opacity-0",
         )}
@@ -799,6 +802,19 @@ export function PlayerSurface({
   visualizerMode,
   lyricDisplayMode,
   onLyricDisplayModeChange,
+  playbackSpeed = 1,
+  onPlaybackSpeedChange,
+  playbackSpeedLocked = false,
+  sleepTimerMode = "off",
+  sleepTimerRemainingSec = null,
+  onSleepTimerSelect,
+  crossfadeSeconds = 0,
+  onCrossfadeSecondsChange,
+  crossfadeBypassed = false,
+  desktopLyricsOpen = false,
+  desktopLyricsLocked = false,
+  onToggleDesktopLyrics,
+  onToggleDesktopLyricsLock,
   onSeek,
 }: {
   activeTrack: Track;
@@ -857,6 +873,19 @@ export function PlayerSurface({
   visualizerMode: AudioOutputMode;
   lyricDisplayMode: "original" | "bilingual";
   onLyricDisplayModeChange: (mode: "original" | "bilingual") => void;
+  playbackSpeed?: number;
+  onPlaybackSpeedChange?: (speed: number) => void;
+  playbackSpeedLocked?: boolean;
+  sleepTimerMode?: "off" | "duration" | "track-end";
+  sleepTimerRemainingSec?: number | null;
+  onSleepTimerSelect?: (option: "off" | "track-end" | number) => void;
+  crossfadeSeconds?: number;
+  onCrossfadeSecondsChange?: (seconds: 0 | 2 | 4 | 6) => void;
+  crossfadeBypassed?: boolean;
+  desktopLyricsOpen?: boolean;
+  desktopLyricsLocked?: boolean;
+  onToggleDesktopLyrics?: () => void;
+  onToggleDesktopLyricsLock?: () => void;
   onSeek: (time: number) => void;
 }) {
   const canPlayVideo = canPlayTrackVideo(activeTrack);
@@ -865,9 +894,6 @@ export function PlayerSurface({
   const themePrimary = colorWithAlpha(palette.primary, 0.34);
   const themeSecondary = colorWithAlpha(palette.secondary, 0.24);
   const themeSoft = colorWithAlpha(palette.primary, 0.12);
-  // The selected request and the provider's actual stream are separate: a
-  // cached/limited stream must not overwrite the user's selected button.
-  const resolvedQualityLevel = qualityLevel;
   const availableLevels = activeTrack.availableLevels ?? [];
   const qualitySwitchableSource =
     activeTrack.source === "netease" ||
@@ -875,6 +901,12 @@ export function PlayerSurface({
     activeTrack.source === "bilibili" ||
     activeTrack.source === "youtube";
   const hasKnownQualityLevels = qualitySwitchableSource && availableLevels.length > 0;
+  // When a requested tier (e.g. Hi-Res) is unavailable on the current track,
+  // highlight the resolved fallback tier (e.g. 无损) so the pill group never
+  // renders with zero active selection.
+  const resolvedQualityLevel = qualitySwitchableSource
+    ? resolveDisplayedQualityLevel(qualityLevel, availableLevels, activeTrack.currentLevel, hifiEnabled)
+    : qualityLevel;
   const [artworkMenuPosition, setArtworkMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [songOptionsOpen, setSongOptionsOpen] = useState(false);
   const [encyclopediaOpen, setEncyclopediaOpen] = useState(false);
@@ -995,13 +1027,15 @@ export function PlayerSurface({
                 </div>
               </div>
             ) : (
-              <CoverArt
-                track={activeTrack}
-                className="size-full"
-                fit="cover"
-                large
-                onArtworkContextMenu={openArtworkMenu}
-              />
+              <div className={cn("aria-cover-breathe size-full origin-center", playing ? "scale-100" : "scale-[0.985]")}>
+                <CoverArt
+                  track={activeTrack}
+                  className="size-full"
+                  fit="cover"
+                  large
+                  onArtworkContextMenu={openArtworkMenu}
+                />
+              </div>
             )}
           </div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/6 via-transparent to-black/10" />
@@ -1026,50 +1060,211 @@ export function PlayerSurface({
                     size="icon"
                     aria-label="歌曲选项"
                     aria-expanded={songOptionsOpen}
-                    title="歌曲选项"
+                    title="歌曲选项（歌词 / 倍速 / 定时 / 淡入淡出）"
+                    className={cn(
+                      "relative",
+                      (sleepTimerMode !== "off" || Math.abs(playbackSpeed - 1) > 0.01 || crossfadeSeconds > 0) &&
+                        "text-violet-700",
+                    )}
                     onClick={() => setSongOptionsOpen((open) => !open)}
                   >
                     <AriaIcon name="sliders" className="size-4" />
+                    {(sleepTimerMode !== "off" || Math.abs(playbackSpeed - 1) > 0.01 || crossfadeSeconds > 0) && (
+                      <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-violet-500" />
+                    )}
                   </Button>
-                  {songOptionsOpen && (
-                    <div
-                      className="absolute right-0 top-full z-30 mt-2 w-56 rounded-[1.1rem] border border-white/80 bg-white/92 p-3 shadow-[0_16px_42px_rgba(23,23,23,0.14)] backdrop-blur-2xl"
-                      onPointerDown={(event) => event.stopPropagation()}
-                    >
-                      <div className="flex items-center gap-2 text-sm font-semibold">
-                        <Languages className="size-4 text-neutral-500" />
-                        歌曲选项
-                      </div>
-                      <p className="mt-1 text-xs text-neutral-500">歌词显示</p>
-                      <div className="mt-3 grid grid-cols-2 rounded-xl bg-neutral-950/[0.05] p-1">
-                        <button
-                          className={cn(
-                            "rounded-lg px-2 py-2 text-xs font-semibold transition",
-                            lyricDisplayMode === "original" ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                  <AnimatePresence>
+                    {songOptionsOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.96, y: -3 }}
+                        transition={{ duration: 0.16, ease: [0.23, 1, 0.32, 1] }}
+                        className="aria-select-menu absolute right-0 top-full z-30 mt-2 w-72 origin-top-right space-y-3 rounded-[1.2rem] border border-white/80 bg-white/94 p-3.5 shadow-[0_18px_46px_rgba(23,23,23,0.16)] backdrop-blur-2xl"
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        <div className="flex items-center justify-between text-sm font-semibold">
+                          <span className="flex items-center gap-2">
+                            <Languages className="size-4 text-neutral-500" />
+                            播放与歌词选项
+                          </span>
+                          {sleepTimerMode !== "off" && (
+                            <span className="rounded-full bg-violet-500/12 px-2 py-0.5 text-[11px] font-semibold text-violet-600 tabular-nums">
+                              {sleepTimerMode === "track-end"
+                                ? "播完本首停止"
+                                : sleepTimerRemainingSec !== null
+                                  ? `${formatDuration(sleepTimerRemainingSec)}`
+                                  : "定时中"}
+                            </span>
                           )}
-                          onClick={() => {
-                            onLyricDisplayModeChange("original");
-                            setSongOptionsOpen(false);
-                          }}
-                        >
-                          仅原文
-                        </button>
-                        <button
-                          className={cn(
-                            "rounded-lg px-2 py-2 text-xs font-semibold transition",
-                            lyricDisplayMode === "bilingual" ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
-                          )}
-                          onClick={() => {
-                            onLyricDisplayModeChange("bilingual");
-                            setSongOptionsOpen(false);
-                          }}
-                        >
-                          双语
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                        </div>
+
+                        <div>
+                          <p className="text-[11px] font-medium text-neutral-500">歌词显示</p>
+                          <div className="mt-1.5 grid grid-cols-2 rounded-xl bg-neutral-950/[0.05] p-1">
+                            <button
+                              className={cn(
+                                "rounded-lg px-2 py-1.5 text-xs font-semibold transition",
+                                lyricDisplayMode === "original" ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                              )}
+                              onClick={() => {
+                                onLyricDisplayModeChange("original");
+                                setSongOptionsOpen(false);
+                              }}
+                            >
+                              仅原文
+                            </button>
+                            <button
+                              className={cn(
+                                "rounded-lg px-2 py-1.5 text-xs font-semibold transition",
+                                lyricDisplayMode === "bilingual" ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                              )}
+                              onClick={() => {
+                                onLyricDisplayModeChange("bilingual");
+                                setSongOptionsOpen(false);
+                              }}
+                            >
+                              双语
+                            </button>
+                          </div>
+                        </div>
+
+                        {onPlaybackSpeedChange && (
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-neutral-500">
+                              <span className="font-medium">播放倍速</span>
+                              {playbackSpeedLocked && <span className="text-[10px] text-amber-600">一起听锁定 1.0x</span>}
+                            </div>
+                            <div className="mt-1.5 grid grid-cols-6 gap-1 rounded-xl bg-neutral-950/[0.05] p-1">
+                              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((speed) => {
+                                const active = Math.abs((playbackSpeedLocked ? 1 : playbackSpeed) - speed) < 0.01;
+                                return (
+                                  <button
+                                    key={speed}
+                                    type="button"
+                                    disabled={playbackSpeedLocked}
+                                    onClick={() => onPlaybackSpeedChange(speed)}
+                                    className={cn(
+                                      "rounded-lg py-1 text-[11px] font-semibold tabular-nums transition disabled:opacity-45",
+                                      active ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                                    )}
+                                  >
+                                    {speed}x
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {onSleepTimerSelect && (
+                          <div>
+                            <p className="text-[11px] font-medium text-neutral-500">定时关闭（结束前 10s 渐弱淡出）</p>
+                            <div className="mt-1.5 grid grid-cols-3 gap-1 rounded-xl bg-neutral-950/[0.05] p-1">
+                              {([
+                                { key: "off", label: "关闭" },
+                                { key: 15, label: "15 分" },
+                                { key: 30, label: "30 分" },
+                                { key: 45, label: "45 分" },
+                                { key: 60, label: "60 分" },
+                                { key: "track-end", label: "播完本首" },
+                              ] as const).map((item) => {
+                                const active =
+                                  (item.key === "off" && sleepTimerMode === "off") ||
+                                  (item.key === "track-end" && sleepTimerMode === "track-end");
+                                return (
+                                  <button
+                                    key={String(item.key)}
+                                    type="button"
+                                    onClick={() => onSleepTimerSelect(item.key)}
+                                    className={cn(
+                                      "rounded-lg px-1.5 py-1.5 text-[11px] font-semibold transition",
+                                      active ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                                    )}
+                                  >
+                                    {item.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {onCrossfadeSecondsChange && (
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-neutral-500">
+                              <span className="font-medium">曲间淡入淡出</span>
+                              {crossfadeBypassed && <span className="text-[10px] text-amber-600">独占/一起听旁路</span>}
+                            </div>
+                            <div className="mt-1.5 grid grid-cols-4 gap-1 rounded-xl bg-neutral-950/[0.05] p-1">
+                              {([0, 2, 4, 6] as const).map((sec) => {
+                                const active = crossfadeSeconds === sec;
+                                return (
+                                  <button
+                                    key={sec}
+                                    type="button"
+                                    onClick={() => onCrossfadeSecondsChange(sec)}
+                                    className={cn(
+                                      "rounded-lg py-1 text-[11px] font-semibold tabular-nums transition",
+                                      active ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                                    )}
+                                  >
+                                    {sec === 0 ? "关闭" : `${sec}s`}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {onToggleDesktopLyrics && (
+                          <div>
+                            <p className="text-[11px] font-medium text-neutral-500">桌面歌词摆件</p>
+                            <div className="mt-1.5 grid grid-cols-2 gap-1 rounded-xl bg-neutral-950/[0.05] p-1">
+                              <button
+                                type="button"
+                                onClick={onToggleDesktopLyrics}
+                                className={cn(
+                                  "rounded-lg py-1.5 text-[11px] font-semibold transition",
+                                  desktopLyricsOpen ? "bg-neutral-950 text-white shadow-sm" : "text-neutral-500 hover:text-neutral-950",
+                                )}
+                              >
+                                {desktopLyricsOpen ? "已开启" : "已关闭"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!desktopLyricsOpen}
+                                onClick={() => onToggleDesktopLyricsLock?.()}
+                                className={cn(
+                                  "rounded-lg py-1.5 text-[11px] font-semibold transition disabled:opacity-40",
+                                  desktopLyricsOpen && desktopLyricsLocked
+                                    ? "bg-neutral-950 text-white shadow-sm"
+                                    : "text-neutral-500 hover:text-neutral-950",
+                                )}
+                              >
+                                {desktopLyricsLocked ? "已锁定穿透" : "鼠标可拖拽"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
+                {onToggleDesktopLyrics && (
+                  <Button
+                    variant="glass"
+                    size="sm"
+                    title={desktopLyricsOpen ? (desktopLyricsLocked ? "桌面歌词已开启（穿透锁定）" : "关闭桌面歌词") : "开启桌面歌词"}
+                    aria-label={desktopLyricsOpen ? "关闭桌面歌词" : "开启桌面歌词"}
+                    aria-pressed={desktopLyricsOpen}
+                    className={cn("relative size-8 px-0", desktopLyricsOpen && "text-violet-700")}
+                    onClick={onToggleDesktopLyrics}
+                  >
+                    <Captions />
+                    {desktopLyricsOpen && <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-violet-500" />}
+                  </Button>
+                )}
                 <Button
                   variant="glass"
                   size="sm"
@@ -1324,6 +1519,7 @@ export function ImmersivePlayerView({
   onVideoError,
   videoActive,
   lyricDisplayMode = "bilingual",
+  onLyricCopied,
 }: {
   activeTrack: Track;
   palette: CoverPalette;
@@ -1366,6 +1562,7 @@ export function ImmersivePlayerView({
   onVideoError: (message: string) => void;
   videoActive: boolean;
   lyricDisplayMode?: "original" | "bilingual";
+  onLyricCopied?: (message: string) => void;
 }) {
   const lyrics = useMemo(() => {
     if (activeTrack.source === "bilibili" && !BILIBILI_LYRICS_ENABLED) {
@@ -1388,8 +1585,31 @@ export function ImmersivePlayerView({
     () => getActiveLyricIndex(lyrics, getPlaybackTime()),
     () => getActiveLyricIndex(lyrics, getPlaybackTime()),
   );
-  const visibleLyrics = lyrics.slice(Math.max(0, activeLyricIndex - 2), Math.min(lyrics.length, activeLyricIndex + 6));
   const videoActiveMode = BILIBILI_VIDEO_ENABLED && videoMode && Boolean(activeTrack.videoUrl);
+  const immersiveLineRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const manualScrollUntilRef = useRef(0);
+  const [manualScrolling, setManualScrolling] = useState(false);
+  const [lyricMenu, setLyricMenu] = useState<LyricContextMenuTarget | null>(null);
+
+  useEffect(() => {
+    setLyricMenu(null);
+  }, [activeTrack.id]);
+
+  useEffect(() => {
+    if (videoActiveMode) return;
+    if (typeof window !== "undefined" && Date.now() < manualScrollUntilRef.current) return;
+    immersiveLineRefs.current[activeLyricIndex]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [activeLyricIndex, activeTrack.id, videoActiveMode]);
+
+  const holdManualScroll = () => {
+    manualScrollUntilRef.current = Date.now() + 3500;
+    setManualScrolling(true);
+    window.setTimeout(() => {
+      if (Date.now() >= manualScrollUntilRef.current) {
+        setManualScrolling(false);
+      }
+    }, 3550);
+  };
 
   return (
     <motion.div
@@ -1398,10 +1618,10 @@ export function ImmersivePlayerView({
         ["--track-accent" as string]: palette.primary,
         ["--track-accent-fg" as string]: readableForegroundForAccent(palette.primary),
       } as CSSProperties}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.28 }}
+      initial={{ opacity: 0, scale: 0.97 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.97 }}
+      transition={{ duration: 0.26, ease: [0.23, 1, 0.32, 1] }}
     >
       {videoActiveMode ? (
         <div className="relative h-full w-full bg-black" onDoubleClick={onClose}>
@@ -1513,12 +1733,33 @@ export function ImmersivePlayerView({
         </div>
       ) : (
         <div className="relative h-full w-full">
+          <div className="absolute inset-0 bg-[linear-gradient(125deg,#080910,#10131d_48%,#07080c)]" />
           <div
-            className="absolute inset-0"
-            style={{
-              background: `radial-gradient(circle at 24% 24%, ${colorWithAlpha(palette.primary, 0.34)} 0, transparent 36%), radial-gradient(circle at 80% 76%, ${colorWithAlpha(palette.secondary, 0.24)} 0, transparent 34%), linear-gradient(125deg, #080910, #10131d 48%, #07080c)`,
-            }}
-          />
+            aria-hidden="true"
+            className={cn(
+              "aria-immersive-ambient",
+              (!playing || !visualizerActive) && "is-paused",
+            )}
+          >
+            <div
+              className="aria-ambient-orb-a"
+              style={{
+                background: `radial-gradient(circle at center, ${colorWithAlpha(palette.primary, 0.36)} 0%, transparent 66%)`,
+              }}
+            />
+            <div
+              className="aria-ambient-orb-b"
+              style={{
+                background: `radial-gradient(circle at center, ${colorWithAlpha(palette.secondary, 0.26)} 0%, transparent 64%)`,
+              }}
+            />
+            <div
+              className="aria-ambient-orb-c"
+              style={{
+                background: `radial-gradient(circle at center, ${colorWithAlpha(palette.primary, 0.16)} 0%, transparent 68%)`,
+              }}
+            />
+          </div>
           <div className="relative z-10 grid h-full grid-rows-[auto_minmax(0,1fr)_auto] px-6 py-6 lg:px-10 2xl:px-14">
             <div className="aria-immersive-header flex items-start justify-between gap-4">
               <div className="min-w-0">
@@ -1544,7 +1785,14 @@ export function ImmersivePlayerView({
 
             <div className="flex min-h-0 flex-1 flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-center lg:gap-8 2xl:gap-12">
               <div className="flex min-w-0 items-center gap-4 lg:block">
-                <div className="size-20 shrink-0 overflow-hidden rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.4)] lg:mx-auto lg:aspect-square lg:h-auto lg:w-full lg:max-w-[min(46vh,28rem)] lg:rounded-[2rem] lg:shadow-[0_42px_140px_rgba(0,0,0,0.46)]">
+                <div
+                  className={cn(
+                    "aria-cover-breathe size-20 shrink-0 origin-center overflow-hidden rounded-2xl lg:mx-auto lg:aspect-square lg:h-auto lg:w-full lg:max-w-[min(46vh,28rem)] lg:rounded-[2rem]",
+                    playing
+                      ? "scale-100 shadow-[0_24px_70px_rgba(0,0,0,0.44)] lg:shadow-[0_42px_140px_rgba(0,0,0,0.48)]"
+                      : "scale-[0.93] shadow-[0_14px_38px_rgba(0,0,0,0.34)] lg:shadow-[0_22px_68px_rgba(0,0,0,0.36)]",
+                  )}
+                >
                   <CoverArt track={activeTrack} className="size-full" fit="cover" large />
                 </div>
                 <div className="min-w-0 lg:hidden">
@@ -1558,9 +1806,9 @@ export function ImmersivePlayerView({
                 </div>
               </div>
 
-              <div className="flex min-h-0 min-w-0 flex-col justify-center overflow-hidden">
+              <div className="flex min-h-0 min-w-0 flex-col justify-center overflow-hidden lg:h-full lg:max-h-[min(66vh,40rem)]">
                 <div className="hidden shrink-0 lg:block">
-                  <h1 className="truncate text-3xl font-semibold leading-tight 2xl:text-4xl" title={activeTrack.title}>
+                  <h1 className="truncate text-3xl font-semibold leading-tight tracking-[-0.025em] 2xl:text-4xl" title={activeTrack.title}>
                     <CopyableTrackText track={activeTrack} field="title">{activeTrack.title}</CopyableTrackText>
                   </h1>
                   <p className="mt-3 truncate text-lg text-white/65">
@@ -1569,24 +1817,55 @@ export function ImmersivePlayerView({
                   <p className="mt-1 truncate text-sm text-white/35">{activeTrack.album}</p>
                 </div>
 
-                <div className="no-scrollbar mt-2 min-h-0 overflow-y-auto pr-2 lg:mt-6">
-                  <div className="space-y-1.5">
-                    {visibleLyrics.map((line, index) => {
-                      const originalIndex = Math.max(0, activeLyricIndex - 2) + index;
-                      const active = originalIndex === activeLyricIndex;
+                <div
+                  className="aria-lyric-scroll aria-scroll-fade-y no-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto pr-2 lg:mt-6"
+                  onWheel={holdManualScroll}
+                  onTouchStart={holdManualScroll}
+                  onPointerDown={holdManualScroll}
+                >
+                  <div className="space-y-1.5 py-6">
+                    {lyrics.map((line, index) => {
+                      const active = index === activeLyricIndex;
+                      const distance = activeLyricIndex >= 0 ? Math.abs(index - activeLyricIndex) : 0;
+                      const depthStyle: CSSProperties | undefined = active
+                        ? undefined
+                        : !manualScrolling && activeLyricIndex >= 0
+                          ? {
+                              opacity: distance === 1 ? 0.56 : distance === 2 ? 0.34 : 0.22,
+                            }
+                          : undefined;
                       return (
                         <button
-                          key={`${activeTrack.id}-immersive-${line.time}-${line.text}-${originalIndex}`}
+                          key={`${activeTrack.id}-immersive-${line.time}-${line.text}-${index}`}
+                          ref={(node) => {
+                            immersiveLineRefs.current[index] = node;
+                          }}
+                          style={depthStyle}
                           className={cn(
-                            "grid w-full grid-cols-[3.75rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left transition",
-                            active ? "bg-white/10 text-white" : "text-white/42 hover:bg-white/5 hover:text-white/70",
+                            "aria-lyric-line grid w-full grid-cols-[3.75rem_minmax(0,1fr)] items-start gap-3 rounded-2xl px-3 py-2 text-left",
+                            active ? "is-active bg-white/10 text-white" : "text-white/45 hover:bg-white/5 hover:text-white/80",
                           )}
-                          onClick={() => onSeek(getLyricStartTime(line))}
+                          onClick={() => {
+                            manualScrollUntilRef.current = 0;
+                            setManualScrolling(false);
+                            onSeek(getLyricStartTime(line));
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setLyricMenu({
+                              x: event.clientX,
+                              y: event.clientY,
+                              line,
+                              lines: lyrics,
+                              mode: lyricDisplayMode,
+                            });
+                          }}
                         >
                           <span className={cn("pt-1 text-xs font-medium tabular-nums", active ? "text-white/55" : "text-white/30")}>
                             {line.time}
                           </span>
-                          <span className={cn("min-w-0 whitespace-pre-wrap break-words", active ? "text-lg font-semibold leading-7 sm:text-xl sm:leading-8" : "text-sm leading-6")}>
+                          <span className={cn("min-w-0 origin-left whitespace-pre-wrap break-words transition-[transform,font-size] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]", active ? "text-lg font-semibold leading-7 sm:text-xl sm:leading-8" : "text-sm leading-6")}>
                             <WordLyricText line={line} active={active} playing={playing} color="#ffffff" pendingColor="rgba(255,255,255,0.38)" />
                             {lyricDisplayMode === "bilingual" && line.translation && (
                               <span className={cn("mt-1 block text-xs font-medium leading-5", active ? "text-white/55" : "text-white/30")}>
@@ -1644,6 +1923,12 @@ export function ImmersivePlayerView({
           </div>
         </div>
       )}
+      <LyricContextMenu
+        target={lyricMenu}
+        tone="dark"
+        onClose={() => setLyricMenu(null)}
+        onCopied={onLyricCopied}
+      />
     </motion.div>
   );
 }
@@ -1667,46 +1952,103 @@ function PlaybackProgress({
 }) {
   const currentTime = usePlaybackTime();
   const resolvedDuration = durationSeconds || parseDuration(activeTrack.duration);
-  const progressFraction = resolvedDuration ? Math.min(1, Math.max(0, currentTime / resolvedDuration)) : 0;
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
+  const [hoverPreview, setHoverPreview] = useState<{ time: number; ratio: number } | null>(null);
+  const [showRemaining, setShowRemaining] = useState(false);
+  const draggingRef = useRef(false);
+  const scrubTimeRef = useRef<number | null>(null);
 
-  if (compact) {
-    return (
-      <div className="flex items-center gap-3">
-        <span className={cn("w-11 shrink-0 text-xs font-medium tabular-nums", timeClassName)}>
-          {formatDuration(currentTime)}
-        </span>
-        <input
-          aria-label={label}
-          type="range"
-          min="0"
-          max={Math.max(1, resolvedDuration || 0)}
-          step="0.1"
-          value={Math.min(currentTime, resolvedDuration || currentTime || 0)}
-          onChange={(event) => onSeek(Number(event.target.value))}
-          className="player-range min-w-0 flex-1"
-          style={
-            {
-              "--range-color": palette.primary,
-              "--range-value": progressFraction,
-            } as CSSProperties
-          }
-        />
-        <span className={cn("w-11 shrink-0 text-right text-xs font-medium tabular-nums", timeClassName)}>
-          {formatDuration(resolvedDuration)}
-        </span>
-      </div>
-    );
-  }
+  useEffect(() => {
+    draggingRef.current = false;
+    scrubTimeRef.current = null;
+    setScrubTime(null);
+  }, [activeTrack.id]);
 
-  return (
-    <div className="mt-3">
+  const displayTime = scrubTime !== null ? scrubTime : currentTime;
+  const maxSeconds = Math.max(1, resolvedDuration || 0);
+  const clampedDisplayTime = Math.min(displayTime, resolvedDuration || displayTime || 0);
+  const progressFraction = resolvedDuration ? Math.min(1, Math.max(0, displayTime / resolvedDuration)) : 0;
+
+  const commitScrub = () => {
+    const finalTime = scrubTimeRef.current;
+    draggingRef.current = false;
+    scrubTimeRef.current = null;
+    setScrubTime(null);
+    if (finalTime !== null) {
+      onSeek(finalTime);
+    }
+  };
+
+  const updateHoverFromPointer = (clientX: number, rect: DOMRect) => {
+    if (!rect.width || !resolvedDuration) {
+      setHoverPreview(null);
+      return;
+    }
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    setHoverPreview({ time: ratio * resolvedDuration, ratio });
+  };
+
+  const tooltipState =
+    scrubTime !== null && resolvedDuration > 0
+      ? { time: scrubTime, ratio: Math.min(1, Math.max(0, scrubTime / resolvedDuration)) }
+      : hoverPreview;
+
+  const rightTimeText = showRemaining && resolvedDuration > 0
+    ? `-${formatDuration(Math.max(0, resolvedDuration - clampedDisplayTime))}`
+    : formatDuration(resolvedDuration);
+
+  const rangeElement = (
+    <div className="relative flex min-w-0 flex-1 items-center">
+      {tooltipState && (
+        <div
+          aria-hidden="true"
+          className="aria-scrub-tooltip pointer-events-none absolute -top-8 z-20 -translate-x-1/2 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums"
+          style={{ left: `${Math.min(96, Math.max(4, tooltipState.ratio * 100))}%` }}
+        >
+          {formatDuration(tooltipState.time)}
+        </div>
+      )}
       <input
         aria-label={label}
         type="range"
         min="0"
-        max={Math.max(1, resolvedDuration || 0)}
-        value={Math.min(currentTime, resolvedDuration || currentTime || 0)}
-        onChange={(event) => onSeek(Number(event.target.value))}
+        max={maxSeconds}
+        step="0.1"
+        data-scrubbing={scrubTime !== null ? "true" : undefined}
+        value={clampedDisplayTime}
+        onPointerDown={(event) => {
+          draggingRef.current = true;
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // Synthetic or non-capturable pointers safely ignore pointer capture.
+          }
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (rect.width && resolvedDuration > 0) {
+            const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+            const next = ratio * resolvedDuration;
+            scrubTimeRef.current = next;
+            setScrubTime(next);
+          }
+        }}
+        onPointerMove={(event) => {
+          updateHoverFromPointer(event.clientX, event.currentTarget.getBoundingClientRect());
+        }}
+        onPointerLeave={() => {
+          setHoverPreview(null);
+        }}
+        onPointerUp={commitScrub}
+        onPointerCancel={commitScrub}
+        onLostPointerCapture={commitScrub}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          if (draggingRef.current) {
+            scrubTimeRef.current = next;
+            setScrubTime(next);
+          } else {
+            onSeek(next);
+          }
+        }}
         className="player-range w-full"
         style={
           {
@@ -1715,9 +2057,43 @@ function PlaybackProgress({
           } as CSSProperties
         }
       />
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-3">
+        <span className={cn("w-11 shrink-0 text-xs font-medium tabular-nums", timeClassName)}>
+          {formatDuration(clampedDisplayTime)}
+        </span>
+        {rangeElement}
+        <button
+          type="button"
+          onClick={() => setShowRemaining((prev) => !prev)}
+          title="切换总时长 / 剩余时间"
+          aria-label="切换总时长或剩余时间"
+          className={cn("w-12 shrink-0 text-right text-xs font-medium tabular-nums transition-opacity hover:opacity-80", timeClassName)}
+        >
+          {rightTimeText}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3">
+      {rangeElement}
       <div className={cn("mt-2 flex items-center justify-between text-xs font-medium tabular-nums", timeClassName)}>
-        <span>{formatDuration(currentTime)}</span>
-        <span>{formatDuration(resolvedDuration)}</span>
+        <span>{formatDuration(clampedDisplayTime)}</span>
+        <button
+          type="button"
+          onClick={() => setShowRemaining((prev) => !prev)}
+          title="切换总时长 / 剩余时间"
+          aria-label="切换总时长或剩余时间"
+          className="transition-opacity hover:opacity-80"
+        >
+          {rightTimeText}
+        </button>
       </div>
     </div>
   );

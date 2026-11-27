@@ -449,9 +449,9 @@ export function ListenTogetherView({
         </section>
       ) : room ? (
         /* Active Room Studio Layout */
-        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
+        <div className="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
           {/* Left: Now Syncing Stage Card */}
-          <section className="glass lt-room-stage relative overflow-hidden rounded-[28px] p-6 sm:p-7">
+          <section className="glass lt-room-stage relative flex min-h-[460px] flex-col justify-between overflow-hidden rounded-[28px] p-6 sm:p-7 lg:h-[540px]">
             {currentNeteaseTrack?.coverUrl && (
               <img
                 src={currentNeteaseTrack.coverUrl}
@@ -462,7 +462,7 @@ export function ListenTogetherView({
               />
             )}
 
-            <div className="relative z-10 flex flex-col">
+            <div className="relative z-10 flex min-h-0 flex-1 flex-col justify-between gap-4">
               {/* Paired Listeners Bridge */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/75 px-4 py-3 backdrop-blur-md">
                 {(() => {
@@ -532,47 +532,48 @@ export function ListenTogetherView({
               </div>
 
               {/* Compact Sync Status Strip (controlled via Aria's main Player) */}
-              <div className="my-5 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/60 p-4">
-                <div className="flex min-w-0 flex-1 items-center gap-3.5">
+              <div className="my-auto flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/60 p-5">
+                <div className="flex min-w-0 flex-1 items-center gap-4">
                   {currentNeteaseTrack ? (
                     <CoverArt
                       track={currentNeteaseTrack}
-                      className="size-12 shrink-0 rounded-xl shadow-sm"
+                      large
+                      className="size-24 shrink-0 rounded-2xl shadow-md sm:size-28"
                     />
                   ) : (
-                    <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
-                      <Disc3 className="size-5 opacity-80" />
+                    <span className="flex size-24 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] sm:size-28">
+                      <Disc3 className="size-8 opacity-80" />
                     </span>
                   )}
                   <div className="min-w-0">
                     <p className="text-[10px] font-semibold tracking-[0.12em] text-[var(--accent)]">
                       当前与播放器同步
                     </p>
-                    <p className="mt-0.5 truncate text-sm font-semibold text-[var(--text-primary)]">
+                    <p className="mt-1 truncate text-base font-semibold text-[var(--text-primary)] sm:text-lg">
                       {currentNeteaseTrack ? currentNeteaseTrack.title : "等待选择同步曲目"}
                     </p>
-                    <p className="truncate text-xs text-[var(--text-secondary)]">
+                    <p className="mt-0.5 truncate text-xs text-[var(--text-secondary)] sm:text-sm">
                       {currentNeteaseTrack
                         ? `${currentNeteaseTrack.artist} · ${playing ? "播放中" : "已暂停"}`
                         : "在右侧共享队列或曲库选歌后，主播放器将自动同步"}
                     </p>
+                    {onOpenPlayer && (
+                      <Button
+                        variant="glass"
+                        size="sm"
+                        onClick={onOpenPlayer}
+                        className="mt-3 shrink-0"
+                      >
+                        前往播放器
+                        <ArrowRight className="size-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
-                {onOpenPlayer && (
-                  <Button
-                    variant="glass"
-                    size="sm"
-                    onClick={onOpenPlayer}
-                    className="shrink-0"
-                  >
-                    前往播放器
-                    <ArrowRight className="size-3.5" />
-                  </Button>
-                )}
               </div>
 
               {/* Clean Share Dock */}
-              <div className="border-t border-[var(--line)] pt-5">
+              <div className="mt-auto border-t border-[var(--line)] pt-4">
                 <div className="flex flex-wrap items-center justify-between gap-2.5">
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-[var(--text-primary)]">
@@ -732,7 +733,7 @@ export function ListenTogetherView({
           </section>
 
           {/* Right: Shared Queue Card */}
-          <aside className="glass flex max-h-[620px] flex-col rounded-[28px] p-5 sm:p-6">
+          <aside className="glass flex min-h-[460px] flex-col rounded-[28px] p-5 sm:p-6 lg:h-[540px]">
             <div className="flex shrink-0 items-baseline justify-between gap-2 pb-3">
               <div>
                 <p className="text-[10px] font-semibold tracking-[0.14em] text-[var(--text-secondary)]">

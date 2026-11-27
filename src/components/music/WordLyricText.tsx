@@ -26,13 +26,18 @@ export function WordLyricText({
     const container = containerRef.current;
     if (!active || !hasWords || !words?.length || !container) return;
 
+    const lastQuantized = new Int16Array(words.length).fill(-1);
     const applyWordProgress = (time: number) => {
       const children = container.children;
       for (let index = 0; index < words.length; index += 1) {
         const element = children[index] as HTMLElement | undefined;
         if (!element) continue;
         const progress = getLyricWordProgress(words[index], time) * 100;
-        element.style.backgroundImage = `linear-gradient(90deg, ${color} ${progress}%, ${pendingColor} ${progress}%)`;
+        const quantized = Math.round(progress * 2);
+        if (lastQuantized[index] === quantized) continue;
+        lastQuantized[index] = quantized;
+        const pct = quantized / 2;
+        element.style.backgroundImage = `linear-gradient(90deg, ${color} ${pct}%, ${pendingColor} ${pct}%)`;
       }
     };
 
@@ -45,27 +50,48 @@ export function WordLyricText({
       : subscribePlaybackTime(() => {
           anchorTime = getPlaybackTime();
           anchorNow = performance.now();
-          applyWordProgress(anchorTime);
+          if (!document.hidden) applyWordProgress(anchorTime);
         });
 
     if (!playing) return () => unsubscribe?.();
 
     let frame = 0;
     let lastFrame = anchorNow;
+    const schedule = () => {
+      if (frame || document.hidden) return;
+      frame = requestAnimationFrame(draw);
+    };
     const draw = (now: number) => {
-      if (now - lastFrame >= 33) {
+      frame = 0;
+      if (document.hidden) return;
+      if (now - lastFrame >= 42) {
         lastFrame = now;
         // Smooth only the active lyric between playback clock samples. The cap
         // prevents a buffered/stalled audio source from running ahead visually.
         const sampleTime = anchorTime + Math.min(0.4, (now - anchorNow) / 1000);
         applyWordProgress(sampleTime);
       }
-      frame = requestAnimationFrame(draw);
+      schedule();
     };
-    frame = requestAnimationFrame(draw);
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
+      } else {
+        anchorTime = typeof currentTime === "number" ? currentTime : getPlaybackTime();
+        anchorNow = performance.now();
+        applyWordProgress(anchorTime);
+        schedule();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    schedule();
     return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       unsubscribe?.();
-      cancelAnimationFrame(frame);
+      if (frame) cancelAnimationFrame(frame);
     };
   }, [active, color, currentTime, hasWords, line.words, pendingColor, playing]);
 

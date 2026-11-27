@@ -15,7 +15,7 @@ const LIKE_RECONCILE_TTL_MS = 20_000;
 
 /**
  * YouTube Music 账号、我喜欢、歌单与精选推荐：
- * - 登录（窗口 / Cookie / 设备码）后同步账号「喜欢的音乐」与播放列表；
+ * - 登录（窗口 / Cookie）后同步账号「喜欢的音乐」与播放列表；
  * - 每日推荐 / 私人漫游 / 探索发现同时支持已登录（个性化）与匿名模式。
  */
 export function useYoutubeData(options: { connected: boolean }) {

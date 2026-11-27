@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import { commitPlaybackTime, getPlaybackTime } from "@/lib/playbackClock";
 import { createGuardedAdvance, requestMediaPlayback } from "@/lib/mediaPlayback";
 import { configureSpectrumAnalyser } from "@/lib/spectrumEngine";
-import { equalizerFrequencies } from "@/lib/equalizer";
+import { equalizerFrequencies, type CompiledEqualizerChain } from "@/lib/equalizer";
 import { uiVolumeToLinearGain, uiVolumeToMpvVolume } from "@/lib/audioVolume";
 import { readCachedAudioSettings, writeCachedAudioSettings, type AudioOutputMode, type QualityLevel } from "@/lib/playerPresentation";
 import loudnessProcessorUrl from "@/lib/loudnessProcessor.js?url&no-inline";
@@ -28,6 +28,11 @@ export function useAudioEngine(options: {
   normalizationEnabled: boolean;
   equalizerEnabled: boolean;
   equalizerBands: number[];
+  equalizerChain?: CompiledEqualizerChain;
+  channelBalance?: number;
+  monoAudio?: boolean;
+  playbackSpeed?: number;
+  microFadeEnabled?: boolean;
   audioOutputMode: AudioOutputMode;
   pageVisible: boolean;
   analyserEnabled: boolean;
@@ -155,8 +160,12 @@ export function useAudioEngine(options: {
   const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const nativeSilenceGainRef = useRef<GainNode | null>(null);
   const normalizerRef = useRef<AudioWorkletNode | null>(null);
+  const preampGainRef = useRef<GainNode | null>(null);
   const equalizerFiltersRef = useRef<BiquadFilterNode[]>([]);
+  const equalizerChainTopologyRef = useRef<string>("");
+  const stereoPannerRef = useRef<StereoPannerNode | null>(null);
   const outputGainRef = useRef<GainNode | null>(null);
+  const pauseFadeTimerRef = useRef<number | null>(null);
   const normalizerLoadRef = useRef<Promise<void> | null>(null);
   const analyserOutputModeRef = useRef<"audible" | "normalized" | "silent" | null>(null);
   const nativeLoadedUrlRef = useRef<string | null>(null);
@@ -186,10 +195,39 @@ export function useAudioEngine(options: {
   const externalAudioActiveRef = useRef(externalAudioActive);
   externalAudioActiveRef.current = externalAudioActive;
   const prevExternalAudioRef = useRef({ active: externalAudioActive, trackId: options.activeTrack.id });
+  const resolvedEqualizerChain = useMemo<CompiledEqualizerChain>(() => {
+    if (options.equalizerChain) return options.equalizerChain;
+    return {
+      preampDb: 0,
+      filters: equalizerFrequencies.map((freq, index) => ({
+        type: "peaking" as const,
+        freq,
+        gain: Number(options.equalizerBands[index]) || 0,
+        q: 1.1,
+      })),
+    };
+  }, [options.equalizerBands, options.equalizerChain]);
+  const resolvedChannelBalance = Math.max(-1, Math.min(1, Number(options.channelBalance) || 0));
+  const resolvedMonoAudio = Boolean(options.monoAudio);
+  const resolvedPlaybackSpeed = Number.isFinite(Number(options.playbackSpeed))
+    ? Math.max(0.5, Math.min(2, Number(options.playbackSpeed)))
+    : 1;
   const volumeRef = useRef(options.volume);
   volumeRef.current = options.volume;
-  const equalizerRef = useRef({ enabled: options.equalizerEnabled, bands: options.equalizerBands });
-  equalizerRef.current = { enabled: options.equalizerEnabled, bands: options.equalizerBands };
+  const equalizerRef = useRef({
+    enabled: options.equalizerEnabled,
+    bands: options.equalizerBands,
+    chain: resolvedEqualizerChain,
+    balance: resolvedChannelBalance,
+    mono: resolvedMonoAudio,
+  });
+  equalizerRef.current = {
+    enabled: options.equalizerEnabled,
+    bands: options.equalizerBands,
+    chain: resolvedEqualizerChain,
+    balance: resolvedChannelBalance,
+    mono: resolvedMonoAudio,
+  };
 
   // The static `supported` flag only knows the platform. The engine's
   // isSupported() checks the platform mpv binary, which macOS ships without
@@ -493,7 +531,7 @@ export function useAudioEngine(options: {
         ? "auto"
         : "metadata";
 
-    if (!audioElementStreamUrl || !nativeAnalyserReady || (nativePlaybackEnabled && !effectiveAnalyserEnabled)) {
+    if (!audioElementStreamUrl || !nativeAnalyserReady || (nativePlaybackEnabled && (!effectiveAnalyserEnabled || !options.pageVisible))) {
       audio.pause();
       if (nativePlaybackEnabled && audio.src) {
         audio.removeAttribute("src");
@@ -543,14 +581,49 @@ export function useAudioEngine(options: {
     }
 
     let cancelPlayback: (() => void) | undefined;
+    if (pauseFadeTimerRef.current !== null) {
+      window.clearTimeout(pauseFadeTimerRef.current);
+      pauseFadeTimerRef.current = null;
+    }
+    const useWebMicroFade =
+      !nativePlaybackEnabled &&
+      options.microFadeEnabled !== false &&
+      !options.exclusiveMode &&
+      Boolean(outputGainRef.current) &&
+      Boolean(audioContextRef.current);
     if (enginePlaying) {
+      if (useWebMicroFade && outputGainRef.current && audioContextRef.current) {
+        const ctx = audioContextRef.current;
+        const targetGain = uiVolumeToLinearGain(volumeRef.current);
+        outputGainRef.current.gain.cancelScheduledValues(ctx.currentTime);
+        outputGainRef.current.gain.setValueAtTime(0.0001, ctx.currentTime);
+        outputGainRef.current.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.032);
+      }
       cancelPlayback = requestMediaPlayback(audio, () => {
         if (!nativePlaybackEnabled) options.setPlaying(() => false);
       });
+    } else if (useWebMicroFade && !audio.paused && outputGainRef.current && audioContextRef.current) {
+      const ctx = audioContextRef.current;
+      outputGainRef.current.gain.cancelScheduledValues(ctx.currentTime);
+      outputGainRef.current.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.03);
+      pauseFadeTimerRef.current = window.setTimeout(() => {
+        pauseFadeTimerRef.current = null;
+        audio.pause();
+        if (outputGainRef.current && audioContextRef.current) {
+          outputGainRef.current.gain.setValueAtTime(
+            uiVolumeToLinearGain(volumeRef.current),
+            audioContextRef.current.currentTime,
+          );
+        }
+      }, 125);
     } else {
       audio.pause();
     }
     return () => {
+      if (pauseFadeTimerRef.current !== null) {
+        window.clearTimeout(pauseFadeTimerRef.current);
+        pauseFadeTimerRef.current = null;
+      }
       audio.removeEventListener("loadedmetadata", alignNativeAnalyser);
       cancelPlayback?.();
     };
@@ -562,6 +635,7 @@ export function useAudioEngine(options: {
     nativeAnalyserWakeToken,
     nativePlaybackEnabled,
     effectiveAnalyserEnabled,
+    options.pageVisible,
     enginePlaying,
   ]);
 
@@ -725,6 +799,9 @@ export function useAudioEngine(options: {
         normalizationEnabled: options.normalizationEnabled,
         equalizerEnabled: equalizerRef.current.enabled,
         equalizerBands: equalizerRef.current.bands,
+        equalizerChain: equalizerRef.current.chain,
+        channelBalance: equalizerRef.current.balance,
+        monoAudio: equalizerRef.current.mono,
       })
       .then((state) => {
         if (cancelled || nativeLoadSequenceRef.current !== loadSequence) return;
@@ -760,8 +837,9 @@ export function useAudioEngine(options: {
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativePlaybackEnabled || !nativeAudio?.supported || (!enginePlaying && !nativeAudioState?.active)) return;
-    nativeAudio.setPaused?.(!enginePlaying).catch(() => undefined);
-  }, [nativeAudioState?.active, nativePlaybackEnabled, enginePlaying]);
+    const fadeMs = options.microFadeEnabled !== false && !options.exclusiveMode ? 105 : 0;
+    nativeAudio.setPaused?.(!enginePlaying, fadeMs > 0 ? { fadeMs } : undefined).catch(() => undefined);
+  }, [nativeAudioState?.active, nativePlaybackEnabled, enginePlaying, options.microFadeEnabled, options.exclusiveMode]);
   useEffect(() => {
     const nativeAudio = window.ariaDesktop?.nativeAudio;
     if (!nativePlaybackEnabled || !nativeAudio?.supported) return;
@@ -800,23 +878,36 @@ export function useAudioEngine(options: {
       window.ariaDesktop?.nativeAudio?.configure?.({
         equalizerEnabled: options.equalizerEnabled,
         equalizerBands: options.equalizerBands,
+        equalizerChain: resolvedEqualizerChain,
+        channelBalance: resolvedChannelBalance,
+        monoAudio: resolvedMonoAudio,
       }).catch(() => setEqualizerError(`均衡器未能应用到 ${nativeBackend} 输出，请切换歌曲后重试。`));
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [nativePlaybackEnabled, nativeAudioState?.active, options.equalizerEnabled, options.equalizerBands]);
+  }, [
+    nativePlaybackEnabled,
+    nativeAudioState?.active,
+    options.equalizerEnabled,
+    options.equalizerBands,
+    resolvedEqualizerChain,
+    resolvedChannelBalance,
+    resolvedMonoAudio,
+  ]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (audio) {
-      audio.playbackRate = 1;
+      audio.playbackRate = resolvedPlaybackSpeed;
       if ("preservesPitch" in audio) audio.preservesPitch = true;
     }
-    window.ariaDesktop?.nativeAudio?.setSpeed?.(1).catch(() => undefined);
-  }, [options.activeTrack.id]);
+    if (nativePlaybackEnabled) {
+      window.ariaDesktop?.nativeAudio?.setSpeed?.(resolvedPlaybackSpeed).catch(() => undefined);
+    }
+  }, [nativePlaybackEnabled, options.activeTrack.id, resolvedPlaybackSpeed]);
 
   const setPlaybackSpeed = useEffectEvent((rate: number) => {
     const clamped = Number.isFinite(rate)
-      ? Math.max(0.9, Math.min(1.1, Math.round(rate * 1000) / 1000))
+      ? Math.max(0.5, Math.min(2, Math.round(rate * 1000) / 1000))
       : 1;
     const audio = audioRef.current;
     if (audio) {
@@ -931,6 +1022,9 @@ export function useAudioEngine(options: {
         normalizationEnabled: options.normalizationEnabled,
         equalizerEnabled: options.equalizerEnabled,
         equalizerBands: options.equalizerBands,
+        equalizerChain: resolvedEqualizerChain,
+        channelBalance: resolvedChannelBalance,
+        monoAudio: resolvedMonoAudio,
       });
       if (state) syncNativeAudioState(state as NativeAudioState);
       return true;
@@ -991,29 +1085,61 @@ export function useAudioEngine(options: {
       audioSourceRef.current.connect(analyserRef.current);
     }
 
-    if (!nativePlaybackEnabled && !equalizerFiltersRef.current.length) {
-      // A fixed 10-band peaking chain sits after the analyser only in system
-      // mode; WASAPI mode runs EQ natively inside mpv.
-      equalizerFiltersRef.current = equalizerFrequencies.map((frequency) => {
+    const desiredEqTopology = resolvedEqualizerChain.filters.map((filter) => filter.type).join(",");
+    if (!nativePlaybackEnabled && (!preampGainRef.current || !stereoPannerRef.current || equalizerChainTopologyRef.current !== desiredEqTopology)) {
+      preampGainRef.current?.disconnect();
+      equalizerFiltersRef.current.forEach((filter) => {
+        try {
+          filter.disconnect();
+        } catch {
+          // Ignore filter disconnect errors while rebuilding chain.
+        }
+      });
+      stereoPannerRef.current?.disconnect();
+
+      const preampGain = preampGainRef.current ?? context.createGain();
+      preampGainRef.current = preampGain;
+      const stereoPanner = stereoPannerRef.current ?? context.createStereoPanner();
+      stereoPannerRef.current = stereoPanner;
+
+      equalizerFiltersRef.current = resolvedEqualizerChain.filters.map((spec) => {
         const filter = context.createBiquadFilter();
-        filter.type = "peaking";
-        filter.frequency.value = frequency;
-        filter.Q.value = 1.1;
-        filter.gain.value = 0;
+        filter.type = spec.type;
+        filter.frequency.value = spec.freq;
+        filter.Q.value = spec.q;
+        filter.gain.value = options.equalizerEnabled ? spec.gain : 0;
         return filter;
       });
-      equalizerFiltersRef.current.forEach((filter, index, filters) => {
-        if (index + 1 < filters.length) filter.connect(filters[index + 1]);
-      });
+      equalizerChainTopologyRef.current = desiredEqTopology;
+
+      if (equalizerFiltersRef.current.length) {
+        preampGain.connect(equalizerFiltersRef.current[0]);
+        equalizerFiltersRef.current.forEach((filter, index, filters) => {
+          if (index + 1 < filters.length) filter.connect(filters[index + 1]);
+        });
+        equalizerFiltersRef.current[equalizerFiltersRef.current.length - 1].connect(stereoPanner);
+      } else {
+        preampGain.connect(stereoPanner);
+      }
+      analyserOutputModeRef.current = null;
     }
-    const equalizerFilters = equalizerFiltersRef.current;
-    const equalizerInput = equalizerFilters[0];
-    const equalizerOutput = equalizerFilters[equalizerFilters.length - 1];
-    if (!nativePlaybackEnabled && equalizerFilters.length) {
-      equalizerFilters.forEach((filter, index) => {
-        const gain = options.equalizerEnabled ? Number(options.equalizerBands[index]) || 0 : 0;
-        filter.gain.setTargetAtTime(gain, context.currentTime, 0.02);
+
+    const preampGain = preampGainRef.current;
+    const stereoPanner = stereoPannerRef.current;
+    if (!nativePlaybackEnabled && preampGain && stereoPanner) {
+      const targetPreamp = options.equalizerEnabled ? 10 ** (resolvedEqualizerChain.preampDb / 20) : 1;
+      preampGain.gain.setTargetAtTime(targetPreamp, context.currentTime, 0.02);
+      equalizerFiltersRef.current.forEach((filter, index) => {
+        const spec = resolvedEqualizerChain.filters[index];
+        if (!spec) return;
+        filter.frequency.setTargetAtTime(spec.freq, context.currentTime, 0.02);
+        filter.Q.setTargetAtTime(spec.q, context.currentTime, 0.02);
+        filter.gain.setTargetAtTime(options.equalizerEnabled ? spec.gain : 0, context.currentTime, 0.02);
       });
+      stereoPanner.pan.setTargetAtTime(resolvedChannelBalance, context.currentTime, 0.02);
+      stereoPanner.channelCount = resolvedMonoAudio ? 1 : 2;
+      stereoPanner.channelCountMode = resolvedMonoAudio ? "explicit" : "max";
+      stereoPanner.channelInterpretation = "speakers";
     }
 
     if (shouldSleepGraph) {
@@ -1053,9 +1179,9 @@ export function useAudioEngine(options: {
         nativeSilenceGainRef.current = null;
       }
       try {
-        equalizerOutput?.disconnect();
+        stereoPanner?.disconnect();
       } catch {
-        // The EQ tail may already be disconnected.
+        // The panner tail may already be disconnected.
       }
       normalizerRef.current?.disconnect();
       outputGain.disconnect();
@@ -1068,14 +1194,14 @@ export function useAudioEngine(options: {
         nativeSilenceGainRef.current = silentGain;
         analyser.connect(silentGain);
         silentGain.connect(context.destination);
-      } else if (equalizerInput && equalizerOutput) {
-        analyser.connect(equalizerInput);
+      } else if (preampGain && stereoPanner) {
+        analyser.connect(preampGain);
         if (desiredOutputMode === "normalized" && normalizerRef.current) {
-          equalizerOutput.connect(normalizerRef.current);
+          stereoPanner.connect(normalizerRef.current);
           normalizerRef.current.connect(outputGain);
           outputGain.connect(context.destination);
         } else {
-          equalizerOutput.connect(outputGain);
+          stereoPanner.connect(outputGain);
           outputGain.connect(context.destination);
         }
       }
@@ -1106,18 +1232,40 @@ export function useAudioEngine(options: {
     enginePlaying,
     options.normalizationEnabled,
     options.equalizerEnabled,
+    resolvedEqualizerChain,
     normalizerReady,
     selectedSinkId,
   ]);
 
   useEffect(() => {
     const context = audioContextRef.current;
-    if (!context) return;
-    equalizerFiltersRef.current.forEach((filter, index) => {
-      const gain = options.equalizerEnabled ? Number(options.equalizerBands[index]) || 0 : 0;
-      filter.gain.setTargetAtTime(gain, context.currentTime, 0.02);
-    });
-  }, [options.equalizerEnabled, options.equalizerBands]);
+    if (!context || nativePlaybackEnabled) return;
+    if (preampGainRef.current) {
+      const targetPreamp = options.equalizerEnabled ? 10 ** (resolvedEqualizerChain.preampDb / 20) : 1;
+      preampGainRef.current.gain.setTargetAtTime(targetPreamp, context.currentTime, 0.02);
+    }
+    if (equalizerFiltersRef.current.length === resolvedEqualizerChain.filters.length) {
+      equalizerFiltersRef.current.forEach((filter, index) => {
+        const spec = resolvedEqualizerChain.filters[index];
+        if (!spec) return;
+        filter.frequency.setTargetAtTime(spec.freq, context.currentTime, 0.02);
+        filter.Q.setTargetAtTime(spec.q, context.currentTime, 0.02);
+        filter.gain.setTargetAtTime(options.equalizerEnabled ? spec.gain : 0, context.currentTime, 0.02);
+      });
+    }
+    if (stereoPannerRef.current) {
+      stereoPannerRef.current.pan.setTargetAtTime(resolvedChannelBalance, context.currentTime, 0.02);
+      stereoPannerRef.current.channelCount = resolvedMonoAudio ? 1 : 2;
+      stereoPannerRef.current.channelCountMode = resolvedMonoAudio ? "explicit" : "max";
+      stereoPannerRef.current.channelInterpretation = "speakers";
+    }
+  }, [
+    nativePlaybackEnabled,
+    options.equalizerEnabled,
+    resolvedEqualizerChain,
+    resolvedChannelBalance,
+    resolvedMonoAudio,
+  ]);
 
   useEffect(() => {
     normalizerRef.current?.port.postMessage("reset");
@@ -1140,9 +1288,21 @@ export function useAudioEngine(options: {
       } catch {
         // Ignore audio graph shutdown errors.
       }
+      try {
+        preampGainRef.current?.disconnect();
+      } catch {
+        // Ignore audio graph shutdown errors.
+      }
+      try {
+        stereoPannerRef.current?.disconnect();
+      } catch {
+        // Ignore audio graph shutdown errors.
+      }
       audioSourceRef.current = null;
       analyserRef.current = null;
       nativeSilenceGainRef.current = null;
+      preampGainRef.current = null;
+      stereoPannerRef.current = null;
       normalizerRef.current?.disconnect();
       normalizerRef.current = null;
       normalizerLoadRef.current = null;
@@ -1154,6 +1314,7 @@ export function useAudioEngine(options: {
         }
       });
       equalizerFiltersRef.current = [];
+      equalizerChainTopologyRef.current = "";
       outputGainRef.current?.disconnect();
       outputGainRef.current = null;
       analyserOutputModeRef.current = null;

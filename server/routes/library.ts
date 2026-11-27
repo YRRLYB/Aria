@@ -2,9 +2,9 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import express from "express";
 import { z } from "zod";
-import { clearLibrary, findTrack, readLibrary, removeLibraryRoot, replaceLibraryRoot } from "../libraryStore";
+import { clearLibrary, findTrack, readLibrary, removeLibraryRoot, replaceLibraryRoot, upsertLibraryTracks } from "../libraryStore";
 import { readOrExtractLocalCover, warmLocalCovers } from "../localCoverCache";
-import { listCdDrives, scanCdDrives, scanMusicFolder } from "../musicScanner";
+import { listCdDrives, scanAudioFiles, scanCdDrives, scanMusicFolder } from "../musicScanner";
 import { getLibraryWatchState, refreshLibraryWatchers, setLibraryAutoScanEnabled } from "../services/libraryWatcher";
 import type { ScannedTrack } from "../types";
 import { HttpError } from "../utils/httpError";
@@ -114,6 +114,22 @@ export function createLibraryRouter() {
       tracks: job.status === "complete" ? job.tracks ?? [] : undefined,
       library: job.status === "complete" ? job.library ?? null : undefined,
     });
+  });
+
+  router.post("/import-files", async (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          filePaths: z.array(z.string().min(1)).min(1).max(200),
+        })
+        .parse(req.body);
+      const tracks = await scanAudioFiles(body.filePaths);
+      const library = tracks.length ? await upsertLibraryTracks(tracks) : await readLibrary();
+      if (tracks.length) void warmLocalCovers(tracks).catch(() => undefined);
+      res.json({ tracks, library });
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/cd-drives", async (_req, res, next) => {

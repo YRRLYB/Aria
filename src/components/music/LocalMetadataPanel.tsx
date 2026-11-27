@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, RotateCcw, Search, Sparkles } from "lucide-react";
+import { Check, FolderOpen, RotateCcw, Search, Sparkles } from "lucide-react";
 import type { Track } from "@/data/music";
 import { api, type ApiScannedTrack } from "@/lib/api";
 import { isUnknownTag, type LocalMetadataApplyOptions, type LocalMetadataPreview } from "@/lib/localMetadata";
@@ -159,6 +159,13 @@ export function LocalMetadataPanel({ tracks, onMetadataUpdated }: { tracks: Trac
             {preview.rows.map((row) => {
               const match = row.candidates.find((candidate) => candidate.id === selected[row.trackId]);
               const done = completed.has(row.trackId);
+              const sourceTrack = localTracks.find((item) => item.id === row.trackId);
+              const canReveal = Boolean(
+                sourceTrack?.localPath &&
+                typeof window !== "undefined" &&
+                window.ariaDesktop?.showItemInFolder,
+              );
+              const isMac = typeof window !== "undefined" && window.ariaDesktop?.platform === "darwin";
               return (
                 <article key={row.trackId} className="flex items-start gap-3 rounded-2xl bg-[var(--surface-muted)] p-3">
                   <input type="checkbox" aria-label={`选择 ${row.title}`} checked={checked.has(row.trackId)} disabled={Boolean(busy) || !match || done} onChange={(event) => setChecked((current) => { const next = new Set(current); if (event.target.checked) next.add(row.trackId); else next.delete(row.trackId); return next; })} className="mt-5 accent-[var(--accent)]" />
@@ -183,7 +190,20 @@ export function LocalMetadataPanel({ tracks, onMetadataUpdated }: { tracks: Trac
                       </>
                     ) : <p className="mt-1 text-xs text-[var(--text-muted)]">{row.error ?? "未找到候选"}</p>}
                   </div>
-                  {done ? <Badge><Check className="mr-1 size-3" />已应用</Badge> : match && <Badge className="shrink-0">{match.confidence === "high" ? "高置信" : match.confidence === "medium" ? "中置信" : "需确认"} · {match.score}</Badge>}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {canReveal && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title={isMac ? "在访达中显示" : "在资源管理器中显示"}
+                        aria-label={isMac ? `在访达中显示 ${row.title}` : `在资源管理器中显示 ${row.title}`}
+                        onClick={() => sourceTrack?.localPath && void window.ariaDesktop?.showItemInFolder?.(sourceTrack.localPath)}
+                      >
+                        <FolderOpen className="size-3.5" />
+                      </Button>
+                    )}
+                    {done ? <Badge><Check className="mr-1 size-3" />已应用</Badge> : match && <Badge className="shrink-0">{match.confidence === "high" ? "高置信" : match.confidence === "medium" ? "中置信" : "需确认"} · {match.score}</Badge>}
+                  </div>
                 </article>
               );
             })}

@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aria 桌面歌词</title>
+    <style>
+      :root {
+        --accent: #7c3aed;
+        --secondary: #38bdf8;
+        --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      * {
+        box-sizing: border-box;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        font-family: "SF Pro Display", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .stage {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 18px 18px;
+      }
+
+      /* ── Plaque (No -webkit-app-region: drag so Win32 native menu never hijacks right-click) ── */
+      .plaque {
+        position: relative;
+        width: 100%;
+        height: 92px;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        padding: 14px 20px 14px 15px;
+        border-radius: 24px;
+        cursor: grab;
+        color: rgba(255, 255, 255, 0.96);
+        background:
+          radial-gradient(125% 140% at 12% 0%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 56%),
+          radial-gradient(115% 130% at 90% 100%, color-mix(in srgb, var(--secondary) 19%, transparent), transparent 60%),
+          linear-gradient(155deg, rgba(22, 23, 33, 0.8), rgba(14, 15, 22, 0.72));
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          0 16px 38px rgba(5, 6, 12, 0.44),
+          0 2px 10px rgba(0, 0, 0, 0.2),
+          0 1px 0 rgba(255, 255, 255, 0.16) inset;
+        backdrop-filter: blur(22px) saturate(185%);
+        -webkit-backdrop-filter: blur(22px) saturate(185%);
+        transition:
+          background 320ms var(--ease-out),
+          border-color 220ms var(--ease-out),
+          box-shadow 260ms var(--ease-out),
+          opacity 220ms var(--ease-out),
+          transform 180ms var(--ease-out);
+      }
+
+      .plaque.is-dragging {
+        cursor: grabbing;
+        transform: scale(0.994);
+      }
+
+      .plaque.is-light {
+        color: rgba(18, 20, 28, 0.94);
+        background:
+          radial-gradient(125% 140% at 12% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 56%),
+          radial-gradient(115% 130% at 90% 100%, color-mix(in srgb, var(--secondary) 14%, transparent), transparent 60%),
+          linear-gradient(155deg, rgba(255, 255, 255, 0.86), rgba(246, 247, 252, 0.78));
+        border-color: rgba(255, 255, 255, 0.78);
+        box-shadow:
+          0 16px 36px rgba(18, 22, 36, 0.18),
+          0 1px 0 rgba(255, 255, 255, 0.92) inset;
+      }
+
+      /* Subtle specular rim hairline */
+      .plaque::before {
+        content: "";
+        position: absolute;
+        left: 24px;
+        right: 24px;
+        top: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+        pointer-events: none;
+        transition: opacity 200ms var(--ease-out);
+      }
+
+      .plaque.is-locked {
+        cursor: default;
+        border-color: rgba(255, 255, 255, 0.09);
+        background:
+          radial-gradient(125% 140% at 12% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 58%),
+          rgba(16, 17, 24, 0.56);
+        box-shadow: 0 10px 26px rgba(6, 7, 14, 0.28);
+      }
+
+      .plaque.is-light.is-locked {
+        border-color: rgba(255, 255, 255, 0.54);
+        background:
+          radial-gradient(125% 140% at 12% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 58%),
+          rgba(250, 250, 254, 0.64);
+        box-shadow: 0 10px 26px rgba(18, 22, 36, 0.12);
+      }
+
+      /* ── Floating Style ("无界悬浮": borderless editorial typography) ── */
+      .plaque.style-floating {
+        justify-content: center;
+        padding: 12px 28px;
+        background: transparent;
+        border-color: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
+
+      .plaque.style-floating::before {
+        opacity: 0;
+      }
+
+      .plaque.style-floating:not(.is-locked):hover {
+        background: rgba(15, 16, 24, 0.46);
+        border-color: rgba(255, 255, 255, 0.12);
+        box-shadow: 0 14px 32px rgba(5, 6, 12, 0.34);
+        backdrop-filter: blur(18px) saturate(165%);
+        -webkit-backdrop-filter: blur(18px) saturate(165%);
+      }
+
+      .plaque.style-floating.is-light:not(.is-locked):hover {
+        background: rgba(252, 252, 255, 0.64);
+        border-color: rgba(255, 255, 255, 0.68);
+        box-shadow: 0 14px 32px rgba(18, 22, 36, 0.14);
+      }
+
+      .plaque.style-floating .jewel-wrap {
+        display: none;
+      }
+
+      .plaque.style-floating .lyric-stack {
+        align-items: center;
+        text-align: center;
+      }
+
+      .plaque.style-floating .track-caption {
+        opacity: 0;
+        transition: opacity 160ms var(--ease-out);
+      }
+
+      .plaque.style-floating:not(.is-locked):hover .track-caption {
+        opacity: 0.68;
+      }
+
+      .plaque.style-floating .lyric-main {
+        font-size: 22.5px;
+        text-shadow:
+          0 2px 14px rgba(0, 0, 0, 0.56),
+          0 1px 3px rgba(0, 0, 0, 0.42),
+          0 0 28px color-mix(in srgb, var(--accent) 40%, transparent);
+      }
+
+      .plaque.style-floating.is-light .lyric-main {
+        color: #ffffff;
+        text-shadow:
+          0 2px 14px rgba(0, 0, 0, 0.6),
+          0 1px 3px rgba(0, 0, 0, 0.48),
+          0 0 26px color-mix(in srgb, var(--accent) 36%, transparent);
+      }
+
+      .plaque.style-floating:not(.is-locked):hover.is-light .lyric-main {
+        color: rgba(18, 20, 28, 0.94);
+        text-shadow: 0 1px 1px rgba(255, 255, 255, 0.72);
+      }
+
+      .plaque.style-floating .lyric-sub {
+        font-size: 13px;
+        text-shadow: 0 1px 8px rgba(0, 0, 0, 0.52);
+      }
+
+      .plaque.style-floating.is-light .lyric-sub {
+        color: rgba(255, 255, 255, 0.84);
+      }
+
+      .plaque.style-floating:not(.is-locked):hover.is-light .lyric-sub {
+        color: rgba(18, 20, 28, 0.62);
+        text-shadow: none;
+      }
+
+      /* ── Album Artwork Jewel ── */
+      .jewel-wrap {
+        position: relative;
+        width: 58px;
+        height: 58px;
+        flex: none;
+      }
+
+      .jewel-aura {
+        position: absolute;
+        inset: -6px;
+        border-radius: 20px;
+        background: radial-gradient(circle at 40% 40%, color-mix(in srgb, var(--accent) 52%, transparent), color-mix(in srgb, var(--secondary) 32%, transparent) 65%, transparent 80%);
+        filter: blur(11px);
+        opacity: 0.7;
+        pointer-events: none;
+        transition: opacity 280ms var(--ease-out);
+      }
+
+      .jewel-box {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        border-radius: 14px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+          linear-gradient(145deg, color-mix(in srgb, var(--accent) 34%, rgba(255, 255, 255, 0.1)), color-mix(in srgb, var(--secondary) 24%, rgba(16, 17, 26, 0.88)));
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+      }
+
+      .plaque.is-light .jewel-box {
+        border-color: rgba(255, 255, 255, 0.85);
+        box-shadow: 0 8px 18px rgba(24, 28, 48, 0.14);
+      }
+
+      .jewel-fallback {
+        width: 24px;
+        height: 24px;
+        opacity: 0.72;
+        color: #ffffff;
+      }
+
+      .jewel-img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        opacity: 0;
+        transition: opacity 240ms var(--ease-out);
+      }
+
+      .jewel-img.is-loaded {
+        opacity: 1;
+      }
+
+      .jewel-status {
+        position: absolute;
+        right: -2px;
+        bottom: -2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        background: rgba(15, 16, 24, 0.88);
+        border: 1.5px solid rgba(255, 255, 255, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      }
+
+      .plaque.is-light .jewel-status {
+        background: #ffffff;
+        border-color: rgba(18, 20, 28, 0.1);
+      }
+
+      .jewel-status-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.4);
+        transition: background-color 220ms var(--ease-out), box-shadow 220ms var(--ease-out);
+      }
+
+      .plaque.is-playing .jewel-status-dot {
+        background: var(--accent);
+        box-shadow: 0 0 8px var(--accent);
+      }
+
+      /* ── Lyric Typography Stack ── */
+      .lyric-stack {
+        min-width: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 3px;
+      }
+
+      .track-caption {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        max-width: calc(100% - 148px);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        color: rgba(255, 255, 255, 0.56);
+        transition: color 180ms var(--ease-out);
+      }
+
+      .plaque.is-light .track-caption {
+        color: rgba(18, 20, 28, 0.54);
+      }
+
+      .track-caption-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        flex: none;
+        background: var(--accent);
+      }
+
+      .track-caption-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .lyric-wrap {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .lyric-wrap.is-updating {
+        animation: lyric-enter 220ms var(--ease-out);
+      }
+
+      @keyframes lyric-enter {
+        from {
+          opacity: 0.25;
+          transform: translateY(5px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .lyric-main {
+        margin: 0;
+        max-width: 100%;
+        font-size: 18.5px;
+        line-height: 1.32;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: rgba(255, 255, 255, 0.96);
+        text-shadow: 0 1px 8px rgba(0, 0, 0, 0.28);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .plaque.is-light .lyric-main {
+        color: rgba(18, 20, 28, 0.94);
+        text-shadow: 0 1px 1px rgba(255, 255, 255, 0.68);
+      }
+
+      .lyric-sub {
+        margin: 0;
+        max-width: 100%;
+        font-size: 12px;
+        line-height: 1.32;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        color: rgba(255, 255, 255, 0.64);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .plaque.is-light .lyric-sub {
+        color: rgba(18, 20, 28, 0.58);
+      }
+
+      .lyric-sub:empty {
+        display: none;
+      }
+
+      /* ── Hover Floating Controls ── */
+      .controls {
+        position: absolute;
+        top: 9px;
+        right: 11px;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 3px 4px;
+        border-radius: 999px;
+        background: rgba(15, 16, 23, 0.62);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        opacity: 0;
+        transform: translateY(-2px);
+        pointer-events: none;
+        transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+      }
+
+      .plaque.is-light .controls {
+        background: rgba(255, 255, 255, 0.84);
+        border-color: rgba(18, 20, 30, 0.1);
+      }
+
+      .plaque:not(.is-locked):hover .controls,
+      .plaque:not(.is-locked):focus-within .controls {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+
+      .ctrl-btn {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        width: 23px;
+        height: 23px;
+        padding: 0;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: rgba(255, 255, 255, 0.84);
+        cursor: pointer;
+        transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 110ms var(--ease-out);
+      }
+
+      .plaque.is-light .ctrl-btn {
+        color: rgba(23, 24, 31, 0.78);
+      }
+
+      .ctrl-btn:hover {
+        background: rgba(255, 255, 255, 0.15);
+        color: #ffffff;
+      }
+
+      .plaque.is-light .ctrl-btn:hover {
+        background: rgba(18, 20, 30, 0.08);
+        color: #111218;
+      }
+
+      .ctrl-btn:active {
+        transform: scale(0.92);
+      }
+
+      .ctrl-btn svg {
+        width: 12.5px;
+        height: 12.5px;
+        stroke: currentColor;
+        stroke-width: 2;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* ── Custom Frosted Context Menu (eliminates Win32 native menu) ── */
+      .ctx-menu {
+        position: fixed;
+        z-index: 40;
+        width: 196px;
+        padding: 6px;
+        border-radius: 14px;
+        background: rgba(20, 21, 30, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        box-shadow:
+          0 16px 36px rgba(0, 0, 0, 0.48),
+          0 1px 0 rgba(255, 255, 255, 0.08) inset;
+        backdrop-filter: blur(20px) saturate(175%);
+        -webkit-backdrop-filter: blur(20px) saturate(175%);
+        color: rgba(248, 249, 252, 0.94);
+        opacity: 0;
+        transform: scale(0.95);
+        transform-origin: top left;
+        pointer-events: none;
+        transition: opacity 120ms var(--ease-out), transform 140ms var(--ease-out);
+      }
+
+      .ctx-menu.is-light {
+        background: rgba(252, 252, 255, 0.94);
+        border-color: rgba(18, 20, 30, 0.1);
+        box-shadow:
+          0 16px 34px rgba(15, 23, 42, 0.16),
+          0 1px 0 rgba(255, 255, 255, 0.9) inset;
+        color: #18181b;
+      }
+
+      .ctx-menu.is-open {
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+      }
+
+      .ctx-transport {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
+        padding-bottom: 5px;
+      }
+
+      .ctx-tbtn {
+        appearance: none;
+        border: 0;
+        height: 28px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.07);
+        color: inherit;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background-color 120ms var(--ease-out), transform 100ms var(--ease-out);
+      }
+
+      .ctx-menu.is-light .ctx-tbtn {
+        background: rgba(15, 23, 42, 0.05);
+      }
+
+      .ctx-tbtn:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+
+      .ctx-menu.is-light .ctx-tbtn:hover {
+        background: rgba(15, 23, 42, 0.1);
+      }
+
+      .ctx-tbtn:active {
+        transform: scale(0.95);
+      }
+
+      .ctx-tbtn svg {
+        width: 13px;
+        height: 13px;
+        stroke: currentColor;
+        stroke-width: 2;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .ctx-sep {
+        height: 1px;
+        margin: 3px 4px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .ctx-menu.is-light .ctx-sep {
+        background: rgba(15, 23, 42, 0.08);
+      }
+
+      .ctx-item {
+        appearance: none;
+        border: 0;
+        width: 100%;
+        background: transparent;
+        color: inherit;
+        padding: 5px 8px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11.5px;
+        font-weight: 500;
+        line-height: 16px;
+        cursor: pointer;
+        text-align: left;
+        transition: background-color 110ms var(--ease-out);
+      }
+
+      .ctx-item:hover {
+        background: rgba(255, 255, 255, 0.11);
+      }
+
+      .ctx-menu.is-light .ctx-item:hover {
+        background: rgba(15, 23, 42, 0.06);
+      }
+
+      .ctx-item-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .ctx-item svg {
+        width: 12.5px;
+        height: 12.5px;
+        stroke: currentColor;
+        stroke-width: 1.9;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.8;
+      }
+
+      .ctx-check {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+
+      .ctx-item.is-danger {
+        color: #fb7185;
+      }
+
+      .ctx-menu.is-light .ctx-item.is-danger {
+        color: #e11d48;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .lyric-wrap.is-updating {
+          animation: none;
+        }
+        .plaque,
+        .controls,
+        .ctrl-btn,
+        .ctx-menu,
+        .jewel-img,
+        .jewel-aura {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div id="plaque" class="plaque style-glass">
+        <div class="jewel-wrap">
+          <div class="jewel-aura"></div>
+          <div class="jewel-box">
+            <svg class="jewel-fallback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"></circle>
+              <circle cx="12" cy="12" r="2.2"></circle>
+            </svg>
+            <img id="jewelImg" class="jewel-img" alt="" draggable="false" />
+          </div>
+          <span class="jewel-status" aria-hidden="true"><span class="jewel-status-dot"></span></span>
+        </div>
+
+        <div class="controls" aria-label="桌面歌词控制">
+          <button id="prevBtn" class="ctrl-btn" type="button" title="上一首" aria-label="上一首">
+            <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+          </button>
+          <button id="playBtn" class="ctrl-btn" type="button" title="播放 / 暂停" aria-label="播放 / 暂停">
+            <svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
+          </button>
+          <button id="nextBtn" class="ctrl-btn" type="button" title="下一首" aria-label="下一首">
+            <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+          </button>
+          <button id="styleBtn" class="ctrl-btn" type="button" title="切换歌词样式" aria-label="切换歌词样式">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="4"></rect><line x1="8" y1="10" x2="16" y2="10"></line><line x1="8" y1="14" x2="13" y2="14"></line></svg>
+          </button>
+          <button id="lockBtn" class="ctrl-btn" type="button" title="鼠标穿透锁定" aria-label="鼠标穿透锁定">
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          </button>
+          <button id="closeBtn" class="ctrl-btn" type="button" title="关闭桌面歌词" aria-label="关闭桌面歌词">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+
+        <div class="lyric-stack">
+          <div class="track-caption">
+            <span class="track-caption-dot"></span>
+            <span id="trackMeta" class="track-caption-text">Aria</span>
+          </div>
+          <div id="lyricWrap" class="lyric-wrap">
+            <p id="lyricMain" class="lyric-main">Aria</p>
+            <p id="lyricSub" class="lyric-sub"></p>
+          </div>
+        </div>
+      </div>
+
+      <div id="ctxMenu" class="ctx-menu" role="menu" aria-label="桌面歌词菜单">
+        <div class="ctx-transport">
+          <button id="ctxPrevBtn" class="ctx-tbtn" type="button" title="上一首" aria-label="上一首">
+            <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+          </button>
+          <button id="ctxPlayBtn" class="ctx-tbtn" type="button" title="播放 / 暂停" aria-label="播放 / 暂停">
+            <svg id="ctxPlayIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
+          </button>
+          <button id="ctxNextBtn" class="ctx-tbtn" type="button" title="下一首" aria-label="下一首">
+            <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+          </button>
+        </div>
+        <div class="ctx-sep"></div>
+        <button id="ctxStyleBtn" class="ctx-item" type="button" role="menuitem">
+          <span class="ctx-item-left">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="4"></rect><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+            <span id="ctxStyleLabel">切换为无界悬浮</span>
+          </span>
+        </button>
+        <button id="ctxTopBtn" class="ctx-item" type="button" role="menuitem">
+          <span class="ctx-item-left">
+            <svg viewBox="0 0 24 24"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>
+            <span>始终置顶</span>
+          </span>
+          <span id="ctxTopCheck" class="ctx-check">✓</span>
+        </button>
+        <button id="ctxLockBtn" class="ctx-item" type="button" role="menuitem">
+          <span class="ctx-item-left">
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <span>鼠标穿透锁定</span>
+          </span>
+        </button>
+        <div class="ctx-sep"></div>
+        <button id="ctxCloseBtn" class="ctx-item is-danger" type="button" role="menuitem">
+          <span class="ctx-item-left">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            <span>关闭桌面歌词</span>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <script>
+      const plaque = document.getElementById("plaque");
+      const lyricWrap = document.getElementById("lyricWrap");
+      const lyricMain = document.getElementById("lyricMain");
+      const lyricSub = document.getElementById("lyricSub");
+      const trackMeta = document.getElementById("trackMeta");
+      const playIcon = document.getElementById("playIcon");
+      const ctxPlayIcon = document.getElementById("ctxPlayIcon");
+      const jewelImg = document.getElementById("jewelImg");
+      const ctxMenu = document.getElementById("ctxMenu");
+      const ctxStyleLabel = document.getElementById("ctxStyleLabel");
+      const ctxTopCheck = document.getElementById("ctxTopCheck");
+
+      let lastLineKey = "";
+      let lastCoverUrl = "";
+      let currentStyle = "glass";
+      let currentAlwaysOnTop = true;
+      let isLocked = false;
+      let activeDragPointerId = null;
+
+      function playIconSvg(playing) {
+        return playing
+          ? '<rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect>'
+          : '<polygon points="6 4 20 12 6 20 6 4"></polygon>';
+      }
+
+      function renderPlayIcons(playing) {
+        const markup = playIconSvg(playing);
+        playIcon.innerHTML = markup;
+        ctxPlayIcon.innerHTML = markup;
+      }
+
+      function updateCoverArtwork(url) {
+        const nextUrl = typeof url === "string" ? url.trim() : "";
+        if (nextUrl === lastCoverUrl) return;
+        lastCoverUrl = nextUrl;
+        if (!nextUrl) {
+          jewelImg.classList.remove("is-loaded");
+          jewelImg.removeAttribute("src");
+          return;
+        }
+        jewelImg.classList.remove("is-loaded");
+        jewelImg.onload = () => {
+          if (lastCoverUrl === nextUrl) jewelImg.classList.add("is-loaded");
+        };
+        jewelImg.onerror = () => {
+          jewelImg.classList.remove("is-loaded");
+        };
+        jewelImg.src = nextUrl;
+      }
+
+      function closeContextMenu() {
+        ctxMenu.classList.remove("is-open");
+      }
+
+      function openContextMenu(clientX, clientY) {
+        if (isLocked) return;
+        const margin = 8;
+        const menuW = 196;
+        const menuH = 156;
+        const maxX = Math.max(margin, window.innerWidth - menuW - margin);
+        const maxY = Math.max(margin, window.innerHeight - menuH - margin);
+        ctxMenu.style.left = `${Math.min(Math.max(clientX, margin), maxX)}px`;
+        ctxMenu.style.top = `${Math.min(Math.max(clientY, margin), maxY)}px`;
+        ctxMenu.classList.add("is-open");
+      }
+
+      function applyState(state) {
+        if (!state || typeof state !== "object") return;
+        const root = document.documentElement;
+        if (state.accent) root.style.setProperty("--accent", state.accent);
+        if (state.secondary) root.style.setProperty("--secondary", state.secondary);
+
+        isLocked = Boolean(state.locked);
+        currentStyle = state.style === "floating" ? "floating" : "glass";
+        currentAlwaysOnTop = state.alwaysOnTop !== false;
+
+        const isLight = state.theme === "light";
+        plaque.classList.toggle("is-locked", isLocked);
+        plaque.classList.toggle("is-light", isLight);
+        plaque.classList.toggle("is-playing", Boolean(state.playing));
+        plaque.classList.toggle("style-floating", currentStyle === "floating");
+        plaque.classList.toggle("style-glass", currentStyle !== "floating");
+        ctxMenu.classList.toggle("is-light", isLight);
+        if (isLocked) closeContextMenu();
+
+        ctxStyleLabel.textContent = currentStyle === "floating" ? "切换为晶透画框" : "切换为无界悬浮";
+        ctxTopCheck.style.visibility = currentAlwaysOnTop ? "visible" : "hidden";
+
+        renderPlayIcons(Boolean(state.playing));
+        updateCoverArtwork(state.coverUrl);
+
+        const title = typeof state.title === "string" && state.title.trim() ? state.title.trim() : "Aria";
+        const artist = typeof state.artist === "string" && state.artist.trim() ? state.artist.trim() : "";
+        trackMeta.textContent = artist ? `${title} · ${artist}` : title;
+
+        const mainText = typeof state.line === "string" && state.line.trim()
+          ? state.line.trim()
+          : artist ? `${title} · ${artist}` : title;
+        const subText = typeof state.translation === "string" ? state.translation.trim() : "";
+
+        const nextKey = `${mainText}\n${subText}`;
+        if (nextKey !== lastLineKey) {
+          lastLineKey = nextKey;
+          lyricMain.textContent = mainText;
+          lyricSub.textContent = subText;
+          lyricWrap.classList.remove("is-updating");
+          void lyricWrap.offsetWidth;
+          lyricWrap.classList.add("is-updating");
+        }
+      }
+
+      // Custom pointer drag replaces -webkit-app-region: drag so Windows never overrides contextmenu.
+      plaque.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || isLocked) return;
+        if (event.target.closest(".controls, .ctx-menu, button")) return;
+        closeContextMenu();
+        activeDragPointerId = event.pointerId;
+        plaque.setPointerCapture?.(event.pointerId);
+        plaque.classList.add("is-dragging");
+        window.ariaDesktopLyrics?.dragStart?.();
+      });
+
+      plaque.addEventListener("pointermove", (event) => {
+        if (activeDragPointerId !== event.pointerId) return;
+        window.ariaDesktopLyrics?.dragMove?.();
+      });
+
+      const finishDrag = (event) => {
+        if (activeDragPointerId !== event.pointerId) return;
+        activeDragPointerId = null;
+        plaque.classList.remove("is-dragging");
+        if (plaque.hasPointerCapture?.(event.pointerId)) {
+          plaque.releasePointerCapture(event.pointerId);
+        }
+        window.ariaDesktopLyrics?.dragEnd?.();
+      };
+      plaque.addEventListener("pointerup", finishDrag);
+      plaque.addEventListener("pointercancel", finishDrag);
+
+      window.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openContextMenu(event.clientX, event.clientY);
+      });
+
+      window.addEventListener("pointerdown", (event) => {
+        if (!ctxMenu.classList.contains("is-open")) return;
+        if (!event.target.closest("#ctxMenu")) {
+          closeContextMenu();
+        }
+      });
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeContextMenu();
+      });
+      window.addEventListener("blur", closeContextMenu);
+
+      document.getElementById("prevBtn").addEventListener("click", () => window.ariaDesktopLyrics?.sendCommand("previous"));
+      document.getElementById("playBtn").addEventListener("click", () => window.ariaDesktopLyrics?.sendCommand("toggle"));
+      document.getElementById("nextBtn").addEventListener("click", () => window.ariaDesktopLyrics?.sendCommand("next"));
+      document.getElementById("styleBtn").addEventListener("click", () => {
+        window.ariaDesktopLyrics?.setStyle?.(currentStyle === "floating" ? "glass" : "floating");
+      });
+      document.getElementById("lockBtn").addEventListener("click", () => window.ariaDesktopLyrics?.toggleLock(true));
+      document.getElementById("closeBtn").addEventListener("click", () => window.ariaDesktopLyrics?.close());
+
+      document.getElementById("ctxPrevBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.sendCommand("previous");
+      });
+      document.getElementById("ctxPlayBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.sendCommand("toggle");
+      });
+      document.getElementById("ctxNextBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.sendCommand("next");
+      });
+      document.getElementById("ctxStyleBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.setStyle?.(currentStyle === "floating" ? "glass" : "floating");
+      });
+      document.getElementById("ctxTopBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.setAlwaysOnTop?.(!currentAlwaysOnTop);
+      });
+      document.getElementById("ctxLockBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.toggleLock(true);
+      });
+      document.getElementById("ctxCloseBtn").addEventListener("click", () => {
+        closeContextMenu();
+        window.ariaDesktopLyrics?.close();
+      });
+
+      window.ariaDesktopLyrics?.onState(applyState);
+    </script>
+  </body>
+</html>

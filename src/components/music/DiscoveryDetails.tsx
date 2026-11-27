@@ -26,6 +26,7 @@ import {
 import { SourceBadge } from "./SourceLogos";
 import { ArtworkImage } from "./ArtworkImage";
 import { AddToPlaylistButton, usePlaylistActions } from "./PlaylistActions";
+import { useTrackContextMenu } from "./TrackContextMenu";
 
 export function DiscoveryError({
   error,
@@ -194,12 +195,15 @@ export function DiscoveryTrackRow({
   index?: number;
   showMatchedLyric?: boolean;
 }) {
+  const trackMenu = useTrackContextMenu();
   return (
     <div
       role="button"
       tabIndex={0}
+      data-track-context-row="true"
       className="aria-flat-row flex min-w-0 cursor-pointer items-center gap-2 rounded-xl px-3 py-2.5"
       onClick={() => onPickTrack(track.id, queue)}
+      onContextMenu={(event) => trackMenu?.open(event, track, queue)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
         if (event.key !== "Enter" && event.key !== " ") return;

@@ -44,6 +44,7 @@ import type {
 } from "@/lib/ariaRoomProfile";
 import { ariaPayloadToGuestTrack, normalizeAriaRoomCode } from "@/lib/ariaRoomSync";
 import type { LocalPlaylist } from "@/lib/localPlaylists";
+import { formatAudioDetail } from "@/lib/playerPresentation";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArtworkImage } from "./ArtworkImage";
@@ -63,6 +64,7 @@ export type AriaRoomSectionProps = {
   identity: ResolvedAriaRoomIdentity;
   accounts?: AriaSourceAccountSummary[];
   activeTrack: Track | null;
+  playing?: boolean;
   loading: boolean;
   probingIps: boolean;
   actionError: string | null;
@@ -159,16 +161,13 @@ function AvatarMedia({
 function resolveEffectivePresence(
   online?: boolean,
   presence?: "active" | "away" | "offline",
-): "active" | "away" | "offline" {
+): "active" | "offline" {
   if (online === false || presence === "offline") return "offline";
-  if (presence === "away") return "away";
   return "active";
 }
 
-function presenceLabel(presence: "active" | "away" | "offline"): string {
-  if (presence === "offline") return "离线";
-  if (presence === "away") return "暂离";
-  return "在线";
+function presenceLabel(presence: "active" | "offline"): string {
+  return presence === "offline" ? "离线" : "在线";
 }
 
 function MemberAvatar({
@@ -189,7 +188,7 @@ function MemberAvatar({
   showStatusDot?: boolean;
 }) {
   const effective = resolveEffectivePresence(online, presence);
-  const dimmed = effective !== "active";
+  const dimmed = effective === "offline";
   return (
     <div className={cn("relative shrink-0", sizeClass)}>
       <div
@@ -198,8 +197,7 @@ function MemberAvatar({
           isHost && !dimmed
             ? "border-[var(--accent)] ring-2 ring-[var(--accent)]/25"
             : "border-[var(--line)]",
-          effective === "offline" && "opacity-60",
-          effective === "away" && "opacity-75",
+          dimmed && "opacity-60",
         )}
       >
         {avatarUrl ? (
@@ -220,11 +218,7 @@ function MemberAvatar({
           title={presenceLabel(effective)}
           className={cn(
             "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface)]",
-            effective === "active"
-              ? "bg-emerald-500"
-              : effective === "away"
-                ? "bg-amber-400"
-                : "bg-neutral-400",
+            effective === "active" ? "bg-emerald-500" : "bg-neutral-400",
           )}
         />
       )}
@@ -263,6 +257,7 @@ export function AriaRoomSection({
   identity,
   accounts = [],
   activeTrack,
+  playing = false,
   loading,
   probingIps,
   actionError,
@@ -873,9 +868,7 @@ export function AriaRoomSection({
                             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
                             effPresence === "active"
                               ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
-                              : effPresence === "away"
-                                ? "bg-amber-500/12 text-amber-600 dark:text-amber-400"
-                                : "bg-[var(--surface-muted)] text-[var(--text-secondary)]",
+                              : "bg-[var(--surface-muted)] text-[var(--text-secondary)]",
                           )}
                         >
                           {presenceLabel(effPresence)}
@@ -1593,22 +1586,85 @@ export function AriaRoomSection({
       {!snapshot.active ? (
         ariaLobbyCard
       ) : (
-        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
-          {/* Left: Clean Room Stage */}
-          <section className="glass lt-room-stage relative overflow-hidden rounded-[28px] p-6 sm:p-7">
+        <div className="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
+          {/* Left: Album Frame + 5-Seat Listener Salon (no duplicated player controls) */}
+          <section className="glass lt-room-stage relative flex min-h-[500px] flex-col justify-between overflow-hidden rounded-[28px] p-6 sm:p-7 lg:h-[560px]">
             {displayTrack?.coverUrl && (
               <ArtworkImage
                 src={displayTrack.coverUrl}
                 alt=""
                 cacheSize={512}
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 size-full scale-125 object-cover opacity-[0.12] blur-3xl dark:opacity-[0.2]"
+                className="pointer-events-none absolute inset-0 size-full scale-125 object-cover opacity-[0.14] blur-3xl dark:opacity-[0.22]"
               />
             )}
 
-            <div className="relative z-10 flex flex-col gap-5">
-              <div className="space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/70 p-4 backdrop-blur-md">
-                <div className="flex items-center justify-between gap-2 text-xs">
+            <div className="relative z-10 flex min-h-0 flex-1 flex-col justify-between gap-5">
+              {/* Upper: Shared Listening Album Frame */}
+              <div className="flex flex-col items-center gap-5 rounded-[22px] border border-[var(--line)] bg-[var(--surface)]/55 p-5 backdrop-blur-md sm:flex-row">
+                {displayTrack ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={onOpenPlayer}
+                      title="打开播放器"
+                      className={cn(
+                        "aria-cover-breathe group relative size-36 shrink-0 overflow-hidden rounded-[22px] shadow-[0_22px_50px_rgba(15,18,32,0.22)] transition hover:scale-[1.02] active:scale-[0.98] sm:size-40",
+                        playing ? "scale-100" : "scale-[0.97]",
+                      )}
+                    >
+                      <CoverArt track={displayTrack} large className="size-full" />
+                    </button>
+                    <div className="flex min-w-0 flex-1 flex-col items-center text-center sm:items-start sm:text-left">
+                      <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+                        {playing && isSynced && (
+                          <div className="lt-sync-wave" aria-hidden="true">
+                            <span />
+                            <span />
+                            <span />
+                          </div>
+                        )}
+                        <span className="text-[11px] font-semibold tracking-[0.12em] text-[var(--accent)]">
+                          {playing ? "正在共听" : "已暂停"}
+                        </span>
+                        <SourceBadge source={displayTrack.source} compact />
+                        <span className="truncate rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+                          {formatAudioDetail(displayTrack)}
+                        </span>
+                      </div>
+                      <h2 className="mt-2.5 line-clamp-2 text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
+                        {displayTrack.title}
+                      </h2>
+                      <p className="mt-1.5 w-full truncate text-xs text-[var(--text-secondary)] sm:text-sm">
+                        {displayTrack.artist}
+                        {displayTrack.album ? ` · ${displayTrack.album}` : ""}
+                      </p>
+                      <Button variant="glass" size="sm" className="mt-4" onClick={onOpenPlayer}>
+                        <Disc3 className="size-3.5" />
+                        打开播放器
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex w-full flex-col items-center justify-center py-4 text-center">
+                    <span className="flex size-16 items-center justify-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--surface-muted)]/45 text-[var(--accent)]">
+                      <Disc3 className="size-7 opacity-80" />
+                    </span>
+                    <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">暂未选曲 · 选一首歌与好友共听</p>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                      从右侧队列点播，或在播放器中选择任意歌曲
+                    </p>
+                    <Button variant="glass" size="sm" className="mt-4" onClick={onOpenPlayer}>
+                      <Disc3 className="size-3.5" />
+                      打开播放器
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Middle: 5-Seat Listener Salon */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2 px-1 text-xs">
                   <span className="inline-flex items-center gap-1.5 font-medium text-[var(--text-secondary)]">
                     <Users className="size-3.5" />
                     在席听友
@@ -1617,7 +1673,7 @@ export function AriaRoomSection({
                     {snapshot.members.length} / {snapshot.maxMembers} 人在席
                   </span>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-5">
                   {snapshot.members.map((member) => {
                     const effPresence = resolveEffectivePresence(member.online, member.presence);
                     return (
@@ -1625,14 +1681,14 @@ export function AriaRoomSection({
                         key={member.peerId}
                         title={`${member.nickname}${member.role === "host" ? "（房主）" : ""} · ${presenceLabel(effPresence)}`}
                         className={cn(
-                          "flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--surface)]/85 py-1 pl-1 pr-3 transition",
-                          effPresence === "offline" && "opacity-65",
+                          "flex flex-col items-center justify-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--surface)]/75 px-2.5 py-4 text-center transition",
+                          effPresence === "offline" && "opacity-60",
                         )}
                       >
                         <MemberAvatar
                           nickname={member.nickname}
                           avatarUrl={member.avatarUrl}
-                          sizeClass="size-7"
+                          sizeClass="size-12"
                           isHost={member.role === "host"}
                           online={member.online}
                           presence={member.presence}
@@ -1640,7 +1696,7 @@ export function AriaRoomSection({
                         />
                         <span
                           className={cn(
-                            "max-w-[96px] truncate text-xs font-medium",
+                            "w-full truncate text-xs font-semibold",
                             effPresence === "offline"
                               ? "text-[var(--text-secondary)]"
                               : "text-[var(--text-primary)]",
@@ -1648,75 +1704,87 @@ export function AriaRoomSection({
                         >
                           {member.nickname}
                         </span>
-                        {member.role === "host" && (
-                          <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">
+                        {member.role === "host" ? (
+                          <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent)]">
                             房主
                           </span>
-                        )}
-                        {effPresence !== "active" && (
-                          <span className="text-[10px] text-[var(--text-secondary)]">
+                        ) : (
+                          <span
+                            className={cn(
+                              "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                              effPresence === "active"
+                                ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
+                                : "bg-[var(--surface-muted)] text-[var(--text-secondary)]",
+                            )}
+                          >
                             {presenceLabel(effPresence)}
                           </span>
                         )}
                       </div>
                     );
                   })}
-                  {Array.from({ length: emptySeatCount }).map((_, idx) => (
-                    <span
-                      key={`empty-${idx}`}
-                      title={`空余席位 ${snapshot.members.length + idx + 1}/${snapshot.maxMembers}`}
-                      className="flex size-9 items-center justify-center rounded-full border border-dashed border-[var(--line)] bg-[var(--surface)]/55 text-[var(--text-secondary)]"
-                    >
-                      <UserPlus className="size-3.5 opacity-55" />
-                    </span>
-                  ))}
+                  {Array.from({ length: emptySeatCount }).map((_, idx) => {
+                    const inviteValue =
+                      snapshot.networkMode === "direct"
+                        ? snapshot.directServer.shareString
+                        : snapshot.roomId;
+                    const seatCopied = copiedKey === "seatInvite";
+                    return (
+                      <button
+                        key={`empty-${idx}`}
+                        type="button"
+                        onClick={() => void copyText("seatInvite", inviteValue)}
+                        title={inviteValue ? "点击复制邀请口令 / 房间码" : `空余席位 ${snapshot.members.length + idx + 1}/${snapshot.maxMembers}`}
+                        className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-[var(--line)] bg-[var(--surface)]/35 px-2.5 py-4 text-center text-[var(--text-secondary)] transition hover:border-[var(--accent)]/55 hover:bg-[var(--surface)]/70 hover:text-[var(--text-primary)] active:scale-[0.98]"
+                      >
+                        <span className="flex size-12 items-center justify-center rounded-full border border-dashed border-[var(--line)] bg-[var(--surface)]/60">
+                          {seatCopied ? (
+                            <Check className="size-4 text-emerald-500" />
+                          ) : (
+                            <UserPlus className="size-4 opacity-70" />
+                          )}
+                        </span>
+                        <span className="text-[11px] font-medium">
+                          {seatCopied ? "已复制邀请" : "邀请入座"}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-muted)]/60 p-4">
-                {displayTrack ? (
-                  <>
-                    <div className="flex min-w-0 flex-1 items-center gap-3.5">
-                      <CoverArt
-                        track={displayTrack}
-                        large
-                        className="size-16 shrink-0 rounded-2xl shadow-md"
-                      />
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h2 className="truncate text-base font-semibold text-[var(--text-primary)]">
-                            {displayTrack.title}
-                          </h2>
-                          <SourceBadge source={displayTrack.source} compact />
-                        </div>
-                        <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">
-                          {displayTrack.artist}
-                          {displayTrack.album ? ` · ${displayTrack.album}` : ""}
-                        </p>
-                      </div>
-                    </div>
-
-                    <Button variant="glass" size="sm" onClick={onOpenPlayer}>
-                      <Disc3 className="size-3.5" />
-                      打开播放器
-                    </Button>
-                  </>
-                ) : (
-                  <div className="flex w-full items-center justify-between gap-3 py-1">
-                    <span className="text-xs text-[var(--text-secondary)]">
-                      暂未选曲，可在播放器点歌或从右侧导入歌单
-                    </span>
-                    <Button variant="glass" size="sm" onClick={onOpenPlayer}>
-                      打开播放器
-                    </Button>
-                  </div>
-                )}
+              {/* Bottom: Quiet Room Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--line)] pt-3 text-xs text-[var(--text-secondary)]">
+                <span className="inline-flex items-center gap-2">
+                  <span>{networkModeLabel}</span>
+                  <span>·</span>
+                  <span>{snapshot.controlMode === "collaborative" ? "全员可切歌" : "仅房主控场"}</span>
+                </span>
+                {snapshot.networkMode === "direct" && snapshot.directServer.shareString ? (
+                  <button
+                    type="button"
+                    onClick={() => void copyText("stageDirect", snapshot.directServer.shareString)}
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-muted)]"
+                  >
+                    {copiedKey === "stageDirect" ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+                    {copiedKey === "stageDirect" ? "已复制直连口令" : "复制直连口令"}
+                  </button>
+                ) : snapshot.roomId ? (
+                  <button
+                    type="button"
+                    onClick={() => void copyText("stageRoom", snapshot.roomId)}
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-muted)]"
+                  >
+                    {copiedKey === "stageRoom" ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+                    {copiedKey === "stageRoom" ? "已复制" : `房间码 ${snapshot.roomId}`}
+                  </button>
+                ) : null}
               </div>
             </div>
           </section>
 
           {/* Right: Clean Queue */}
-          <aside className="glass flex max-h-[560px] flex-col rounded-[28px] p-5 sm:p-6">
+          <aside className="glass flex min-h-[500px] flex-col rounded-[28px] p-5 sm:p-6 lg:h-[560px]">
             <div className="flex shrink-0 items-center justify-between gap-2 pb-3">
               <h2 className="text-base font-semibold text-[var(--text-primary)]">
                 播放队列

@@ -6,9 +6,11 @@ import { useVirtualRows } from "@/lib/virtualRows";
 import { formatAudioDetail } from "@/lib/playerPresentation";
 import { AriaSelect } from "@/components/ui/aria-select";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { ArtworkImage } from "./ArtworkImage";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 import { usePlaylistActions } from "./PlaylistActions";
+import { useTrackContextMenu } from "./TrackContextMenu";
 
 export function PlaylistDetail({ playlist, tracks, loading, error, connected, showSubscribe = true, playCounts, onBack, onRetry, onPickTrack, onUpdate, onUploadCover, onRemove, onReorder, onSubscribe, onDelete, onRequireLogin }: {
   playlist: ProviderPlaylist;
@@ -44,12 +46,20 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, sh
   const pendingRef = useRef(false);
   const draggedId = useRef<string | null>(null);
   const actions = usePlaylistActions();
+  const confirm = useConfirm();
+  const trackMenu = useTrackContextMenu();
   const canEditTracks = connected && playlist.owned === true;
   const canEditDetails = connected && playlist.canEdit === true;
 
   async function deleteCurrentPlaylist() {
     if (!canEditDetails || busy) return;
-    if (!window.confirm(`确定删除歌单“${playlist.name}”吗？此操作无法撤销。`)) return;
+    const confirmed = await confirm({
+      title: `删除歌单“${playlist.name}”？`,
+      description: "此操作无法撤销。",
+      confirmLabel: "删除歌单",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     await run(onDelete, "歌单已删除");
   }
 
@@ -130,7 +140,7 @@ export function PlaylistDetail({ playlist, tracks, loading, error, connected, sh
     </div>
     {canEditTracks && <div className="mt-3 flex shrink-0 items-center gap-3 text-xs text-neutral-500"><label className="flex items-center gap-2"><input type="checkbox" aria-label="选择所有显示歌曲" disabled={busy || loading || !visibleTracks.length} checked={visibleTracks.length > 0 && visibleTracks.every((track) => selectedIds.has(track.id))} onChange={(event) => setSelectedIds(event.target.checked ? new Set(visibleTracks.map((track) => track.id)) : new Set())} className="accent-violet-500" />已选 {selection.length} 首</label>{selection.length > 0 && <><Button size="sm" variant="ghost" disabled={busy} onClick={() => actions?.openAdd(selection)}><ListPlus />加入其他歌单</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => onRemove(selection), `已移除 ${selection.length} 首`).then((saved) => { if (saved) setSelectedIds(new Set()); })}><Trash2 />从歌单移除</Button></>}<span className="ml-auto">{canReorder ? "拖动歌曲调整顺序，保存后同步" : "切回原始顺序并清空查找可排序"}</span></div>}
     <div ref={virtual.containerRef} className="mt-3 min-h-0 flex-1 overflow-y-auto">
-      <div className="relative" style={{ height: virtual.totalHeight }}>{virtual.rows.map(({ index, offsetTop }) => { const track = visibleTracks[index]; if (!track) return null; return <div key={track.id} draggable={canReorder && !busy} onDragStart={(event) => { draggedId.current = track.id; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", track.id); }} onDragEnd={() => { draggedId.current = null; }} onDragOver={(event) => { if (canReorder && draggedId.current) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } }} onDrop={(event) => { event.preventDefault(); if (draggedId.current) moveTrack(draggedId.current, index); draggedId.current = null; }} className="aria-flat-row absolute inset-x-0 flex h-[70px] items-center gap-3 rounded-xl px-3" style={{ top: offsetTop }}>
+      <div className="relative" style={{ height: virtual.totalHeight }}>{virtual.rows.map(({ index, offsetTop }) => { const track = visibleTracks[index]; if (!track) return null; return <div key={track.id} data-track-context-row="true" onContextMenu={(event) => trackMenu?.open(event, track, visibleTracks)} draggable={canReorder && !busy} onDragStart={(event) => { draggedId.current = track.id; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", track.id); }} onDragEnd={() => { draggedId.current = null; }} onDragOver={(event) => { if (canReorder && draggedId.current) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } }} onDrop={(event) => { event.preventDefault(); if (draggedId.current) moveTrack(draggedId.current, index); draggedId.current = null; }} className="aria-flat-row absolute inset-x-0 flex h-[70px] items-center gap-3 rounded-xl px-3" style={{ top: offsetTop }}>
         {canEditTracks && <input type="checkbox" aria-label={`选择 ${track.title}`} checked={selectedIds.has(track.id)} disabled={busy} onChange={() => setSelectedIds((current) => { const next = new Set(current); if (next.has(track.id)) next.delete(track.id); else next.add(track.id); return next; })} className="shrink-0 accent-violet-500" />}
         {canReorder ? <GripVertical className="size-4 shrink-0 cursor-grab text-neutral-400" /> : <span className="w-5 shrink-0 text-center text-xs text-neutral-400">{index + 1}</span>}
         <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onPickTrack(track.id, visibleTracks)}><CoverArt track={track} className="size-12 rounded-xl" /><span className="min-w-0 flex-1"><span title={track.title} className="block min-w-0 truncate text-sm font-semibold"><CopyableTrackText track={track} field="title">{track.title}</CopyableTrackText></span><span className="block truncate text-xs text-neutral-500">{track.artist} · {track.album}</span></span></button>

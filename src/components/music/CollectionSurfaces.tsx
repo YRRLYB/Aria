@@ -3,6 +3,7 @@ import { Clock3, Cloud, Disc3, Heart, Link2, LoaderCircle, Play, Plus, Radio, Re
 import { AriaIcon } from "@/components/icons/aria";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Track } from "@/data/music";
 import type { ProviderPlaylist } from "@/lib/api";
 import { api } from "@/lib/api";
@@ -21,6 +22,7 @@ import { BilibiliLinkDialog, LocalPlaylistDetail, LocalPlaylistSurface, type Loc
 import type { PickerPlaylistCatalog } from "./PlaylistTrackBrowser";
 import { SuperMixSurface, type SuperMixSurfaceProps } from "./SuperMixSurfaces";
 import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
+import { useTrackContextMenu } from "./TrackContextMenu";
 
 // 我喜欢页的来源筛选。YouTube v1 不提供账号收藏（capabilities.liked=false），
 // 因此这里显式列出四源，不随 SourceToggleOption 自动扩展。
@@ -301,6 +303,7 @@ function LikedColumn({
   onVisibleTracksChange?: (tracks: Track[]) => void;
   onPickTrack: (id: string, queue?: Track[]) => void;
 }) {
+  const trackMenu = useTrackContextMenu();
   const virtual = useVirtualRows({ count: tracks.length, rowHeight: 72, overscan: 10 });
   const visibleTracks = useMemo(
     () => virtual.rows.map(({ index }) => tracks[index]).filter((track): track is Track => Boolean(track)),
@@ -335,9 +338,11 @@ function LikedColumn({
             return (
               <button
                 key={track.id}
+                data-track-context-row="true"
                 className="aria-flat-row absolute left-0 right-0 grid h-16 w-full grid-cols-[3rem_minmax(0,1fr)_auto_1.75rem] items-center gap-3 rounded-xl px-2.5 text-left"
                 style={{ top: offsetTop }}
                 onClick={() => onPickTrack(track.id, tracks)}
+                onContextMenu={(event) => trackMenu?.open(event, track, tracks)}
               >
                 <CoverArt track={track} className="size-12 rounded-xl" />
                 <div className="min-w-0 flex-1">
@@ -891,6 +896,7 @@ function BilibiliPlaylistTab({
   const [importOpen, setImportOpen] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   async function refreshMirror(playlist: LocalPlaylist) {
     if (!playlist.remoteRef || syncingId) return;
@@ -1079,7 +1085,11 @@ function BilibiliPlaylistTab({
                     className="flex size-9 items-center justify-center rounded-full bg-white/90 text-neutral-400 shadow-sm ring-1 ring-black/5 transition hover:bg-red-50 hover:text-red-600"
                     onClick={(event) => {
                       event.stopPropagation();
-                      if (window.confirm(`删除镜像歌单“${playlist.name}”？B站收藏夹本身不会被修改。`)) bilibili.onDeleteReferenced?.(playlist.id);
+                      void (async () => {
+                        if (await confirm({ title: `删除镜像歌单“${playlist.name}”？`, description: "B站收藏夹本身不会被修改。", confirmLabel: "删除镜像", tone: "danger" })) {
+                          bilibili.onDeleteReferenced?.(playlist.id);
+                        }
+                      })();
                     }}
                   >
                     <Trash2 className="size-4" />
@@ -1245,7 +1255,7 @@ export function StatsSurface({
                 >
                   <div
                     className={cn(
-                      "w-full rounded-t-md transition-all duration-300",
+                      "w-full rounded-t-md transition-[opacity,background-color,transform] duration-250 ease-[cubic-bezier(0.23,1,0.32,1)]",
                       bucket.count === 0
                         ? "bg-[var(--line)] opacity-60"
                         : isPeak
@@ -1285,7 +1295,7 @@ export function StatsSurface({
                   key={item.source}
                   title={`${item.label} ${Math.round(item.share)}%`}
                   style={{ width: `${item.share}%`, backgroundColor: item.color }}
-                  className="h-full transition-all duration-300 first:rounded-l-full last:rounded-r-full"
+                  className="h-full transition-[width,background-color,opacity] duration-250 ease-[cubic-bezier(0.23,1,0.32,1)] first:rounded-l-full last:rounded-r-full"
                 />
               ) : null,
             )}
@@ -1459,6 +1469,7 @@ function VirtualTrackList({
   onPickTrack: (id: string, queue?: Track[]) => void;
   renderMeta?: (track: Track) => React.ReactNode;
 }) {
+  const trackMenu = useTrackContextMenu();
   const virtual = useVirtualRows({ count: tracks.length, rowHeight: 88, overscan: 10 });
 
   return (
@@ -1472,10 +1483,12 @@ function VirtualTrackList({
               key={track.id}
               role="button"
               tabIndex={0}
+              data-track-context-row="true"
               onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onPickTrack(track.id, tracks); } }}
               className="aria-flat-row absolute left-0 right-0 grid h-20 grid-cols-[2rem_3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-3 text-left"
               style={{ top: offsetTop }}
               onClick={() => onPickTrack(track.id, tracks)}
+              onContextMenu={(event) => trackMenu?.open(event, track, tracks)}
             >
               <span className="text-center text-sm text-neutral-400">{index + 1}</span>
               <CoverArt track={track} className="size-14 rounded-2xl" />

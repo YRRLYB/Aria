@@ -42,9 +42,15 @@ declare global {
           normalizationEnabled?: boolean;
           equalizerEnabled?: boolean;
           equalizerBands?: number[];
+          equalizerChain?: {
+            preampDb: number;
+            filters: Array<{ type: "peaking" | "lowshelf" | "highshelf"; freq: number; gain: number; q: number }>;
+          };
+          channelBalance?: number;
+          monoAudio?: boolean;
         }) => Promise<unknown>;
         loadNext?: (payload: { trackId: string; url: string }) => Promise<unknown>;
-        setPaused?: (paused: boolean) => Promise<unknown>;
+        setPaused?: (paused: boolean, options?: { fadeMs?: number }) => Promise<unknown>;
         seek?: (position: number) => Promise<unknown>;
         setVolume?: (volume: number) => Promise<unknown>;
         setSpeed?: (speed: number) => Promise<unknown>;
@@ -55,6 +61,12 @@ declare global {
           normalizationEnabled?: boolean;
           equalizerEnabled?: boolean;
           equalizerBands?: number[];
+          equalizerChain?: {
+            preampDb: number;
+            filters: Array<{ type: "peaking" | "lowshelf" | "highshelf"; freq: number; gain: number; q: number }>;
+          };
+          channelBalance?: number;
+          monoAudio?: boolean;
         }) => Promise<unknown>;
         stop?: () => Promise<unknown>;
         recoverOutput?: (reason?: string) => Promise<unknown>;
@@ -84,10 +96,35 @@ declare global {
       onWindowFocusChange?: (callback: (focused: boolean) => void) => () => void;
       onPlaybackCommand?: (callback: (command: "toggle" | "play" | "pause" | "previous" | "next" | "volumeUp" | "volumeDown" | "mute" | "like" | "mode" | "equalizer") => void) => () => void;
       onOpenSettings?: (callback: () => void) => () => void;
+      onNavigateHistory?: (callback: (direction: -1 | 1) => void) => () => void;
       showApp?: () => void;
       quitApp?: () => void;
       setBackgroundEnabled?: (enabled: boolean) => void;
       chooseMusicFolder?: () => Promise<string | null>;
+      showItemInFolder?: (filePath: string) => Promise<boolean>;
+      getPathForFile?: (file: File) => string;
+      consumePendingOpenFiles?: () => Promise<string[]>;
+      onOpenAudioFiles?: (callback: (files: string[]) => void) => () => void;
+      getWindowMaterial?: () => Promise<"default" | "translucent">;
+      setWindowMaterial?: (mode: "default" | "translucent") => Promise<"default" | "translucent">;
+      desktopLyrics?: {
+        getState: () => Promise<{ open: boolean; locked: boolean; style?: "glass" | "floating"; alwaysOnTop?: boolean }>;
+        toggle: () => Promise<{ open: boolean; locked: boolean; style?: "glass" | "floating"; alwaysOnTop?: boolean }>;
+        close: () => Promise<{ open: boolean; locked: boolean; style?: "glass" | "floating"; alwaysOnTop?: boolean }>;
+        setLocked: (locked?: boolean) => Promise<{ open: boolean; locked: boolean; style?: "glass" | "floating"; alwaysOnTop?: boolean }>;
+        update: (payload: {
+          title: string;
+          artist: string;
+          line: string;
+          translation?: string;
+          coverUrl?: string;
+          playing: boolean;
+          accent?: string;
+          secondary?: string;
+          theme?: "light" | "dark";
+        }) => Promise<boolean>;
+        onStateChange: (callback: (state: { open: boolean; locked: boolean; style?: "glass" | "floating"; alwaysOnTop?: boolean }) => void) => () => void;
+      };
       qqLoginWindow?: () => Promise<{ ok: boolean; cookie?: string; message?: string }>;
       /** 应用内 YouTube 登录窗口；代理字符串（http://host:port）随窗口会话生效。 */
       youtubeLoginWindow?: (proxy?: string) => Promise<{ ok: boolean; cookie?: string; message?: string }>;
@@ -103,7 +140,14 @@ declare global {
       };
       getRemoteAccess?: () => Promise<{ enabled: boolean; token: string; port: number; addresses: string[] }>;
       setRemoteAccess?: (enabled: boolean) => Promise<{ enabled: boolean; token: string }>;
-      updateTaskbarPlayback?: (payload: { title?: string; artist?: string; playing?: boolean }) => Promise<boolean>;
+      updateTaskbarPlayback?: (payload: {
+        title?: string;
+        artist?: string;
+        playing?: boolean;
+        liked?: boolean;
+        repeatMode?: "all" | "one";
+        shuffleEnabled?: boolean;
+      }) => Promise<boolean>;
       updateMediaSession?: (payload: { active: boolean; title: string; artist: string; album: string; artwork: string | null; playing: boolean; canPrevious: boolean; canNext: boolean }) => Promise<boolean>;
       setTaskbarPreviewRect?: (rect: { x: number; y: number; width: number; height: number } | null) => Promise<boolean>;
       setTaskbarIconicThumb?: (pixels: Uint8ClampedArray, width: number, height: number) => Promise<boolean>;
@@ -790,6 +834,12 @@ export const api = {
   },
   getLibrary(signal?: AbortSignal) {
     return request<ApiLibraryIndex>("/api/library", { signal });
+  },
+  importLocalFiles(filePaths: string[]) {
+    return request<{ tracks: ApiScannedTrack[]; library: ApiLibraryIndex }>("/api/library/import-files", {
+      method: "POST",
+      body: JSON.stringify({ filePaths }),
+    });
   },
   getLibraryWatchState(signal?: AbortSignal) {
     return request<ApiLibraryWatchState>("/api/library/watch-state", { signal });

@@ -1,6 +1,6 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Album, ArrowLeft, Disc3, FolderOpen, Languages, ListMusic, RefreshCw, X } from "lucide-react";
+import { Album, ArrowLeft, Disc3, FolderOpen, Languages, ListEnd, ListMusic, ListPlus, RefreshCw, X } from "lucide-react";
 import type { LyricCandidate, Track } from "@/data/music";
 import { api } from "@/lib/api";
 import { formatAudioDetail } from "@/lib/playerPresentation";
@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CoverArt, CopyableTrackText, EmptyState } from "./shared";
 import { LocalMetadataPanel, type LocalMetadataUpdated } from "./LocalMetadataPanel";
+import { usePlaylistActions } from "./PlaylistActions";
+import { useTrackContextMenu } from "./TrackContextMenu";
 
 type LibrarySurfaceProps = {
   folderName: string;
@@ -19,6 +21,7 @@ type LibrarySurfaceProps = {
   libraryMeta: { roots: string[]; updatedAt: string | null };
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
+  onEnqueueTracks?: (tracks: Track[]) => void;
   onScanPath: (folderPath: string) => Promise<unknown>;
   onScanCd: (qualityMode: "high" | "low") => Promise<void>;
   onLyricsBound: (trackId: string, lyrics: Track["lyrics"], candidateId?: string) => void;
@@ -44,6 +47,7 @@ export function LibrarySurface({
   libraryMeta,
   activeTrackId,
   onPickTrack,
+  onEnqueueTracks,
   onScanPath,
   onScanCd,
   onLyricsBound,
@@ -232,7 +236,12 @@ export function LibrarySurface({
           onPickTrack={onPickTrack}
         />
       ) : (
-        <TrackListView tracks={fileTracks} activeTrackId={activeTrackId} onPickTrack={onPickTrack} />
+        <TrackListView
+          tracks={fileTracks}
+          activeTrackId={activeTrackId}
+          onPickTrack={onPickTrack}
+          onEnqueueTracks={onEnqueueTracks}
+        />
       )}
     </div>
   );
@@ -355,41 +364,198 @@ function AlbumDetailView({
   );
 }
 
+type QualityFilter = "all" | "hires" | "lossless" | "lossy";
+
+function matchesQualityFilter(track: Track, filter: QualityFilter) {
+  if (filter === "all") return true;
+  if (filter === "hires") return track.quality === "Hi-Res" || track.quality === "臻品";
+  if (filter === "lossless") {
+    return track.quality === "Hi-Res" || track.quality === "臻品" || track.quality === "FLAC" || track.quality === "Lossless";
+  }
+  return track.quality === "320K" || track.quality === "128K" || track.quality === "AAC";
+}
+
 function TrackListView({
   tracks,
   activeTrackId,
   onPickTrack,
+  onEnqueueTracks,
 }: {
   tracks: Track[];
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
+  onEnqueueTracks?: (tracks: Track[]) => void;
 }) {
-  const virtual = useVirtualRows({ count: tracks.length, rowHeight: 88, overscan: 10 });
+  const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const anchorIndexRef = useRef<number | null>(null);
+  const playlistActions = usePlaylistActions();
+
+  const qualityCounts = useMemo(() => {
+    let hires = 0;
+    let lossless = 0;
+    let lossy = 0;
+    for (const track of tracks) {
+      if (matchesQualityFilter(track, "hires")) hires += 1;
+      if (matchesQualityFilter(track, "lossless")) lossless += 1;
+      if (matchesQualityFilter(track, "lossy")) lossy += 1;
+    }
+    return { all: tracks.length, hires, lossless, lossy };
+  }, [tracks]);
+
+  const filteredTracks = useMemo(
+    () => (qualityFilter === "all" ? tracks : tracks.filter((track) => matchesQualityFilter(track, qualityFilter))),
+    [qualityFilter, tracks],
+  );
+  const selectedTracks = useMemo(
+    () => filteredTracks.filter((track) => selectedIds.has(track.id)),
+    [filteredTracks, selectedIds],
+  );
+  const virtual = useVirtualRows({ count: filteredTracks.length, rowHeight: 88, overscan: 10 });
+
+  function handleRowClick(event: MouseEvent<HTMLButtonElement>, track: Track, index: number) {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      anchorIndexRef.current = index;
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        if (next.has(track.id)) next.delete(track.id);
+        else next.add(track.id);
+        return next;
+      });
+      return;
+    }
+    if (event.shiftKey) {
+      event.preventDefault();
+      const anchor = anchorIndexRef.current ?? index;
+      const start = Math.min(anchor, index);
+      const end = Math.max(anchor, index);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        for (let i = start; i <= end; i += 1) {
+          const item = filteredTracks[i];
+          if (item) next.add(item.id);
+        }
+        return next;
+      });
+      return;
+    }
+    if (selectedIds.size > 0) setSelectedIds(new Set());
+    anchorIndexRef.current = index;
+    onPickTrack(track.id, filteredTracks);
+  }
 
   if (!tracks.length) return <EmptyState text="还没有扫描到本地音乐。你可以选择文件夹，或直接输入路径扫描。" />;
   return (
-    <div
-      ref={virtual.containerRef}
-      className="no-scrollbar mt-5 min-h-0 flex-1 overflow-y-auto pr-1"
-      style={{ maxHeight: "calc(100vh - 24rem)" }}
-    >
-      <div className="relative" style={{ height: virtual.totalHeight }}>
-        {virtual.rows.map(({ index, offsetTop }) => {
-          const track = tracks[index];
-          if (!track) return null;
-          return (
-            <TrackRow
-              key={track.id}
-              track={track}
-              index={index}
-              active={activeTrackId === track.id}
-              queue={tracks}
-              onPickTrack={onPickTrack}
-              style={{ top: offsetTop }}
-            />
-          );
-        })}
+    <div className="mt-4 flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="aria-segment inline-flex flex-wrap items-center gap-1 rounded-full p-1">
+          {(
+            [
+              { id: "all", label: "全部", count: qualityCounts.all },
+              { id: "hires", label: "Hi-Res", count: qualityCounts.hires },
+              { id: "lossless", label: "无损", count: qualityCounts.lossless },
+              { id: "lossy", label: "有损", count: qualityCounts.lossy },
+            ] as const
+          ).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                setQualityFilter(item.id);
+                setSelectedIds(new Set());
+                anchorIndexRef.current = null;
+              }}
+              className={cn(
+                "aria-segment-item rounded-full px-3 py-1 text-xs font-medium tabular-nums",
+                qualityFilter === item.id && "is-active",
+              )}
+            >
+              {item.label} · {item.count}
+            </button>
+          ))}
+        </div>
+        <span className="text-[11px] text-neutral-400">按住 Ctrl / Shift 可多选</span>
       </div>
+
+      <AnimatePresence initial={false}>
+        {selectedTracks.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.98 }}
+            transition={{ duration: 0.15, ease: [0.23, 1, 0.32, 1] }}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-violet-200/70 bg-violet-50/75 px-3.5 py-2 text-xs shadow-sm backdrop-blur-md"
+          >
+            <span className="font-semibold text-violet-900 tabular-nums">已选 {selectedTracks.length} 首曲目</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {onEnqueueTracks && (
+                <Button
+                  size="sm"
+                  variant="glass"
+                  onClick={() => {
+                    onEnqueueTracks(selectedTracks);
+                    setSelectedIds(new Set());
+                  }}
+                >
+                  <ListEnd />
+                  加入队列
+                </Button>
+              )}
+              {playlistActions && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    playlistActions.openAdd(selectedTracks);
+                    setSelectedIds(new Set());
+                  }}
+                >
+                  <ListPlus />
+                  加入歌单
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedIds(new Set())}
+              >
+                <X />
+                取消
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {!filteredTracks.length ? (
+        <EmptyState text="当前音质筛选条件下没有匹配的本地曲目。" />
+      ) : (
+        <div
+          ref={virtual.containerRef}
+          className="no-scrollbar min-h-0 flex-1 overflow-y-auto pr-1"
+          style={{ maxHeight: "calc(100vh - 26rem)" }}
+        >
+          <div className="relative" style={{ height: virtual.totalHeight }}>
+            {virtual.rows.map(({ index, offsetTop }) => {
+              const track = filteredTracks[index];
+              if (!track) return null;
+              return (
+                <TrackRow
+                  key={track.id}
+                  track={track}
+                  index={index}
+                  active={activeTrackId === track.id}
+                  selected={selectedIds.has(track.id)}
+                  queue={filteredTracks}
+                  onPickTrack={onPickTrack}
+                  onClickRow={(event) => handleRowClick(event, track, index)}
+                  style={{ top: offsetTop }}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -499,25 +665,33 @@ function TrackRow({
   track,
   index,
   active,
+  selected = false,
   queue,
   onPickTrack,
+  onClickRow,
   style,
 }: {
   track: Track;
   index: number;
   active: boolean;
+  selected?: boolean;
   queue: Track[];
   onPickTrack: (id: string, queue?: Track[]) => void;
+  onClickRow?: (event: MouseEvent<HTMLButtonElement>) => void;
   style?: CSSProperties;
 }) {
+  const trackMenu = useTrackContextMenu();
   return (
     <button
+      data-track-context-row="true"
       className={cn(
         "aria-flat-row absolute left-0 right-0 grid h-20 grid-cols-[2.5rem_3.5rem_minmax(0,1fr)_auto] items-center gap-4 rounded-xl px-3 text-left",
         active && "is-current",
+        selected && "bg-violet-500/10 ring-1 ring-violet-500/30",
       )}
       style={style}
-      onClick={() => onPickTrack(track.id, queue)}
+      onClick={(event) => (onClickRow ? onClickRow(event) : onPickTrack(track.id, queue))}
+      onContextMenu={(event) => trackMenu?.open(event, track, queue)}
     >
       <span className="text-center text-sm font-medium text-neutral-400">{String(index + 1).padStart(2, "0")}</span>
       <CoverArt track={track} className="size-14 rounded-2xl" />

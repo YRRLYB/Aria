@@ -1,5 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { MotionConfig } from "framer-motion";
+import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import App from "./App";
 import "./index.css";
 
@@ -10,6 +12,10 @@ if (desktopPlatform) document.documentElement.dataset.platform = desktopPlatform
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <MotionConfig reducedMotion="user">
+      <ConfirmDialogProvider>
+        <App />
+      </ConfirmDialogProvider>
+    </MotionConfig>
   </StrictMode>,
 );

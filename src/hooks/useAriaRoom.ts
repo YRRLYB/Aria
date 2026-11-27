@@ -234,12 +234,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
   const readyReportedNoncesRef = useRef<Set<string>>(new Set());
   const prefetchedNextNonceRef = useRef<string | null>(null);
   const autoRejoinAttemptedRef = useRef<boolean>(false);
-  const lastSentPresenceRef = useRef<"active" | "away" | null>(null);
-  const presenceDebounceTimerRef = useRef<number | null>(null);
-  const windowFocusedRef = useRef<boolean>(typeof document !== "undefined" ? document.hasFocus() : true);
-  const windowVisibleRef = useRef<boolean>(
-    typeof document !== "undefined" ? document.visibilityState === "visible" : true,
-  );
+  const lastSentPresenceRef = useRef<"active" | null>(null);
 
   const markControlCommandHandled = useCallback((commandId?: unknown): boolean => {
     if (typeof commandId !== "string" || !commandId) return true;
@@ -1694,72 +1689,16 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     joinRoomByInput,
   ]);
 
-  // Track window focus & visibility to report in-app active vs away presence cleanly.
+  // Report "active" presence whenever connected so the user stays online
+  // as long as the Aria process is running (regardless of focus or playback).
   useEffect(() => {
-    const syncPresence = (immediate = false) => {
-      if (presenceDebounceTimerRef.current !== null) {
-        window.clearTimeout(presenceDebounceTimerRef.current);
-        presenceDebounceTimerRef.current = null;
-      }
-      const nextPresence: "active" | "away" =
-        windowVisibleRef.current && windowFocusedRef.current ? "active" : "away";
-      const snap = snapshotRef.current;
-      if (!snap.active || snap.signalingState !== "connected") return;
-
-      const sendNow = () => {
-        if (lastSentPresenceRef.current === nextPresence) return;
-        lastSentPresenceRef.current = nextPresence;
-        void api.updateAriaRoomPresence(nextPresence).catch(() => undefined);
-      };
-
-      if (immediate || nextPresence === "active") {
-        sendNow();
-      } else {
-        presenceDebounceTimerRef.current = window.setTimeout(sendNow, 800);
-      }
-    };
-
-    const onVisibilityChange = () => {
-      windowVisibleRef.current = document.visibilityState === "visible";
-      syncPresence(windowVisibleRef.current && windowFocusedRef.current);
-    };
-    const onFocus = () => {
-      windowFocusedRef.current = true;
-      syncPresence(true);
-    };
-    const onBlur = () => {
-      windowFocusedRef.current = false;
-      syncPresence(false);
-    };
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("blur", onBlur);
-    const offDesktopVis = window.ariaDesktop?.onWindowVisibilityChange?.((visible) => {
-      windowVisibleRef.current = visible;
-      syncPresence(visible && windowFocusedRef.current);
-    });
-    const offDesktopFocus = window.ariaDesktop?.onWindowFocusChange?.((focused) => {
-      windowFocusedRef.current = focused;
-      syncPresence(focused && windowVisibleRef.current);
-    });
-
-    if (snapshot.active && snapshot.signalingState === "connected") {
+    if (!snapshot.active || snapshot.signalingState !== "connected") {
       lastSentPresenceRef.current = null;
-      syncPresence(true);
+      return;
     }
-
-    return () => {
-      if (presenceDebounceTimerRef.current !== null) {
-        window.clearTimeout(presenceDebounceTimerRef.current);
-        presenceDebounceTimerRef.current = null;
-      }
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("blur", onBlur);
-      offDesktopVis?.();
-      offDesktopFocus?.();
-    };
+    if (lastSentPresenceRef.current === "active") return;
+    lastSentPresenceRef.current = "active";
+    void api.updateAriaRoomPresence("active").catch(() => undefined);
   }, [snapshot.active, snapshot.signalingState]);
 
   const probePreferredIps = useCallback(async (overrideUrl?: string, provider?: AriaSignalingProvider) => {

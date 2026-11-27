@@ -15,13 +15,12 @@ import {
   searchYoutubeTracks,
   setYoutubeLike,
 } from "./client";
-import { checkYoutubeDeviceLogin, startYoutubeDeviceLogin } from "./deviceLogin";
 import { youtubeManifest } from "./manifest";
 
 /**
  * YouTube Music source: anonymous search over the music.youtube.com innertube
  * API plus audio/video stream resolution, with optional account binding
- * (cookie / window / device login) that unlocks the user's liked songs &
+ * (cookie / window login) that unlocks the user's liked songs &
  * playlists. Streams, covers and every API call can be routed through a
  * user-configured proxy; see client.ts.
  */
@@ -91,17 +90,6 @@ export const youtubeSource: MusicSource = {
 
   getDiscovery() {
     return getYoutubeDiscovery();
-  },
-
-  // 设备码（RFC 8628）扫码式登录：复用 QQ/B站的泛型 /qr/start + /qr/check
-  // 路由，从结构上绕开 Google 对嵌入浏览器的登录拦截；成功后服务端直接
-  // 换取并保存 youtube.com 会话 Cookie，与窗口登录共用账号管线。
-  startQrLogin() {
-    return startYoutubeDeviceLogin();
-  },
-
-  checkQrLogin(key) {
-    return checkYoutubeDeviceLogin(key);
   },
 };
 

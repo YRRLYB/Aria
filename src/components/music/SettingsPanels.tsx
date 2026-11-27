@@ -129,7 +129,7 @@ function UpdateCard() {
       )}
       {state?.status === "downloading" && (
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-neutral-200">
-          <div className="h-full rounded-full bg-neutral-950 transition-all" style={{ width: `${Math.max(2, Math.min(100, state.percent ?? 0))}%` }} />
+          <div className="h-full rounded-full bg-neutral-950 transition-[width] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]" style={{ width: `${Math.max(2, Math.min(100, state.percent ?? 0))}%` }} />
         </div>
       )}
     </div>
@@ -234,6 +234,8 @@ export function SettingsPanel({
   onKeyboardShortcutsChange,
   theme,
   onThemeChange,
+  windowMaterial = "default",
+  onWindowMaterialChange,
   bilibiliDefaultVideoQn = 120,
   onBilibiliDefaultVideoQnChange,
   bilibiliDefaultAudioLevel = "hires",
@@ -278,6 +280,8 @@ export function SettingsPanel({
   onKeyboardShortcutsChange: (shortcuts: KeyboardShortcuts) => void;
   theme: AriaTheme;
   onThemeChange: (theme: AriaTheme) => void;
+  windowMaterial?: "default" | "translucent";
+  onWindowMaterialChange?: (mode: "default" | "translucent") => void;
   bilibiliDefaultVideoQn?: BilibiliDefaultVideoQn;
   onBilibiliDefaultVideoQnChange?: (qn: BilibiliDefaultVideoQn) => void;
   bilibiliDefaultAudioLevel?: BilibiliDefaultAudioLevel;
@@ -731,6 +735,38 @@ export function SettingsPanel({
                     </div>
                   </div>
                 </div>
+
+                {desktopReady && onWindowMaterialChange && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 py-3.5">
+                    <div>
+                      <p className="text-sm font-medium text-neutral-900">窗口材质</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {isMac ? "启用 macOS Vibrancy 窗口毛玻璃景深" : "启用 Windows 11 Mica 半透明窗口景深"}
+                      </p>
+                    </div>
+                    <div className="settings-segment inline-flex rounded-xl p-1">
+                      {(
+                        [
+                          { value: "default", label: "标准" },
+                          { value: "translucent", label: "半透明材质" },
+                        ] as const
+                      ).map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          aria-pressed={windowMaterial === option.value}
+                          onClick={() => onWindowMaterialChange(option.value)}
+                          className={cn(
+                            "settings-segment-item inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                            windowMaterial === option.value && "is-active",
+                          )}
+                        >
+                          <span>{option.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center justify-between gap-3 py-3.5">
                   <div className="min-w-0 flex-1">
@@ -2239,121 +2275,8 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
     }
   }
 
-  // 设备码登录（RFC 8628，智能电视同款授权通道）：手机上打开激活页输入代码
-  // 确认即可，凭据输入发生在用户自己的浏览器里，Aria 全程不接触 Google 登录
-  // 页——从结构上绕开「此浏览器或应用可能不安全」的嵌入浏览器拦截，交互与
-  // QQ/B站扫码同一范式（二维码 + 轮询 + 自动完成）。
-  const [deviceLogin, setDeviceLogin] = useState<{ key: string; userCode: string; verificationUrl: string; qrImage: string } | null>(null);
-  const [deviceStarting, setDeviceStarting] = useState(false);
-  const [deviceChecking, setDeviceChecking] = useState(false);
-  const [deviceStatus, setDeviceStatus] = useState("");
-  const devicePollInFlightRef = useRef(false);
-  const onAccountChangeRef = useRef(onAccountChange);
-  onAccountChangeRef.current = onAccountChange;
-
-  async function startDeviceLogin() {
-    setDeviceStarting(true);
-    setMessage(null);
-    const synced = await syncDraftProxy();
-    if (!synced.ok) {
-      setDeviceStarting(false);
-      return;
-    }
-    setDeviceStatus("正在向 Google 申请设备码…");
-    try {
-      const started = await api.startSourceQrLogin("youtube");
-      setDeviceLogin({
-        key: started.key,
-        userCode: started.userCode ?? "",
-        verificationUrl: started.verificationUrl ?? "",
-        qrImage: started.qrImage,
-      });
-      setDeviceStatus("用手机浏览器扫描二维码（或打开激活页）并输入代码确认，确认后约 5 秒自动登录。");
-    } catch (error) {
-      setDeviceLogin(null);
-      setDeviceStatus("");
-      setMessage(error instanceof Error ? error.message : "设备码申请失败，请稍后重试");
-    } finally {
-      setDeviceStarting(false);
-    }
-  }
-
-  async function copyUserCode() {
-    if (!deviceLogin?.userCode) return;
-    try {
-      await navigator.clipboard.writeText(deviceLogin.userCode);
-      setDeviceStatus("代码已复制，请在手机上粘贴并确认授权。");
-    } catch {
-      setDeviceStatus("复制失败，请手动输入代码。");
-    }
-  }
-
-  async function pollDeviceLogin(key: string, manual = false, isCancelled?: () => boolean) {
-    if (devicePollInFlightRef.current) return;
-    devicePollInFlightRef.current = true;
-    if (manual) {
-      setDeviceChecking(true);
-      setDeviceStatus("正在向 Google 确认授权状态…");
-    }
-    try {
-      const result = await api.checkSourceQrLogin("youtube", key);
-      if (isCancelled?.()) return;
-      if (result.status === "waiting") {
-        if (manual) {
-          setDeviceStatus("尚未检测到确认：请确认手机上已点击「允许」，约 5 秒内会自动完成。");
-        }
-        return;
-      }
-      setDeviceLogin(null);
-      if (result.status === "success") {
-        let resolvedAccount = result.account;
-        if (!resolvedAccount?.connected) {
-          const fresh = await api.getSourceAccount("youtube").catch(() => null);
-          if (fresh?.account) resolvedAccount = fresh.account;
-        }
-        if (resolvedAccount) setAccount(resolvedAccount);
-        setHasStoredCookie(true);
-        onAccountChangeRef.current?.();
-        window.dispatchEvent(new Event("aria-sources-changed"));
-        setDeviceStatus("YouTube 登录成功，歌单与我喜欢已可同步。");
-        setMessage(`已登录：${resolvedAccount?.nickname ?? "YouTube 账号"}，歌单与我喜欢已可同步。`);
-      } else {
-        setDeviceStatus("");
-        setMessage(result.message);
-      }
-    } catch (error) {
-      if (isCancelled?.()) return;
-      if (manual) {
-        setDeviceStatus(error instanceof Error ? `检查失败：${error.message}` : "检查授权状态失败，请稍后重试。");
-      } else {
-        setDeviceStatus("轮询网络波动，正在自动重试…");
-      }
-    } finally {
-      devicePollInFlightRef.current = false;
-      if (manual && !isCancelled?.()) {
-        setDeviceChecking(false);
-      }
-    }
-  }
-
-  // 轮询设备码状态；Google 要求 ≥5s 间隔，仅依赖 key 本身，避免父组件重渲染
-  // 反复重建定时器打断轮询。
-  const deviceKey = deviceLogin?.key ?? null;
-  useEffect(() => {
-    if (!deviceKey) return;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      void pollDeviceLogin(deviceKey, false, () => cancelled);
-    }, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [deviceKey]);
-
-  // 窗口登录（备用路径）：应用内打开真实 Chromium 窗口登录 Google 账号，
-  // 成功后自动提取会话 Cookie；个别账号可能被 Google 风控拦截，主路径是
-  // 上面的设备码登录。
+  // 窗口登录（主路径）：应用内打开真实 Chromium 窗口登录 Google 账号，
+  // 成功后自动提取会话 Cookie；若个别网络环境受限可使用下方 Cookie 备用绑定。
   async function loginInWindow() {
     const openLoginWindow = window.ariaDesktop?.youtubeLoginWindow;
     if (!openLoginWindow) {
@@ -2454,10 +2377,6 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
               <Cookie />
               Cookie 备用绑定
             </Button>
-            <Button size="sm" variant="subtle" onClick={() => void startDeviceLogin()} disabled={deviceStarting || saving}>
-              <QrCode />
-              {deviceStarting ? "申请中…" : "设备码备用登录"}
-            </Button>
             {account?.connected && (
               <Button size="sm" variant="subtle" onClick={() => void logout()} disabled={saving}>
                 <LogOut />
@@ -2470,44 +2389,6 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
               已打开 YouTube 登录窗口：像平时一样登录 Google 账号即可，登录成功后 Aria 会自动完成绑定。
               {!savedProxy && " 未配置代理时可能无法打开登录页，建议先在上方填写代理端口。"}
             </p>
-          )}
-          {deviceLogin && (
-            <div className="settings-inline-well mt-3 rounded-xl p-3">
-              <div className="flex flex-wrap items-center gap-4">
-                <img
-                  src={deviceLogin.qrImage}
-                  alt="YouTube 设备码登录二维码"
-                  className="settings-qr-box size-36 rounded-xl"
-                  draggable={false}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-neutral-800">设备码备用授权（Google TV 授权通道）</p>
-                  <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-                    备用通道：借用 Google 官方 YouTube TV 设备码授权（手机确认页会显示 YouTube on TV）；如需完整同步 YouTube Music 推荐与红心，建议优先使用「窗口登录」。打开{" "}
-                    <span className="font-medium text-neutral-700">{deviceLogin.verificationUrl}</span> 输入代码并确认。
-                  </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <code className="rounded-lg bg-neutral-100 px-3 py-1.5 text-sm font-semibold tracking-[0.2em] text-neutral-800">
-                      {deviceLogin.userCode}
-                    </code>
-                    <Button size="sm" variant="ghost" onClick={() => void copyUserCode()}>
-                      <Copy />
-                      复制代码
-                    </Button>
-                    <Button size="sm" variant="subtle" onClick={() => void pollDeviceLogin(deviceLogin.key, true)} disabled={deviceChecking || deviceStarting}>
-                      <RefreshCw className={deviceChecking ? "animate-spin" : undefined} />
-                      {deviceChecking ? "检查中…" : "我已确认"}
-                    </Button>
-                    <Button size="sm" variant="subtle" onClick={() => void startDeviceLogin()} disabled={deviceStarting}>
-                      重新生成
-                    </Button>
-                  </div>
-                </div>
-              </div>
-              {deviceStatus && (
-                <p role="status" className="settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs">{deviceStatus}</p>
-              )}
-            </div>
           )}
           {showCookieInput && (
             <div className="settings-inline-well mt-3 rounded-xl p-3">

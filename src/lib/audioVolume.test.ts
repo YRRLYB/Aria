@@ -25,9 +25,15 @@ describe("audioVolume", () => {
   });
 
   it("maintains equal constant dB increments per slider step from 1 to 100", () => {
+    expect(MIN_VOLUME_DB).toBe(-60);
+    expect(uiVolumeToLinearGain(10)).toBeLessThan(0.003);
+    expect(uiVolumeToLinearGain(50)).toBeGreaterThan(0.03);
+    expect(uiVolumeToLinearGain(50)).toBeLessThan(0.035);
+
     const expectedStepDb = Math.abs(MIN_VOLUME_DB) / 100;
     let previousGain = uiVolumeToLinearGain(1);
-    expect(previousGain).toBeGreaterThan(0.005);
+    expect(previousGain).toBeGreaterThan(0.0009);
+    expect(previousGain).toBeLessThan(0.0015);
 
     for (let v = 2; v <= 100; v += 1) {
       const currentGain = uiVolumeToLinearGain(v);

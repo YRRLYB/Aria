@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ArrowLeft, ChevronLeft, ChevronRight, Headphones, Maximize2, Minus, Moon, Radio, Search, Settings2, SlidersHorizontal, Sparkles, Sun, UserRound, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, Clock3, FastForward, Headphones, Heart, Maximize2, Minus, Moon, Radio, Rewind, Search, Settings2, SlidersHorizontal, Sparkles, Sun, UserRound, Volume2, VolumeX, X } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   CollectionSurface,
   LikedSurface,
@@ -76,15 +78,19 @@ import { saveBilibiliAudioMeta, useBilibiliData } from "@/hooks/useBilibiliData"
 import { useYoutubeData } from "@/hooks/useYoutubeData";
 import { saveYoutubeAudioMeta } from "@/lib/youtubeAudioMeta";
 import {
+  compileEqualizerChain,
   createEqualizerCustomPreset,
   defaultEqualizerSettings,
   maxEqualizerCustomPresets,
   readCachedEqualizerPresets,
+  readCachedEqualizerProfile,
   readCachedEqualizerSettings,
   writeCachedEqualizerPresets,
+  writeCachedEqualizerProfile,
   writeCachedEqualizerSettings,
   type EqualizerCustomPreset,
   type EqualizerPresetId,
+  type EqualizerProfile,
 } from "@/lib/equalizer";
 import {
   applyThemeToDocument,
@@ -116,6 +122,7 @@ import {
   adaptPaletteForTheme,
   extractDominantColors,
   createCachedQueueSnapshots,
+  getActiveLyricIndex,
   hasSyncedLyrics,
   mergeTrackRecord,
   mergeTracks,
@@ -146,7 +153,10 @@ import {
   type ViewHistorySnapshot,
 } from "@/lib/viewHistory";
 import { ArtistNavigationContext } from "@/components/music/shared";
-import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime } from "@/lib/playbackClock";
+import { TrackContextMenuProvider } from "@/components/music/TrackContextMenu";
+import { commitPlaybackTime, getPlaybackTime, resetPlaybackTime, subscribePlaybackTime } from "@/lib/playbackClock";
+import { normalizeBilingualLyrics } from "@/lib/lyricNormalize";
+import { readSearchHistory, recordSearchHistory, removeSearchHistoryItem, writeSearchHistory } from "@/lib/searchHistory";
 import { materializeQueueIds, mergeQueueTrackSources, orderedQueueIds, playableTracks } from "@/lib/playQueue";
 import { matchesShortcut, readKeyboardShortcuts, shortcutDefinitions, writeKeyboardShortcuts, type KeyboardShortcuts, type ShortcutCommand } from "@/lib/keyboardShortcuts";
 import { cachedArtworkUrl, directArtworkUrl } from "@/lib/coverUrl";
@@ -162,9 +172,9 @@ const dragRegionStyle = { WebkitAppRegion: "drag" } as CSSProperties;
 const noDragRegionStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
 const panelVariants = {
-  initial: { opacity: 0, y: 18 },
-  animate: { opacity: 1, y: 0, transitionEnd: { transform: "none" } },
-  exit: { opacity: 0, y: -16 },
+  initial: (dir: number) => (dir === 0 ? { opacity: 0, y: 5 } : { opacity: 0, x: dir > 0 ? 18 : -18 }),
+  animate: { opacity: 1, x: 0, y: 0, transitionEnd: { transform: "none" } },
+  exit: (dir: number) => (dir === 0 ? { opacity: 0, y: -4 } : { opacity: 0, x: dir > 0 ? -12 : 12 }),
 };
 
 async function loadCoverBitmapWithFallback(url: string, signal: AbortSignal): Promise<ImageBitmap | null> {
@@ -231,6 +241,8 @@ async function createMediaSessionArtwork(url: string, signal: AbortSignal): Prom
 }
 
 export default function App() {
+  const confirm = useConfirm();
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [initialPlayerCache] = useState(() => {
     migrateBilibiliLyricsCache();
     return readCachedPlayerState();
@@ -402,6 +414,24 @@ export default function App() {
   const [addPlaylistRequest, setAddPlaylistRequest] = useState<{ tracks: Track[]; playlistId?: string; existingTrackIds?: string[] } | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
+  const [searchHistory, setSearchHistory] = useState<string[]>(readSearchHistory);
+  const [undoBanner, setUndoBanner] = useState<{ id: number; message: string; undo: () => void } | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
+  const [shortcutHud, setShortcutHud] = useState<{ id: number; icon: "volume" | "mute" | "forward" | "rewind" | "like" | "copy" | "lyrics"; label: string; progress?: number } | null>(null);
+  const hudTimerRef = useRef<number | null>(null);
+  const [desktopLyricsOpen, setDesktopLyricsOpen] = useState(false);
+  const [desktopLyricsLocked, setDesktopLyricsLocked] = useState(false);
+  const lastDesktopLyricsKeyRef = useRef("");
+  const [navDirection, setNavDirection] = useState<-1 | 0 | 1>(0);
+  const [fileDropActive, setFileDropActive] = useState(false);
+  const fileDropDepthRef = useRef(0);
+  const [windowMaterial, setWindowMaterial] = useState<"default" | "translucent">(() => {
+    try {
+      return window.localStorage.getItem("aria-window-material-v1") === "translucent" ? "translucent" : "default";
+    } catch {
+      return "default";
+    }
+  });
   const playlistReturnRef = useRef<{ view?: ViewId; query: string; user: ProviderUser | null } | null>(null);
   const [hifiEnabled, setHifiEnabled] = useState(() => readCachedAudioSettings().hifiEnabled ?? true);
   const [masterQualityEnabled, setMasterQualityEnabled] = useState(() => {
@@ -421,6 +451,81 @@ export default function App() {
   useEffect(() => {
     writeCachedEqualizerSettings(equalizer);
   }, [equalizer]);
+  const [equalizerProfile, setEqualizerProfile] = useState<EqualizerProfile>(() => readCachedEqualizerProfile());
+  useEffect(() => {
+    writeCachedEqualizerProfile(equalizerProfile);
+  }, [equalizerProfile]);
+  const compiledEqualizerChain = useMemo(
+    () => compileEqualizerChain(equalizer, equalizerProfile),
+    [equalizer, equalizerProfile],
+  );
+  const [channelBalance, setChannelBalance] = useState<number>(() => {
+    try {
+      const raw = Number(window.localStorage.getItem("aria-channel-balance-v1"));
+      return Number.isFinite(raw) ? Math.max(-1, Math.min(1, raw)) : 0;
+    } catch {
+      return 0;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("aria-channel-balance-v1", String(channelBalance));
+    } catch {
+      // Non-critical setting persistence.
+    }
+  }, [channelBalance]);
+  const [monoAudio, setMonoAudio] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("aria-mono-audio-v1") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("aria-mono-audio-v1", monoAudio ? "true" : "false");
+    } catch {
+      // Non-critical setting persistence.
+    }
+  }, [monoAudio]);
+  const [userPlaybackSpeed, setUserPlaybackSpeed] = useState<number>(() => {
+    try {
+      const raw = Number(window.localStorage.getItem("aria-playback-speed-v1"));
+      return Number.isFinite(raw) && raw >= 0.5 && raw <= 2 ? raw : 1;
+    } catch {
+      return 1;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("aria-playback-speed-v1", String(userPlaybackSpeed));
+    } catch {
+      // Non-critical setting persistence.
+    }
+  }, [userPlaybackSpeed]);
+  const [crossfadeSeconds, setCrossfadeSeconds] = useState<0 | 2 | 4 | 6>(() => {
+    try {
+      const raw = Number(window.localStorage.getItem("aria-crossfade-seconds-v1"));
+      return raw === 2 || raw === 4 || raw === 6 ? raw : 0;
+    } catch {
+      return 0;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("aria-crossfade-seconds-v1", String(crossfadeSeconds));
+    } catch {
+      // Non-critical setting persistence.
+    }
+  }, [crossfadeSeconds]);
+  const [sleepTimer, setSleepTimer] = useState<{ mode: "off" | "duration" | "track-end"; endsAt: number | null }>({
+    mode: "off",
+    endsAt: null,
+  });
+  const [sleepTimerRemainingSec, setSleepTimerRemainingSec] = useState<number | null>(null);
+  const [fadeVolumeScale, setFadeVolumeScale] = useState(1);
+  const [roomSyncActive, setRoomSyncActive] = useState(false);
+
   function updateEqualizer(patch: Partial<typeof equalizer>) {
     setEqualizer((current) => ({ ...current, ...patch }));
   }
@@ -441,9 +546,27 @@ export default function App() {
     if (!trimmed) return false;
     const existing = customEqualizerPresets.find((item) => item.name === trimmed);
     if (!existing && customEqualizerPresets.length >= maxEqualizerCustomPresets) return false;
-    const preset = createEqualizerCustomPreset(trimmed, equalizer.bands);
+    const basePreset = createEqualizerCustomPreset(trimmed, equalizer.bands);
+    const preset: EqualizerCustomPreset = {
+      ...basePreset,
+      mode: equalizerProfile.mode,
+      preampDb: equalizerProfile.preampDb,
+      bands31: equalizerProfile.bands31.slice(),
+      peqFilters: equalizerProfile.peqFilters.map((item) => ({ ...item })),
+    };
     const next = existing
-      ? customEqualizerPresets.map((item) => (item.id === existing.id ? { ...item, bands: preset.bands } : item))
+      ? customEqualizerPresets.map((item) =>
+          item.id === existing.id
+            ? {
+                ...item,
+                bands: preset.bands,
+                mode: preset.mode,
+                preampDb: preset.preampDb,
+                bands31: preset.bands31,
+                peqFilters: preset.peqFilters,
+              }
+            : item,
+        )
       : [...customEqualizerPresets, preset];
     setCustomEqualizerPresets(next);
     writeCachedEqualizerPresets(next);
@@ -461,8 +584,18 @@ export default function App() {
     const merged = customEqualizerPresets.slice();
     for (const imported of presets) {
       const index = merged.findIndex((item) => item.name === imported.name);
-      if (index >= 0) merged[index] = { ...merged[index], bands: imported.bands };
-      else if (merged.length < maxEqualizerCustomPresets) merged.push(imported);
+      if (index >= 0) {
+        merged[index] = {
+          ...merged[index],
+          bands: imported.bands,
+          mode: imported.mode,
+          preampDb: imported.preampDb,
+          bands31: imported.bands31,
+          peqFilters: imported.peqFilters,
+        };
+      } else if (merged.length < maxEqualizerCustomPresets) {
+        merged.push(imported);
+      }
     }
     setCustomEqualizerPresets(merged);
     writeCachedEqualizerPresets(merged);
@@ -512,6 +645,24 @@ export default function App() {
     applyThemeToDocument(theme, systemDark);
     writeCachedTheme(theme);
   }, [theme, systemDark]);
+
+  function applySmoothTheme(nextTheme: AriaTheme) {
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const docWithTransition = document as Document & {
+      startViewTransition?: (updateCallback: () => void) => unknown;
+    };
+    if (!prefersReducedMotion && typeof docWithTransition.startViewTransition === "function") {
+      docWithTransition.startViewTransition(() => {
+        flushSync(() => setTheme(nextTheme));
+        applyThemeToDocument(nextTheme, systemDark);
+      });
+      return;
+    }
+    setTheme(nextTheme);
+  }
 
   useEffect(() => {
     if (!playbackNotice) return;
@@ -584,6 +735,7 @@ export default function App() {
     scanBackendPath,
     scanCdLibrary,
     removeLibraryRoot,
+    importLocalFiles,
     replaceLocalArtwork,
   } = useLocalLibrary({
     applyTrackUpdate,
@@ -1366,24 +1518,65 @@ export default function App() {
 
   useEffect(() => { setSuggestionIndex(-1); }, [searchDraft, searchSuggestions]);
 
+  function showUndoBanner(message: string, undo: () => void) {
+    if (undoTimerRef.current !== null) {
+      window.clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    const id = Date.now();
+    setUndoBanner({ id, message, undo });
+    undoTimerRef.current = window.setTimeout(() => {
+      undoTimerRef.current = null;
+      setUndoBanner((current) => (current?.id === id ? null : current));
+    }, 10_000);
+  }
+
+  function showShortcutHud(
+    label: string,
+    icon: "volume" | "mute" | "forward" | "rewind" | "like" | "copy" | "lyrics",
+    progress?: number,
+  ) {
+    if (hudTimerRef.current !== null) {
+      window.clearTimeout(hudTimerRef.current);
+      hudTimerRef.current = null;
+    }
+    const id = Date.now();
+    setShortcutHud({ id, icon, label, progress });
+    hudTimerRef.current = window.setTimeout(() => {
+      hudTimerRef.current = null;
+      setShortcutHud((current) => (current?.id === id ? null : current));
+    }, 900);
+  }
+
+  useEffect(() => () => {
+    if (undoTimerRef.current !== null) window.clearTimeout(undoTimerRef.current);
+    if (hudTimerRef.current !== null) window.clearTimeout(hudTimerRef.current);
+  }, []);
+
   function clearSearchState() {
     setSearchDraft("");
     setQuery("");
     setSearchFocused(false);
   }
 
-  function submitSearch(rawValue = searchDraft) {
+  const submitSearch = (rawValue = searchDraft) => {
     const trimmed = rawValue.trim();
     setSearchFocused(false);
     if (!trimmed) {
       setQuery("");
       return;
     }
+    setSearchHistory((current) => {
+      const next = recordSearchHistory(current, trimmed);
+      writeSearchHistory(next);
+      return next;
+    });
+    setNavDirection(1);
     setSelectedUser(null);
     setSelectedAlbum(null);
     setSearchDraft(trimmed);
     setQuery(trimmed);
-  }
+  };
 
   function pickSuggestion(value: string) {
     submitSearch(value);
@@ -1432,6 +1625,7 @@ export default function App() {
   const navigateHistory = useEffectEvent((direction: -1 | 1): boolean => {
     const stepped = stepViewHistory(viewHistory, direction);
     if (!stepped) return false;
+    setNavDirection(direction);
     restoringHistoryRef.current = true;
     setViewHistory(stepped.state);
     const target = stepped.target;
@@ -1596,13 +1790,18 @@ export default function App() {
     idleTrackId: idleTrack.id,
     effectiveQualityLevel,
     playing,
-    volume,
+    volume: Math.round(volume * fadeVolumeScale),
     hifiEnabled,
     masterQualityEnabled,
     gaplessEnabled,
     normalizationEnabled,
     equalizerEnabled: equalizer.enabled,
     equalizerBands: equalizer.bands,
+    equalizerChain: compiledEqualizerChain,
+    channelBalance,
+    monoAudio,
+    playbackSpeed: roomSyncActive ? 1 : userPlaybackSpeed,
+    microFadeEnabled: !exclusiveMode && !roomSyncActive,
     audioOutputMode,
     pageVisible,
     analyserEnabled:
@@ -2053,15 +2252,30 @@ export default function App() {
 
   function removeFromQueue(trackId: string) {
     if (!trackId || trackId === activeTrack.id) return;
-    const ids = queueIdsForManagement().filter((id) => id !== trackId);
+    const prevIds = queueIdsForManagement();
+    const removedTrack = effectiveQueueTracks.find((track) => track.id === trackId);
+    const ids = prevIds.filter((id) => id !== trackId);
+    if (ids.length === prevIds.length) return;
     setPlayQueueIds(ids);
     syncRoomQueueIds(ids);
+    showUndoBanner(`已将“${removedTrack?.title ?? "歌曲"}”移出队列`, () => {
+      setPlayQueueIds(prevIds);
+      syncRoomQueueIds(prevIds);
+    });
   }
 
   function clearQueue() {
+    const prevIds = queueIdsForManagement();
     const ids = activeTrack.id !== idleTrack.id && activeTrack.streamUrl ? [activeTrack.id] : [];
+    const removedCount = Math.max(0, prevIds.length - ids.length);
     setPlayQueueIds(ids);
     syncRoomQueueIds(ids);
+    if (removedCount > 0) {
+      showUndoBanner(`已清空队列中的 ${removedCount} 首待播歌曲`, () => {
+        setPlayQueueIds(prevIds);
+        syncRoomQueueIds(prevIds);
+      });
+    }
   }
 
   function moveQueueTrack(trackId: string, direction: "up" | "down") {
@@ -2074,6 +2288,56 @@ export default function App() {
     [ids[index], ids[targetIndex]] = [ids[targetIndex], ids[index]];
     setPlayQueueIds(ids);
     syncRoomQueueIds(ids);
+  }
+
+  function reorderQueueTrack(sourceId: string, targetId: string, position: "before" | "after") {
+    if (!sourceId || !targetId || sourceId === targetId || sourceId === activeTrack.id) return;
+    const ids = queueIdsForManagement();
+    const fromIndex = ids.indexOf(sourceId);
+    const rawTargetIndex = ids.indexOf(targetId);
+    if (fromIndex < 0 || rawTargetIndex < 0) return;
+    const next = ids.filter((id) => id !== sourceId);
+    const targetIndexAfterRemoval = next.indexOf(targetId);
+    const insertIndex = position === "before" ? targetIndexAfterRemoval : targetIndexAfterRemoval + 1;
+    next.splice(Math.max(0, Math.min(next.length, insertIndex)), 0, sourceId);
+    setPlayQueueIds(next);
+    syncRoomQueueIds(next);
+  }
+
+  function enqueueTracks(tracksToAdd: Track[]) {
+    if (!tracksToAdd.length) return;
+    const baseIds = queueIdsForManagement();
+    const existing = new Set(baseIds);
+    const addedIds = tracksToAdd.map((track) => track.id).filter((id) => Boolean(id) && !existing.has(id));
+    if (!addedIds.length) {
+      showShortcutHud("选中歌曲已在队列中", "copy");
+      return;
+    }
+    const nextIds = [...baseIds, ...addedIds];
+    setPlayQueueIds(nextIds);
+    syncRoomQueueIds(nextIds);
+    showShortcutHud(`已加入 ${addedIds.length} 首到队列`, "copy");
+  }
+
+  function removePlaylistTracksWithUndo(playlistId: string, tracksToRemove: Track[]) {
+    if (!tracksToRemove.length) return;
+    const target = localPlaylists.playlists.find((playlist) => playlist.id === playlistId);
+    if (!target) {
+      localPlaylists.removeTracks(playlistId, tracksToRemove);
+      return;
+    }
+    const snapshot = {
+      trackIds: [...target.trackIds],
+      trackSnapshots: target.trackSnapshots ? { ...target.trackSnapshots } : undefined,
+      manualTrackIds: target.superMix?.manualTrackIds ? [...target.superMix.manualTrackIds] : undefined,
+    };
+    localPlaylists.removeTracks(playlistId, tracksToRemove);
+    const label = tracksToRemove.length === 1
+      ? `已从“${target.name}”移除“${tracksToRemove[0].title}”`
+      : `已从“${target.name}”移除 ${tracksToRemove.length} 首歌曲`;
+    showUndoBanner(label, () => {
+      localPlaylists.restorePlaylistTracks(playlistId, snapshot);
+    });
   }
 
   function restartActiveTrack() {
@@ -2098,8 +2362,118 @@ export default function App() {
     audio.play().catch(() => setPlaying(false));
   }
 
+  function selectSleepTimer(option: "off" | "track-end" | number) {
+    if (option === "off") {
+      setSleepTimer({ mode: "off", endsAt: null });
+      setSleepTimerRemainingSec(null);
+      setFadeVolumeScale(1);
+      return;
+    }
+    if (option === "track-end") {
+      setSleepTimer({ mode: "track-end", endsAt: null });
+      setSleepTimerRemainingSec(null);
+      setFadeVolumeScale(1);
+      setPlaybackNotice("已开启定时关闭：本首播放完毕后停止");
+      return;
+    }
+    const endsAt = Date.now() + option * 60_000;
+    setSleepTimer({ mode: "duration", endsAt });
+    setSleepTimerRemainingSec(option * 60);
+    setFadeVolumeScale(1);
+    setPlaybackNotice(`已开启定时关闭：${option} 分钟后暂停播放`);
+  }
+
+  useEffect(() => {
+    if (sleepTimer.mode !== "duration" || !sleepTimer.endsAt) {
+      setSleepTimerRemainingSec(null);
+      return;
+    }
+    const endsAt = sleepTimer.endsAt;
+    const tick = () => {
+      const remainingMs = endsAt - Date.now();
+      if (remainingMs <= 0) {
+        setSleepTimer({ mode: "off", endsAt: null });
+        setSleepTimerRemainingSec(null);
+        setFadeVolumeScale(1);
+        setPlaying(false);
+        setPlaybackNotice("定时关闭已到时，已自动暂停播放");
+        return;
+      }
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      setSleepTimerRemainingSec(remainingSec);
+      if (remainingMs <= 10_000 && !exclusiveMode) {
+        setFadeVolumeScale(Math.max(0.05, remainingMs / 10_000));
+      } else {
+        setFadeVolumeScale(1);
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 500);
+    return () => window.clearInterval(timer);
+  }, [exclusiveMode, sleepTimer]);
+
+  const crossfadeTriggeredTrackRef = useRef<string | null>(null);
+  useEffect(() => {
+    setRoomSyncActive(ariaRoom.isActive || listenTogether.isActive);
+  }, [ariaRoom.isActive, listenTogether.isActive]);
+  useEffect(() => {
+    crossfadeTriggeredTrackRef.current = null;
+    setFadeVolumeScale(1);
+  }, [activeTrack.id]);
+
+  useEffect(() => {
+    if (
+      crossfadeSeconds <= 0 ||
+      exclusiveMode ||
+      ariaRoom.isActive ||
+      listenTogether.isActive ||
+      repeatMode === "one" ||
+      !playing ||
+      standaloneMvActive ||
+      activeTrack.id === idleTrack.id
+    ) {
+      return;
+    }
+    let fadeOutTimer: number | null = null;
+    const dispose = subscribePlaybackTime(() => {
+      if (crossfadeTriggeredTrackRef.current === activeTrack.id) return;
+      if (durationSeconds <= crossfadeSeconds + 3) return;
+      const remaining = durationSeconds - getPlaybackTime();
+      if (remaining > 0.25 && remaining <= crossfadeSeconds) {
+        crossfadeTriggeredTrackRef.current = activeTrack.id;
+        setFadeVolumeScale(0.18);
+        fadeOutTimer = window.setTimeout(() => {
+          setFadeVolumeScale(1);
+          pickRelativeTrack(1);
+        }, 380);
+      }
+    });
+    return () => {
+      dispose();
+      if (fadeOutTimer !== null) window.clearTimeout(fadeOutTimer);
+    };
+  }, [
+    activeTrack.id,
+    ariaRoom.isActive,
+    crossfadeSeconds,
+    durationSeconds,
+    exclusiveMode,
+    listenTogether.isActive,
+    playing,
+    repeatMode,
+    standaloneMvActive,
+  ]);
+
   function handleTrackEnded() {
     if (ariaRoom.isGuest) return;
+    if (sleepTimer.mode === "track-end") {
+      setSleepTimer({ mode: "off", endsAt: null });
+      setSleepTimerRemainingSec(null);
+      setFadeVolumeScale(1);
+      setPlaying(false);
+      setPlaybackNotice("本首播放完毕，已按定时设置停止");
+      return;
+    }
     if (repeatMode === "one") {
       restartActiveTrack();
       if (ariaRoom.isHost) {
@@ -2185,7 +2559,118 @@ export default function App() {
     setSelectedUser(null);
     setSelectedAlbum(null);
     clearSearchState();
+    setNavDirection(1);
     setActiveView("artists");
+  }
+
+  function openAlbumForTrack(track: Track) {
+    if (immersiveOpen) void closeImmersiveView();
+    const albumName = track.album?.trim();
+    if (!albumName) return;
+    setNavDirection(1);
+    if ((track.source === "netease" || track.source === "qq") && track.albumId) {
+      setSelectedArtist(null);
+      setSelectedUser(null);
+      clearSearchState();
+      setSelectedAlbum({
+        id: track.albumId,
+        name: albumName,
+        source: track.source,
+        artist: track.artist,
+        artistId: track.artistIds?.[0] ?? null,
+        coverUrl: track.coverUrl ?? null,
+        publishTime: null,
+        trackCount: null,
+      });
+      setActiveView("explore");
+      return;
+    }
+    setSelectedArtist(null);
+    setSelectedUser(null);
+    setSelectedAlbum(null);
+    submitSearch(albumName);
+  }
+
+  useEffect(() => {
+    const bridge = window.ariaDesktop?.desktopLyrics;
+    if (!bridge) return;
+    let active = true;
+    void bridge.getState().then((state) => {
+      if (!active || !state) return;
+      setDesktopLyricsOpen(Boolean(state.open));
+      setDesktopLyricsLocked(Boolean(state.locked));
+    }).catch(() => undefined);
+    const unsub = bridge.onStateChange((state) => {
+      if (!state) return;
+      setDesktopLyricsOpen(Boolean(state.open));
+      setDesktopLyricsLocked(Boolean(state.locked));
+    });
+    return () => {
+      active = false;
+      unsub?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const bridge = window.ariaDesktop?.desktopLyrics;
+    if (!bridge || !desktopLyricsOpen) {
+      lastDesktopLyricsKeyRef.current = "";
+      return;
+    }
+    const bilibiliOff = activeTrack.source === "bilibili" && !BILIBILI_LYRICS_ENABLED;
+    const lines = bilibiliOff ? [] : normalizeBilingualLyrics(activeTrack.lyrics);
+    const pushCurrentLine = () => {
+      const idx = lines.length ? getActiveLyricIndex(lines, getPlaybackTime()) : -1;
+      const activeLine = idx >= 0 ? lines[idx] : undefined;
+      const lineText = activeLine?.text?.trim()
+        || (activeTrack.id === "idle" ? "Aria · 静候播放" : `${activeTrack.title} · ${activeTrack.artist}`);
+      const translationText =
+        lyricDisplayMode === "bilingual" && activeLine?.translation
+          ? activeLine.translation.trim()
+          : "";
+      const payload = {
+        title: activeTrack.id === "idle" ? "Aria" : activeTrack.title,
+        artist: activeTrack.id === "idle" ? "" : activeTrack.artist,
+        line: lineText,
+        translation: translationText,
+        coverUrl: activeTrack.id === "idle" || !activeTrack.coverUrl ? "" : api.resolveUrl(activeTrack.coverUrl),
+        playing,
+        accent: surfacePalette.primary,
+        secondary: surfacePalette.secondary,
+        theme: resolvedTheme,
+      };
+      const nextKey = `${payload.title}|${payload.artist}|${payload.line}|${payload.translation}|${payload.coverUrl}|${payload.playing}|${payload.accent}|${payload.secondary}|${payload.theme}`;
+      if (nextKey === lastDesktopLyricsKeyRef.current) return;
+      lastDesktopLyricsKeyRef.current = nextKey;
+      void bridge.update(payload);
+    };
+    pushCurrentLine();
+    return subscribePlaybackTime(pushCurrentLine);
+  }, [activeTrack, desktopLyricsOpen, lyricDisplayMode, playing, resolvedTheme, surfacePalette.primary, surfacePalette.secondary]);
+
+  async function toggleDesktopLyricsWindow() {
+    const bridge = window.ariaDesktop?.desktopLyrics;
+    if (!bridge) return;
+    try {
+      const next = await bridge.toggle();
+      setDesktopLyricsOpen(Boolean(next.open));
+      setDesktopLyricsLocked(Boolean(next.locked));
+      showShortcutHud(next.open ? "已开启桌面歌词" : "已关闭桌面歌词", "lyrics");
+    } catch {
+      // Ignore bridge error when closing.
+    }
+  }
+
+  async function toggleDesktopLyricsLock() {
+    const bridge = window.ariaDesktop?.desktopLyrics;
+    if (!bridge) return;
+    try {
+      const next = await bridge.setLocked(!desktopLyricsLocked);
+      setDesktopLyricsLocked(Boolean(next.locked));
+      showShortcutHud(next.locked ? "桌面歌词已锁定穿透" : "桌面歌词已解锁", "lyrics");
+    } catch {
+      // Ignore bridge error.
+    }
   }
 
   function resolveQueueForTrack(trackId: string, preferredQueue?: Track[]) {
@@ -2416,24 +2901,35 @@ export default function App() {
       return;
     }
     if (command === "volumeUp") {
-      setVolume((current) => Math.min(100, Math.round(current + 5)));
+      const next = Math.min(100, Math.round(volume + 5));
+      setVolume(next);
+      showShortcutHud(`音量 ${next}%`, next === 0 ? "mute" : "volume", next / 100);
       return;
     }
     if (command === "volumeDown") {
-      setVolume((current) => Math.max(0, Math.round(current - 5)));
+      const next = Math.max(0, Math.round(volume - 5));
+      setVolume(next);
+      showShortcutHud(next === 0 ? "已静音" : `音量 ${next}%`, next === 0 ? "mute" : "volume", next / 100);
       return;
     }
     if (command === "mute") {
       if (volume > 0) {
         lastNonZeroVolumeRef.current = volume;
         setVolume(0);
+        showShortcutHud("已静音", "mute", 0);
       } else {
-        setVolume(lastNonZeroVolumeRef.current || 65);
+        const restored = lastNonZeroVolumeRef.current || 65;
+        setVolume(restored);
+        showShortcutHud(`音量 ${restored}%`, "volume", restored / 100);
       }
       return;
     }
     if (command === "like") {
-      if (hasActiveTrack) toggleLikeTrack(activeTrack.id);
+      if (hasActiveTrack) {
+        const nextLiked = !isTrackLiked(activeTrack);
+        toggleLikeTrack(activeTrack.id);
+        showShortcutHud(nextLiked ? "已加入我喜欢" : "已取消喜欢", "like");
+      }
       return;
     }
     if (command === "mode") {
@@ -2533,6 +3029,12 @@ export default function App() {
   }, [handleOpenSettingsFromShell]);
 
   useEffect(() => {
+    return window.ariaDesktop?.onNavigateHistory?.((direction) => {
+      navigateHistory(direction);
+    });
+  }, [navigateHistory]);
+
+  useEffect(() => {
     writeKeyboardShortcuts(keyboardShortcuts);
     window.ariaDesktop?.configureGlobalShortcuts?.(keyboardShortcuts).catch(() => undefined);
   }, [keyboardShortcuts]);
@@ -2546,19 +3048,127 @@ export default function App() {
   }, [lyricDisplayMode]);
 
   useEffect(() => {
+    const bridge = window.ariaDesktop;
+    if (!bridge?.getWindowMaterial) return;
+    let active = true;
+    void bridge.getWindowMaterial().then((mode) => {
+      if (active && (mode === "default" || mode === "translucent")) setWindowMaterial(mode);
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.dataset.windowMaterial = windowMaterial;
+    }
+    try {
+      window.localStorage.setItem("aria-window-material-v1", windowMaterial);
+    } catch {
+      // Ignore storage write errors.
+    }
+    void window.ariaDesktop?.setWindowMaterial?.(windowMaterial);
+  }, [windowMaterial]);
+
+  const handleImportAndPlayPaths = useEffectEvent(async (filePaths: string[]) => {
+    if (!filePaths.length) return;
+    try {
+      const imported = await importLocalFiles(filePaths);
+      if (!imported.length) {
+        setPlaybackNotice("未识别到可播放的音频文件");
+        return;
+      }
+      chooseTrack(imported[0].id, imported);
+      showShortcutHud(`已导入并播放 ${imported.length} 首音频`, "copy");
+    } catch (error) {
+      setPlaybackError(error instanceof Error ? error.message : "导入音频文件失败");
+    }
+  });
+
+  useEffect(() => {
+    const audioExtRe = /\.(flac|alac|wav|ape|m4a|aac|mp3|ogg|opus|wma|aiff?)$/i;
+    const isFileDrag = (event: DragEvent) => Boolean(event.dataTransfer?.types?.includes("Files"));
+    const onDragEnter = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      fileDropDepthRef.current += 1;
+      setFileDropActive(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      fileDropDepthRef.current = Math.max(0, fileDropDepthRef.current - 1);
+      if (fileDropDepthRef.current === 0) setFileDropActive(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      fileDropDepthRef.current = 0;
+      setFileDropActive(false);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      const paths = files
+        .map((file) => window.ariaDesktop?.getPathForFile?.(file) || (file as File & { path?: string }).path || "")
+        .filter((p) => Boolean(p) && audioExtRe.test(p));
+      if (paths.length) {
+        void handleImportAndPlayPaths(paths);
+      } else if (files.length) {
+        setPlaybackNotice("仅支持拖拽 FLAC / WAV / ALAC / MP3 / M4A / OGG / OPUS / APE 音频文件");
+      }
+    };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
+
+  useEffect(() => {
+    const bridge = window.ariaDesktop;
+    if (!bridge) return;
+    void bridge.consumePendingOpenFiles?.().then((files) => {
+      if (files?.length) void handleImportAndPlayPaths(files);
+    }).catch(() => undefined);
+    const unsub = bridge.onOpenAudioFiles?.((files) => {
+      if (files?.length) void handleImportAndPlayPaths(files);
+    });
+    return () => unsub?.();
+  }, []);
+
+  const lastTaskbarPayloadKeyRef = useRef("");
+  const activeTrackLiked = hasActiveTrack ? isTrackLiked(activeTrack) : false;
+
+  useEffect(() => {
     const updateTaskbarPlayback = window.ariaDesktop?.updateTaskbarPlayback;
     if (!updateTaskbarPlayback) return;
 
-    const hasTrack = activeTrack.id !== idleTrack.id;
+    const nextTitle = hasActiveTrack ? activeTrack.title : "";
+    const nextArtist = hasActiveTrack ? activeTrack.artist : "";
+    const nextKey = `${hasActiveTrack}|${nextTitle}|${nextArtist}|${playing}|${activeTrackLiked}|${repeatMode}|${shuffleEnabled}`;
+    if (nextKey === lastTaskbarPayloadKeyRef.current) return;
+    lastTaskbarPayloadKeyRef.current = nextKey;
+
     // Keep the native window/application identity stable for OOPZ and other
     // application-loopback tools. Song metadata is published separately.
     document.title = "Aria";
     updateTaskbarPlayback({
-      title: hasTrack ? activeTrack.title : "",
-      artist: hasTrack ? activeTrack.artist : "",
+      title: nextTitle,
+      artist: nextArtist,
       playing,
+      liked: activeTrackLiked,
+      repeatMode,
+      shuffleEnabled,
     }).catch(() => undefined);
-  }, [activeTrack.artist, activeTrack.id, activeTrack.title, playing]);
+  }, [hasActiveTrack, activeTrack.title, activeTrack.artist, activeTrackLiked, playing, repeatMode, shuffleEnabled]);
 
   useEffect(() => {
     const coverUrl = hasActiveTrack ? activeTrack.coverUrl : undefined;
@@ -2889,6 +3499,29 @@ export default function App() {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+        const lowerKey = event.key.toLowerCase();
+        if (lowerKey === "k") {
+          event.preventDefault();
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+          return;
+        }
+        if (lowerKey === "f" && !isEditableTarget(event.target)) {
+          event.preventDefault();
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+          return;
+        }
+        if (event.key === "[") {
+          if (navigateHistory(-1)) event.preventDefault();
+          return;
+        }
+        if (event.key === "]") {
+          if (navigateHistory(1)) event.preventDefault();
+          return;
+        }
+      }
       if (isEditableTarget(event.target)) return;
       if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && (event.key === " " || event.code === "Space" || event.key === "MediaPlayPause")) {
         event.preventDefault();
@@ -2903,6 +3536,28 @@ export default function App() {
       if (event.key === "MediaTrackPrevious" || (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "ArrowLeft")) {
         event.preventDefault();
         handlePlaybackCommand("previous");
+        return;
+      }
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        if (hasActiveTrack) {
+          event.preventDefault();
+          const delta = event.key === "ArrowRight" ? 5 : -5;
+          seekTo(Math.max(0, getPlaybackTime() + delta));
+          showShortcutHud(delta > 0 ? "快进 +5s" : "快退 -5s", delta > 0 ? "forward" : "rewind");
+        }
+        return;
+      }
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        const targetEl = event.target instanceof HTMLElement ? event.target : null;
+        if (!targetEl?.closest("[role='listbox']")) {
+          event.preventDefault();
+          handlePlaybackCommand(event.key === "ArrowUp" ? "volumeUp" : "volumeDown");
+        }
+        return;
+      }
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        handlePlaybackCommand("like");
         return;
       }
       if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "i") {
@@ -3036,7 +3691,13 @@ export default function App() {
   }
 
   async function removeLibraryFolder(root: string) {
-    if (!window.confirm(`从曲库中移除“${root}”？音频文件不会被删除。`)) return;
+    const confirmed = await confirm({
+      title: `从曲库中移除“${root}”？`,
+      description: "仅移除曲库索引，硬盘上的音频文件不会被删除。",
+      confirmLabel: "移除文件夹",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     try {
       await removeLibraryRoot(root);
       setLibraryWatchState(await api.getLibraryWatchState());
@@ -3357,6 +4018,19 @@ export default function App() {
       setAddPlaylistRequest({ tracks: normalizedTracks, playlistId, existingTrackIds });
       if (neteaseConnected && normalizedTracks.some((track) => track.source === "netease")) void refreshPlaylistList().catch(() => undefined);
     }}>
+    <TrackContextMenuProvider
+      activeTrackId={activeTrack.id}
+      onPlayTrack={chooseTrack}
+      onPlayNext={playNextTrack}
+      onAddToPlaylist={(track) => {
+        const normalized = canonicalizeTrackForLibrary(track);
+        setAddPlaylistRequest({ tracks: [normalized] });
+        if (neteaseConnected && normalized.source === "netease") void refreshPlaylistList().catch(() => undefined);
+      }}
+      onOpenArtist={openArtistForTrack}
+      onOpenAlbum={openAlbumForTrack}
+      onNotify={(label) => showShortcutHud(label, "copy")}
+    >
     <main
       className="aria-stage relative h-dvh overflow-hidden text-[var(--text-primary)]"
       data-ambient-active={playing && pageVisible ? "true" : "false"}
@@ -3475,7 +4149,7 @@ export default function App() {
           </div>
 
           <div className="app-nav-slot">
-            <AppNavigation activeView={activeView} onPick={(id) => { clearSearchState(); setSelectedArtist(null); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); setPlaylistSourceRequest(null); } setActiveView(id); }} />
+            <AppNavigation activeView={activeView} onPick={(id) => { setNavDirection(0); clearSearchState(); setSelectedArtist(null); setSelectedUser(null); setSelectedAlbum(null); if (id === "playlists") { closePlaylist(); localPlaylists.setSelectedId(null); playlistReturnRef.current = null; setPlaylistSourceIntent(null); setPlaylistSourceRequest(null); } setActiveView(id); }} />
           </div>
 
           <div
@@ -3497,6 +4171,7 @@ export default function App() {
               <Search className="size-3.5" strokeWidth={2.25} />
             </button>
             <input
+              ref={searchInputRef}
               value={searchDraft}
               onChange={(event) => { setSearchDraft(event.target.value); setSearchFocused(true); }}
               onFocus={() => setSearchFocused(true)}
@@ -3559,6 +4234,53 @@ export default function App() {
             {searchFocused && searchDraft.trim() && searchSuggestions.length > 0 && <div id="search-suggestions" role="listbox" aria-label="搜索建议" className="absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-violet-100 bg-white p-2 shadow-xl">
               {searchSuggestions.map((suggestion, index) => <button key={suggestion} id={`search-suggestion-${index}`} type="button" role="option" aria-selected={suggestionIndex === index} className={cn("flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-neutral-600 hover:bg-violet-50", suggestionIndex === index && "bg-violet-50 text-violet-700")} onMouseDown={(event) => event.preventDefault()} onClick={() => pickSuggestion(suggestion)}><Search className="size-3.5 shrink-0" /><span className="truncate">{suggestion}</span></button>)}
             </div>}
+            {searchFocused && !searchDraft.trim() && searchHistory.length > 0 && (
+              <div id="search-history-dropdown" role="listbox" aria-label="最近搜索" className="absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-neutral-200/80 bg-white/95 p-2 shadow-xl backdrop-blur-xl">
+                <div className="mb-1 flex items-center justify-between px-2.5 py-1 text-[11px] font-medium text-neutral-400">
+                  <span className="inline-flex items-center gap-1"><Clock3 className="size-3" />最近搜索</span>
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 transition hover:bg-neutral-950/[0.06] hover:text-neutral-700"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setSearchHistory([]);
+                      writeSearchHistory([]);
+                    }}
+                  >
+                    清空
+                  </button>
+                </div>
+                {searchHistory.map((item) => (
+                  <div key={item} className="group flex items-center gap-1 rounded-xl px-2.5 py-1.5 hover:bg-violet-50">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-neutral-700"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => pickSuggestion(item)}
+                    >
+                      <Search className="size-3.5 shrink-0 text-neutral-400" />
+                      <span className="truncate">{item}</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`删除搜索记录 ${item}`}
+                      className="rounded-full p-1 text-neutral-400 opacity-0 transition hover:bg-black/5 hover:text-neutral-700 group-hover:opacity-100"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSearchHistory((current) => {
+                          const next = removeSearchHistoryItem(current, item);
+                          writeSearchHistory(next);
+                          return next;
+                        });
+                      }}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="app-header-actions flex items-center gap-2" style={noDragRegionStyle}>
@@ -3629,7 +4351,7 @@ export default function App() {
               size="icon"
               aria-label={resolvedTheme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
               title={resolvedTheme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
-              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+              onClick={() => applySmoothTheme(resolvedTheme === "dark" ? "light" : "dark")}
             >
               {resolvedTheme === "dark" ? <Sun /> : <Moon />}
             </Button>
@@ -3849,6 +4571,19 @@ export default function App() {
                   visualizerActive={pageVisible && !immersiveOpen && activeView === "player" && !videoMode}
                   lyricDisplayMode={lyricDisplayMode}
                   onLyricDisplayModeChange={setLyricDisplayMode}
+                  playbackSpeed={userPlaybackSpeed}
+                  onPlaybackSpeedChange={setUserPlaybackSpeed}
+                  playbackSpeedLocked={ariaRoom.isActive || listenTogether.isActive}
+                  sleepTimerMode={sleepTimer.mode}
+                  sleepTimerRemainingSec={sleepTimerRemainingSec}
+                  onSleepTimerSelect={selectSleepTimer}
+                  crossfadeSeconds={crossfadeSeconds}
+                  onCrossfadeSecondsChange={setCrossfadeSeconds}
+                  crossfadeBypassed={exclusiveMode || ariaRoom.isActive || listenTogether.isActive}
+                  desktopLyricsOpen={desktopLyricsOpen}
+                  desktopLyricsLocked={desktopLyricsLocked}
+                  onToggleDesktopLyrics={window.ariaDesktop?.desktopLyrics ? () => void toggleDesktopLyricsWindow() : undefined}
+                  onToggleDesktopLyricsLock={window.ariaDesktop?.desktopLyrics ? () => void toggleDesktopLyricsLock() : undefined}
                   onSeek={seekTo}
                   equalizerEnabled={equalizer.enabled}
                   onOpenEqualizer={() => setEqualizerOpen(true)}
@@ -3863,9 +4598,15 @@ export default function App() {
                       preset={equalizer.preset}
                       error={equalizerError}
                       customPresets={customEqualizerPresets}
+                      profile={equalizerProfile}
+                      channelBalance={channelBalance}
+                      monoAudio={monoAudio}
                       onEnabledChange={(enabled) => updateEqualizer({ enabled })}
                       onBandsChange={(bands) => updateEqualizer({ bands })}
                       onPresetChange={selectEqualizerPreset}
+                      onProfileChange={setEqualizerProfile}
+                      onChannelBalanceChange={setChannelBalance}
+                      onMonoAudioChange={setMonoAudio}
                       onSavePreset={saveCustomEqualizerPreset}
                       onDeletePreset={deleteCustomEqualizerPreset}
                       onImportPresets={importCustomEqualizerPresets}
@@ -3873,14 +4614,15 @@ export default function App() {
                   </Suspense>
                 )}
           </div>
-          <AnimatePresence initial={false} mode="popLayout">
+          <AnimatePresence initial={false} mode="popLayout" custom={navDirection}>
             <motion.div
               key={selectedAlbum ? `album:${selectedAlbum.id}` : selectedUser ? `user:${selectedUser.id}` : query.trim() ? "search" : activeView}
+              custom={navDirection}
               variants={panelVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: 0.17, ease: [0.23, 1, 0.32, 1] }}
               className={cn(
                 "app-view min-h-0 min-w-0 scrollbar-thin",
                 activeView === "home" && !query.trim() && "app-view-home",
@@ -3927,8 +4669,8 @@ export default function App() {
                   youtubeMore={searchYoutubeMore}
                   onRetry={retrySearch}
                   onLoadMore={() => void loadMoreSearch()}
-                  onPickUser={setSelectedUser}
-                  onPickAlbum={setSelectedAlbum}
+                  onPickUser={(user) => { setNavDirection(1); setSelectedUser(user); }}
+                  onPickAlbum={(album) => { setNavDirection(1); setSelectedAlbum(album); }}
                   artistAvatarCache={artistAvatarCache}
                   onPickTrack={(id, queue) => {
                     chooseTrack(id, queue);
@@ -3974,6 +4716,7 @@ export default function App() {
                   libraryMeta={libraryMeta}
                   activeTrackId={activeTrackId}
                   onPickTrack={chooseTrack}
+                  onEnqueueTracks={enqueueTracks}
                   onScanPath={scanBackendPath}
                   onScanCd={scanCdLibrary}
                   onLyricsBound={(trackId, lyrics, candidateId) => applyLyricsToTrack(trackId, lyrics, candidateId)}
@@ -4042,7 +4785,7 @@ export default function App() {
                     onRename: localPlaylists.rename,
                     onDelete: localPlaylists.remove,
                     onAdd: localPlaylists.addTracks,
-                    onRemove: localPlaylists.removeTracks,
+                    onRemove: removePlaylistTracksWithUndo,
                     onReorder: localPlaylists.reorder,
                     onPickTrack: chooseTrack,
                   }}
@@ -4064,7 +4807,7 @@ export default function App() {
                     onRename: localPlaylists.rename,
                     onDelete: localPlaylists.remove,
                     onAdd: localPlaylists.addTracks,
-                    onRemove: localPlaylists.removeTracks,
+                    onRemove: removePlaylistTracksWithUndo,
                     onReorder: localPlaylists.reorder,
                     onSyncReference: localPlaylists.syncReference,
                     onPickTrack: chooseTrack,
@@ -4157,7 +4900,7 @@ export default function App() {
                     onCloseReferenced: () => localPlaylists.setSelectedId(null),
                     onRenameReferenced: localPlaylists.rename,
                     onAddReferenced: localPlaylists.addTracks,
-                    onRemoveReferenced: localPlaylists.removeTracks,
+                    onRemoveReferenced: removePlaylistTracksWithUndo,
                     onReorderReferenced: localPlaylists.reorder,
                   }}
                   youtube={{
@@ -4425,6 +5168,8 @@ export default function App() {
                     onKeyboardShortcutsChange={setKeyboardShortcuts}
                     theme={theme}
                     onThemeChange={setTheme}
+                    windowMaterial={windowMaterial}
+                    onWindowMaterialChange={setWindowMaterial}
                     bilibiliDefaultVideoQn={bilibiliDefaultVideoQn}
                     onBilibiliDefaultVideoQnChange={(qn) => {
                       setBilibiliDefaultVideoQn(qn);
@@ -4486,6 +5231,7 @@ export default function App() {
                         identity={ariaRoom.identity}
                         accounts={ariaRoomAccounts}
                         activeTrack={activeTrack.id === idleTrack.id ? null : activeTrack}
+                        playing={playing}
                         loading={ariaRoom.loading}
                         probingIps={ariaRoom.probingIps}
                         actionError={ariaRoom.actionError}
@@ -4656,6 +5402,8 @@ export default function App() {
               onPlayNext={playNextTrack}
               onRemove={removeFromQueue}
               onMove={moveQueueTrack}
+              onReorder={reorderQueueTrack}
+              onLyricCopied={(msg) => showShortcutHud(msg, "copy")}
             />
           ) : (
           <aside className="glass hidden min-h-0 flex-col rounded-[1.5rem] p-4 xl:flex">
@@ -4674,6 +5422,7 @@ export default function App() {
               onPlayNext={playNextTrack}
               onRemove={removeFromQueue}
               onMove={moveQueueTrack}
+              onReorder={reorderQueueTrack}
             />
           </aside>
           )}
@@ -4687,6 +5436,7 @@ export default function App() {
           onPlayNext={playNextTrack}
           onRemove={removeFromQueue}
           onMove={moveQueueTrack}
+          onReorder={reorderQueueTrack}
           onClear={clearQueue}
         />}
 
@@ -4717,6 +5467,7 @@ export default function App() {
               onSeek={seekTo}
               visualizerActive={pageVisible}
               lyricDisplayMode={lyricDisplayMode}
+              onLyricCopied={(msg) => showShortcutHud(msg, "copy")}
               videoMode={videoMode}
               onToggleVideoMode={toggleVideoMode}
               standaloneMvAudio={standaloneMvActive}
@@ -4802,13 +5553,14 @@ export default function App() {
             navCloseTimer.current = window.setTimeout(() => {
               setNavOpen(false);
               navCloseTimer.current = null;
-            }, 300);
+            }, 180);
           }}
           onPick={(id) => {
             if (navCloseTimer.current !== null) {
               window.clearTimeout(navCloseTimer.current);
               navCloseTimer.current = null;
             }
+            setNavDirection(0);
             clearSearchState();
             setSelectedArtist(null);
             setSelectedUser(null);
@@ -4822,6 +5574,107 @@ export default function App() {
         />}
 
       </div>
+      <AnimatePresence>
+        {fileDropActive && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.14 }}
+            className="pointer-events-none fixed inset-0 z-[105] flex items-center justify-center bg-neutral-950/24 p-6 backdrop-blur-md"
+          >
+            <div className="flex flex-col items-center gap-2 rounded-[1.75rem] border border-white/60 bg-white/88 px-8 py-6 text-center shadow-[0_24px_60px_rgba(15,18,32,0.28)] dark:border-white/15 dark:bg-[#171722]/90">
+              <Sparkles className="size-7 text-violet-500" />
+              <p className="text-base font-semibold">松开以导入并播放音频文件</p>
+              <p className="text-xs text-neutral-500">支持 FLAC / WAV / ALAC / MP3 / M4A / OGG / OPUS / APE</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {shortcutHud && (
+          <motion.div
+            key={shortcutHud.id}
+            role="status"
+            aria-live="polite"
+            initial={{ opacity: 0, y: -8, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.97 }}
+            transition={{ duration: 0.16, ease: [0.23, 1, 0.32, 1] }}
+            className="pointer-events-none fixed left-1/2 top-20 z-[95] flex -translate-x-1/2 items-center gap-2.5 rounded-full border border-white/15 bg-neutral-950/88 px-4 py-2 text-xs font-medium text-white shadow-[0_14px_34px_rgba(10,12,24,0.34)] backdrop-blur-2xl"
+          >
+            {shortcutHud.icon === "volume" && <Volume2 className="size-3.5 text-violet-300" />}
+            {shortcutHud.icon === "mute" && <VolumeX className="size-3.5 text-rose-300" />}
+            {shortcutHud.icon === "forward" && <FastForward className="size-3.5 text-sky-300" />}
+            {shortcutHud.icon === "rewind" && <Rewind className="size-3.5 text-sky-300" />}
+            {shortcutHud.icon === "like" && <Heart className="size-3.5 fill-rose-400 text-rose-400" />}
+            {shortcutHud.icon === "copy" && <Check className="size-3.5 text-emerald-300" />}
+            {shortcutHud.icon === "lyrics" && <Sparkles className="size-3.5 text-violet-300" />}
+            <span className="whitespace-nowrap tabular-nums">{shortcutHud.label}</span>
+            {typeof shortcutHud.progress === "number" && (
+              <span className="h-1 w-14 overflow-hidden rounded-full bg-white/20">
+                <span
+                  className="block h-full rounded-full bg-white transition-[width] duration-100"
+                  style={{ width: `${Math.round(Math.max(0, Math.min(1, shortcutHud.progress)) * 100)}%` }}
+                />
+              </span>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {undoBanner && (
+          <motion.div
+            key={undoBanner.id}
+            role="status"
+            aria-live="polite"
+            initial={{ opacity: 0, y: 12, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
+            className={cn(
+              "fixed left-1/2 z-[92] flex w-max max-w-[min(92vw,32rem)] -translate-x-1/2 flex-col overflow-hidden rounded-2xl border border-white/14 bg-neutral-950/92 text-sm text-white shadow-[0_18px_50px_rgba(20,24,35,0.38)] backdrop-blur-2xl",
+              playbackNotice || playbackError || deviceChangePrompt ? "bottom-22" : "bottom-6",
+            )}
+          >
+            <div className="flex items-center gap-3 px-4 py-2.5">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{undoBanner.message}</span>
+              <button
+                type="button"
+                className="shrink-0 rounded-full bg-white/16 px-3 py-1 text-xs font-semibold text-white transition hover:bg-white/26 active:scale-95"
+                onClick={() => {
+                  const action = undoBanner.undo;
+                  if (undoTimerRef.current !== null) {
+                    window.clearTimeout(undoTimerRef.current);
+                    undoTimerRef.current = null;
+                  }
+                  setUndoBanner(null);
+                  action();
+                }}
+              >
+                撤销
+              </button>
+              <button
+                type="button"
+                className="shrink-0 rounded-full px-1 text-white/55 transition hover:text-white"
+                aria-label="关闭撤销提示"
+                onClick={() => {
+                  if (undoTimerRef.current !== null) {
+                    window.clearTimeout(undoTimerRef.current);
+                    undoTimerRef.current = null;
+                  }
+                  setUndoBanner(null);
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="h-[2px] w-full bg-white/10">
+              <div className="aria-undo-bar h-full w-full bg-violet-400/90" />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {(playbackNotice || playbackError || deviceChangePrompt) && (
         <div
           role="alert"
@@ -4912,6 +5765,7 @@ export default function App() {
         }}
       />
     </main>
+    </TrackContextMenuProvider>
     </PlaylistActionsProvider>
     </ArtistNavigationContext.Provider>
   );

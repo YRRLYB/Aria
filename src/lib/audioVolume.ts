@@ -1,10 +1,10 @@
 // Constant-dB audio-tapered volume mapping aligned with Windows Core Audio
 // Audio-Tapered Volume Controls (dB = 20 * log10(gain)): every 1% slider
-// step moves perceived loudness by an equal 0.40 dB increment from -40 dB to 0 dB,
-// eliminating the steep low-end cliff at v = 1 -> 2 and unifying WebAudio,
-// standalone <video>, and mpv (cubic softvol) output levels.
+// step moves perceived loudness by an equal 0.60 dB increment from -60 dB to 0 dB,
+// giving whisper-quiet low-volume headroom when system volume is set high while
+// unifying WebAudio, standalone <video>, and mpv (cubic softvol) output levels.
 
-export const MIN_VOLUME_DB = -40;
+export const MIN_VOLUME_DB = -60;
 
 export function clampUiVolume(volume: number): number {
   if (!Number.isFinite(volume)) return 0;

@@ -54,11 +54,18 @@ button:disabled { cursor: default; }
   border-radius: 9px;
   color: #8b91b0;
   background: transparent;
-  transition: color 150ms, background-color 150ms, opacity 150ms;
+  transition:
+    transform 140ms var(--ease-out),
+    color 150ms var(--ease-out),
+    background-color 150ms var(--ease-out),
+    opacity 150ms var(--ease-out);
 }
 .app-history-btn:hover:not(:disabled) {
   color: var(--text-primary);
   background: #f3effe;
+}
+.app-history-btn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 .app-history-btn:disabled {
   opacity: 0.32;
@@ -83,11 +90,22 @@ button:disabled { cursor: default; }
   font-weight: 500;
   white-space: nowrap;
   -webkit-app-region: no-drag;
-  transition: color 160ms, background-color 160ms;
+  transition:
+    transform 140ms var(--ease-out),
+    color 160ms var(--ease-out),
+    background-color 160ms var(--ease-out);
 }
 .app-nav-link svg { width: 14px; height: 14px; flex-shrink: 0; }
 .app-nav-link:hover { color: var(--text-primary); background: #f6f3ff; }
-.app-nav-link.is-active { background: #eee8ff; color: #735bb7; font-weight: 700; }
+.app-nav-link:active { transform: scale(0.96); }
+.app-nav-link.is-active { color: #735bb7; font-weight: 700; }
+.app-nav-link.is-active:hover { background: transparent; }
+.app-nav-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: 11px;
+  background: #eee8ff;
+}
 .app-search {
   position: relative;
   grid-column: 3;
@@ -108,11 +126,6 @@ button:disabled { cursor: default; }
 .app-search input { color: var(--text-primary); font-size: 12px; }
 .app-search input::placeholder { color: #a3aaca; }
 .app-search > button { width: 31px; height: 31px; color: #878eae; }
-@keyframes aria-search-prism {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
 .app-search > button.app-search-trigger {
   width: 28px;
   height: 28px;
@@ -120,10 +133,10 @@ button:disabled { cursor: default; }
   background: transparent;
   color: #141418;
   transition:
-    background 200ms ease,
-    color 180ms ease,
-    box-shadow 200ms ease,
-    transform 160ms ease;
+    background-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out),
+    transform 140ms var(--ease-out);
 }
 .app-search > button.app-search-trigger:hover {
   background: rgba(20, 20, 24, 0.08);
@@ -131,24 +144,20 @@ button:disabled { cursor: default; }
 }
 .app-search:focus-within > button.app-search-trigger,
 .app-search > button.app-search-trigger.is-active {
-  background: linear-gradient(120deg, #111116 0%, #6d28d9 26%, #f7f5ff 50%, #9333ea 74%, #111116 100%);
-  background-size: 260% 260%;
-  animation: aria-search-prism 3s ease-in-out infinite;
+  background: var(--accent);
   color: #ffffff;
   box-shadow:
-    0 4px 16px rgba(109, 40, 217, 0.36),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+    0 4px 12px rgba(154, 128, 223, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
-.app-search:focus-within > button.app-search-trigger svg,
-.app-search > button.app-search-trigger.is-active svg {
-  filter: drop-shadow(0 1px 2px rgba(10, 10, 18, 0.6));
-}
-.app-search:focus-within > button.app-search-trigger:hover,
-.app-search > button.app-search-trigger.is-active:hover {
-  transform: scale(1.06);
-  box-shadow:
-    0 6px 20px rgba(109, 40, 217, 0.46),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+@media (hover: hover) and (pointer: fine) {
+  .app-search:focus-within > button.app-search-trigger:hover,
+  .app-search > button.app-search-trigger.is-active:hover {
+    transform: scale(1.05);
+    box-shadow:
+      0 6px 16px rgba(154, 128, 223, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  }
 }
 .app-search > button.app-search-trigger:active {
   transform: scale(0.94);

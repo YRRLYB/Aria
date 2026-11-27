@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { motion } from "framer-motion";
 import { ArrowDown, ArrowUp, ListEnd, Search, Trash2, X } from "lucide-react";
 import { AriaIcon } from "@/components/icons/aria";
 import { CopyableTrackText, CoverArt, EmptyState } from "@/components/music/shared";
@@ -18,6 +19,8 @@ import {
 import { cn } from "@/lib/utils";
 import { WordLyricText } from "./WordLyricText";
 import { getLyricStartTime } from "@/lib/lyricTiming";
+import { LyricContextMenu, type LyricContextMenuTarget } from "./LyricContextMenu";
+import { useTrackContextMenu } from "./TrackContextMenu";
 export function QueueList({
   tracks,
   activeTrackId,
@@ -26,6 +29,7 @@ export function QueueList({
   onPlayNext,
   onRemove,
   onMove,
+  onReorder,
 }: {
   tracks: Track[];
   activeTrackId: string;
@@ -34,7 +38,11 @@ export function QueueList({
   onPlayNext?: (id: string) => void;
   onRemove?: (id: string) => void;
   onMove?: (id: string, direction: "up" | "down") => void;
+  onReorder?: (sourceId: string, targetId: string, position: "before" | "after") => void;
 }) {
+  const trackMenu = useTrackContextMenu();
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: "before" | "after" } | null>(null);
   const displayTracks = useMemo(() => {
     const firstTracks = tracks.slice(0, 24);
     if (firstTracks.some((track) => track.id === activeTrackId)) return firstTracks;
@@ -45,14 +53,57 @@ export function QueueList({
 
   return (
     <div className="no-scrollbar relative mt-4 flex-1 space-y-2 overflow-y-auto">
-      {displayTracks.map((track) => (
+      {displayTracks.map((track) => {
+        const draggable = Boolean(onReorder && track.id !== activeTrackId);
+        const dropBefore = dropTarget?.id === track.id && dropTarget.position === "before";
+        const dropAfter = dropTarget?.id === track.id && dropTarget.position === "after";
+        return (
         <div
           key={track.id}
+          data-track-context-row="true"
+          draggable={draggable}
+          onDragStart={(event) => {
+            if (!draggable) return;
+            setDraggedId(track.id);
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", track.id);
+          }}
+          onDragEnd={() => {
+            setDraggedId(null);
+            setDropTarget(null);
+          }}
+          onDragOver={(event) => {
+            if (!onReorder || !draggedId || draggedId === track.id) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            const rect = event.currentTarget.getBoundingClientRect();
+            const position: "before" | "after" = event.clientY - rect.top < rect.height / 2 ? "before" : "after";
+            setDropTarget((current) =>
+              current?.id === track.id && current.position === position ? current : { id: track.id, position },
+            );
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            setDropTarget((current) => (current?.id === track.id ? null : current));
+          }}
+          onDrop={(event) => {
+            if (!onReorder || !draggedId || draggedId === track.id) return;
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            const position: "before" | "after" = event.clientY - rect.top < rect.height / 2 ? "before" : "after";
+            onReorder(draggedId, track.id, position);
+            setDraggedId(null);
+            setDropTarget(null);
+          }}
+          onContextMenu={(event) => trackMenu?.open(event, track, tracks)}
           className={cn(
             "group relative flex w-full items-center rounded-2xl p-2 text-left transition hover:bg-white/65",
             activeTrackId === track.id && "bg-white/75",
+            draggedId === track.id && "opacity-45",
           )}
         >
+          {dropBefore && <span aria-hidden="true" className="pointer-events-none absolute inset-x-3 top-0 h-0.5 rounded-full bg-violet-500" />}
+          {dropAfter && <span aria-hidden="true" className="pointer-events-none absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-violet-500" />}
           <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onPickTrack(track.id)}>
             <CoverArt track={track} className="size-14 rounded-2xl" />
             <div className="min-w-0 flex-1">
@@ -120,7 +171,8 @@ export function QueueList({
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
       {hiddenCount > 0 && (
         <div className="rounded-2xl bg-white/45 px-3 py-2 text-center text-xs text-neutral-500">
           还有 {hiddenCount} 首，使用搜索快速定位
@@ -148,6 +200,8 @@ export function PlayerSidePanel({
   onPlayNext,
   onRemove,
   onMove,
+  onReorder,
+  onLyricCopied,
 }: {
   mode: "lyrics" | "queue";
   onModeChange: (mode: "lyrics" | "queue") => void;
@@ -164,6 +218,8 @@ export function PlayerSidePanel({
   onPlayNext?: (id: string) => void;
   onRemove?: (id: string) => void;
   onMove?: (id: string, direction: "up" | "down") => void;
+  onReorder?: (sourceId: string, targetId: string, position: "before" | "after") => void;
+  onLyricCopied?: (message: string) => void;
 }) {
   return (
     <aside className="glass hidden min-h-0 min-w-0 flex-col rounded-[1.5rem] p-4 lg:flex">
@@ -171,22 +227,40 @@ export function PlayerSidePanel({
         <h2 className="text-base font-semibold tracking-tight">{mode === "lyrics" ? (track.lyrics.some((line) => line.words?.length) && !mvLyricsUnavailable ? "逐字歌词" : "同步歌词") : "下一首"}</h2>
         <div className="flex rounded-full bg-neutral-950/[0.045] p-0.5">
           <button
+            type="button"
             className={cn(
-              "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
-              mode === "lyrics" && "bg-neutral-950 text-white",
+              "relative rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition-[color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.96]",
+              mode === "lyrics" && "text-white",
             )}
             onClick={() => onModeChange("lyrics")}
           >
-            歌词
+            {mode === "lyrics" && (
+              <motion.span
+                layoutId="aria-player-side-pill"
+                aria-hidden="true"
+                className="absolute inset-0 rounded-full bg-neutral-950 shadow-sm"
+                transition={{ type: "spring", stiffness: 460, damping: 36 }}
+              />
+            )}
+            <span className="relative z-10">歌词</span>
           </button>
           <button
+            type="button"
             className={cn(
-              "rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition",
-              mode === "queue" && "bg-neutral-950 text-white",
+              "relative rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition-[color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.96]",
+              mode === "queue" && "text-white",
             )}
             onClick={() => onModeChange("queue")}
           >
-            下一首
+            {mode === "queue" && (
+              <motion.span
+                layoutId="aria-player-side-pill"
+                aria-hidden="true"
+                className="absolute inset-0 rounded-full bg-neutral-950 shadow-sm"
+                transition={{ type: "spring", stiffness: 460, damping: 36 }}
+              />
+            )}
+            <span className="relative z-10">下一首</span>
           </button>
         </div>
       </div>
@@ -200,6 +274,7 @@ export function PlayerSidePanel({
           playing={playing}
           onSeek={onSeek}
           onBindLyrics={onBindLyrics}
+          onLyricCopied={onLyricCopied}
         />
       ) : (
         <QueueList
@@ -210,6 +285,7 @@ export function PlayerSidePanel({
           onPlayNext={onPlayNext}
           onRemove={onRemove}
           onMove={onMove}
+          onReorder={onReorder}
         />
       )}
     </aside>
@@ -224,6 +300,7 @@ function SidebarLyrics({
   playing,
   onSeek,
   onBindLyrics,
+  onLyricCopied,
 }: {
   track: Track;
   palette: CoverPalette;
@@ -232,6 +309,7 @@ function SidebarLyrics({
   playing: boolean;
   onSeek: (time: number) => void;
   onBindLyrics?: (trackId: string, lyrics: Track["lyrics"], candidateId: string) => void;
+  onLyricCopied?: (message: string) => void;
 }) {
   const bilibiliLyricsOff = track.source === "bilibili" && !BILIBILI_LYRICS_ENABLED;
   const canSearchManualLyrics =
@@ -243,8 +321,10 @@ function SidebarLyrics({
   const [bindingId, setBindingId] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<LyricCandidate[]>([]);
+  const [lyricMenu, setLyricMenu] = useState<LyricContextMenuTarget | null>(null);
 
   useEffect(() => {
+    setLyricMenu(null);
     setSearchOpen(false);
     setCandidates([]);
     setSearchError(null);
@@ -418,7 +498,7 @@ function SidebarLyrics({
         </div>
       ) : (
         <div
-          className="aria-lyric-scroll no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
+          className="aria-lyric-scroll aria-scroll-fade-y no-scrollbar relative z-10 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1"
           onWheel={holdManualScroll}
           onTouchStart={holdManualScroll}
           onPointerDown={holdManualScroll}
@@ -447,9 +527,20 @@ function SidebarLyrics({
                   manualScrollUntilRef.current = 0;
                   onSeek(getLyricStartTime(line));
                 }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setLyricMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    line,
+                    lines,
+                    mode: lyricDisplayMode,
+                  });
+                }}
               >
                 <span className="pt-0.5 text-xs font-medium tabular-nums text-neutral-400">{line.time}</span>
-                <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7 transition-all duration-200", active ? "text-2xl font-semibold" : "text-base")}>
+                <span className={cn("min-w-0 whitespace-pre-wrap break-words leading-7 transition-[color,font-size,opacity] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]", active ? "text-2xl font-semibold" : "text-base")}>
                   <WordLyricText line={line} active={active} playing={playing} color={palette.primary} />
                   {lyricDisplayMode === "bilingual" && line.translation && (
                     <span className={cn("mt-1 block text-sm font-medium leading-6", active ? "text-neutral-600" : "text-neutral-400")}>
@@ -477,6 +568,11 @@ function SidebarLyrics({
           <div className="h-14 shrink-0" />
         </div>
       )}
+      <LyricContextMenu
+        target={lyricMenu}
+        onClose={() => setLyricMenu(null)}
+        onCopied={onLyricCopied}
+      />
     </div>
   );
 }
