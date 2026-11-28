@@ -1,7 +1,7 @@
 {
   "name": "aria",
   "private": true,
-  "version": "0.8.8",
+  "version": "0.9.0",
   "license": "CC-BY-NC-SA-4.0",
   "type": "module",
   "main": "electron/main.cjs",
@@ -13,7 +13,7 @@
     "dev:electron": "electron .",
     "build:native": "node scripts/build-native.cjs",
     "build:web": "vite build",
-    "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --external:sharp --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
+    "build:server": "node -e \"require('node:fs').rmSync('dist-server',{recursive:true,force:true})\" && esbuild server/index.ts --bundle --platform=node --format=cjs --external:NeteaseCloudMusicApi --external:sharp --external:node:sqlite --outfile=dist-server/index.cjs && node scripts/copy-ncm-runtime.cjs",
     "build:desktop": "npm run ensure:mpv && npm run build:native && npm run build:updater && npm run build:web && npm run build:server",
     "dist:beta": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --win nsis --x64",
     "dist:mac": "npm run build:desktop && electron-builder --config electron-builder.config.cjs --publish never --mac --x64 --arm64",

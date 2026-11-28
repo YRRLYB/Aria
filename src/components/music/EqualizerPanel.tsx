@@ -297,11 +297,13 @@ export function EqualizerPanel({
 
   function loadCustomPreset(item: EqualizerCustomPreset) {
     const targetMode: EqualizerMode = item.mode ?? "iso10";
+    const nextPreamp =
+      typeof item.preampDb === "number" ? sanitizePreampDb(item.preampDb) : profile.preampDb;
     if (targetMode === "iso31") {
       setProfile({
         ...profile,
         mode: "iso31",
-        preampDb: typeof item.preampDb === "number" ? item.preampDb : profile.preampDb,
+        preampDb: nextPreamp,
         bands31: sanitizeEqualizer31Bands(item.bands31 ?? resampleBands10To31(item.bands)),
       });
     } else if (targetMode === "peq") {
@@ -309,19 +311,22 @@ export function EqualizerPanel({
       setProfile({
         ...profile,
         mode: "peq",
-        preampDb: typeof item.preampDb === "number" ? item.preampDb : profile.preampDb,
+        preampDb: nextPreamp,
         peqFilters: nextPeq.length ? nextPeq : profile.peqFilters,
       });
     } else {
       setProfile({
         ...profile,
         mode: "iso10",
-        preampDb: typeof item.preampDb === "number" ? item.preampDb : 0,
+        preampDb: typeof item.preampDb === "number" ? sanitizePreampDb(item.preampDb) : 0,
       });
       applyPreset10("custom", item.bands);
     }
     if (!enabled) onEnabledChange(true);
-    setNotice({ tone: "info", text: `已载入预设「${item.name}」。` });
+    setNotice({
+      tone: "info",
+      text: `已载入预设「${item.name}」（Preamp ${formatDb(typeof item.preampDb === "number" ? item.preampDb : 0, true)}）。`,
+    });
   }
 
   function beginDrag10(
@@ -919,11 +924,13 @@ export function EqualizerPanel({
             {telemetry.recommendedPreampDb < 0 && Math.abs(profile.preampDb - telemetry.recommendedPreampDb) > 0.25 && (
               <button
                 type="button"
-                onClick={() => setProfile({ ...profile, preampDb: telemetry.recommendedPreampDb })}
+                onClick={() =>
+                  setProfile({ ...profile, preampDb: sanitizePreampDb(telemetry.recommendedPreampDb) })
+                }
                 className="inline-flex items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-violet-600 transition hover:bg-violet-500/18 dark:text-violet-300"
               >
                 <Sparkles className="size-3" />
-                自动防削波 ({formatDb(telemetry.recommendedPreampDb, true)})
+                一键安全归一化 ({formatDb(telemetry.recommendedPreampDb, true)})
               </button>
             )}
           </div>

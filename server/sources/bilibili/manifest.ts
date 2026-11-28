@@ -21,5 +21,6 @@ export const bilibiliManifest: SourceManifest = {
     qualitySelection: true,
     // MV is presented as an overlay on the shared Aria player, not a separate page.
     videoPlayback: true,
+    directShareable: true,
   },
 };

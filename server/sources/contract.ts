@@ -3,12 +3,11 @@ import type { LyricLine } from "../../src/lib/lyricTypes";
 import { HttpError } from "../utils/httpError";
 
 /**
- * Identifiers for built-in sources. `bilibili` and `youtube` are reserved so
- * their track keys remain parseable before the modules themselves land.
+ * Identifiers for built-in sources, including Private Cloud (OpenSubsonic & WebDAV).
  */
-export type SourceId = "netease" | "qq" | "bilibili" | "youtube";
+export type SourceId = "netease" | "qq" | "bilibili" | "youtube" | "subsonic" | "webdav";
 
-export const SOURCE_IDS: readonly SourceId[] = ["netease", "qq", "bilibili", "youtube"];
+export const SOURCE_IDS: readonly SourceId[] = ["netease", "qq", "bilibili", "youtube", "subsonic", "webdav"];
 
 export function isSourceId(value: string): value is SourceId {
   return (SOURCE_IDS as readonly string[]).includes(value);
@@ -70,6 +69,10 @@ export type SourceCapabilities = {
   qualitySelection: boolean;
   /** Muxed video stream in addition to the audio stream. */
   videoPlayback: boolean;
+  /** Whether Listen Together may broadcast a CDN directUrl across peers (false for private cloud/local/YouTube). */
+  directShareable?: boolean;
+  /** Whether requests use an isolated per-source proxy configuration. */
+  usesDedicatedProxy?: boolean;
 };
 
 export type SourceSearchQuery = {
@@ -251,6 +254,7 @@ export type SourceDiscoveryBundle = {
 
 export type MusicSource = {
   readonly manifest: SourceManifest;
+  healthCheck?(instanceId?: string): Promise<{ ok: boolean; latencyMs?: number; reason?: string; serverVersion?: string }>;
   search(query: SourceSearchQuery, signal?: AbortSignal): Promise<SourceSearchPage>;
   /**
    * Resolve a playable URL. `options.refresh` bypasses any internal URL cache

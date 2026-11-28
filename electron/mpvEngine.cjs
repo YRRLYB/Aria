@@ -285,6 +285,7 @@ class MpvAudioEngine {
       volume: 72,
       speed: 1,
       exclusive: false,
+      exclusiveFallback: false,
       deviceId: "auto",
       bitrate: null,
       gaplessGeneration: 0,
@@ -723,33 +724,34 @@ class MpvAudioEngine {
       if (!canToggleExclusive) {
         this.state.exclusive = false;
         if (exclusive) {
-          await this.teardown();
-          this.state.active = false;
-          this.state.trackId = null;
-          this.state.url = null;
-          throw new Error(
-            IS_MAC
-              ? "CoreAudio exclusive mode is not supported by this mpv build."
-              : "Audio exclusive mode is not supported by this mpv build.",
-          );
+          this.state.exclusiveFallback = true;
+          const reason = IS_MAC
+            ? "当前 mpv 构建不支持 CoreAudio 独占模式，已自动回退至共享模式。"
+            : "当前音频后端不支持独占模式，已自动回退至共享模式。";
+          this.writeLog("native-audio.log", `exclusive fallback: ${reason}`);
+          this.emit({ kind: "exclusive-fallback", reason });
+        } else {
+          this.state.exclusiveFallback = false;
         }
       } else {
-        await this.command("set_property", "audio-exclusive", exclusive).catch((err) => {
-          if (exclusive) throw err;
+        let toggleFailed = false;
+        await this.command("set_property", "audio-exclusive", exclusive).catch(() => {
+          if (exclusive) toggleFailed = true;
         });
-        this.state.exclusive = exclusive
-          ? Boolean(await this.command("get_property", "audio-exclusive").catch(() => false))
-          : false;
+        this.state.exclusive =
+          exclusive && !toggleFailed
+            ? Boolean(await this.command("get_property", "audio-exclusive").catch(() => false))
+            : false;
         if (exclusive && !this.state.exclusive) {
-          await this.teardown();
-          this.state.active = false;
-          this.state.trackId = null;
-          this.state.url = null;
-          throw new Error(
-            IS_MAC
-              ? "CoreAudio exclusive mode was rejected by the selected output device."
-              : "WASAPI exclusive mode was rejected by the selected output device.",
-          );
+          await this.command("set_property", "audio-exclusive", false).catch(() => undefined);
+          this.state.exclusiveFallback = true;
+          const reason = IS_MAC
+            ? "CoreAudio 独占模式被输出设备拒绝或占用，已自动回退至共享模式。"
+            : "WASAPI 独占模式被其他程序占用或被输出设备拒绝，已自动回退至共享模式。";
+          this.writeLog("native-audio.log", `exclusive fallback: ${reason}`);
+          this.emit({ kind: "exclusive-fallback", reason });
+        } else {
+          this.state.exclusiveFallback = false;
         }
       }
     }

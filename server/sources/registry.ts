@@ -4,6 +4,8 @@ import { neteaseManifest } from "./netease/manifest";
 import { qqManifest } from "./qq/manifest";
 import { bilibiliManifest } from "./bilibili/manifest";
 import { youtubeManifest } from "./youtube/manifest";
+import { subsonicManifest } from "./subsonic/manifest";
+import { webdavManifest } from "./webdav/manifest";
 import { readStore, updateStore } from "../store";
 import type { AppStore } from "../types";
 
@@ -17,6 +19,8 @@ const manifests: Partial<Record<SourceId, SourceManifest>> = {
   qq: qqManifest,
   bilibili: bilibiliManifest,
   youtube: youtubeManifest,
+  subsonic: subsonicManifest,
+  webdav: webdavManifest,
 };
 
 const loaders: Partial<Record<SourceId, () => Promise<MusicSource>>> = {
@@ -24,6 +28,8 @@ const loaders: Partial<Record<SourceId, () => Promise<MusicSource>>> = {
   qq: () => import("./qq/source").then((module) => module.qqSource),
   bilibili: () => import("./bilibili/source").then((module) => module.bilibiliSource),
   youtube: () => import("./youtube/source").then((module) => module.youtubeSource),
+  subsonic: () => import("./subsonic/source").then((module) => module.subsonicSource),
+  webdav: () => import("./webdav/source").then((module) => module.webdavSource),
 };
 
 const instances = new Map<SourceId, MusicSource>();
@@ -48,6 +54,10 @@ export type SourceRuntimeState = {
   /** ms timestamp until which the source is skipped after repeated failures. */
   unavailableUntil: number | null;
 };
+
+export function getSourceManifest(id: string): SourceManifest | undefined {
+  return manifests[id as SourceId];
+}
 
 export function listSourceManifests(): SourceManifest[] {
   return Object.keys(loaders)

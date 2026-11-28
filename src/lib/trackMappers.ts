@@ -10,11 +10,13 @@ const LOCAL_DEFAULT_WAVEFORM = [28, 42, 64, 38, 72, 54, 46, 82, 58, 36, 68, 48];
 const PROVIDER_DEFAULT_WAVEFORM = [24, 40, 66, 48, 78, 56, 36, 84, 62, 42, 70, 52];
 const DEFAULT_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = ["standard", "higher", "exhigh"];
 const LOCAL_PLACEHOLDER_LYRICS: Track["lyrics"] = [];
-const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili" | "youtube", Track["lyrics"]> = {
+const PROVIDER_PLACEHOLDER_LYRICS: Record<"netease" | "qq" | "bilibili" | "youtube" | "subsonic" | "webdav", Track["lyrics"]> = {
   netease: [],
   qq: [],
   bilibili: [],
   youtube: [],
+  subsonic: [],
+  webdav: [],
 };
 const EMPTY_AVAILABLE_LEVELS: NonNullable<Track["availableLevels"]> = [];
 const EMPTY_ARTIST_IDS: string[] = [];
@@ -85,7 +87,11 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
   // The id convention is "<source>:<externalId>" for every provider; NetEase
   // keys keep their historical format so snapshots restore unchanged.
   const source: Track["source"] =
-    track.source === "qq" || track.source === "bilibili" || track.source === "youtube"
+    track.source === "qq" ||
+    track.source === "bilibili" ||
+    track.source === "youtube" ||
+    track.source === "subsonic" ||
+    track.source === "webdav"
       ? track.source
       : "netease";
   const trackKey = `${source}:${track.id}`;
@@ -120,9 +126,11 @@ export function providerTrackToUiTrack(track: ProviderTrack, index: number): Tra
     hasVideo: track.hasVideo ?? (source === "bilibili" || source === "youtube"),
     videoQuality: track.videoQuality ?? null,
     coverUrl: track.coverUrl
-      ? source === "qq" || source === "bilibili" || source === "youtube"
-        ? api.getSourceCoverUrl(source, track.coverUrl)
-        : api.getNeteaseCoverUrl(track.coverUrl)
+      ? source === "subsonic" || source === "webdav"
+        ? api.resolveUrl(track.coverUrl)
+        : source === "qq" || source === "bilibili" || source === "youtube"
+          ? api.getSourceCoverUrl(source, track.coverUrl)
+          : api.getNeteaseCoverUrl(track.coverUrl)
       : undefined,
     likedAt: track.likedAt ?? null,
     bpm: null,

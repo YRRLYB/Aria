@@ -29,6 +29,9 @@ const EqualizerDialog = lazy(() =>
 const CloudSurface = lazy(() =>
   import("@/components/music/CloudSurface").then((mod) => ({ default: mod.CloudSurface })),
 );
+const PrivateCloudSurface = lazy(() =>
+  import("@/components/music/PrivateCloudSurface").then((mod) => ({ default: mod.PrivateCloudSurface })),
+);
 const ExploreSurface = lazy(() =>
   import("@/components/music/ExploreSurface").then((mod) => ({ default: mod.ExploreSurface })),
 );
@@ -68,8 +71,15 @@ import { useLocalLibrary } from "@/hooks/useLocalLibrary";
 import { useAriaRoom } from "@/hooks/useAriaRoom";
 import { useListenTogether } from "@/hooks/useListenTogether";
 import { useLocalPlaylists } from "@/hooks/useLocalPlaylists";
-import { resolveLocalPlaylistTracks, shouldUseLocalPlaylistDialog } from "@/lib/localPlaylists";
+import { resolveLocalPlaylistTracks, shouldUseLocalPlaylistDialog, type LocalPlaylist } from "@/lib/localPlaylists";
 import type { AriaRoomTrackPayload, UpdateState } from "@/lib/api";
+import {
+  buildBackupSnapshot,
+  mergeBackupSnapshot,
+  type AriaBackupSnapshot,
+  type BackupMergeStrategy,
+  type BackupModuleKey,
+} from "@/lib/configBackup";
 import { canonicalTrackId, canonicalizeTrackForLibrary } from "@/lib/ariaRoomSync";
 import { useLyricsSync } from "@/hooks/useLyricsSync";
 import { useNeteaseData } from "@/hooks/useNeteaseData";
@@ -114,7 +124,7 @@ import {
   writePlayHistory,
   type PlayHistoryEntry,
 } from "@/lib/playHistory";
-import { api, type ApiLibraryWatchState, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser, type SourceAccountSummary } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type PrivateCloudInstancePublic, type ProviderDiscoveryBundle, type ProviderStyle, type ProviderStyleGroup, type ProviderUser, type SourceAccountSummary } from "@/lib/api";
 import { ArtworkImage } from "@/components/music/ArtworkImage";
 import { AddToPlaylistDialog, PlaylistActionsProvider } from "@/components/music/PlaylistActions";
 import { AddToLocalPlaylistDialog } from "@/components/music/LocalPlaylistSurfaces";
@@ -400,6 +410,12 @@ export default function App() {
   const [exploreStyleId, setExploreStyleId] = useState<string | null>(null);
   const [exploreStyle, setExploreStyle] = useState<ProviderStyle | null>(null);
   const [exploreTracks, setExploreTracks] = useState<Track[]>([]);
+  const [cloudTab, setCloudTab] = useState<"netease" | "private">("netease");
+  const [privateCloudInstances, setPrivateCloudInstances] = useState<PrivateCloudInstancePublic[]>([]);
+  const [privateCloudTracks, setPrivateCloudTracks] = useState<Track[]>([]);
+  const [privateCloudSearchTracks, setPrivateCloudSearchTracks] = useState<Track[]>([]);
+  const [privateCloudLoading, setPrivateCloudLoading] = useState(false);
+  const [privateCloudError, setPrivateCloudError] = useState<string | null>(null);
   const [ariaRoomGuestTracks, setAriaRoomGuestTracks] = useState<Track[]>([]);
   const [exploreStyleCursor, setExploreStyleCursor] = useState<string | null>(null);
   const [exploreStyleMore, setExploreStyleMore] = useState(false);
@@ -943,6 +959,43 @@ export default function App() {
   });
   const { cloudTracks, setCloudTracks } = cloudLibrary;
 
+  async function refreshPrivateCloudInstances() {
+    const res = await api.listPrivateCloudInstances();
+    setPrivateCloudInstances(Array.isArray(res.instances) ? res.instances : []);
+  }
+
+  async function refreshPrivateCloudTracks(instanceId?: string) {
+    setPrivateCloudLoading(true);
+    setPrivateCloudError(null);
+    try {
+      const res = await api.listPrivateCloudTracks(instanceId);
+      const mapped = (Array.isArray(res.tracks) ? res.tracks : []).map((item, idx) =>
+        providerTrackToUiTrack(item, idx),
+      );
+      setPrivateCloudTracks(mapped);
+    } catch (error) {
+      setPrivateCloudError(error instanceof Error ? error.message : "加载私有云曲库失败");
+    } finally {
+      setPrivateCloudLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshPrivateCloudInstances().catch(() => undefined);
+    void refreshPrivateCloudTracks();
+    // Load private cloud instances and indexed tracks on startup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (activeView === "privateCloud" || (activeView === "cloud" && cloudTab === "private")) {
+      void refreshPrivateCloudInstances().catch(() => undefined);
+      void refreshPrivateCloudTracks();
+    }
+    // Refresh private cloud state when switching into the view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, cloudTab]);
+
   useEffect(() => {
     if (activeView !== "explore" || exploreStyleGroups.length) return;
     let cancelled = false;
@@ -1041,6 +1094,8 @@ export default function App() {
         ...qqSearchTracks,
         ...bilibiliSearchTracks,
         ...youtubeSearchTracks,
+        ...privateCloudTracks,
+        ...privateCloudSearchTracks,
         ...qqLibraryTracks,
         ...bilibiliLibraryTracks,
         ...bilibiliData.playlistTracks,
@@ -1064,6 +1119,8 @@ export default function App() {
       qqSearchTracks,
       bilibiliSearchTracks,
       youtubeSearchTracks,
+      privateCloudTracks,
+      privateCloudSearchTracks,
       qqLibraryTracks,
       bilibiliLibraryTracks,
       bilibiliData.playlistTracks,
@@ -1494,6 +1551,7 @@ export default function App() {
     onMergeQqTracks: setQqSearchTracks,
     onMergeBilibiliTracks: setBilibiliSearchTracks,
     onMergeYoutubeTracks: setYoutubeSearchTracks,
+    onMergePrivateCloudTracks: setPrivateCloudSearchTracks,
   });
 
   const {
@@ -1831,6 +1889,10 @@ export default function App() {
         commitPlaybackTime(clamped, true);
         void seekNativeTrackRef.current(clamped);
       }
+    },
+    onExclusiveFallback: (reason) => {
+      setAudioOutputMode("shared");
+      setPlaybackNotice(reason);
     },
   });
   seekNativeTrackRef.current = seekNativeTrack;
@@ -2466,6 +2528,16 @@ export default function App() {
 
   function handleTrackEnded() {
     if (ariaRoom.isGuest) return;
+    if (activeTrack.source === "subsonic" && activeTrack.providerId) {
+      const sep = activeTrack.providerId.indexOf(":");
+      if (sep > 0) {
+        const instanceId = activeTrack.providerId.slice(0, sep);
+        const songId = activeTrack.providerId.slice(sep + 1);
+        if (instanceId && songId) {
+          void api.scrobbleSubsonic(instanceId, songId, true).catch(() => undefined);
+        }
+      }
+    }
     if (sleepTimer.mode === "track-end") {
       setSleepTimer({ mode: "off", endsAt: null });
       setSleepTimerRemainingSec(null);
@@ -4652,6 +4724,7 @@ export default function App() {
                   qqTracks={searchBundle.qqTracks}
                   bilibiliTracks={searchBundle.bilibiliTracks}
                   youtubeTracks={searchBundle.youtubeTracks}
+                  privateCloudTracks={searchBundle.privateCloudTracks}
                   qqError={searchQqError}
                   bilibiliError={searchBilibiliError}
                   youtubeError={searchYoutubeError}
@@ -5105,20 +5178,79 @@ export default function App() {
                   onPlayNext={playNextTrack}
                 />
               )}
-              {activeView === "cloud" && (
-                <Suspense fallback={null}>
-                  <CloudSurface
-                    {...cloudLibrary}
-                    connected={neteaseConnected}
-                    activeTrackId={activeTrackId}
-                    onPickTrack={chooseTrack}
-                    onRequireLogin={() => {
-                      setSettingsReturnView("cloud");
-                      setActiveView("settings");
-                    }}
-                  />
-                </Suspense>
-              )}
+              {(activeView === "cloud" || activeView === "privateCloud") && (() => {
+                const activeCloudTab: "netease" | "private" =
+                  activeView === "privateCloud" ? "private" : cloudTab;
+                const cloudSwitcher = (
+                  <div className="aria-segment inline-flex items-center rounded-full p-0.5 text-xs" role="tablist" aria-label="云盘来源">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeCloudTab === "netease"}
+                      onClick={() => {
+                        setCloudTab("netease");
+                        if (activeView !== "cloud") setActiveView("cloud");
+                      }}
+                      className={cn(
+                        "rounded-full px-3 py-1 font-medium transition",
+                        activeCloudTab === "netease"
+                          ? "bg-white text-neutral-900 shadow-xs dark:bg-neutral-800 dark:text-white"
+                          : "text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white",
+                      )}
+                    >
+                      网易云云盘
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeCloudTab === "private"}
+                      onClick={() => {
+                        setCloudTab("private");
+                        if (activeView !== "cloud") setActiveView("cloud");
+                      }}
+                      className={cn(
+                        "rounded-full px-3 py-1 font-medium transition",
+                        activeCloudTab === "private"
+                          ? "bg-white text-neutral-900 shadow-xs dark:bg-neutral-800 dark:text-white"
+                          : "text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white",
+                      )}
+                    >
+                      私有云
+                    </button>
+                  </div>
+                );
+                return (
+                  <Suspense fallback={null}>
+                    {activeCloudTab === "private" ? (
+                      <PrivateCloudSurface
+                        instances={privateCloudInstances}
+                        tracks={privateCloudTracks}
+                        loading={privateCloudLoading}
+                        error={privateCloudError}
+                        activeTrackId={activeTrackId}
+                        headerTabs={cloudSwitcher}
+                        onRefreshInstances={refreshPrivateCloudInstances}
+                        onRefreshTracks={refreshPrivateCloudTracks}
+                        onPickTrack={chooseTrack}
+                        onPlayNext={playNextTrack}
+                        onNotice={(message) => setPlaybackNotice(message)}
+                      />
+                    ) : (
+                      <CloudSurface
+                        {...cloudLibrary}
+                        connected={neteaseConnected}
+                        activeTrackId={activeTrackId}
+                        headerTabs={cloudSwitcher}
+                        onPickTrack={chooseTrack}
+                        onRequireLogin={() => {
+                          setSettingsReturnView("cloud");
+                          setActiveView("settings");
+                        }}
+                      />
+                    )}
+                  </Suspense>
+                );
+              })()}
               {activeView === "stats" && (
                 <StatsSurface
                   tracks={allTracks}
@@ -5203,6 +5335,121 @@ export default function App() {
                     onNeteaseAccountChange={(account) => {
                       setNeteaseAccount(account);
                       if (account.connected) void refreshNeteaseData();
+                    }}
+                    onOpenPrivateCloud={() => {
+                      setNavDirection(1);
+                      setCloudTab("private");
+                      setActiveView("cloud");
+                    }}
+                    onBuildBackupSnapshot={(modules: BackupModuleKey[]) =>
+                      buildBackupSnapshot(
+                        {
+                          appVersion: "0.9.0",
+                          eqPresets: customEqualizerPresets,
+                          playlists: localPlaylists.playlists,
+                          preferences: {
+                            theme,
+                            windowMaterial,
+                            hifiEnabled,
+                            masterQualityEnabled,
+                            gaplessEnabled,
+                            normalizationEnabled,
+                            audioOutputMode,
+                            bilibiliDefaultVideoQn,
+                            bilibiliDefaultAudioLevel,
+                          },
+                          desktopLyrics: {
+                            open: desktopLyricsOpen,
+                            locked: desktopLyricsLocked,
+                          },
+                        },
+                        modules,
+                      )
+                    }
+                    onApplyBackupSnapshot={(
+                      snapshot: AriaBackupSnapshot,
+                      strategy: BackupMergeStrategy,
+                      modules: BackupModuleKey[],
+                    ) => {
+                      const next = mergeBackupSnapshot(
+                        {
+                          appVersion: "0.9.0",
+                          eqPresets: customEqualizerPresets,
+                          playlists: localPlaylists.playlists,
+                          preferences: {
+                            theme,
+                            windowMaterial,
+                            hifiEnabled,
+                            masterQualityEnabled,
+                            gaplessEnabled,
+                            normalizationEnabled,
+                            audioOutputMode,
+                            bilibiliDefaultVideoQn,
+                            bilibiliDefaultAudioLevel,
+                          },
+                          desktopLyrics: {
+                            open: desktopLyricsOpen,
+                            locked: desktopLyricsLocked,
+                          },
+                        },
+                        snapshot,
+                        strategy,
+                        modules,
+                      );
+                      const appliedParts: string[] = [];
+                      if (modules.includes("eqPresets") && Array.isArray(next.eqPresets)) {
+                        const eqList = next.eqPresets as EqualizerCustomPreset[];
+                        setCustomEqualizerPresets(eqList);
+                        writeCachedEqualizerPresets(eqList);
+                        appliedParts.push(`EQ 预设 ${eqList.length} 项`);
+                      }
+                      if (modules.includes("playlists") && Array.isArray(next.playlists)) {
+                        const plList = next.playlists as LocalPlaylist[];
+                        localPlaylists.replaceAll(plList);
+                        appliedParts.push(`歌单 ${plList.length} 个`);
+                      }
+                      if (modules.includes("preferences") && next.preferences) {
+                        const p = next.preferences;
+                        if (p.theme === "light" || p.theme === "dark" || p.theme === "system") setTheme(p.theme);
+                        if (p.windowMaterial === "default" || p.windowMaterial === "translucent") {
+                          setWindowMaterial(p.windowMaterial);
+                        }
+                        if (typeof p.hifiEnabled === "boolean") handleHifiEnabledChange(p.hifiEnabled);
+                        if (typeof p.masterQualityEnabled === "boolean") {
+                          setMasterQualityEnabled(p.masterQualityEnabled);
+                        }
+                        if (typeof p.gaplessEnabled === "boolean") setGaplessEnabled(p.gaplessEnabled);
+                        if (typeof p.normalizationEnabled === "boolean") {
+                          setNormalizationEnabled(p.normalizationEnabled);
+                        }
+                        if (
+                          p.audioOutputMode === "system" ||
+                          p.audioOutputMode === "shared" ||
+                          p.audioOutputMode === "exclusive"
+                        ) {
+                          setAudioOutputMode(p.audioOutputMode);
+                        }
+                        if (
+                          p.bilibiliDefaultVideoQn === 64 ||
+                          p.bilibiliDefaultVideoQn === 80 ||
+                          p.bilibiliDefaultVideoQn === 116 ||
+                          p.bilibiliDefaultVideoQn === 120
+                        ) {
+                          setBilibiliDefaultVideoQn(p.bilibiliDefaultVideoQn);
+                        }
+                        if (
+                          p.bilibiliDefaultAudioLevel === "standard" ||
+                          p.bilibiliDefaultAudioLevel === "exhigh" ||
+                          p.bilibiliDefaultAudioLevel === "lossless" ||
+                          p.bilibiliDefaultAudioLevel === "hires"
+                        ) {
+                          setBilibiliDefaultAudioLevel(p.bilibiliDefaultAudioLevel);
+                        }
+                        appliedParts.push("外观与音频偏好");
+                      }
+                      const summary = appliedParts.length ? appliedParts.join(" · ") : "未变更任何模块";
+                      setPlaybackNotice(`配置恢复完成：${summary}`);
+                      return { summary };
                     }}
                     onClose={() => {
                       if (!navigateHistory(-1)) setActiveView(settingsReturnView);

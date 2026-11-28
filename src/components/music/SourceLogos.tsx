@@ -79,6 +79,19 @@ export function CloudLogo({ className }: { className?: string }) {
   );
 }
 
+export function PrivateCloudLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={cn("size-4 shrink-0", className)} aria-hidden="true">
+      <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="#0F766E" />
+      <path
+        d="M7.8 15.8h8.3a2.6 2.6 0 0 0 .35-5.18 3.9 3.9 0 0 0-7.55-1.1 3.1 3.1 0 0 0-1.1 6.28z"
+        fill="#fff"
+      />
+      <circle cx="12" cy="12.6" r="1.1" fill="#0F766E" />
+    </svg>
+  );
+}
+
 export function SuperMixLogo({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={cn("size-4 shrink-0", className)} aria-hidden="true">
@@ -108,6 +121,8 @@ const SOURCE_META: Record<SourceLogoOption | "super-mix", { label: string; short
   qq: { label: "QQ 音乐", shortLabel: "QQ" },
   bilibili: { label: "B站", shortLabel: "B站" },
   youtube: { label: "YouTube", shortLabel: "YT" },
+  subsonic: { label: "私有云", shortLabel: "私有云" },
+  webdav: { label: "WebDAV", shortLabel: "WebDAV" },
   "super-mix": { label: "Super混合", shortLabel: "Super" },
 };
 
@@ -117,6 +132,7 @@ export function SourceLogo({ source, className }: { source: SourceLogoOption | "
   if (source === "bilibili") return <BilibiliLogo className={className} />;
   if (source === "youtube") return <YoutubeLogo className={className} />;
   if (source === "cloud") return <CloudLogo className={className} />;
+  if (source === "subsonic" || source === "webdav") return <PrivateCloudLogo className={className} />;
   if (source === "super-mix") return <SuperMixLogo className={className} />;
   return <LocalLogo className={className} />;
 }

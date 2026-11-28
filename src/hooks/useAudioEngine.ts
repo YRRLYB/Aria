@@ -55,6 +55,7 @@ export function useAudioEngine(options: {
   // preloading; null when the next track cannot be preloaded.
   getNextPreload: () => { trackId: string; url: string } | null;
   onNativeTrackLoaded?: (trackId: string, durationSec: number) => void;
+  onExclusiveFallback?: (reason: string) => void;
 }) {
   const activeTrack = options.activeTrack;
   const [audioOutputDevices, setAudioOutputDevices] = useState<Array<{ id: string; label: string }>>([]);
@@ -313,6 +314,11 @@ export function useAudioEngine(options: {
     }
     if (state.kind === "ended" && currentTrackMatches && nativePlaybackEnabled) {
       options.handleTrackEnded();
+    }
+    if (state.kind === "exclusive-fallback" && nativePlaybackEnabled) {
+      options.onExclusiveFallback?.(
+        state.reason || "音频设备已被其他程序占用，已自动回退至共享模式。",
+      );
     }
 
     // With an appended mpv playlist entry, the native engine emits a

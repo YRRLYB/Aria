@@ -20,5 +20,6 @@ export const neteaseManifest: SourceManifest = {
     albumDetail: true,
     qualitySelection: true,
     videoPlayback: true,
+    directShareable: true,
   },
 };

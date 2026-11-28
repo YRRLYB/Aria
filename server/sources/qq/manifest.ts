@@ -20,5 +20,6 @@ export const qqManifest: SourceManifest = {
     albumDetail: true,
     qualitySelection: true,
     videoPlayback: true,
+    directShareable: true,
   },
 };

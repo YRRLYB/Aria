@@ -311,7 +311,16 @@ export function HistorySurface({
     const todayMs = todayStart.getTime();
     let plays = 0;
     let today = 0;
-    const counts: Record<SourceLogoOption, number> = { local: 0, cloud: 0, netease: 0, qq: 0, bilibili: 0, youtube: 0 };
+    const counts: Record<SourceLogoOption, number> = {
+      local: 0,
+      cloud: 0,
+      netease: 0,
+      qq: 0,
+      bilibili: 0,
+      youtube: 0,
+      subsonic: 0,
+      webdav: 0,
+    };
     for (const entry of history) {
       plays += entry.count;
       if (entry.playedAt >= todayMs) today += 1;

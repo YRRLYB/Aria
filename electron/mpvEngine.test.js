@@ -330,4 +330,29 @@ describe("native mpv output", () => {
     const chAdd = calls.find((c) => c[0] === "af" && c[1] === "add" && String(c[2]).startsWith("@aria-channel:"));
     expect(chAdd?.[2]).toContain("pan=stereo|c0=0.500*c0+0.500*c1|c1=0.250*c0+0.250*c1");
   });
+
+  it("falls back to shared mode with exclusive-fallback event when audio-exclusive is rejected", async () => {
+    const events = [];
+    const engine = new MpvAudioEngine({
+      app: { isPackaged: false },
+      writeLog: vi.fn(),
+      sendEvent: (payload) => events.push(payload),
+    });
+    engine.ensureProcess = vi.fn().mockResolvedValue(undefined);
+    engine.teardown = vi.fn().mockResolvedValue(undefined);
+    engine.command = vi.fn().mockImplementation(async (...args) => {
+      if (args[0] === "get_property" && args[1] === "audio-exclusive") {
+        return false;
+      }
+      return null;
+    });
+
+    const snapshot = await engine.applyOutputSettings({ exclusive: true, deviceId: "auto" });
+    expect(engine.teardown).not.toHaveBeenCalled();
+    expect(snapshot.exclusive).toBe(false);
+    expect(snapshot.exclusiveFallback).toBe(true);
+    const fallbackEvent = events.find((evt) => evt.kind === "exclusive-fallback");
+    expect(fallbackEvent).toBeTruthy();
+    expect(typeof fallbackEvent.reason).toBe("string");
+  });
 });

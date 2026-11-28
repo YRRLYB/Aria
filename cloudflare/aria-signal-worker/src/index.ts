@@ -16,6 +16,8 @@ interface WorkerEnv {
     idFromName(name: string): unknown;
     get(id: unknown): { fetch(request: Request): Promise<Response> };
   };
+  CF_TURN_TOKEN_ID?: string;
+  CF_TURN_API_TOKEN?: string;
 }
 
 type StoredCapabilities = {
@@ -524,6 +526,61 @@ export default {
           },
         },
       );
+    }
+
+    if (url.pathname === "/turn-credentials") {
+      if (request.method !== "GET") {
+        return new Response("Method not allowed", { status: 405 });
+      }
+      const roomCode = (url.searchParams.get("room") || "").trim().toUpperCase();
+      if (!ROOM_CODE_PATTERN.test(roomCode)) {
+        return new Response(JSON.stringify({ available: false, error: "Invalid room code", iceServers: [] }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const tokenId = env.CF_TURN_TOKEN_ID?.trim();
+      const apiToken = env.CF_TURN_API_TOKEN?.trim();
+      if (!tokenId || !apiToken) {
+        return new Response(JSON.stringify({ available: false, iceServers: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      try {
+        const resp = await fetch(
+          `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(tokenId)}/credentials/generate-ice-servers`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${apiToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ ttl: 900 }),
+          },
+        );
+        if (!resp.ok) {
+          return new Response(JSON.stringify({ available: false, iceServers: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const data = (await resp.json()) as { iceServers?: unknown };
+        const iceServers = Array.isArray(data.iceServers)
+          ? data.iceServers
+          : data.iceServers
+            ? [data.iceServers]
+            : [];
+        return new Response(JSON.stringify({ available: true, ttl: 900, iceServers }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      } catch {
+        return new Response(JSON.stringify({ available: false, iceServers: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
     }
 
     if (url.pathname === "/ws") {

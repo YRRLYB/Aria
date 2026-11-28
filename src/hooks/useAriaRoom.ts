@@ -182,6 +182,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [lastDriftMs, setLastDriftMs] = useState<number | null>(null);
+  const [relayActive, setRelayActive] = useState(false);
   const [bufferProgress, setBufferProgress] = useState<{ downloadedBytes: number; totalBytes: number | null; completed: boolean } | null>(null);
 
   const identity = useMemo(
@@ -1315,7 +1316,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     });
   }, [identity.nickname, identity.peerId]);
 
-  // Early warm prefetch (2s after starting a track) + 20s before EOF lookahead
+  // Early warm prefetch (2s after starting a track) + 25s before EOF lookahead
   useEffect(() => {
     if (!snapshot.active || snapshot.role !== "host" || !options.playing) return;
     const earlyTimer = window.setTimeout(() => {
@@ -1324,9 +1325,9 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     const eofTimer = window.setInterval(() => {
       const cb = callbacksRef.current;
       if (!cb.playing || !cb.activeTrack) return;
-      if (!Number.isFinite(cb.durationSeconds) || cb.durationSeconds <= 20) return;
+      if (!Number.isFinite(cb.durationSeconds) || cb.durationSeconds <= 25) return;
       const remaining = cb.durationSeconds - cb.getPlaybackTime();
-      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 20) return;
+      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 25) return;
       triggerHostPrefetchNext();
     }, 2_000);
 
@@ -1335,6 +1336,53 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
       window.clearInterval(eofTimer);
     };
   }, [snapshot.active, snapshot.role, options.playing, options.activeTrack?.id, snapshot.playback.nonce, triggerHostPrefetchNext]);
+
+  // Monitor WebRTC ICE candidate pairs to detect active TURN relay paths.
+  useEffect(() => {
+    if (!snapshot.active) {
+      setRelayActive(false);
+      return;
+    }
+    let cancelled = false;
+    const pollStats = async () => {
+      let foundRelay = false;
+      for (const bundle of peersRef.current.values()) {
+        if (bundle.pc.connectionState === "closed") continue;
+        try {
+          const stats = await bundle.pc.getStats();
+          const candidates = new Map<string, { candidateType?: string }>();
+          const pairs: Array<{ state?: string; nominated?: boolean; localCandidateId?: string; remoteCandidateId?: string }> = [];
+          stats.forEach((report) => {
+            if (report.type === "local-candidate" || report.type === "remote-candidate") {
+              candidates.set(report.id, report as { candidateType?: string });
+            } else if (report.type === "candidate-pair") {
+              pairs.push(report as { state?: string; nominated?: boolean; localCandidateId?: string; remoteCandidateId?: string });
+            }
+          });
+          for (const pair of pairs) {
+            if (pair.state !== "succeeded" && !pair.nominated) continue;
+            const localType = pair.localCandidateId ? candidates.get(pair.localCandidateId)?.candidateType : undefined;
+            const remoteType = pair.remoteCandidateId ? candidates.get(pair.remoteCandidateId)?.candidateType : undefined;
+            if (localType === "relay" || remoteType === "relay") {
+              foundRelay = true;
+              break;
+            }
+          }
+          if (foundRelay) break;
+        } catch {
+          // Ignore transient stats errors on closing connections.
+        }
+      }
+      if (!cancelled) setRelayActive(foundRelay);
+    };
+    const timer = window.setInterval(() => {
+      void pollStats();
+    }, 3_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [snapshot.active]);
 
   const updateProfile = useCallback((patch: Partial<AriaRoomProfile>) => {
     setProfile((prev) => {
@@ -1915,6 +1963,13 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
           payload: { track: hostUiTrack, queue: hostUiQueue },
         });
 
+        const hasOnlineGuests = updatedSnap.members.some(
+          (m) => m.peerId !== identity.peerId && m.role === "guest" && m.online !== false && m.presence !== "offline",
+        );
+        if (hasOnlineGuests && resolvedTrack.nonce) {
+          await api.waitAriaRoomTrackReady(resolvedTrack.nonce, 3_000).catch(() => undefined);
+        }
+
         const syncEvt = await api.syncAriaRoomHostPlayback({
           kind: "play_at",
           nonce: resolvedTrack.nonce,
@@ -2009,7 +2064,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
         const { currentPayload, nextPayload, cleanQueue } = buildHostPayloads(track, activeQueue);
         void (async () => {
           try {
-            await api.prepareAriaRoomHostState({
+            const preparedSnap = await api.prepareAriaRoomHostState({
               track: currentPayload,
               nextTrack: nextPayload,
               queue: cleanQueue,
@@ -2017,6 +2072,13 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
               positionSec: 0,
             });
             if (callbacksRef.current.activeTrack?.id !== track.id) return;
+            const hasOnlineGuests = preparedSnap.members.some(
+              (m) => m.peerId !== identity.peerId && m.role === "guest" && m.online !== false && m.presence !== "offline",
+            );
+            if (hasOnlineGuests && currentPayload?.nonce) {
+              await api.waitAriaRoomTrackReady(currentPayload.nonce, 3_000).catch(() => undefined);
+              if (callbacksRef.current.activeTrack?.id !== track.id) return;
+            }
             const livePos = Math.max(0, callbacksRef.current.getPlaybackTime());
             const syncPos = options?.restartFromZero || livePos > 2.5 ? 0 : livePos;
             const syncEvt = await api.syncAriaRoomHostPlayback({
@@ -2247,6 +2309,7 @@ export function useAriaRoom(options: UseAriaRoomOptions) {
     rttMs,
     clockOffsetMs,
     lastDriftMs,
+    relayActive,
     bufferProgress,
     clearError: () => setActionError(null),
     updateProfile,

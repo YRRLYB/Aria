@@ -1181,6 +1181,13 @@ html.dark[data-window-material="translucent"] {
   color: #ffb3b3;
 }
 
+.dark .source-badge-subsonic,
+.dark .source-badge-webdav {
+  border-color: rgba(45, 212, 191, 0.3);
+  background: rgba(20, 184, 166, 0.16);
+  color: #5eead4;
+}
+
 .dark .history-search {
   border-color: rgba(255, 255, 255, 0.14);
   background: rgba(20, 21, 30, 0.88);

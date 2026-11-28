@@ -546,7 +546,7 @@ export type AriaRoomTrackPayload = {
   nonce: string;
   id: string;
   providerId?: string;
-  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube";
+  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube" | "subsonic" | "webdav";
   title: string;
   artist: string;
   album: string;
@@ -1586,7 +1586,113 @@ export const api = {
       body: JSON.stringify({ nonce, bufferedBytes }),
     });
   },
+  waitAriaRoomTrackReady(nonce: string, timeoutMs = 3000) {
+    return request<{ readyPeerIds: string[]; timedOut: boolean }>("/api/aria-room/wait-ready", {
+      method: "POST",
+      body: JSON.stringify({ nonce, timeoutMs }),
+    });
+  },
   sendAriaRoomClockPing() {
     return request<{ pingId: string | null }>("/api/aria-room/clock-ping", { method: "POST" });
   },
+  listPrivateCloudInstances() {
+    return request<{ instances: PrivateCloudInstancePublic[] }>("/api/private-cloud/instances");
+  },
+  createPrivateCloudInstance(body: PrivateCloudUpsertPayload) {
+    return request<{ instance: PrivateCloudInstancePublic }>("/api/private-cloud/instances", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  updatePrivateCloudInstance(id: string, body: PrivateCloudUpsertPayload) {
+    return request<{ instance: PrivateCloudInstancePublic }>(`/api/private-cloud/instances/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+  deletePrivateCloudInstance(id: string) {
+    return request<{ ok: boolean }>(`/api/private-cloud/instances/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+  testPrivateCloudInstance(id: string) {
+    return request<{ ok: boolean; latencyMs?: number; openSubsonic?: boolean; serverVersion?: string; reason?: string }>(
+      `/api/private-cloud/instances/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    );
+  },
+  testPrivateCloudDraft(body: PrivateCloudUpsertPayload & { instanceId?: string }) {
+    return request<{
+      ok: boolean;
+      latencyMs?: number;
+      openSubsonic?: boolean;
+      serverVersion?: string;
+      normalizedUrl?: string;
+      reason?: string;
+    }>("/api/private-cloud/test-connection", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  scanPrivateCloudInstance(id: string) {
+    return request<{
+      progress: {
+        instanceId: string;
+        scanning: boolean;
+        discovered: number;
+        scanned: number;
+        skipped: number;
+        errors: number;
+        lastError: string | null;
+      };
+    }>(`/api/private-cloud/instances/${encodeURIComponent(id)}/scan`, { method: "POST" });
+  },
+  listPrivateCloudTracks(instanceId?: string) {
+    const query = instanceId ? `?instanceId=${encodeURIComponent(instanceId)}` : "";
+    return request<{ tracks: ProviderTrack[] }>(`/api/private-cloud/tracks${query}`);
+  },
+  scrobbleSubsonic(instanceId: string, songId: string, submission = true) {
+    return request<{ ok: boolean }>(
+      `/api/private-cloud/subsonic/${encodeURIComponent(instanceId)}/scrobble/${encodeURIComponent(songId)}`,
+      { method: "POST", body: JSON.stringify({ submission }) },
+    );
+  },
+  pushWebdavBackup(instanceId: string, remotePath: string, snapshot: unknown) {
+    return request<{ ok: boolean; remotePath: string; bytes: number }>("/api/backup/webdav/push", {
+      method: "POST",
+      body: JSON.stringify({ instanceId, remotePath, snapshot }),
+    });
+  },
+  pullWebdavBackup(instanceId: string, remotePath: string) {
+    return request<{ ok: boolean; remotePath: string; snapshot: unknown }>("/api/backup/webdav/pull", {
+      method: "POST",
+      body: JSON.stringify({ instanceId, remotePath }),
+    });
+  },
+};
+
+export type PrivateCloudInstancePublic = {
+  id: string;
+  kind: "subsonic" | "webdav";
+  name: string;
+  baseUrl: string;
+  username: string;
+  hasPassword: boolean;
+  rootPath?: string;
+  enabled: boolean;
+  mobileTranscodeBitrate?: number;
+  createdAt: number;
+  updatedAt: number;
+  lastSyncAt?: number | null;
+  trackCount?: number;
+  scanning?: boolean;
+};
+
+export type PrivateCloudUpsertPayload = {
+  kind: "subsonic" | "webdav";
+  name: string;
+  baseUrl: string;
+  username?: string;
+  password?: string;
+  rootPath?: string;
+  enabled?: boolean;
+  mobileTranscodeBitrate?: number;
 };

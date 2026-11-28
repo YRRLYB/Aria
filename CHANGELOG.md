@@ -1,5 +1,23 @@
 # 更新记录
 
+## 0.9.0（第 5 音源私有云 · 凭据加密与配置漫游 · 一起听 2.0 内核加固）
+
+### 新增与架构演进
+- **第 5 音源 — 私有云（OpenSubsonic & WebDAV）**：
+  - 支持同时添加与管理多个 **OpenSubsonic**（Navidrome / Gonic 等，`v1.16.1` 盐值 MD5 鉴权、桌面 `format=raw` 无损直出、移动端 `opus` 转码、`getLyricsBySongId` 歌词与播放完成 `scrobble` 上报）与 **WebDAV**（NAS / Alist `PROPFIND Depth:1` 增量目录同步 + `128 KB`/`64 KB` Range 头部媒体信息嗅探 + 内置 `node:sqlite` 曲库索引 + `302/307` 重定向剥离 `Authorization` 头安全流代理）实例，全面融入全站搜索、播放队列、歌单与「私有云」独立视图。
+- **统一音源契约与 AES-256-GCM 凭据保护**：新增 `secretBox`（`0600` 权限本地密钥 + AES-256-GCM）加密存储私有云实例密码，前端界面与 API 严格不返回明文密码；音源 Manifest 新增 `directShareable` 能力声明与 `GET /api/sources/:sourceId/health` 健康探测。
+- **配置备份与 WebDAV 云端漫游**：设置页新增轻量备份与漫游卡片，支持按模块勾选导出/导入 `.aria-backup.json`（严格白名单过滤，永不导出 Cookie、私有云密码或 Token），并支持一键上传/恢复至已配置的 WebDAV 实例。
+- **一起听 2.0 内核加固**：
+  - 对 `subsonic` / `webdav` / `local` 及 `directShareable: false` 音源强制锁定 `stream_proxy` P2P 转发模式，严防私人 NAS 地址与凭据泄漏给房间听友；
+  - 房主切歌新增 **Barrier Ready** 缓冲屏障（最短等待听友 `track_ready` 后同步播发 `play_at`，最长 3 秒优雅超时），升级下一首预加载前瞻窗口至 **25 秒**，新增 WebRTC `relayActive` 状态感知与 Cloudflare Worker 可选 `/turn-credentials` 短期 ICE 凭据端点。
+
+### 修复与细节打磨
+- **桌面歌词多屏异构 DPI 拖拽锁定**：拖拽时主进程显式使用 `setBounds({ x, y, width: 620, height: 176 }, false)`，消除跨不同缩放比例显示器拖拽时窗口拉伸或缩小的异常。
+- **Windows 10 Mica 透明回退与对比度适配**：检测 Windows build `< 22000` 时自动跳过 Mica 并保持不透明窗口底色，强化 `prefers-reduced-transparency` 媒体查询适配。
+- **AutoEQ Preamp 同步与一键安全归一化**：载入外部预设时同步应用并展示前级增益 `Preamp`，在 Headroom 指示旁提供「一键安全归一化」入口。
+- **WASAPI / CoreAudio 独占模式自动回退**：当独占输出被系统或其他应用占用打开失败时，不再报错停止或破坏当前播放会话，而是平滑回退至共享模式（`exclusiveFallback: true`）、自动同步切换 UI 开关并给出清晰提示。
+- **文档与版本整理**：将完整的一起听自部署信令指南拆分至 [docs/listen-together-deploy.md](docs/listen-together-deploy.md)，精简主 `README.md` 篇幅。
+
 ## 0.8.8（桌面歌词摆件 · 科学 Hi-Fi 多模式均衡器 · 流体交互与性能降载）
 
 ### 新增与升级

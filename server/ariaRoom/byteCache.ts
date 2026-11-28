@@ -32,7 +32,7 @@ export type AriaRoomTrackPayload = {
   nonce: string;
   id: string;
   providerId?: string;
-  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube";
+  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube" | "subsonic" | "webdav";
   title: string;
   artist: string;
   album: string;

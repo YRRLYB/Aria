@@ -39,6 +39,7 @@ export function SearchSurface({
   qqTracks = [],
   bilibiliTracks = [],
   youtubeTracks = [],
+  privateCloudTracks = [],
   qqError = null,
   bilibiliError = null,
   youtubeError = null,
@@ -70,6 +71,7 @@ export function SearchSurface({
   qqTracks?: Track[];
   bilibiliTracks?: Track[];
   youtubeTracks?: Track[];
+  privateCloudTracks?: Track[];
   qqError?: string | null;
   bilibiliError?: string | null;
   youtubeError?: string | null;
@@ -96,13 +98,18 @@ export function SearchSurface({
   onPickAlbum?: (album: ProviderAlbum) => void;
 }) {
   const tracks = useMemo(
-    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks, ...bilibiliTracks, ...youtubeTracks]),
-    [localTracks, neteaseTracks, qqTracks, bilibiliTracks, youtubeTracks],
+    () => mergeTracks([...localTracks, ...neteaseTracks, ...qqTracks, ...bilibiliTracks, ...youtubeTracks, ...privateCloudTracks]),
+    [localTracks, neteaseTracks, qqTracks, bilibiliTracks, youtubeTracks, privateCloudTracks],
   );
   // 融合但不同时铺开：来源芯片切到单一源时，只显示该源的结果。
-  const [sourceFilter, setSourceFilter] = useState<"all" | SourceToggleOption | "bilibili">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | SourceToggleOption | "bilibili" | "privateCloud">("all");
   const filteredTracks = useMemo(
-    () => (sourceFilter === "all" ? tracks : tracks.filter((track) => track.source === sourceFilter)),
+    () =>
+      sourceFilter === "all"
+        ? tracks
+        : sourceFilter === "privateCloud"
+          ? tracks.filter((track) => track.source === "subsonic" || track.source === "webdav")
+          : tracks.filter((track) => track.source === sourceFilter),
     [tracks, sourceFilter],
   );
   // 本地没有分页；QQ 没有 total，只能按“是否满页”判断。切到“全部”时
@@ -137,12 +144,16 @@ export function SearchSurface({
     () => tracks.filter((track) => track.source === "bilibili"),
     [tracks],
   );
-  const youtubeQueue = useMemo(
+    const youtubeQueue = useMemo(
     () => tracks.filter((track) => track.source === "youtube"),
     [tracks],
   );
+  const privateCloudQueue = useMemo(
+    () => tracks.filter((track) => track.source === "subsonic" || track.source === "webdav"),
+    [tracks],
+  );
   const descriptions = {
-    tracks: "本地、网易云、QQ 音乐、B站与 YouTube 一起搜，点来源图标切换查看。",
+    tracks: "本地、网易云、QQ 音乐、B站、YouTube 与私有云一起搜，点来源图标切换查看。",
     artists: "浏览歌手作品、专辑与简介。",
     playlists: "浏览公开歌单并播放完整曲目。",
     users: "搜索网易云用户，查看他们的公开歌单。",
@@ -220,6 +231,7 @@ export function SearchSurface({
               ["qq", "QQ 音乐", "qq"],
               ["bilibili", "B站", "bilibili"],
               ["youtube", "YouTube", "youtube"],
+              ["privateCloud", "私有云", "subsonic"],
               ["local", "本地", "local"],
             ] as const
           ).map(([value, label, logo]) => {
@@ -277,7 +289,9 @@ export function SearchSurface({
                         ? bilibiliQueue
                         : track.source === "youtube"
                           ? youtubeQueue
-                          : neteaseQueue
+                          : track.source === "subsonic" || track.source === "webdav"
+                            ? privateCloudQueue
+                            : neteaseQueue
                 }
                 onPickTrack={onPickTrack}
                 showMatchedLyric={mode === "lyrics"}

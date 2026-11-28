@@ -1398,4 +1398,93 @@ describe("AriaRoomManager Direct Port, Bit-Exact Range, Security & 5-Member Cap"
       await signalNode.close();
     }
   });
+
+  it("forces stream_proxy for private cloud (subsonic/webdav) and enforces Barrier Ready", async () => {
+    const manager = new AriaRoomManager({ localApiPort: 0 });
+    const guestSockets: Array<{ close: () => void }> = [];
+    try {
+      const snap = await manager.createRoom({
+        peerId: "host-barrier",
+        nickname: "Host",
+        networkMode: "direct",
+        controlMode: "collaborative",
+        directPort: 0,
+      });
+      const port = snap.directServer.port;
+      const token = snap.directServer.roomToken!;
+
+      // 1. Subsonic and WebDAV tracks must NEVER resolve to direct_url.
+      for (const cloudTrack of [
+        {
+          nonce: "priv_sub_1",
+          id: "subsonic:inst1:song1",
+          providerId: "inst1:song1",
+          source: "subsonic" as const,
+          title: "Private Subsonic",
+          artist: "Artist",
+          album: "Album",
+          duration: "03:30",
+          quality: "Lossless" as const,
+        },
+        {
+          nonce: "priv_dav_1",
+          id: "webdav:inst2:track1",
+          providerId: "inst2:track1",
+          source: "webdav" as const,
+          title: "Private WebDAV",
+          artist: "Artist",
+          album: "Album",
+          duration: "04:00",
+          quality: "FLAC" as const,
+        },
+      ]) {
+        const resolved = await manager.resolveTrackForRoom(cloudTrack);
+        expect(resolved.ok).toBe(true);
+        if (resolved.ok) {
+          expect(resolved.track.dispatch?.mode).toBe("stream_proxy");
+          expect(resolved.track.dispatch?.directUrl).toBeUndefined();
+        }
+      }
+
+      // 2. Connect an online guest and verify Barrier Ready completes before timeout when track_ready arrives.
+      const { ws } = await connectWebSocket(
+        `ws://127.0.0.1:${port}/aria-room/ws?token=${encodeURIComponent(token)}`,
+      );
+      guestSockets.push(ws);
+      ws.sendJson({
+        type: "hello",
+        role: "guest",
+        member: {
+          peerId: "guest-barrier-1",
+          nickname: "Guest Barrier",
+          avatarUrl: null,
+          role: "guest",
+          joinedAt: Date.now(),
+          connectedVia: "direct",
+        },
+      });
+      await new Promise((r) => setTimeout(r, 80));
+
+      const readyWait = manager.waitForTrackReady("nonce_barrier_ok", 1_500);
+      setTimeout(() => {
+        ws.sendJson({
+          type: "track_ready",
+          roomId: snap.roomId,
+          fromPeerId: "guest-barrier-1",
+          nonce: "nonce_barrier_ok",
+          bufferedBytes: 32_768,
+        });
+      }, 40);
+      const okRes = await readyWait;
+      expect(okRes.timedOut).toBe(false);
+      expect(okRes.readyPeerIds).toContain("guest-barrier-1");
+
+      // 3. Timed-out Barrier Ready resolves gracefully rather than throwing.
+      const timeoutRes = await manager.waitForTrackReady("nonce_barrier_timeout", 80);
+      expect(timeoutRes.timedOut).toBe(true);
+    } finally {
+      for (const ws of guestSockets) ws.close();
+      await manager.leaveRoom();
+    }
+  });
 });

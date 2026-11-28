@@ -10,8 +10,10 @@ export type NativeAudioState = {
   volume: number;
   speed?: number;
   exclusive: boolean;
+  exclusiveFallback?: boolean;
   deviceId: string;
   bitrate: number | null;
   gaplessGeneration?: number;
   kind?: string;
+  reason?: string;
 };

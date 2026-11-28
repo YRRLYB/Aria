@@ -419,6 +419,8 @@ function resolveAriaGuestCoverUrl(payload: AriaRoomTrackPayload, encodedNonce: s
   if (
     rawCover &&
     payload.source !== "local" &&
+    payload.source !== "subsonic" &&
+    payload.source !== "webdav" &&
     (/^https?:\/\//i.test(rawCover) ||
       rawCover.startsWith("/api/providers/") ||
       rawCover.startsWith("/api/sources/"))
@@ -440,6 +442,8 @@ function resolveAriaFallbackCoverUrl(
   if (
     rawCover &&
     payload.source !== "local" &&
+    payload.source !== "subsonic" &&
+    payload.source !== "webdav" &&
     (/^https?:\/\//i.test(rawCover) ||
       rawCover.startsWith("/api/providers/") ||
       rawCover.startsWith("/api/sources/"))
@@ -455,7 +459,11 @@ function deriveCanonicalStreamUrl(payload: AriaRoomTrackPayload): string | null 
     return `/api/providers/netease/stream/${encodeURIComponent(pid)}`;
   }
   if (
-    (payload.source === "qq" || payload.source === "bilibili" || payload.source === "youtube") &&
+    (payload.source === "qq" ||
+      payload.source === "bilibili" ||
+      payload.source === "youtube" ||
+      payload.source === "subsonic" ||
+      payload.source === "webdav") &&
     pid
   ) {
     return `/api/sources/${payload.source}/tracks/${encodeURIComponent(pid)}/stream`;

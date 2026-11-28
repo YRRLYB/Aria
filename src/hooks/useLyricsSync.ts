@@ -84,9 +84,9 @@ export function useLyricsSync(options: {
     }
 
     const providerId = track.providerId ?? (track.id.startsWith(`${track.source}:`) ? track.id.slice(track.source.length + 1) : undefined);
-    if (track.source === "qq") {
+    if (track.source === "qq" || track.source === "subsonic" || track.source === "webdav") {
       if (!providerId) return "unavailable";
-      const result = await api.getSourceLyrics("qq", providerId);
+      const result = await api.getSourceLyrics(track.source, providerId);
       const normalized = Array.isArray(result.lyrics) ? normalizeBilingualLyrics(result.lyrics) : [];
       if (normalized.length) {
         applyLyricsToTrack(track.id, normalized);

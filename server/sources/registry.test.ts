@@ -28,11 +28,25 @@ describe("source registry switches", () => {
   });
 
   it("lists the built-in sources sorted by id", () => {
-    expect(listSourceManifests().map((manifest) => manifest.id)).toEqual(["bilibili", "netease", "qq", "youtube"]);
+    expect(listSourceManifests().map((manifest) => manifest.id)).toEqual([
+      "bilibili",
+      "netease",
+      "qq",
+      "subsonic",
+      "webdav",
+      "youtube",
+    ]);
   });
 
   it("treats a source missing from the store as enabled", async () => {
-    await expect(readSourceEnabledMap()).resolves.toEqual({ netease: true, qq: true, bilibili: true, youtube: true });
+    await expect(readSourceEnabledMap()).resolves.toEqual({
+      netease: true,
+      qq: true,
+      bilibili: true,
+      youtube: true,
+      subsonic: true,
+      webdav: true,
+    });
   });
 
   it("persists a disabled source and reports it everywhere", async () => {
@@ -40,7 +54,14 @@ describe("source registry switches", () => {
     expect(states.find((state) => state.manifest.id === "qq")?.enabled).toBe(false);
     expect((state.store.sources as Record<string, { enabled?: boolean }>).qq).toEqual({ enabled: false });
     // Cache must have been invalidated, otherwise the UI would keep the old flag.
-    await expect(readSourceEnabledMap()).resolves.toEqual({ netease: true, qq: false, bilibili: true, youtube: true });
+    await expect(readSourceEnabledMap()).resolves.toEqual({
+      netease: true,
+      qq: false,
+      bilibili: true,
+      youtube: true,
+      subsonic: true,
+      webdav: true,
+    });
   });
 
   it("keeps flags for other sources while toggling one", async () => {
@@ -62,6 +83,6 @@ describe("source registry switches", () => {
 
   it("reports no circuit when nothing failed", async () => {
     const states = await listSourceStates();
-    expect(states.map((state) => state.unavailableUntil)).toEqual([null, null, null, null]);
+    expect(states.map((state) => state.unavailableUntil)).toEqual([null, null, null, null, null, null]);
   });
 });

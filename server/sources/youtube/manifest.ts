@@ -28,5 +28,7 @@ export const youtubeManifest: SourceManifest = {
     // AAC 128k / Opus ~70k / Opus ~160k tier selection.
     qualitySelection: true,
     videoPlayback: true,
+    directShareable: false,
+    usesDedicatedProxy: true,
   },
 };

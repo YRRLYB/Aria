@@ -28,7 +28,7 @@ export type Track = {
   albumArtist?: string | null;
   duration: string;
   quality: "臻品" | "Hi-Res" | "FLAC" | "Lossless" | "320K" | "128K" | "AAC";
-  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube";
+  source: "local" | "cloud" | "netease" | "qq" | "bilibili" | "youtube" | "subsonic" | "webdav";
   streamUrl?: string;
   /** Muxed video proxy route; only present for video-capable sources (Bilibili). */
   videoUrl?: string;
@@ -82,6 +82,7 @@ export type ViewId =
   | "daily"
   | "radar"
   | "cloud"
+  | "privateCloud"
   | "stats"
   | "settings"
   | "listenTogether";

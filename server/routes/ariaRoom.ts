@@ -24,7 +24,7 @@ const trackPayloadSchema: z.ZodType<AriaRoomTrackPayload> = z.object({
   nonce: z.string().min(1).max(48),
   id: z.string().min(1).max(200),
   providerId: z.string().max(200).optional(),
-  source: z.enum(["local", "cloud", "netease", "qq", "bilibili", "youtube"]),
+  source: z.enum(["local", "cloud", "netease", "qq", "bilibili", "youtube", "subsonic", "webdav"]),
   title: z.string().max(300),
   artist: z.string().max(300),
   album: z.string().max(300),
@@ -400,6 +400,21 @@ export function createAriaRoomRouter(options: { localApiPort: number; manager?: 
         .parse(req.body ?? {});
       manager.sendTrackReady(body.nonce, body.bufferedBytes);
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/wait-ready", async (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          nonce: z.string().min(1).max(48),
+          timeoutMs: z.number().int().min(100).max(10_000).default(3000),
+        })
+        .parse(req.body ?? {});
+      const result = await manager.waitForTrackReady(body.nonce, body.timeoutMs);
+      res.json(result);
     } catch (error) {
       next(error);
     }

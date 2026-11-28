@@ -23,7 +23,7 @@ export type SuperMixStrategy = "interleave" | "shuffle" | "sequential";
 
 export type SuperMixSourceRef = {
   key: string;
-  source: "local" | "netease" | "qq" | "bilibili" | "youtube";
+  source: "local" | "netease" | "qq" | "bilibili" | "youtube" | "subsonic" | "webdav";
   playlistId: string;
   name: string;
   coverUrl?: string | null;

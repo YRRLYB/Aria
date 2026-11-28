@@ -7,4 +7,6 @@ export const sourceLabel: Record<Track["source"], string> = {
   qq: "QQ音乐",
   bilibili: "B站",
   youtube: "YouTube",
+  subsonic: "私有云",
+  webdav: "WebDAV",
 };

@@ -28,6 +28,7 @@ export type SearchBundle = {
   qqTracks: Track[];
   bilibiliTracks: Track[];
   youtubeTracks: Track[];
+  privateCloudTracks: Track[];
   artists: ArtistSummary[];
   playlists: ProviderPlaylist[];
   users: ProviderUser[];
@@ -42,6 +43,7 @@ const emptySearchBundle: SearchBundle = {
   qqTracks: [],
   bilibiliTracks: [],
   youtubeTracks: [],
+  privateCloudTracks: [],
   artists: [],
   playlists: [],
   users: [],
@@ -62,6 +64,7 @@ export function useDiscovery(options: {
   onMergeQqTracks: (updater: (current: Track[]) => Track[]) => void;
   onMergeBilibiliTracks?: (updater: (current: Track[]) => Track[]) => void;
   onMergeYoutubeTracks?: (updater: (current: Track[]) => Track[]) => void;
+  onMergePrivateCloudTracks?: (updater: (current: Track[]) => Track[]) => void;
 }) {
   const [searchBundle, setSearchBundle] =
     useState<SearchBundle>(emptySearchBundle);
@@ -359,7 +362,30 @@ export function useDiscovery(options: {
                   );
               })
           : Promise.resolve();
-      Promise.allSettled([neteaseSearch, qqSearch, bilibiliSearch, youtubeSearch]).finally(() => {
+      const privateCloudSearch =
+        searchMode === "tracks"
+          ? Promise.allSettled([
+              sourceSwitches.subsonic === false ? Promise.resolve(null) : api.searchSource("subsonic", text, "tracks", searchPageSize),
+              sourceSwitches.webdav === false ? Promise.resolve(null) : api.searchSource("webdav", text, "tracks", searchPageSize),
+            ]).then((results) => {
+              if (requestId !== searchRequestRef.current) return;
+              const combined: Track[] = [];
+              for (const res of results) {
+                if (res.status === "fulfilled" && res.value) {
+                  combined.push(...res.value.tracks.map((track, idx) => providerTrackToUiTrack(track, idx)));
+                }
+              }
+              if (!combined.length) return;
+              options.onMergePrivateCloudTracks?.((current) =>
+                trimTrackCache([...current, ...combined]),
+              );
+              setSearchBundle((current) => ({
+                ...current,
+                privateCloudTracks: combined,
+              }));
+            })
+          : Promise.resolve();
+      Promise.allSettled([neteaseSearch, qqSearch, bilibiliSearch, youtubeSearch, privateCloudSearch]).finally(() => {
         if (requestId === searchRequestRef.current) {
           setSearchLoading(false);
           searchLoadingRef.current = false;

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Cloud, HardDrive, LoaderCircle, Play, RefreshCw, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,12 +13,13 @@ import { CopyableTrackText, CoverArt, EmptyState } from "./shared";
 export function CloudSurface({
   cloudTracks, visibleTracks, items, count, size, maxSize, more, loaded,
   loading, error, accessExpired, query, setQuery, refreshCloud, loadMoreCloud, retryCloud,
-  resolveCloudTrack, connected, activeTrackId, onPickTrack, onRequireLogin,
+  resolveCloudTrack, connected, activeTrackId, onPickTrack, onRequireLogin, headerTabs,
 }: CloudLibraryState & {
   connected: boolean;
   activeTrackId: string;
   onPickTrack: (id: string, queue?: Track[]) => void;
   onRequireLogin: () => void;
+  headerTabs?: ReactNode;
 }) {
   const [pendingTrackId, setPendingTrackId] = useState<string | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
@@ -46,9 +47,12 @@ export function CloudSurface({
 
   return (
     <section className="aria-page-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-5 sm:p-7" aria-label="音乐云盘">
-      <div className="aria-page-header flex shrink-0 items-start justify-between gap-5 pb-4">
+      <div className="aria-page-header flex shrink-0 flex-wrap items-start justify-between gap-4 pb-4">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">音乐云盘</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">音乐云盘</h1>
+            {headerTabs}
+          </div>
           <p className="mt-1 text-xs text-neutral-500">{connected ? "听见你收藏的每一份原声。" : "登录网易云，随时播放你上传的音乐。"}</p>
         </div>
         {connected && (

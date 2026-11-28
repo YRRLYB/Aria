@@ -161,6 +161,13 @@ export function useLocalPlaylists(tracks: Track[]) {
     setSelectedId((current) => current === id ? null : current);
   }
 
+  function replaceAll(nextPlaylists: LocalPlaylist[]) {
+    setPlaylists(nextPlaylists);
+    setSelectedId((current) =>
+      current && nextPlaylists.some((item) => item.id === current) ? current : null,
+    );
+  }
+
   function restorePlaylistTracks(
     id: string,
     snapshot: { trackIds: string[]; trackSnapshots?: Record<string, Track>; manualTrackIds?: string[] },
@@ -203,5 +210,6 @@ export function useLocalPlaylists(tracks: Track[]) {
     reorder,
     syncReference,
     remove,
+    replaceAll,
   };
 }

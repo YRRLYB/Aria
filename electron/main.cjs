@@ -1002,11 +1002,19 @@ function writeWindowMaterialPref(mode) {
   }
 }
 
+function isWindows11OrNewer() {
+  if (process.platform !== "win32") return false;
+  const parts = String(os.release() || "").split(".");
+  const build = Number(parts[2]);
+  return Number.isFinite(build) && build >= 22000;
+}
+
 function applyWindowMaterial(mode) {
   windowMaterial = mode === "translucent" ? "translucent" : "default";
   if (!mainWindow || mainWindow.isDestroyed()) return windowMaterial;
+  const win11Mica = isWindows11OrNewer();
   try {
-    if (process.platform === "win32" && typeof mainWindow.setBackgroundMaterial === "function") {
+    if (win11Mica && typeof mainWindow.setBackgroundMaterial === "function") {
       mainWindow.setBackgroundMaterial(windowMaterial === "translucent" ? "mica" : "none");
     } else if (process.platform === "darwin" && typeof mainWindow.setVibrancy === "function") {
       mainWindow.setVibrancy(windowMaterial === "translucent" ? "under-window" : null);
@@ -1015,8 +1023,9 @@ function applyWindowMaterial(mode) {
     // Older Windows/macOS versions may not support translucent material APIs.
   }
   try {
+    const canUseTransparentBg = windowMaterial === "translucent" && (win11Mica || process.platform === "darwin");
     mainWindow.setBackgroundColor(
-      windowMaterial === "translucent"
+      canUseTransparentBg
         ? "#00000000"
         : nativeTheme.shouldUseDarkColors
           ? "#0f0f16"
@@ -1412,8 +1421,15 @@ ipcMain.handle("aria:desktop-lyrics:set-always-on-top", (_event, enabled) => {
 ipcMain.on("aria:desktop-lyrics:drag-start", () => {
   if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed() || desktopLyricsLocked) return;
   const cursor = screen.getCursorScreenPoint();
-  const [winX, winY] = desktopLyricsWindow.getPosition();
-  desktopLyricsDragAnchor = { cursorX: cursor.x, cursorY: cursor.y, winX, winY };
+  const bounds = desktopLyricsWindow.getBounds();
+  desktopLyricsDragAnchor = {
+    cursorX: cursor.x,
+    cursorY: cursor.y,
+    winX: bounds.x,
+    winY: bounds.y,
+    width: 620,
+    height: 176,
+  };
 });
 
 ipcMain.on("aria:desktop-lyrics:drag-move", () => {
@@ -1421,7 +1437,15 @@ ipcMain.on("aria:desktop-lyrics:drag-move", () => {
   const cursor = screen.getCursorScreenPoint();
   const nextX = Math.round(desktopLyricsDragAnchor.winX + (cursor.x - desktopLyricsDragAnchor.cursorX));
   const nextY = Math.round(desktopLyricsDragAnchor.winY + (cursor.y - desktopLyricsDragAnchor.cursorY));
-  desktopLyricsWindow.setPosition(nextX, nextY, false);
+  desktopLyricsWindow.setBounds(
+    {
+      x: nextX,
+      y: nextY,
+      width: desktopLyricsDragAnchor.width,
+      height: desktopLyricsDragAnchor.height,
+    },
+    false,
+  );
 });
 
 ipcMain.on("aria:desktop-lyrics:drag-end", () => {

@@ -75,6 +75,8 @@ const SOURCE_COLOR: Record<Track["source"], { label: string; color: string }> = 
   youtube: { label: "YouTube", color: "#FF0033" },
   local: { label: "本地", color: "#6E5AD6" },
   cloud: { label: "云盘", color: "#4F6EF7" },
+  subsonic: { label: "私有云", color: "#0D9488" },
+  webdav: { label: "WebDAV", color: "#0284C7" },
 };
 
 const STRATEGY_LABEL: Record<SuperMixStrategy, string> = {

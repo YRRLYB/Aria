@@ -10,8 +10,10 @@ import { invalidateNeteaseIdentity, normalizeRealIp } from "./clients/neteaseIde
 import { getProvider, listProviders } from "./providers";
 import { createLibraryRouter } from "./routes/library";
 import { createAriaRoomRouter } from "./routes/ariaRoom";
+import { createBackupRouter } from "./routes/backup";
 import { createListenTogetherRouter } from "./routes/listenTogether";
 import { createLocalMetadataRouter } from "./routes/localMetadata";
+import { createPrivateCloudRouter } from "./routes/privateCloud";
 import { createRemoteCoverRouter } from "./routes/remoteCover";
 import {
   checkNeteaseQrLogin,
@@ -117,6 +119,8 @@ app.get("/api/remote-access", (_req, res) => {
 
 app.use("/api/library", createLibraryRouter());
 app.use("/api/library/metadata", createLocalMetadataRouter());
+app.use("/api/private-cloud", createPrivateCloudRouter());
+app.use("/api/backup", createBackupRouter());
 app.use(
   "/api/sources",
   createSourcesRouter({ coverCaches: { netease: remoteCoverCache, qq: qqCoverCache, bilibili: bilibiliCoverCache, youtube: youtubeCoverCache } }),

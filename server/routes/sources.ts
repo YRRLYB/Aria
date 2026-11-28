@@ -66,6 +66,17 @@ export function createSourcesRouter(options: SourcesRouterOptions) {
     }
   });
 
+  router.get("/:sourceId/health", async (req, res, next) => {
+    try {
+      const source = await getSource(req.params.sourceId);
+      const instanceId = typeof req.query.instanceId === "string" ? req.query.instanceId : undefined;
+      const health = source.healthCheck ? await source.healthCheck(instanceId) : { ok: true };
+      res.json({ sourceId: req.params.sourceId, ...health });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/:sourceId/search", async (req, res, next) => {
     try {
       const source = await getSource(req.params.sourceId);

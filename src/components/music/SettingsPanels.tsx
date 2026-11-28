@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useState, useRef, type CSSProperties } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, Check, CheckCircle2, Cookie, Copy, Download, FolderPlus, FolderSearch, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Sun, Trash2, Volume2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, CheckCircle2, Cloud, Cookie, Copy, Download, FolderPlus, FolderSearch, Keyboard, LogIn, LogOut, Monitor, Moon, QrCode, Radio, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Sun, Trash2, Upload, Volume2, X } from "lucide-react";
 import QRCode from "qrcode";
 import { AriaSelect } from "@/components/ui/aria-select";
 import { Button } from "@/components/ui/button";
-import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type SourceAccountSummary, type UpdateState } from "@/lib/api";
+import { api, type ApiLibraryWatchState, type NeteaseAccountSummary, type NeteaseQrStart, type PrivateCloudInstancePublic, type SourceAccountSummary, type UpdateState } from "@/lib/api";
+import {
+  parseAndValidateBackup,
+  type AriaBackupSnapshot,
+  type BackupMergeStrategy,
+  type BackupModuleKey,
+} from "@/lib/configBackup";
 import { formatTransferSpeed } from "@/components/music/UpdateBanner";
 import { SourceLogo, type SourceLogoOption } from "@/components/music/SourceLogos";
 import type { NativeAudioState } from "@/lib/audioTypes";
@@ -242,6 +248,9 @@ export function SettingsPanel({
   onBilibiliDefaultAudioLevelChange,
   onNeteaseAccountChange,
   onSourceAccountChange,
+  onOpenPrivateCloud,
+  onBuildBackupSnapshot,
+  onApplyBackupSnapshot,
   onClose,
 }: {
   backgroundEnabled: boolean;
@@ -290,6 +299,13 @@ export function SettingsPanel({
   onNeteaseAccountChange?: (account: NeteaseAccountSummary) => void;
   /** Fired after a non-NetEase source account changes so the header can refresh. */
   onSourceAccountChange?: () => void;
+  onOpenPrivateCloud?: () => void;
+  onBuildBackupSnapshot?: (modules: BackupModuleKey[]) => AriaBackupSnapshot;
+  onApplyBackupSnapshot?: (
+    snapshot: AriaBackupSnapshot,
+    strategy: BackupMergeStrategy,
+    modules: BackupModuleKey[],
+  ) => { summary: string };
   onClose: () => void;
 }) {
   const [section, setSection] = useState<SettingsSection>("all");
@@ -620,6 +636,25 @@ export function SettingsPanel({
                 <QqSourceCard onAccountChange={onSourceAccountChange} />
                 <BilibiliSourceCard onAccountChange={onSourceAccountChange} />
                 <YoutubeSourceCard onAccountChange={onSourceAccountChange} />
+                <div className="py-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600">
+                      <Cloud className="size-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-neutral-900">私有云 (OpenSubsonic / WebDAV)</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        管理 Navidrome / Subsonic 与 Alist / NAS WebDAV 实例，凭据已采用 AES-256-GCM 本地加密保存。
+                      </p>
+                    </div>
+                  </div>
+                  {onOpenPrivateCloud && (
+                    <Button size="sm" variant="subtle" onClick={onOpenPrivateCloud}>
+                      <Cloud />
+                      管理私有云
+                    </Button>
+                  )}
+                </div>
               </div>
             </section>
           )}
@@ -802,6 +837,12 @@ export function SettingsPanel({
                 </div>
 
                 <RemoteAccessSettings />
+
+                <BackupRoamingCard
+                  onBuildSnapshot={onBuildBackupSnapshot}
+                  onApplySnapshot={onApplyBackupSnapshot}
+                  onOpenPrivateCloud={onOpenPrivateCloud}
+                />
 
                 <UpdateCard />
               </div>
@@ -2420,6 +2461,266 @@ function YoutubeSourceCard({ onAccountChange, embedded = false }: { onAccountCha
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const BACKUP_MODULE_LABELS: Array<{ key: BackupModuleKey; label: string }> = [
+  { key: "eqPresets", label: "EQ 预设" },
+  { key: "playlists", label: "自建歌单与 Super 混合" },
+  { key: "preferences", label: "外观与音频偏好" },
+  { key: "desktopLyrics", label: "桌面歌词设置" },
+];
+
+function BackupRoamingCard({
+  onBuildSnapshot,
+  onApplySnapshot,
+  onOpenPrivateCloud,
+}: {
+  onBuildSnapshot?: (modules: BackupModuleKey[]) => AriaBackupSnapshot;
+  onApplySnapshot?: (
+    snapshot: AriaBackupSnapshot,
+    strategy: BackupMergeStrategy,
+    modules: BackupModuleKey[],
+  ) => { summary: string };
+  onOpenPrivateCloud?: () => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedModules, setSelectedModules] = useState<BackupModuleKey[]>([
+    "eqPresets",
+    "playlists",
+    "preferences",
+    "desktopLyrics",
+  ]);
+  const [strategy, setStrategy] = useState<BackupMergeStrategy>("merge");
+  const [webdavInstances, setWebdavInstances] = useState<PrivateCloudInstancePublic[]>([]);
+  const [selectedWebdavId, setSelectedWebdavId] = useState("");
+  const [remotePath, setRemotePath] = useState("/Aria/.aria-backup.json");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    api
+      .listPrivateCloudInstances()
+      .then((res) => {
+        if (!mounted) return;
+        const list = (res.instances ?? []).filter((item) => item.kind === "webdav");
+        setWebdavInstances(list);
+        if (list.length && !selectedWebdavId) {
+          setSelectedWebdavId(list[0].id);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+    // Only load WebDAV targets on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!onBuildSnapshot || !onApplySnapshot) return null;
+
+  function toggleModule(key: BackupModuleKey) {
+    setSelectedModules((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key],
+    );
+  }
+
+  function handleExportFile() {
+    if (!selectedModules.length) {
+      setStatus({ kind: "error", text: "请至少选择一个备份模块。" });
+      return;
+    }
+    const snapshot = onBuildSnapshot!(selectedModules);
+    const json = JSON.stringify(snapshot, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `aria-backup-${stamp}.aria-backup.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus({ kind: "ok", text: "已生成并下载 .aria-backup.json（已自动剥离凭据与密码）。" });
+  }
+
+  async function handleImportFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!selectedModules.length) {
+      setStatus({ kind: "error", text: "请至少选择一个要恢复的模块。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const text = await file.text();
+      const parsed = parseAndValidateBackup(text);
+      const res = onApplySnapshot!(parsed, strategy, selectedModules);
+      setStatus({ kind: "ok", text: `本地导入完成：${res.summary}` });
+    } catch (error) {
+      setStatus({ kind: "error", text: error instanceof Error ? error.message : "备份文件解析失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleWebdavPush() {
+    if (!selectedWebdavId || !selectedModules.length) {
+      setStatus({ kind: "error", text: "请先选择 WebDAV 实例并至少勾选一个模块。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const snapshot = onBuildSnapshot!(selectedModules);
+      const res = await api.pushWebdavBackup(selectedWebdavId, remotePath.trim() || "/Aria/.aria-backup.json", snapshot);
+      setStatus({ kind: "ok", text: `已同步至 WebDAV（${res.remotePath}，${(res.bytes / 1024).toFixed(1)} KB）。` });
+    } catch (error) {
+      setStatus({ kind: "error", text: error instanceof Error ? error.message : "同步到 WebDAV 失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleWebdavPull() {
+    if (!selectedWebdavId || !selectedModules.length) {
+      setStatus({ kind: "error", text: "请先选择 WebDAV 实例并至少勾选一个模块。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.pullWebdavBackup(selectedWebdavId, remotePath.trim() || "/Aria/.aria-backup.json");
+      const parsed = parseAndValidateBackup(res.snapshot);
+      const applied = onApplySnapshot!(parsed, strategy, selectedModules);
+      setStatus({ kind: "ok", text: `已从 WebDAV 恢复：${applied.summary}` });
+    } catch (error) {
+      setStatus({ kind: "error", text: error instanceof Error ? error.message : "从 WebDAV 拉取失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-neutral-900">配置备份与 WebDAV 漫游</p>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            跨设备同步 EQ 预设、歌单与界面偏好；白名单严格导出，绝不包含 Cookie、私有云密码或 Token。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.aria-backup.json"
+            className="hidden"
+            onChange={(event) => void handleImportFile(event)}
+          />
+          <Button size="sm" variant="subtle" onClick={handleExportFile} disabled={busy}>
+            <Download />
+            导出配置
+          </Button>
+          <Button size="sm" variant="subtle" onClick={() => fileInputRef.current?.click()} disabled={busy}>
+            <Upload />
+            导入配置
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {BACKUP_MODULE_LABELS.map((item) => {
+          const active = selectedModules.includes(item.key);
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => toggleModule(item.key)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs font-medium transition",
+                active
+                  ? "border-neutral-900 bg-neutral-900 text-white dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-950"
+                  : "border-black/10 bg-white/70 text-neutral-600 hover:bg-neutral-100 dark:border-white/10 dark:bg-white/5 dark:text-neutral-300",
+              )}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+        <div className="ml-auto flex items-center gap-1 rounded-full bg-black/[0.04] p-0.5 text-xs dark:bg-white/[0.06]">
+          <button
+            type="button"
+            onClick={() => setStrategy("merge")}
+            className={cn(
+              "rounded-full px-2.5 py-1 transition",
+              strategy === "merge" ? "bg-white font-medium text-neutral-900 shadow-xs dark:bg-neutral-800 dark:text-white" : "text-neutral-500",
+            )}
+          >
+            增量合并
+          </button>
+          <button
+            type="button"
+            onClick={() => setStrategy("overwrite")}
+            className={cn(
+              "rounded-full px-2.5 py-1 transition",
+              strategy === "overwrite" ? "bg-white font-medium text-neutral-900 shadow-xs dark:bg-neutral-800 dark:text-white" : "text-neutral-500",
+            )}
+          >
+            覆盖替换
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-inline-well mt-3 rounded-xl p-3">
+        {webdavInstances.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <AriaSelect
+              value={selectedWebdavId}
+              onChange={(value) => setSelectedWebdavId(value)}
+              options={webdavInstances.map((inst) => ({ value: inst.id, label: inst.name }))}
+              className="min-w-[150px]"
+            />
+            <input
+              value={remotePath}
+              onChange={(event) => setRemotePath(event.target.value)}
+              placeholder="/Aria/.aria-backup.json"
+              aria-label="WebDAV 备份路径"
+              className="settings-input min-w-0 flex-1 rounded-lg px-3 py-1.5 text-xs outline-none"
+            />
+            <Button size="sm" onClick={() => void handleWebdavPush()} disabled={busy}>
+              <Cloud />
+              上传漫游
+            </Button>
+            <Button size="sm" variant="subtle" onClick={() => void handleWebdavPull()} disabled={busy}>
+              <RefreshCw />
+              云端恢复
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-500">
+            <span>尚未添加 WebDAV 私有云实例，添加后可一键云端漫游备份。</span>
+            {onOpenPrivateCloud && (
+              <Button size="sm" variant="subtle" onClick={onOpenPrivateCloud}>
+                <Cloud />
+                添加 WebDAV 实例
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {status && (
+        <p
+          role="status"
+          className={cn(
+            "settings-status-banner mt-2.5 rounded-lg px-3 py-2 text-xs",
+            status.kind === "error" && "text-rose-600 dark:text-rose-400",
+          )}
+        >
+          {status.text}
+        </p>
+      )}
     </div>
   );
 }

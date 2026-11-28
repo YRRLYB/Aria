@@ -6,7 +6,7 @@ import net from "node:net";
 import type { Request, Response } from "express";
 import { getNeteaseAccountSummary, peekNeteaseAccountSummary } from "../services/neteaseService";
 import { peekBilibiliCapability, resolveBilibiliCapability } from "../sources/bilibili/client";
-import { readSourceEnabledMap } from "../sources/registry";
+import { getSourceManifest, readSourceEnabledMap } from "../sources/registry";
 import { readStore, updateStore } from "../store";
 import type { AriaRoomStoredConfig } from "../types";
 import { HttpError } from "../utils/httpError";
@@ -495,6 +495,8 @@ export class AriaRoomManager {
   >();
   private proxyFallbackRequestedNonces = new Set<string>();
   private fallbackServingNonces = new Set<string>();
+  private trackReadyPeersByNonce = new Map<string, Set<string>>();
+  private trackReadyWaiters = new Map<string, Set<() => void>>();
   private failedDirectEndpoints = new Set<string>();
   private guestResolvedUpstreamMap = new Map<
     string,
@@ -1280,6 +1282,11 @@ export class AriaRoomManager {
     this.pendingResolves.clear();
     this.proxyFallbackRequestedNonces.clear();
     this.fallbackServingNonces.clear();
+    this.trackReadyPeersByNonce.clear();
+    for (const waiters of this.trackReadyWaiters.values()) {
+      for (const wake of waiters) wake();
+    }
+    this.trackReadyWaiters.clear();
     this.members.clear();
     this.allowedNonces.clear();
     this.playback = { ...EMPTY_PLAYBACK };
@@ -1598,7 +1605,11 @@ export class AriaRoomManager {
   ): Promise<{ ok: true; track: AriaRoomTrackPayload } | { ok: false; reason: string }> {
     const fallbackProvider = track.addedByPeerId || this.myPeerId || "host";
 
-    if (track.source === "local") {
+    if (
+      track.source === "local" ||
+      track.source === "subsonic" ||
+      track.source === "webdav"
+    ) {
       return {
         ok: true,
         track: {
@@ -1606,6 +1617,7 @@ export class AriaRoomManager {
           dispatch: {
             mode: "stream_proxy",
             providerPeerId: fallbackProvider,
+            ...(track.mimeType ? { mimeType: track.mimeType } : {}),
           },
         },
       };
@@ -1706,8 +1718,10 @@ export class AriaRoomManager {
 
     if (matched) {
       const res = matched.outcome;
+      const manifestDirectShareable = getSourceManifest(track.source as never)?.capabilities?.directShareable;
       const isLocalProxyOnly =
         track.source === "cloud" ||
+        manifestDirectShareable === false ||
         (this.networkMode === "direct" && matched.peerId === this.myPeerId) ||
         !/^https?:\/\//i.test(res.directUrl ?? "");
 
@@ -1832,6 +1846,62 @@ export class AriaRoomManager {
       fromPeerId: this.myPeerId,
       nonce,
       bufferedBytes,
+    });
+  }
+
+  /**
+   * Barrier Ready: host waits briefly (default 3000 ms) for all online guests
+   * to confirm initial audio bytes are buffered before broadcasting `play_at`.
+   */
+  async waitForTrackReady(
+    nonce: string,
+    timeoutMs = 3_000,
+  ): Promise<{ readyPeerIds: string[]; timedOut: boolean }> {
+    const onlineGuestIds = Array.from(this.members.values())
+      .filter((m) => m.peerId !== this.myPeerId && m.role === "guest" && m.online !== false && m.presence !== "offline")
+      .map((m) => m.peerId);
+    if (!this.active || !nonce || onlineGuestIds.length === 0) {
+      return { readyPeerIds: [], timedOut: false };
+    }
+
+    const readySet = this.trackReadyPeersByNonce.get(nonce) ?? new Set<string>();
+    if (onlineGuestIds.every((id) => readySet.has(id))) {
+      return { readyPeerIds: Array.from(readySet), timedOut: false };
+    }
+
+    const clampedTimeout = Math.max(50, Math.min(10_000, timeoutMs));
+    return await new Promise((resolve) => {
+      let finished = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.trackReadyWaiters.get(nonce)?.delete(check);
+        if (this.trackReadyWaiters.get(nonce)?.size === 0) {
+          this.trackReadyWaiters.delete(nonce);
+        }
+      };
+      const finish = (timedOut: boolean) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        const latest = this.trackReadyPeersByNonce.get(nonce);
+        resolve({ readyPeerIds: latest ? Array.from(latest) : [], timedOut });
+      };
+      const check = () => {
+        const currentGuests = Array.from(this.members.values())
+          .filter((m) => m.peerId !== this.myPeerId && m.role === "guest" && m.online !== false && m.presence !== "offline")
+          .map((m) => m.peerId);
+        const latest = this.trackReadyPeersByNonce.get(nonce);
+        if (!this.active || currentGuests.length === 0 || (latest && currentGuests.every((id) => latest.has(id)))) {
+          finish(false);
+        }
+      };
+      let waiters = this.trackReadyWaiters.get(nonce);
+      if (!waiters) {
+        waiters = new Set();
+        this.trackReadyWaiters.set(nonce, waiters);
+      }
+      waiters.add(check);
+      const timer = setTimeout(() => finish(true), clampedTimeout);
     });
   }
 
@@ -3082,6 +3152,20 @@ export class AriaRoomManager {
       const existing = this.members.get(msg.fromPeerId);
       if (existing) {
         this.members.set(msg.fromPeerId, { ...existing, readyNonce: msg.nonce });
+      }
+      let readySet = this.trackReadyPeersByNonce.get(msg.nonce);
+      if (!readySet) {
+        if (this.trackReadyPeersByNonce.size >= 32) {
+          const oldestKey = this.trackReadyPeersByNonce.keys().next().value;
+          if (oldestKey) this.trackReadyPeersByNonce.delete(oldestKey);
+        }
+        readySet = new Set<string>();
+        this.trackReadyPeersByNonce.set(msg.nonce, readySet);
+      }
+      readySet.add(msg.fromPeerId);
+      const waiters = this.trackReadyWaiters.get(msg.nonce);
+      if (waiters) {
+        for (const wake of Array.from(waiters)) wake();
       }
       this.emitSse("track_ready", {
         fromPeerId: msg.fromPeerId,

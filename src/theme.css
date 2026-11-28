@@ -665,6 +665,12 @@ button:disabled { cursor: default; }
   background: rgba(255, 0, 51, 0.08);
   color: #cc0033;
 }
+.source-badge-subsonic,
+.source-badge-webdav {
+  border-color: rgba(15, 118, 110, 0.22);
+  background: rgba(15, 118, 110, 0.09);
+  color: #0f766e;
+}
 
 /* Redesigned History surface */
 .history-search {
